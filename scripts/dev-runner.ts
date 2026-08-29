@@ -11,6 +11,11 @@ import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshot
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
+  createChildWatchdog,
+  resolveChildWatchdogTimeoutMs,
+  terminateChildProcessTree,
+} from "../server/src/dev-runner-child-watchdog.ts";
+import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
@@ -360,8 +365,27 @@ async function runPnpm(args: string[], options: {
   stdio?: "inherit" | ["ignore", "pipe", "pipe"];
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  /**
+   * Echo captured stderr as it arrives instead of only after exit. The child
+   * still gets to own stdout (for JSON payloads); this just stops its progress
+   * and warnings from being invisible while it runs.
+   */
+  forwardStderr?: boolean;
+  /**
+   * Print "still running" notices and terminate the child once `timeoutMs`
+   * passes. A captured child that stalls otherwise stalls the runner with no
+   * output at all.
+   */
+  watchdog?: { label: string; timeoutMs: number };
 } = {}) {
-  return await new Promise<{ code: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
+  return await new Promise<{
+    code: number;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+    elapsedMs: number;
+  }>((resolve, reject) => {
     const spawned = spawn(pnpmBin, args, {
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
@@ -371,6 +395,21 @@ async function runPnpm(args: string[], options: {
 
     const stdoutBuffer = createCapturedOutputBuffer();
     const stderrBuffer = createCapturedOutputBuffer();
+    const watchdog = options.watchdog
+      ? createChildWatchdog(
+        {
+          label: options.watchdog.label,
+          command: `${pnpmBin} ${args.join(" ")}`,
+          timeoutMs: options.watchdog.timeoutMs,
+        },
+        ({ elapsedMs }) => {
+          process.stderr.write(
+            `[paperclip] ${options.watchdog!.label} did not finish within ${Math.round(elapsedMs / 1000)}s; terminating it.\n`,
+          );
+          void terminateChildProcessTree(spawned);
+        },
+      )
+      : null;
 
     if (spawned.stdout) {
       spawned.stdout.on("data", (chunk) => {
@@ -380,11 +419,18 @@ async function runPnpm(args: string[], options: {
     if (spawned.stderr) {
       spawned.stderr.on("data", (chunk) => {
         stderrBuffer.append(chunk);
+        if (options.forwardStderr) process.stderr.write(chunk);
       });
     }
 
-    spawned.on("error", reject);
+    spawned.on("error", (error) => {
+      watchdog?.dispose();
+      reject(error);
+    });
     spawned.on("exit", (code, signal) => {
+      const timedOut = watchdog?.timedOut ?? false;
+      const elapsedMs = watchdog?.elapsedMs() ?? 0;
+      watchdog?.dispose();
       const stdout = stdoutBuffer.finish();
       const stderr = stderrBuffer.finish();
       resolve({
@@ -392,21 +438,58 @@ async function runPnpm(args: string[], options: {
         signal,
         stdout: stdout.text,
         stderr: stderr.text,
+        timedOut,
+        elapsedMs,
       });
     });
   });
 }
 
-async function getMigrationStatusPayload() {
-  const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
-    { env },
-  );
-  if (status.code !== 0) {
+const migrationStatusArgs = ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"];
+const migrationStatusCommand = `pnpm ${migrationStatusArgs.join(" ")}`;
+
+/**
+ * Run the migration status check as a captured child.
+ *
+ * `foreground` is the startup preflight the operator is waiting on: its stderr
+ * (adoption decisions, postmaster start/stop progress, warnings) is echoed live,
+ * because until it exits nothing else is printed and a slow or stuck cluster
+ * would otherwise look like a hung `pnpm dev`. Background refreshes in dev mode
+ * keep stderr captured so change scans stay quiet, but still run under the
+ * watchdog so a stall cannot wedge the scan loop unnoticed.
+ */
+async function getMigrationStatusPayload(options: { foreground?: boolean } = {}) {
+  if (options.foreground) {
+    console.log(`[paperclip] checking database migration status (${migrationStatusCommand})`);
+  }
+  const status = await runPnpm(migrationStatusArgs, {
+    env,
+    forwardStderr: options.foreground ?? false,
+    watchdog: {
+      label: "migration status check",
+      timeoutMs: resolveChildWatchdogTimeoutMs(env),
+    },
+  });
+  if (status.timedOut) {
     process.stderr.write(
-      status.stderr ||
-        status.stdout ||
-        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+      `[paperclip] migration status check was terminated after ${Math.round(status.elapsedMs / 1000)}s without finishing ` +
+        `(set PAPERCLIP_DEV_PREFLIGHT_TIMEOUT_MS to change the limit). Run it by hand to see where it stops:\n` +
+        `  ${migrationStatusCommand}\n` +
+        `${options.foreground || !status.stderr ? "" : `Captured stderr:\n${status.stderr}\n`}`,
+    );
+    process.exit(1);
+  }
+  if (status.code !== 0) {
+    // When stderr was echoed live, the child's own diagnosis is already on
+    // screen; repeating it would bury the summary line.
+    if (!options.foreground && status.stderr) {
+      process.stderr.write(status.stderr.endsWith("\n") ? status.stderr : `${status.stderr}\n`);
+    }
+    if (status.stdout.trim()) {
+      process.stderr.write(status.stdout.endsWith("\n") ? status.stdout : `${status.stdout}\n`);
+    }
+    process.stderr.write(
+      `[paperclip] migration status check failed with code ${status.code} after ${Math.round(status.elapsedMs / 1000)}s: ${migrationStatusCommand}\n`,
     );
     process.exit(status.code);
   }
@@ -415,7 +498,7 @@ async function getMigrationStatusPayload() {
     return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
   } catch (error) {
     process.stderr.write(
-      status.stderr ||
+      (!options.foreground && status.stderr) ||
         status.stdout ||
         "[paperclip] migration-status returned invalid JSON payload\n",
     );
@@ -423,8 +506,8 @@ async function getMigrationStatusPayload() {
   }
 }
 
-async function refreshPendingMigrations() {
-  const payload = await getMigrationStatusPayload();
+async function refreshPendingMigrations(options: { foreground?: boolean } = {}) {
+  const payload = await getMigrationStatusPayload(options);
   pendingMigrations =
     payload.status === "needsMigrations" && Array.isArray(payload.pendingMigrations)
       ? payload.pendingMigrations.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
@@ -433,12 +516,19 @@ async function refreshPendingMigrations() {
   return payload;
 }
 
-async function maybePreflightMigrations(options: { interactive?: boolean; autoApply?: boolean; exitOnDecline?: boolean } = {}) {
+async function maybePreflightMigrations(options: {
+  interactive?: boolean;
+  autoApply?: boolean;
+  exitOnDecline?: boolean;
+  /** True for the startup preflight the operator is watching; see getMigrationStatusPayload. */
+  foreground?: boolean;
+} = {}) {
   const interactive = options.interactive ?? mode === "watch";
   const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
+  const foreground = options.foreground ?? false;
 
-  const payload = await refreshPendingMigrations();
+  const payload = await refreshPendingMigrations({ foreground });
   if (payload.status !== "needsMigrations" || pendingMigrations.length === 0) {
     return;
   }
@@ -488,7 +578,7 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
     process.exit(exit.code);
   }
 
-  await refreshPendingMigrations();
+  await refreshPendingMigrations({ foreground });
 }
 
 async function buildPluginSdk() {
@@ -705,7 +795,7 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-await maybePreflightMigrations();
+await maybePreflightMigrations({ foreground: true });
 await startServerChild();
 installDevIntervals();
 

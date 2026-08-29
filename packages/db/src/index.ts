@@ -12,7 +12,26 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  isPostgresStartingUpError,
+  isPostgresConnectionUnavailableError,
+  isPostgresNotReadyError,
+  waitForPostgresReady,
+  type WaitForPostgresReadyOptions,
 } from "./client.js";
+export {
+  POSTMASTER_LOCK_FILE_NAME,
+  postmasterLockFilePath,
+  readPostmasterLockFile,
+  probeProcessLiveness,
+  canonicalizeDataDirectory,
+  inspectPostmasterLock,
+  decideEmbeddedPostgresStart,
+  type PostmasterLockFile,
+  type PostmasterLockStatus,
+  type ProcessLiveness,
+  type PortHolderIdentity,
+  type EmbeddedPostgresStartDecision,
+} from "./embedded-postgres-lock.js";
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -37,7 +56,21 @@ export {
   ensureLinuxSharedLibraryAliases,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";
-export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
+export {
+  DEFAULT_EMBEDDED_POSTGRES_START_TIMEOUT_MS,
+  DEFAULT_EMBEDDED_POSTGRES_STOP_TIMEOUT_MS,
+  EmbeddedPostgresStartTimeoutError,
+  EmbeddedPostgresStopTimeoutError,
+  hasEmbeddedPostgresProcessExited,
+  loadWithoutEmbeddedPostgresExitHooks,
+  startEmbeddedPostgresWithin,
+  stopEmbeddedPostgresWithin,
+  type EmbeddedPostgresChildProcess,
+  type EmbeddedPostgresLifecycle,
+  type StartEmbeddedPostgresOptions,
+  type StopEmbeddedPostgresOptions,
+  type StopEmbeddedPostgresOutcome,
+} from "./embedded-postgres-lifecycle.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
