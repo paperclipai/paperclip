@@ -12982,6 +12982,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // same false-quiescence gap this fallback exists to close. Live-event and
   // plugin-event publishing run after the transaction commits, so a publish
   // failure cannot roll back the durable claim writes.
+  //
+  // The update below carries the same status: "running" condition the atomic
+  // release above uses. While this fallback waits, a concurrent path (a
+  // cancellation, the orphan reaper) can move the run to a terminal status.
+  // Without the condition this update would match that row and overwrite its
+  // real outcome. With it, the update matches no row, so the function returns
+  // early below and leaves the terminal run, its wakeup request, and its
+  // issue lock untouched.
   async function failRunClaimedJustBeforeSuppression(runId: string, cause: unknown) {
     const now = new Date();
     const causeMessage = cause instanceof Error ? cause.message : String(cause);
@@ -12996,7 +13004,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorCode: "claim_release_failed",
           updatedAt: now,
         })
-        .where(eq(heartbeatRuns.id, runId))
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;

@@ -322,6 +322,128 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     }, 20_000);
   }
 
+  // Wraps db.transaction so the release transaction (call 0) fails on
+  // releaseFailingTable exactly like withFailingTransactionalUpdate above —
+  // this forces the fallback to run. The fallback's own transaction (call 1)
+  // first writes a terminal outcome to the run, wakeup, and issue-lock rows
+  // before it runs its real update. This stands in for a concurrent path (a
+  // cancellation, the orphan reaper) that reaches a terminal status — and
+  // finishes releasing the same three rows this fallback also guards — while
+  // the fallback was still waiting to run its own update.
+  function withRunTerminalizedBeforeFallbackUpdate(
+    realDb: typeof db,
+    releaseFailingTable: unknown,
+    ids: { runId: string; wakeupRequestId: string; issueId: string },
+  ) {
+    let callIndex = 0;
+    return new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop !== "transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>) => {
+          const isReleaseCall = callIndex === 0;
+          const isFallbackCall = callIndex === 1;
+          callIndex += 1;
+          return target.transaction(async (tx) => {
+            if (isReleaseCall) {
+              const txProxy = new Proxy(tx as object, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "update") {
+                    return (table: unknown) => {
+                      if (table === releaseFailingTable) {
+                        throw new Error("simulated transactional write failure");
+                      }
+                      return (txTarget as any).update(table);
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(txProxy);
+            }
+            if (isFallbackCall) {
+              const now = new Date();
+              const txDb = tx as typeof db;
+              await txDb
+                .update(heartbeatRuns)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled while a task drain was pending",
+                  errorCode: "cancelled",
+                  updatedAt: now,
+                })
+                .where(eq(heartbeatRuns.id, ids.runId));
+              await txDb
+                .update(agentWakeupRequests)
+                .set({ status: "cancelled", finishedAt: now, updatedAt: now })
+                .where(eq(agentWakeupRequests.id, ids.wakeupRequestId));
+              await txDb
+                .update(issues)
+                .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+                .where(eq(issues.id, ids.issueId));
+            }
+            return fn(tx);
+          });
+        };
+      },
+    }) as typeof db;
+  }
+
+  it("leaves a run's outcome untouched when another path already terminalized it before the fallback runs", async () => {
+    const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+
+    const failingDb = withRunTerminalizedBeforeFallbackUpdate(db, issues, { runId, wakeupRequestId, issueId });
+    const heartbeat = heartbeatService(failingDb);
+
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = event.payload as { runId?: string; status?: string };
+      if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+        startTaskDrain({});
+      }
+    });
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+    }
+
+    // The other path's outcome survives untouched. Before the fix, the
+    // fallback's unconditional update matched this already-terminal row and
+    // overwrote it with "failed" / "claim_release_failed", losing the real
+    // cause.
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("cancelled");
+
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    // The run is not active by any measure: not in the live execution-promise
+    // tracking (it already settled) and not in the stuck claim-release
+    // marker (the fallback found no row to update, so it never throws).
+    // Quiescence must be able to reach true.
+    const status = getTaskDrainStatus();
+    expect(status.activeRuns).toBe(0);
+    expect(status.quiescent).toBe(true);
+  }, 20_000);
+
   for (const [label, failingTable] of [
     ["the wakeup-request update", agentWakeupRequests],
     ["the issue-lock update", issues],
