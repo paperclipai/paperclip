@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueExecutionDecisions,
   issueInboxArchives,
   issueRecoveryActions,
   issueThreadInteractions,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueComments);
+    await db.delete(issueExecutionDecisions);
     await db.delete(issueRecoveryActions);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
@@ -622,5 +624,27 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       request(app(actor)).post(`/api/issues/${raceIssueId}/stalled-review-decision`).send({ action: "approve" }),
     ]);
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+  });
+
+  it("finalizes a covered final review only when the pending participant already left approval evidence", async () => {
+    const seeded = await seedCompany("REC");
+    const issueId = await seedReview({ companyId: seeded.companyId, assigneeAgentId: seeded.assigneeAgentId, identifier: "REC-1" });
+    const firstStageId = randomUUID();
+    const finalStageId = randomUUID();
+    await db.update(issues).set({
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [
+        { id: firstStageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: seeded.peerAgentId }] },
+        { id: finalStageId, type: "approval", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }] },
+      ] },
+      executionState: { status: "pending", currentStageId: finalStageId, currentStageIndex: 1, currentStageType: "approval", currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId }, returnAssignee: { type: "agent", agentId: seeded.peerAgentId }, completedStageIds: [firstStageId], lastDecisionId: null, lastDecisionOutcome: null },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueThreadInteractions).values({ companyId: seeded.companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "none", payload: { version: 1, prompt: "covered path" } });
+    await db.insert(issueComments).values({ companyId: seeded.companyId, issueId, body: "## Review: APPROVED\n\nFinal signoff.", authorAgentId: seeded.assigneeAgentId });
+
+    const response = await request(app(boardActor(seeded.companyId, seeded.memberUserId)))
+      .post(`/api/issues/${issueId}/stalled-review-decision`).send({ action: "approve" }).expect(200);
+
+    expect(response.body.issue).toMatchObject({ status: "done", executionState: { status: "completed", completedStageIds: [firstStageId, finalStageId], lastDecisionOutcome: "approved" } });
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId))).toHaveLength(1);
   });
 });
