@@ -2343,6 +2343,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  async function lockAuthorizedBrokerResponsibleMembership(input: {
+    companyId: string;
+    responsibleUserId: string;
+  }, tx: DbTransaction) {
+    const membership = await tx
+      .select({
+        id: companyMemberships.id,
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, input.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, input.responsibleUserId),
+      ))
+      .limit(1)
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (
+      !membership
+      || membership.status !== "active"
+      || !membership.membershipRole
+      || membership.membershipRole === "viewer"
+    ) {
+      throw new HttpError(403, "Responsible user is no longer authorized for company write access", {
+        code: "responsible_user_unauthorized",
+      });
+    }
+    return membership;
+  }
+
   async function recordConnectionTokenIssuance(input: {
     companyId: string;
     applicationId: string | null;
@@ -2361,8 +2393,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     outcome: ConnectionTokenIssuanceOutcome;
     errorCode?: string | null;
     metadata?: Record<string, unknown>;
-  }) {
-    await db.insert(connectionTokenIssuances).values({
+  }, dbClient: ToolAccessMutationDb = db) {
+    await dbClient.insert(connectionTokenIssuances).values({
       companyId: input.companyId,
       applicationId: input.applicationId,
       connectionId: input.connectionId,
@@ -2603,7 +2635,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     agentId: string;
     runId: string;
     issueId: string | null;
-  }) {
+  }, secretClient: ReturnType<typeof secretService> = secrets) {
     const ref = findBrokerCredentialRef(input.connection);
     if (!ref) {
       throw unprocessable("Connection token exchange requires a vault-backed parent credential", {
@@ -2611,12 +2643,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
     }
     if (ref.kind === "secret_ref") {
-      return secrets.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.versionSelector ?? "latest", {
+      return secretClient.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.versionSelector ?? "latest", {
         accessContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
         bindingContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
       });
     }
-    return secrets.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.version ?? "latest", {
+    return secretClient.resolveSecretValue(input.connection.companyId, ref.ref.secretId, ref.ref.version ?? "latest", {
       accessContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
       bindingContext: accessContextForBroker({ ...input, configPath: ref.configPath }),
     });
@@ -2651,9 +2683,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     responsibleUserId: string | null;
     scope: string[];
     ttlSeconds: number;
-  }) {
+  }, secretClient: ReturnType<typeof secretService> = secrets) {
     const isPages = isPagesTokenConnection(input.connection, input.application);
-    const parentToken = await resolveBrokerParentCredential(input);
+    const parentToken = await resolveBrokerParentCredential(input, secretClient);
     const broker = tokenBrokerConfig(input.connection);
     const protocol = readConfigString(broker, "protocol") ?? readConfigString(broker, "exchangeProtocol") ?? (isPages ? "pages" : "generic");
     const url = exchangeTokenUrl(input.connection, isPages);
@@ -11460,40 +11492,51 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         });
       }
 
+      const selectedGrant = grant;
       try {
-        const minted = await mintExchangeConnectionToken({
-          connection: credentialConnection,
-          application,
-          agentId: input.agentId,
-          runId: input.runId,
-          issueId: runContext.issueId,
-          responsibleUserId: runContext.responsibleUserId,
-          scope: issuedScope,
-          ttlSeconds,
+        const mintResult = await db.transaction(async (tx) => {
+          await lockAuthorizedBrokerResponsibleMembership({
+            companyId: connection.companyId,
+            responsibleUserId: runContext.responsibleUserId,
+          }, tx);
+          const minted = await mintExchangeConnectionToken({
+            connection: credentialConnection,
+            application,
+            agentId: input.agentId,
+            runId: input.runId,
+            issueId: runContext.issueId,
+            responsibleUserId: runContext.responsibleUserId,
+            scope: issuedScope,
+            ttlSeconds,
+          }, secretService(tx));
+          const expiresAt = minted.expiresAt;
+          const mintedScope = "scope" in minted ? minted.scope : issuedScope;
+          const effectiveTtlSeconds = Math.max(1, Math.min(900, Math.ceil((expiresAt.getTime() - now().getTime()) / 1000)));
+          const tokenHash = bearerTokenHash(minted.token);
+          await recordConnectionTokenIssuance({
+            companyId: connection.companyId,
+            applicationId: connection.applicationId,
+            connectionId: connection.id,
+            agentId: input.agentId,
+            runId: input.runId,
+            issueId: runContext.issueId,
+            projectId: runContext.projectId,
+            responsibleUserId: runContext.responsibleUserId,
+            path,
+            requestedScope,
+            issuedScope: mintedScope,
+            ttlSeconds: effectiveTtlSeconds,
+            expiresAt,
+            tokenHash,
+            outcome: "success",
+            metadata: { tokenRef: tokenHash, tokenType: minted.tokenType },
+          }, tx);
+          await tx
+            .update(connectionGrants)
+            .set({ lastUsedAt: new Date(), updatedAt: new Date() })
+            .where(eq(connectionGrants.id, selectedGrant.id));
+          return { minted, expiresAt, mintedScope, effectiveTtlSeconds, tokenHash };
         });
-        const expiresAt = minted.expiresAt;
-        const mintedScope = "scope" in minted ? minted.scope : issuedScope;
-        const effectiveTtlSeconds = Math.max(1, Math.min(900, Math.ceil((expiresAt.getTime() - now().getTime()) / 1000)));
-        const tokenHash = bearerTokenHash(minted.token);
-        await recordConnectionTokenIssuance({
-          companyId: connection.companyId,
-          applicationId: connection.applicationId,
-          connectionId: connection.id,
-          agentId: input.agentId,
-          runId: input.runId,
-          issueId: runContext.issueId,
-          projectId: runContext.projectId,
-          responsibleUserId: runContext.responsibleUserId,
-          path,
-          requestedScope,
-          issuedScope: mintedScope,
-          ttlSeconds: effectiveTtlSeconds,
-          expiresAt,
-          tokenHash,
-          outcome: "success",
-          metadata: { tokenRef: tokenHash, tokenType: minted.tokenType },
-        });
-        await db.update(connectionGrants).set({ lastUsedAt: new Date(), updatedAt: new Date() }).where(eq(connectionGrants.id, grant.id));
         await auditConnectionTokenIssuance({
           companyId: connection.companyId,
           connectionId: connection.id,
@@ -11501,20 +11544,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           runId: input.runId,
           path,
           outcome: "success",
-          details: { ttlSeconds: effectiveTtlSeconds, scopeCount: mintedScope.length, tokenRef: tokenHash },
+          details: {
+            ttlSeconds: mintResult.effectiveTtlSeconds,
+            scopeCount: mintResult.mintedScope.length,
+            tokenRef: mintResult.tokenHash,
+          },
         });
         return {
           status: "minted",
           connectionId: connection.id,
           connection: { id: connection.id, uid: connection.uid },
-          grantId: grant.id,
-          providerTenantId: grant.providerTenant?.externalId,
+          grantId: selectedGrant.id,
+          providerTenantId: selectedGrant.providerTenant?.externalId,
           path: "exchange",
-          token: minted.token,
-          tokenType: minted.tokenType,
-          expiresAt: expiresAt.toISOString(),
-          ttlSeconds: effectiveTtlSeconds,
-          scope: mintedScope,
+          token: mintResult.minted.token,
+          tokenType: mintResult.minted.tokenType,
+          expiresAt: mintResult.expiresAt.toISOString(),
+          ttlSeconds: mintResult.effectiveTtlSeconds,
+          scope: mintResult.mintedScope,
           attribution,
         };
       } catch (error) {

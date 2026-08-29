@@ -777,6 +777,97 @@ describeEmbeddedPostgres("tool access service", () => {
     ]));
   });
 
+  it("serializes exchange-token minting behind responsible-user membership revocation", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const mintDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const revocationDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const service = createTestToolAccessService(mintDb);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("membership revocation must win before token exchange"),
+    );
+    let releaseRevocation!: () => void;
+    const revocationMayCommit = new Promise<void>((resolve) => {
+      releaseRevocation = resolve;
+    });
+    let membershipLocked!: () => void;
+    const membershipIsLocked = new Promise<void>((resolve) => {
+      membershipLocked = resolve;
+    });
+    let revocation: Promise<void> | null = null;
+
+    try {
+      revocation = revocationDb.transaction(async (tx) => {
+        await tx
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, company.id),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, "user-for-run"),
+          ))
+          .for("update");
+        membershipLocked();
+        await revocationMayCommit;
+        await tx
+          .update(companyMemberships)
+          .set({ membershipRole: "viewer", updatedAt: new Date() })
+          .where(and(
+            eq(companyMemberships.companyId, company.id),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, "user-for-run"),
+          ));
+      });
+
+      await membershipIsLocked;
+      const mint = service.mintConnectionTokenForAgent({
+        connectionId: connection.id,
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+        body: { scope: "pages:publish:ns/dotta" },
+      }).then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+
+      expect(await waitForBlockedMembershipUpdate()).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      releaseRevocation();
+      await revocation;
+
+      const outcome = await mint;
+      expect(outcome.value).toBeNull();
+      expect(outcome.error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("no longer authorized"),
+        details: { code: "responsible_user_unauthorized" },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      await expect(db
+        .select({
+          outcome: connectionTokenIssuances.outcome,
+          tokenHash: connectionTokenIssuances.tokenHash,
+          errorCode: connectionTokenIssuances.errorCode,
+        })
+        .from(connectionTokenIssuances)
+        .where(eq(connectionTokenIssuances.connectionId, connection.id)))
+        .resolves.toEqual([{
+          outcome: "failure",
+          tokenHash: null,
+          errorCode: "responsible_user_unauthorized",
+        }]);
+    } finally {
+      releaseRevocation();
+      await revocation?.catch(() => undefined);
+      await mintDb.$client.end({ timeout: 0 }).catch(() => undefined);
+      await revocationDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
+
   it("denies token minting with an actionable error when the requesting agent has no install", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
