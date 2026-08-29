@@ -4266,11 +4266,11 @@ export function issueRoutes(
    * Guards agent mutations on human-assigned (gate) issues.
    *
    * When this function returns `true` it installs a `res.end` override that
-   * restores the one-shot grant claim before the 4xx response bytes leave the
-   * server. Route handlers that commit a protected mutation MUST signal this by
-   * setting `res.locals.humanGateMutationCommitted = true` immediately after the
-   * DB write; the override skips the restore in that case so the approval is not
-   * reusable for a second run of the same mutation.
+   * restores the one-shot grant claim on any error response where the mutation
+   * did not commit. Route handlers that commit a protected mutation MUST signal
+   * this by setting `res.locals.humanGateMutationCommitted = true` immediately
+   * after the DB write; the override uses that flag — not the status code —
+   * to decide whether the grant is consumable.
    */
   async function assertHumanAssignedIssueMutationAllowed(
     req: Request,
@@ -4319,20 +4319,21 @@ export function issueRoutes(
       }
       throw err;
     }
-    // Restore-on-4xx-pre-mutation: if the route handler returns a 4xx status
-    // (rejected before or during pre-mutation validation), undo the claim so the
-    // agent can retry with the same approval. Only 4xx responses are eligible —
-    // a 5xx response may mean the protected mutation already committed.
+    // Restore-on-error-pre-mutation: if the route handler returns any error
+    // status (4xx or 5xx) without having committed the protected mutation, undo
+    // the claim so the agent can retry with the same approval.
+    //
+    // `humanGateMutationCommitted` is the authoritative signal: route handlers
+    // MUST set `res.locals.humanGateMutationCommitted = true` immediately after
+    // the DB write. If the flag is false when the response ends, the mutation
+    // did not commit and the grant should be restored regardless of status code
+    // — a 5xx thrown before the write is indistinguishable from a 4xx
+    // validation rejection from the grant's perspective.
     //
     // The restore runs inside a res.end override so it completes before the
     // response bytes reach the client. This closes the TOCTOU race where an
     // immediate agent retry would see the claim as still consumed while the
     // async cleanup was still pending.
-    //
-    // Route handlers MUST set res.locals.humanGateMutationCommitted = true
-    // immediately after any DB write that should be treated as committed. The
-    // override skips the restore in that case to prevent making the approval
-    // reusable after a mutation that has already run.
     const origEnd = res.end.bind(res);
     let restorePending = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4340,7 +4341,6 @@ export function issueRoutes(
       if (
         !restorePending &&
         res.statusCode >= 400 &&
-        res.statusCode < 500 &&
         !res.locals.humanGateMutationCommitted
       ) {
         restorePending = true;
