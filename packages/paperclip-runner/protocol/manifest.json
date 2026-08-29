@@ -122,6 +122,12 @@
       "compatibilityCase": "cross-language-input"
     },
     {
+      "path": "fixtures/evals/harness-driver-conformance.json",
+      "sha256": "ce84eb64faa6af78e17a156cde352a951db7c108c8819a20109b732b23a5bec5",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/local-runner/scripts/duplicate-terminal.json",
       "sha256": "56928a21318ea4b390c65fb34f0d3114760619d79301f4d535391a8566b693ab",
       "expectation": "accept",

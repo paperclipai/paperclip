@@ -6,5 +6,7 @@
  * accidental production dependency.
  */
 export * from "./index.js";
+export * from "./conformance/control-plane-port.js";
+export * from "./conformance/harness-driver.js";
 export * from "./conformance/semantic-conformance.js";
 export * from "./protocol/replay-loader.js";

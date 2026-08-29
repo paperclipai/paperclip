@@ -1,12 +1,17 @@
 export * from "./catalog/index.js";
+export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
 export * from "./contracts/durable-recovery.js";
+export * from "./contracts/harness-driver.js";
 export * from "./contracts/local-runner.js";
 export * from "./contracts/native-execution.js";
+export * from "./contracts/native-session-backend.js";
 export * from "./contracts/question-set.js";
 export * from "./contracts/runtime-context.js";
 export * from "./contracts/types.js";
+export * from "./backends/harness-driver-backend.js";
+export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,
   type DurablePrpControlPlaneOptions,
