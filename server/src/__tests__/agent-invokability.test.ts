@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateAgentInvokability,
   listInvalidOrgChainDescendantIds,
+  DIRECT_NON_INVOKABLE_STATUSES,
   type AgentOrgRow,
 } from "../services/agent-invokability.ts";
 
@@ -53,6 +54,21 @@ describe("agent invokability", () => {
       reason: "reporting_cycle",
       invalidOrgChain: true,
     });
+  });
+
+  it("blocks error-status agents from invocation", () => {
+    const target = agent({ id: "errored", status: "error" });
+
+    expect(evaluateAgentInvokability(target, [target])).toMatchObject({
+      invokable: false,
+      reason: "error",
+      invalidOrgChain: false,
+      details: { agentId: "errored", agentStatus: "error" },
+    });
+  });
+
+  it("treats error as a directly non-invokable status", () => {
+    expect(DIRECT_NON_INVOKABLE_STATUSES.has("error")).toBe(true);
   });
 
   it("lists non-terminated descendants made invalid by a terminated root", () => {
