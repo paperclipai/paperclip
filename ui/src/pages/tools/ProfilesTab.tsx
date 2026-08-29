@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { AgentSelect } from "@/components/AgentMultiSelect";
 import {
   Dialog,
   DialogContent,
@@ -484,18 +485,7 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="space-y-1.5">
         <Label>Agent</Label>
-        <Select value={agentId} onValueChange={setAgentId}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select an agent" />
-          </SelectTrigger>
-          <SelectContent>
-            {agentOptions.map((agent) => (
-              <SelectItem key={agent.id} value={agent.id}>
-                {agent.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <AgentSelect agents={agentOptions} value={agentId} onChange={setAgentId} />
       </div>
       {!agentId ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
@@ -1181,12 +1171,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             {targetType === "agent" ? (
               <div className="space-y-1.5">
                 <Label>Agent</Label>
-                <Select value={targetAgentId} onValueChange={setTargetAgentId}>
-                  <SelectTrigger><SelectValue placeholder="Select an agent" /></SelectTrigger>
-                  <SelectContent>
-                    {agentOptions.map((agent) => <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <AgentSelect agents={agentOptions} value={targetAgentId} onChange={setTargetAgentId} />
               </div>
             ) : null}
             {targetType === "project" ? (

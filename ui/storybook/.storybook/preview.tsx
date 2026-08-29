@@ -1,7 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { WorkTimelineResult } from "@paperclipai/shared";
+import {
+  CONNECTABLE_APP_DEFINITIONS,
+  type WorkTimelineResult,
+} from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
 import { ONBOARDING_STORAGE_KEY } from "@/components/OnboardingWizard";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
@@ -39,12 +42,16 @@ import "./styles.css";
 const STORYBOOK_USER_AVATAR =
   "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=96&q=80";
 
-function withStorybookTimelineDetails(data: WorkTimelineResult): WorkTimelineResult {
+function withStorybookTimelineDetails(
+  data: WorkTimelineResult,
+): WorkTimelineResult {
   return {
     ...data,
-    actors: data.actors.map((actor) => (
-      actor.type === "user" ? { ...actor, avatar: STORYBOOK_USER_AVATAR } : actor
-    )),
+    actors: data.actors.map((actor) =>
+      actor.type === "user"
+        ? { ...actor, avatar: STORYBOOK_USER_AVATAR }
+        : actor,
+    ),
     spans: data.spans.map((span, index) => {
       const inputTokens = 42_000 + index * 137;
       const cachedInputTokens = index % 3 === 0 ? 8_000 : 0;
@@ -62,7 +69,9 @@ function withStorybookTimelineDetails(data: WorkTimelineResult): WorkTimelineRes
   };
 }
 
-const storybookTimelineSample = withStorybookTimelineDetails(timelineSample as WorkTimelineResult);
+const storybookTimelineSample = withStorybookTimelineDetails(
+  timelineSample as WorkTimelineResult,
+);
 
 // Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
 // caches in adapter config renderers) hit our fixtures before they reach the
@@ -148,6 +157,66 @@ function installStorybookApiFixtures() {
       return Response.json([]);
     }
 
+    if (
+      url.pathname ===
+      "/api/connection-intents/interaction-connection-intent-default/setup-options"
+    ) {
+      return Response.json({
+        version: 1,
+        interaction: null,
+        service: {
+          service: "notion",
+          name: "Notion",
+          description: "Search and update a Notion workspace.",
+          logoUrl: null,
+          methods: [
+            { key: "mcp-oauth", label: "Sign in with Notion", auth: "oauth" },
+          ],
+          state: "needs_user_action",
+          connectionId: null,
+        },
+        requestedAgentId: "11111111-1111-4111-8111-111111111111",
+        existingConnections: [
+          {
+            id: "connection-storybook-notion",
+            companyId: "company-storybook",
+            applicationId: "application-storybook-notion",
+            name: "Board Operator’s Notion",
+            uid: "notion/storybook",
+            transport: "mcp_remote",
+            authKind: "oauth",
+            credentialPolicy: "per_user",
+            status: "active",
+            enabled: true,
+            config: { sourceTemplateKey: "notion" },
+            transportConfig: { sourceTemplateKey: "notion" },
+            credentialRefs: [],
+            credentialSecretRefs: [],
+          },
+        ],
+      });
+    }
+
+    if (url.pathname === "/api/companies/company-storybook/tools/gallery") {
+      return Response.json({
+        apps: CONNECTABLE_APP_DEFINITIONS.filter(
+          (app) => app.slug === "notion",
+        ),
+        capabilities: {
+          canSetCompanyInstall: true,
+          companyInstallReason: null,
+        },
+      });
+    }
+    if (
+      url.pathname === "/api/companies/company-storybook/tools/applications"
+    ) {
+      return Response.json({ applications: [] });
+    }
+    if (url.pathname === "/api/companies/company-storybook/tools/connections") {
+      return Response.json({ connections: [] });
+    }
+
     if (url.pathname === "/api/adapters") {
       return Response.json([
         {
@@ -209,23 +278,33 @@ function installStorybookApiFixtures() {
       return Response.json([]);
     }
 
-    const adapterSchemaMatch = url.pathname.match(/^\/api\/adapters\/([^/]+)\/config-schema$/);
+    const adapterSchemaMatch = url.pathname.match(
+      /^\/api\/adapters\/([^/]+)\/config-schema$/,
+    );
     if (adapterSchemaMatch) {
       const [, adapterType] = adapterSchemaMatch;
-      const schemas = (window as typeof window & {
-        __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
-      }).__paperclipStorybookAdapterSchemas;
+      const schemas = (
+        window as typeof window & {
+          __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+        }
+      ).__paperclipStorybookAdapterSchemas;
       const schema = schemas?.[adapterType];
       if (schema) return Response.json(schema);
     }
 
-    const secretsListMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secrets$/);
+    const secretsListMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secrets$/,
+    );
     if (secretsListMatch) {
       const [, companyId] = secretsListMatch;
-      return Response.json(companyId === "company-storybook" ? storybookSecrets : []);
+      return Response.json(
+        companyId === "company-storybook" ? storybookSecrets : [],
+      );
     }
 
-    const secretProvidersMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secret-providers$/);
+    const secretProvidersMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers$/,
+    );
     if (secretProvidersMatch) {
       return Response.json(storybookSecretProviders);
     }
@@ -247,36 +326,57 @@ function installStorybookApiFixtures() {
     const secretProviderConfigDiscoveryPreviewMatch = url.pathname.match(
       /^\/api\/companies\/([^/]+)\/secret-provider-configs\/discovery\/preview$/,
     );
-    if (secretProviderConfigDiscoveryPreviewMatch && init?.method?.toUpperCase() === "POST") {
+    if (
+      secretProviderConfigDiscoveryPreviewMatch &&
+      init?.method?.toUpperCase() === "POST"
+    ) {
       return Response.json(storybookSecretProviderDiscoveryPreview);
     }
 
-    const secretUsageMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/usage$/);
+    const secretUsageMatch = url.pathname.match(
+      /^\/api\/secrets\/([^/]+)\/usage$/,
+    );
     if (secretUsageMatch) {
       const [, secretId] = secretUsageMatch;
       return Response.json({
         secretId,
-        bindings: storybookSecretBindings.filter((binding) => binding.secretId === secretId),
+        bindings: storybookSecretBindings.filter(
+          (binding) => binding.secretId === secretId,
+        ),
       });
     }
 
-    const secretEventsMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/access-events$/);
+    const secretEventsMatch = url.pathname.match(
+      /^\/api\/secrets\/([^/]+)\/access-events$/,
+    );
     if (secretEventsMatch) {
       const [, secretId] = secretEventsMatch;
-      return Response.json(storybookSecretAccessEvents.filter((event) => event.secretId === secretId));
+      return Response.json(
+        storybookSecretAccessEvents.filter(
+          (event) => event.secretId === secretId,
+        ),
+      );
     }
 
-    const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
+    const companyResourceMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/([^/]+)$/,
+    );
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
       if (resource === "agents") {
-        return Response.json(companyId === "company-storybook" ? storybookAgents : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookAgents : [],
+        );
       }
       if (resource === "projects") {
-        return Response.json(companyId === "company-storybook" ? storybookProjects : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookProjects : [],
+        );
       }
       if (resource === "approvals") {
-        return Response.json(companyId === "company-storybook" ? storybookApprovals : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookApprovals : [],
+        );
       }
       if (resource === "dashboard") {
         return Response.json({
@@ -293,9 +393,15 @@ function installStorybookApiFixtures() {
                 spans: [],
                 events: [],
                 edges: [],
-                pagination: { limit: 100, offset: 0, totalIssues: 0, hasMore: false },
+                pagination: {
+                  limit: 100,
+                  offset: 0,
+                  totalIssues: 0,
+                  hasMore: false,
+                },
                 window: {
-                  from: url.searchParams.get("from") ?? new Date(0).toISOString(),
+                  from:
+                    url.searchParams.get("from") ?? new Date(0).toISOString(),
                   to: url.searchParams.get("to") ?? new Date(0).toISOString(),
                   capped: false,
                 },
@@ -306,7 +412,9 @@ function installStorybookApiFixtures() {
         return Response.json([]);
       }
       if (resource === "live-runs") {
-        return Response.json(companyId === "company-storybook" ? storybookLiveRuns : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookLiveRuns : [],
+        );
       }
       if (resource === "inbox-dismissals") {
         return Response.json([]);
@@ -327,14 +435,19 @@ function installStorybookApiFixtures() {
         return Response.json(
           query
             ? issues.filter((issue) =>
-                `${issue.identifier ?? ""} ${issue.title} ${issue.description ?? ""}`.toLowerCase().includes(query),
+                `${issue.identifier ?? ""} ${issue.title} ${issue.description ?? ""}`
+                  .toLowerCase()
+                  .includes(query),
               )
             : issues,
         );
       }
     }
 
-    if (url.pathname.startsWith("/api/invites/") && url.pathname.endsWith("/logo")) {
+    if (
+      url.pathname.startsWith("/api/invites/") &&
+      url.pathname.endsWith("/logo")
+    ) {
       return new Response(null, { status: 204 });
     }
 

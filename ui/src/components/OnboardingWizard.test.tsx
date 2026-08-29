@@ -1088,11 +1088,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     const deny = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");
     };
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
-    const removeItem = vi
-      .spyOn(Storage.prototype, "removeItem")
-      .mockImplementation(deny);
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
+    // Deny the browser boundary itself. Spying on a Storage object or
+    // prototype is not portable: DOM implementations may return a fresh
+    // wrapper and Node exposes a separate experimental Storage global.
+    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
     mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
 
@@ -1106,14 +1105,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     await flushReact();
 
-    expect(getItem).toHaveBeenCalled();
+    expect(localStorage).toHaveBeenCalled();
     // It mounted: the wizard is open with no draft, rather than the render
     // throwing on the way in.
     expect(document.body.textContent).not.toBe("");
 
-    getItem.mockRestore();
-    removeItem.mockRestore();
-    setItem.mockRestore();
+    localStorage.mockRestore();
     await act(async () => {
       root.unmount();
     });
@@ -1171,9 +1168,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     const deny = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");
     };
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
-    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(deny);
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
+    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
     mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
 
@@ -1198,9 +1193,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     expect(mockDialog.closeOnboarding).toHaveBeenCalled();
 
-    getItem.mockRestore();
-    removeItem.mockRestore();
-    setItem.mockRestore();
+    localStorage.mockRestore();
     await act(async () => {
       root.unmount();
     });

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "slug": "hugging-face",
+  "name": "Hugging Face",
+  "description": "Connect Hugging Face's provider-hosted MCP server.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/hugging-face.svg"
+  },
+  "urlPatterns": [
+    "https://huggingface.co/*"
+  ],
+  "docsUrl": "https://huggingface.co/docs/hub/agents-mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://huggingface.co/mcp?login&gradio=none",
+        "scopesHint": [
+          "read-mcp"
+        ]
+      },
+      "guidanceMd": "Connect Hugging Face in the browser. A Hugging Face account.",
+      "riskTier": "S2",
+      "label": "Sign in with Hugging Face",
+      "consoleLinks": {
+        "docs": "https://huggingface.co/docs/hub/agents-mcp"
+      },
+      "warnings": [
+        "A Hugging Face account."
+      ]
+    }
+  ]
+}

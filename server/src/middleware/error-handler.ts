@@ -101,11 +101,15 @@ export function errorHandler(
     const workspaceRepairPreconditionFailure = details?.code === "workspace_repair_precondition_failed";
     const structuredConnectionError = new Set([
       "user_authorization_required",
+      "organization_authorization_required",
+      "grant_audience_denied",
       "grant_revoked",
       "needs_reauthorization",
       "installation_required",
       "connection_not_installed",
       "subject_not_permitted",
+      "standing_delegation_required",
+      "grant_owner_membership_inactive",
     ]).has(typeof details?.code === "string" ? details.code : "");
     recordResponsibleUserDenialFromHttpError(req, details);
     if (err.status >= 500) {

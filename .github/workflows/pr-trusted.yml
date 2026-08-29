@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       runner: ${{ steps.route.outputs.runner }}
+      full_ci: ${{ steps.scope.outputs.full_ci }}
 
     steps:
       - name: Validate PR identity and select runner
@@ -217,6 +218,41 @@ jobs:
           echo "runner=$aws_runner" >> "$GITHUB_OUTPUT"
           echo '::notice title=AWS CI routing::Using an ephemeral RunsOn Fleet runner'
 
+      - name: Select stacked PR CI scope
+        id: scope
+        shell: bash
+        env:
+          STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          full_ci='true'
+          reason='ordinary pull request'
+
+          if jq -e 'type == "object"' <<< "$STACK_JSON" >/dev/null 2>&1; then
+            stack_position="$(jq -r '.position // empty' <<< "$STACK_JSON")"
+            stack_size="$(jq -r '.size // empty' <<< "$STACK_JSON")"
+            stack_base_ref="$(jq -r '.base.ref // empty' <<< "$STACK_JSON")"
+
+            if [[ ! "$stack_position" =~ ^[1-9][0-9]*$ ]] ||
+               [[ ! "$stack_size" =~ ^[1-9][0-9]*$ ]] ||
+               (( stack_position > stack_size )) ||
+               [[ -z "$stack_base_ref" ]]; then
+              reason='malformed stack metadata; defaulting to full CI'
+            elif (( stack_position == stack_size )); then
+              reason='top pull request in stack'
+            elif [[ "$stack_base_ref" == "$PR_BASE_REF" ]]; then
+              reason='lowest unmerged pull request in stack'
+            else
+              full_ci='false'
+              reason='middle pull request in stack'
+            fi
+          fi
+
+          echo "full_ci=$full_ci" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Stacked PR CI scope::$reason; full_ci=$full_ci"
+
   policy:
     needs: [gate]
     runs-on: ${{ needs.gate.outputs.runner }}
@@ -323,6 +359,7 @@ jobs:
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -362,6 +399,7 @@ jobs:
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
@@ -452,24 +490,41 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, typecheck_release_registry, general_tests, build]
+    needs: [gate, policy, typecheck_release_registry, general_tests, build]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
     steps:
       - name: Fail if any split verify lane failed
         env:
+          FULL_CI: ${{ needs.gate.outputs.full_ci }}
+          POLICY_RESULT: ${{ needs.policy.result }}
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
-          test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
-          test "$GENERAL_TESTS_RESULT" = "success"
-          test "$BUILD_RESULT" = "success"
+          test "$POLICY_RESULT" = "success"
+          case "$FULL_CI" in
+            true)
+              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+              test "$GENERAL_TESTS_RESULT" = "success"
+              test "$BUILD_RESULT" = "success"
+              ;;
+            false)
+              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
+              test "$GENERAL_TESTS_RESULT" = "skipped"
+              test "$BUILD_RESULT" = "skipped"
+              ;;
+            *)
+              echo "Invalid full_ci decision: $FULL_CI" >&2
+              exit 1
+              ;;
+          esac
 
   build:
     name: Build
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -509,6 +564,7 @@ jobs:
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
@@ -570,6 +626,7 @@ jobs:
   canary_dry_run:
     name: Canary Dry Run
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -627,6 +684,7 @@ jobs:
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
     needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 30
     strategy:
@@ -728,12 +786,23 @@ jobs:
     # across the matrix above (same pattern as the `verify` aggregate).
     name: e2e
     if: ${{ always() }}
-    needs: [gate, e2e_shards]
+    needs: [gate, policy, e2e_shards]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
     steps:
       - name: Fail if any e2e shard failed
         env:
+          FULL_CI: ${{ needs.gate.outputs.full_ci }}
+          POLICY_RESULT: ${{ needs.policy.result }}
           E2E_SHARDS_RESULT: ${{ needs.e2e_shards.result }}
-        run: test "$E2E_SHARDS_RESULT" = "success"
+        run: |
+          test "$POLICY_RESULT" = "success"
+          case "$FULL_CI" in
+            true) test "$E2E_SHARDS_RESULT" = "success" ;;
+            false) test "$E2E_SHARDS_RESULT" = "skipped" ;;
+            *)
+              echo "Invalid full_ci decision: $FULL_CI" >&2
+              exit 1
+              ;;
+          esac

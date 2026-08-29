@@ -1126,6 +1126,56 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("wakes with fresh-approval instructions after an accepted tool action expires", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({
+      status: "expired",
+      error: "Managed arguments changed after review",
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action-expired",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-expired",
+            toolName: "shopify_update_product",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-expired/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          toolAction: {
+            toolName: "shopify_update_product",
+            actionRequestId: "action-request-expired",
+            decision: "accepted",
+            executionStatus: "expired",
+            error: "Managed arguments changed after review",
+            instructions: "the approved shopify_update_product action expired before execution: Managed arguments changed after review; if the task still requires it, call the tool again to request a fresh approval.",
+          },
+        }),
+      }),
+    );
+  });
+
   it("rejects client-supplied tool-action metadata on interaction creation", async () => {
     const app = await createApp();
 

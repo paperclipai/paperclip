@@ -4,7 +4,7 @@ import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { appSourceConnectHref } from "./app-connect-policy";
 
 /** Popular gallery keys surfaced first in the Browse store (PAP-13254, door 1). */
-export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
+export const POPULAR_KEYS = ["zapier", "notion", "posthog", "linear", "jira", "cloudflare"];
 
 /** Deep-link into the Connect wizard's bring-your-own-tool URL flow. */
 export const BYO_CONNECT_HREF = "/apps/connect?byo=1";
@@ -32,7 +32,7 @@ export function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">Connect your own tool</div>
         <div className="text-xs text-muted-foreground">
-          Paste the URL from a custom or self-hosted MCP server and review its actions before enabling it.
+          Paste the URL from a custom or self-hosted MCP server. All discovered actions are enabled automatically.
         </div>
       </div>
       <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>

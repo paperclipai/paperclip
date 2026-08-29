@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "slug": "google-workspace-search",
+  "name": "Google Workspace Search",
+  "description": "Search Gmail, Drive, Calendar, and Chat through one read-only Google Workspace search tool.",
+  "categories": [
+    "data",
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/google-workspace-search.svg"
+  },
+  "urlPatterns": [
+    "https://workspacemcp.googleapis.com/*"
+  ],
+  "docsUrl": "https://developers.google.com/workspace/guides/universal-search-mcp",
+  "setupPrerequisite": {
+    "title": "Google Developer Preview access required",
+    "description": "Google must register both the Workspace email used to authorize Paperclip and the Google Cloud project that owns the OAuth client. Registration is limited to those emails and projects; it does not enable unrelated Paperclip customers.",
+    "steps": [
+      "Apply with the Workspace email that will sign in and the Google Cloud project that owns the OAuth client.",
+      "Wait for the Google Group notification and then Google's final project-registration email, usually within a couple of days.",
+      "Add every additional tester email or Cloud project through Google's member request forms before connecting."
+    ],
+    "actionLabel": "Apply or verify Developer Preview enrollment",
+    "actionUrl": "https://developers.google.com/workspace/preview"
+  },
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "paperclip-read",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_id_connector",
+      "connectorProfile": "workspace-search.read",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Search Workspace",
+        "description": "Search Gmail, Drive, Calendar, and Chat without write access."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed OAuth for cross-product Workspace search.",
+      "defaults": {
+        "serverUrl": "https://workspacemcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly"
+        ]
+      },
+      "guidanceMd": "Connect Google Workspace Search for one read-only search tool spanning Gmail, Drive, Calendar, and Chat.",
+      "warnings": [
+        "This requests read access to all four supported search corpora.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
+      "key": "customer-read-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Search Workspace",
+        "description": "Search Gmail, Drive, Calendar, and Chat without write access."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-owned OAuth client for cross-product Workspace search.",
+      "defaults": {
+        "serverUrl": "https://workspacemcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Gmail, Drive, Calendar, Chat, and Workspace MCP APIs, then register Paperclip's callback URI.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/universal-search-mcp"
+      },
+      "warnings": [
+        "This requests read access to all four supported search corpora.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    }
+  ]
+}

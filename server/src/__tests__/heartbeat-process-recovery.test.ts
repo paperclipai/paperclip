@@ -2800,7 +2800,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(issues)
-      .set({ status: "in_review" })
+      .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
     mockAdapterExecute.mockRejectedValueOnce(
@@ -2887,7 +2887,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toEqual({
-      status: "in_review",
+      status: "in_progress",
       executionRunId: retryRun?.id ?? null,
     });
 
@@ -3036,7 +3036,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(issues)
-      .set({ status: "in_review" })
+      .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
     const heartbeat = heartbeatService(db);
@@ -3080,7 +3080,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toEqual({
-      status: "in_review",
+      status: "in_progress",
       executionRunId: retryRun?.id ?? null,
     });
 
@@ -3158,7 +3158,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(issues)
-      .set({ status: "in_review" })
+      .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
     mockAdapterExecute.mockRejectedValueOnce(

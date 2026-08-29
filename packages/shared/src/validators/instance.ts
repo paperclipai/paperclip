@@ -125,6 +125,15 @@ export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
     .optional(),
 }).strict();
 
+// The longest time a task drain can run before it expires on its own. A
+// caller can send a shorter `ttlMs`, but not a longer one — the request must
+// fail instead of the server silently clamping the value.
+export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
+
+export const startTaskDrainRequestSchema = z.object({
+  ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
+}).strict();
+
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare
 // the type from the full settings type, so every field keeps its precise type.
@@ -140,6 +149,7 @@ export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
   typeof issueGraphLivenessAutoRecoveryRequestSchema
 >;
+export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
 
 export const instanceSettingsSchema = z.object({
   id: z.string().guid(),

@@ -30,6 +30,7 @@ import type {
 import {
   runChildProcess,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -487,6 +488,7 @@ export async function execute(
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;

@@ -125,6 +125,7 @@ export interface InteractionAudienceFacts {
   effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
   resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
   hasAddressee: boolean;
+  isUserAddressee?: boolean;
 }
 
 /**
@@ -143,7 +144,7 @@ export function describeInteractionAudience({
   interaction: IssueThreadInteraction;
   /** Display label of the creating actor, when known. */
   creatorLabel?: string | null;
-  /** Display label of the named addressee agent, when the card has one. */
+  /** Display label of the named addressee, when the card has one. */
   addresseeLabel?: string | null;
 }): InteractionAudienceDescription {
   return describeResolverAudience({
@@ -152,7 +153,8 @@ export function describeInteractionAudience({
       requestedResolverPolicy: interaction.requestedResolverPolicy,
       effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
       resolverPolicyProvenance: interaction.resolverPolicyProvenance,
-      hasAddressee: Boolean(interaction.addresseeAgentId),
+      hasAddressee: Boolean(interaction.addresseeAgentId || interaction.addresseeUserId),
+      isUserAddressee: Boolean(interaction.addresseeUserId),
     },
     creatorLabel,
     addresseeLabel,
@@ -176,10 +178,19 @@ export function describeResolverAudience({
   const policy = facts.effectiveResolverPolicy;
   const requestedPolicy = facts.requestedResolverPolicy;
   const hasAddressee = facts.hasAddressee;
-  const addressee = addresseeLabel?.trim() || "the addressed agent";
-  const creator = creatorLabel?.trim() || "the agent that created it";
+  const isUserAddressee = facts.isUserAddressee === true;
+  // `formatAssigneeUserLabel` returns the display-cased "You" for the signed-in
+  // reader, which is right for a badge and wrong mid-sentence ("Only You can
+  // respond."). Every use below is inside a sentence.
+  const midSentence = (label: string) => (label === "You" ? "you" : label);
+  const addressee = midSentence(
+    addresseeLabel?.trim() || (isUserAddressee ? "the addressed user" : "the addressed agent"),
+  );
+  const creator = midSentence(creatorLabel?.trim() || "the agent that created it");
 
-  const summary = policy === "human_only"
+  const summary = isUserAddressee
+    ? `Only ${addressee} can respond.`
+    : policy === "human_only"
     ? "Only a person on the board can respond — agents cannot resolve this card."
     : hasAddressee
       ? `Only ${addressee} or a person on the board can respond.`
@@ -189,7 +200,9 @@ export function describeResolverAudience({
 
   // Same fact, fewer words: a collapsed row has to answer "is this mine to
   // decide?" in one glance, next to the buttons that act on the answer.
-  const shortSummary = policy === "human_only"
+  const shortSummary = isUserAddressee
+    ? `Only ${addressee} can respond`
+    : policy === "human_only"
     ? "Only the board can respond"
     : hasAddressee
       ? `Only ${addressee} or the board can respond`
@@ -228,9 +241,9 @@ export function describeResolverAudience({
     policy,
     requestedPolicy,
     // A named addressee owns the response, so the label must not read "Anyone"
-    // while the sentence next to it names one agent. `human_only` still wins,
-    // because an addressed agent cannot resolve a human-only card.
-    label: policy !== "human_only" && hasAddressee
+    // while the sentence next to it names one actor. `human_only` wins for an
+    // agent addressee, while a user addressee is the narrower human audience.
+    label: (policy !== "human_only" || isUserAddressee) && hasAddressee
       ? "Addressed"
       : RESOLVER_POLICY_LABELS[policy],
     summary,
@@ -259,7 +272,8 @@ export function describeAttentionResolverAudience(
       requestedResolverPolicy: audience.requestedResolverPolicy,
       effectiveResolverPolicySource: audience.effectiveResolverPolicySource,
       resolverPolicyProvenance: audience.resolverPolicyProvenance,
-      hasAddressee: Boolean(audience.addresseeAgentId),
+      hasAddressee: Boolean(audience.addresseeAgentId || audience.addresseeUserId),
+      isUserAddressee: Boolean(audience.addresseeUserId),
     },
     creatorLabel: audience.createdByAgentName,
     addresseeLabel: audience.addresseeName,

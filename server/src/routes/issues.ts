@@ -1996,6 +1996,18 @@ function readToolActionContinuationContext(interaction: {
     };
   }
 
+  if (executionStatus === "expired") {
+    const expirationMessage = error ? `: ${error}` : "";
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(error ? { error } : {}),
+      instructions: `the approved ${toolName} action expired before execution${expirationMessage}; if the task still requires it, call the tool again to request a fresh approval.`,
+    };
+  }
+
   return {
     toolName,
     actionRequestId,
@@ -4333,6 +4345,7 @@ export function issueRoutes(
       effectiveResolverPolicy: string;
       resolverPolicyProvenance?: string | null;
       addresseeAgentId?: string | null;
+      addresseeUserId?: string | null;
       kind: string;
       status: string;
       payload?: unknown;
@@ -11274,6 +11287,7 @@ export function issueRoutes(
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
         addresseeAgentId: interaction.addresseeAgentId ?? null,
+        addresseeUserId: interaction.addresseeUserId ?? null,
         requestedResolverPolicy: interaction.requestedResolverPolicy,
         effectiveResolverPolicy: interaction.effectiveResolverPolicy,
         resolverPolicyProvenance: interaction.resolverPolicyProvenance,
@@ -11345,6 +11359,9 @@ export function issueRoutes(
       );
       if (!authorizedResolution) return;
       const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
+      if (current.kind === "connection_intent") {
+        throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
+      }
       const suggestedTaskEffectsAuthorized = current.kind === "suggest_tasks"
         ? await assertSuggestedTaskEffectsAllowed(
             req,
@@ -11593,7 +11610,10 @@ export function issueRoutes(
         interactionId,
       );
       if (!authorizedResolution) return;
-      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
+      const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
+      if (current.kind === "connection_intent") {
+        throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
+      }
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
