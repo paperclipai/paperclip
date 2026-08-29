@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPaperclipIdGmailConnector,
   GMAIL_CONNECTOR_SCOPES,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   paperclipIdGmailConnectorConfigFromEnv,
   PaperclipIdConnectorError,
   type PaperclipIdGmailConnectorConfig,
@@ -97,6 +98,43 @@ describe("Paperclip ID Gmail connector", () => {
     await expect(connector.claim({ subject, companyId, claimId: "clm_test" })).resolves.toEqual(credentials);
   });
 
+  it("binds non-Gmail credentials and requests to their exact connector profile", async () => {
+    const keys = config();
+    const profile = "drive.read" as const;
+    const credentials = {
+      v: 1 as const,
+      accessToken: "drive-access-secret",
+      refreshToken: "drive-refresh-secret",
+      tokenType: "Bearer",
+      accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
+      subject,
+      companyId,
+      profile,
+    };
+    const sealed = seal(credentials, keys.sealPublicKey, "google-workspace-initial-tokens", keys.config, profile);
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { request: string };
+      const [, encodedClaims] = body.request.split(".");
+      const claims = JSON.parse(Buffer.from(encodedClaims!, "base64url").toString("utf8"));
+      expect(claims.prf).toBe(profile);
+      return Response.json({ claimId: "clm_drive", scopes: credentials.scopes, sealed });
+    });
+    const connector = createPaperclipIdGmailConnector({ config: keys.config, request: request as typeof fetch });
+
+    await expect(connector.claim({ subject, companyId, profile, claimId: "clm_drive" })).resolves.toEqual(credentials);
+  });
+
+  it("accepts only the current capability protocol and known profiles", async () => {
+    const keys = config();
+    const request = vi.fn(async () => Response.json({
+      protocolVersion: 2,
+      profiles: ["gmail.read", "drive.write", "unknown.profile"],
+    }));
+    const connector = createPaperclipIdGmailConnector({ config: keys.config, request: request as typeof fetch });
+    await expect(connector.getCapabilities()).resolves.toEqual(["gmail.read", "drive.write"]);
+  });
+
   it("does not expose a broker response body when a request fails", async () => {
     const keys = config();
     const request = vi.fn(async () => new Response(JSON.stringify({
@@ -129,15 +167,23 @@ describe("Paperclip ID Gmail connector", () => {
 function seal(
   payload: unknown,
   recipientPublicKey: KeyObject,
-  purpose: "gmail-initial-tokens" | "gmail-access-token",
+  purpose: "gmail-initial-tokens" | "gmail-access-token" | "google-workspace-initial-tokens" | "google-workspace-access-token",
   configValue: PaperclipIdGmailConnectorConfig,
+  profile?: string,
 ) {
   const ephemeral = generateKeyPairSync("x25519");
   const ephemeralJwk = ephemeral.publicKey.export({ format: "jwk" }) as { x: string };
   const recipientJwk = recipientPublicKey.export({ format: "jwk" }) as { x: string };
   const ephemeralRaw = Buffer.from(ephemeralJwk.x, "base64url");
   const recipientRaw = Buffer.from(recipientJwk.x, "base64url");
-  const aad = Buffer.from([1, "X25519-HKDF-SHA256-A256GCM", purpose, configValue.instanceId, configValue.environment].join("\n"));
+  const aad = Buffer.from([
+    1,
+    "X25519-HKDF-SHA256-A256GCM",
+    purpose,
+    configValue.instanceId,
+    configValue.environment,
+    ...(profile ? [profile] : []),
+  ].join("\n"));
   const key = Buffer.from(hkdfSync(
     "sha256",
     diffieHellman({ privateKey: ephemeral.privateKey, publicKey: recipientPublicKey }),

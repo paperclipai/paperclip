@@ -83,6 +83,15 @@ describe("tool access validators", () => {
     }).success).toBe(false);
   });
 
+  it("accepts a curated provider-generated URL while still requiring a source", () => {
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "zapier",
+      connectionMethodKey: "generated-url",
+      link: "https://mcp.zapier.com/api/v1/connect?token=secret-token",
+    }).success).toBe(true);
+    expect(connectToolAppSchema.safeParse({}).success).toBe(false);
+  });
+
   // PAP-17087: the guided generic flow and paste-config both reach the connect
   // endpoint, so unsafe header names/values are rejected once at this boundary.
   it("accepts generic advanced-authentication input for a pasted URL", () => {
@@ -148,6 +157,18 @@ describe("tool access validators", () => {
       galleryKey: "posthog",
       oauthClient: { clientId: "client-abc" },
     }).success).toBe(true);
+  });
+
+  it("allows only curated app setup to resume an exact draft", () => {
+    const resumeConnectionId = "11111111-1111-4111-8111-111111111111";
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "notion",
+      resumeConnectionId,
+    }).success).toBe(true);
+    expect(connectToolAppSchema.safeParse({
+      link: "https://mcp.example.test/mcp",
+      resumeConnectionId,
+    }).success).toBe(false);
   });
 
   it("accepts secret references for connection credentials", () => {

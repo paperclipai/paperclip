@@ -2,7 +2,9 @@
 
 Audience: internal engineers and product contributors working on integrations.
 
-Provider notes: [Gmail](./GMAIL.md), [PostHog](./POSTHOG.md).
+Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
+[Gmail](./GMAIL.md), [PostHog](./POSTHOG.md). Optional credential custody:
+[Vercel Connect](./VERCEL-CONNECT.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.
@@ -16,10 +18,14 @@ substrate on the PAP-10341 branch canonical:
   `tool_applications`, `tool_connections`, catalog entries, profiles, policy
   rules, action requests, gateway sessions, audit events, and runtime slots.
   Connections v1 is retired as an implementation path.
-- **D2: one vault, brokered projections.** Durable third-party credentials live
-  in `company_secrets` as secret refs. Adapter config, plugin config, harness
-  credential files, and run environments may receive only brokered or projected
-  credentials.
+- **D2: one credential authority per connection, brokered projections.** The
+  default is the Paperclip instance vault: durable third-party credentials live
+  in `company_secrets` as secret refs. A reviewed remote MCP method may instead
+  opt in to [Vercel Connect](./VERCEL-CONNECT.md), in which case Vercel is the
+  durable credential authority and Paperclip stores only the connector reference
+  and redacted grant metadata. A connection must never mix those two sources.
+  Adapter config, plugin config, harness credential files, and run environments
+  may receive only brokered or projected credentials.
 - **D3: the vocabulary and three-door IA are product law.** The default product
   doors are Apps, Connections, and Review. Protocol and operator-depth concepts
   live behind Developer or Advanced surfaces.
@@ -114,6 +120,13 @@ hold the planes apart (from the plan §3):
   every product we benchmarked (Vercel, Railway, GitHub, Google) keeps them on
   separate pages with separate names.
 
+The explicit Vercel Connect exception does not change D7 or merge P1 and P2.
+The operator chooses Vercel as the P2 credential authority for an individual
+connection. `id.paperclip.ing` is not involved, and neither sign-in tokens nor
+provider tokens pass through it. The deployment's Vercel access token or
+workload OIDC identity is bootstrap authority for that external vault, not a
+provider resource credential.
+
 ### Naming alignment
 
 Use the surface-correct name for each plane; they intentionally differ:
@@ -153,6 +166,9 @@ not own durable tokens.
 - [Connector playbook](./CONNECTOR-PLAYBOOK.md) is the repeatable template for
   adding a vendor as a catalog entry on Apps v2 — the optional branded
   convenience layer over the baseline above.
+- [Vercel Connect operator guide](./VERCEL-CONNECT.md) documents the optional
+  external credential source, deployment flags, runtime resolution, recovery,
+  and smoke requirements.
 - [MCP access governance](../MCP-ACCESS-GOVERNANCE.md) remains the operator
   runbook for the current gateway, profile, policy, approval, runtime, and audit
   APIs.

@@ -281,6 +281,12 @@ async function sendRequest(input: {
   const body = readRequestBody(init.body);
   const method = (init.method ?? "GET").toUpperCase();
 
+  // Raw node:http requests do not add the default User-Agent that `fetch` and
+  // curl send. Some provider CDNs reject an absent User-Agent before the MCP or
+  // OAuth service sees the request (Coda returns 403 instead of its 401 OAuth
+  // challenge), so give every guarded request a stable, non-identifying client
+  // token while preserving an explicit caller value.
+  if (!headers.has("user-agent")) headers.set("user-agent", "Paperclip/1.0");
   if (body !== undefined && !headers.has("content-length") && !headers.has("transfer-encoding")) {
     headers.set("content-length", String(body.byteLength));
   }

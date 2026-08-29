@@ -91,6 +91,7 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       transport: "mcp_remote",
       authKind: "none",
       credentialPolicy: "shared",
+      credentialSource: "paperclip_vault",
       status: "draft",
       enabled: false,
       config: { url: "http://127.0.0.1:8848/mcp" },

@@ -78,6 +78,7 @@ import type {
   ToolConnectionHealthStatus,
   ToolConnectionAuthKind,
   ToolConnectionCredentialPolicy,
+  ToolConnectionCredentialSource,
   ToolConnectionTransport,
   ToolCredentialSecretRef,
   ToolOAuthStartResult,
@@ -119,8 +120,10 @@ import type {
   UpdateToolProfileEntry,
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
+  VercelConnectCredentialReference,
+  VercelConnectGrantReference,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, connectionIntentPayloadSchema, credentialConfigPath, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp, resolveConnectionMethodServerUrl } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, connectionIntentPayloadSchema, credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId, isToolConnectionAttentionHealth, recommendedDefaultsForApp, resolveConnectionMethodServerUrl, type GoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -136,13 +139,22 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import {
+  initializeMcpHttpSession,
+  mcpHttpRequestHeaders,
+  parseMcpHttpResponseBody,
+} from "./mcp-http.js";
 import {
   assertPublicRemoteHttpEndpoint,
   parseRemoteHttpEndpoint,
   type RemoteHttpEndpointLookup,
 } from "./remote-http-endpoint-guard.js";
 import { guardedRemoteHttpFetch, type GuardedRemoteHttpFetchOptions } from "./remote-http-fetch.js";
+import {
+  REMOTE_URL_SECRET_CONFIG_PATH,
+  remoteUrlCredentialMatchesPublicUrl,
+  splitRemoteUrlCredential,
+} from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
@@ -158,10 +170,19 @@ import { ComposioApiError, createComposioClient, type ComposioClient } from "./c
 import { composioChildConfig, createComposioSessionManager } from "./composio-session-manager.js";
 import {
   createPaperclipIdGmailConnector,
-  GMAIL_CONNECTOR_SCOPES,
   paperclipIdGmailConnectorConfigFromEnv,
   type PaperclipIdGmailConnector,
 } from "./paperclip-id-gmail-connector.js";
+import {
+  createVercelConnectClient,
+  deriveVercelConnectSubject,
+  vercelConnectCallbackUrl,
+  vercelConnectIntegrationStatus,
+  vercelGrantReference,
+  vercelTokenRequest,
+  VercelConnectClientError,
+  type VercelConnectClient,
+} from "./vercel-connect.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -361,6 +382,7 @@ type OAuthProviderEndpoints = {
   registrationUrl?: string | null;
   codeChallengeMethodsSupported?: string[];
   tokenEndpointAuthMethodsSupported?: string[];
+  grantTypesSupported?: string[];
   grantType?: "authorization_code" | "client_credentials";
   metadataUrl?: string | null;
   /**
@@ -498,6 +520,8 @@ type ToolAccessServiceOptions = {
   composioClientFactory?: (apiKey: string) => ComposioClient;
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipIdGmailConnector?: PaperclipIdGmailConnector | null;
+  /** Test seam for Vercel Connect without live vendor traffic. */
+  vercelConnectClient?: VercelConnectClient | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -783,7 +807,12 @@ export function googleSheetsRobotEmailFromEnv(
 }
 
 function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
-  const method = getAvailableConnectionMethod(app, methodKey);
+  const normalizedMethodKey = app.slug === "gmail" && methodKey === "paperclip-id-oauth"
+    ? "paperclip-draft"
+    : methodKey;
+  const method = normalizedMethodKey
+    ? app.methods.find((candidate) => candidate.key === normalizedMethodKey) ?? null
+    : getAvailableConnectionMethod(app, null);
   if (!method) throw unprocessable("This app does not have an available connection method");
   return method;
 }
@@ -862,6 +891,9 @@ export function normalizeConnectionMethodConfig(
     throw badRequest("Missing or invalid connection settings for the server URL");
   }
   const endpoint = resolvedServerUrl ? new URL(resolvedServerUrl) : null;
+  if (endpoint && endpoint.protocol !== "https:") {
+    throw badRequest("Connection server URL must use HTTPS");
+  }
   const headers: Record<string, string> = {};
   for (const field of fields) {
     const transport = field.transport;
@@ -1112,6 +1144,8 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     ownership: row.ownership,
     transport: row.transport,
     authKind: row.authKind,
+    credentialSource: row.credentialSource,
+    externalCredential: row.externalCredential ?? null,
     credentialPolicy: row.credentialPolicy,
     status: row.status,
     enabled: row.enabled,
@@ -1129,6 +1163,21 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     createdByUserId: row.createdByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function redactedVercelGrant(
+  value: VercelConnectGrantReference | null | undefined,
+): Omit<VercelConnectGrantReference, "subjectId"> | null {
+  if (!value) return null;
+  const { subjectId: _subjectId, ...redacted } = value;
+  return redacted;
+}
+
+function toConnectionGrant(row: typeof connectionGrants.$inferSelect) {
+  return {
+    ...row,
+    externalCredential: redactedVercelGrant(row.externalCredential),
   };
 }
 
@@ -1721,6 +1770,33 @@ export function isGmailToolPermanentlyBlocked(tool: McpToolDescriptor): boolean 
     || (normalizedProviderToolName(tool.name).includes("label") && riskLevel !== "read");
 }
 
+const GOOGLE_WORKSPACE_READ_TOOLS: Record<string, ReadonlySet<string>> = {
+  gmail: new Set(["get-message", "get-thread", "get-draft", "list-drafts", "list-labels", "search-threads", "list-threads", "search-messages"]),
+  "google-drive": new Set(["download-file-content", "get-file-metadata", "get-file-permissions", "list-recent-files", "read-file-content", "search-files"]),
+  "google-docs": new Set(["read-doc"]),
+  "google-sheets": new Set(["get-values", "get-spreadsheet"]),
+  "google-slides": new Set(["read-presentation"]),
+  "google-calendar": new Set(["get-event", "list-calendars", "list-events", "search-events", "suggest-time"]),
+  "google-chat": new Set(["search-conversations", "list-messages", "search-messages"]),
+  "google-people": new Set(["search-directory-people", "search-contacts", "get-user-profile"]),
+  "google-workspace-search": new Set(["search-corpus"]),
+};
+
+function googleWorkspaceToolLeafName(name: string): string {
+  return (name.split(/[.:/]/).pop() ?? name).replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/_/g, "-").toLowerCase();
+}
+
+export function isGoogleWorkspaceToolAllowed(
+  profileId: GoogleWorkspaceConnectorProfileId,
+  tool: McpToolDescriptor,
+): boolean {
+  const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profileId];
+  const toolName = googleWorkspaceToolLeafName(tool.name);
+  const readTools = GOOGLE_WORKSPACE_READ_TOOLS[profile.appSlug] ?? new Set<string>();
+  return readTools.has(toolName)
+    || profile.writeTools.some((writeTool) => googleWorkspaceToolLeafName(writeTool) === toolName);
+}
+
 function descriptorHash(tool: McpToolDescriptor, riskLevel: ToolRiskLevel): string {
   return stableHash({
     name: tool.name,
@@ -1799,6 +1875,17 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
         code: "oauth_reauthorization_required",
       };
     }
+    if (typeof code === "string" && code.startsWith("vercel_connect_")) {
+      return {
+        status: code === "vercel_connect_unavailable"
+          || code === "vercel_connect_auth_failed"
+          || code === "vercel_connect_installation_required"
+          ? "degraded"
+          : "error",
+        message: error.message,
+        code,
+      };
+    }
     if (
       code === "oauth_refresh_in_progress"
       || code === "oauth_refresh_superseded"
@@ -1838,6 +1925,18 @@ function remoteEndpoint(config: Record<string, unknown>): string {
   return parsed.toString();
 }
 
+function vercelConnectResourcesFor(
+  connection: typeof toolConnections.$inferSelect,
+): string[] {
+  const resource = new URL(remoteEndpoint(connection.config));
+  // OAuth resource indicators name the protected MCP resource, not the
+  // connection's transport-only filtering query. PostHog uses this canonical
+  // URL to select its MCP consent scope set.
+  resource.search = "";
+  resource.hash = "";
+  return [resource.toString()];
+}
+
 function readStdioTemplateId(config: Record<string, unknown>): string {
   const templateId = config.templateId;
   if (typeof templateId !== "string" || templateId.trim().length === 0) {
@@ -1848,6 +1947,38 @@ function readStdioTemplateId(config: Record<string, unknown>): string {
 
 export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}) {
   const secrets = secretService(db);
+
+  async function resolvedRemoteEndpoint(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ): Promise<string> {
+    const publicEndpoint = remoteEndpoint(connection.config);
+    const ref = connection.credentialRefs.find((candidate) => candidate.placement === "url");
+    if (!ref) return publicEndpoint;
+    let value: string;
+    try {
+      value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath: REMOTE_URL_SECRET_CONFIG_PATH,
+        actorType: actor?.actorType ?? "system",
+        actorId: actor?.actorId ?? null,
+      });
+    } catch {
+      throw unprocessable("A configured credential secret could not be resolved.", {
+        code: "mcp_remote_missing_secret",
+        connectionId: connection.id,
+        credential: REMOTE_URL_SECRET_CONFIG_PATH,
+      });
+    }
+    if (!remoteUrlCredentialMatchesPublicUrl(publicEndpoint, value)) {
+      throw unprocessable("The stored MCP URL credential no longer matches this connection.", {
+        code: "mcp_remote_url_credential_mismatch",
+        connectionId: connection.id,
+      });
+    }
+    return parseRemoteHttpEndpoint(value, (message, code) => badRequest(message, { code })).toString();
+  }
   const composioSessions = createComposioSessionManager(db, {
     composioClientFactory: options.composioClientFactory,
     now: options.now,
@@ -1861,12 +1992,128 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     ?? (gmailConnectorConfig
       ? createPaperclipIdGmailConnector({ config: gmailConnectorConfig, now: () => now().getTime() })
       : null);
+  const vercelConnect = options.vercelConnectClient === undefined
+    ? createVercelConnectClient()
+    : options.vercelConnectClient;
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
   // These maps remove duplicate work inside one service instance. OAuth also
   // uses the database refresh lease below as its cross-process boundary.
   const oauthRefreshFlights = new Map<string, Promise<unknown>>();
+  const oauthGrantRefreshFlights = new Map<string, Promise<unknown>>();
   const catalogRefreshFlights = new Map<string, Promise<unknown>>();
   const catalogCacheTtlMs = Math.max(0, options.catalogCacheTtlMs ?? 15 * 60 * 1000);
+
+  function vercelConnectHttpError(error: unknown): HttpError {
+    if (error instanceof VercelConnectClientError) {
+      return new HttpError(error.status, error.message, { code: error.code });
+    }
+    return new HttpError(502, "Vercel Connect could not complete the credential request.", {
+      code: "vercel_connect_request_failed",
+    });
+  }
+
+  function vercelCredentialFor(
+    connection: typeof toolConnections.$inferSelect,
+  ): VercelConnectCredentialReference {
+    if (connection.credentialSource !== "vercel_connect" || !connection.externalCredential) {
+      throw unprocessable("This connection does not use Vercel Connect", {
+        code: "vercel_connect_not_configured",
+      });
+    }
+    return connection.externalCredential;
+  }
+
+  async function resolveVercelCredentialHeaders(
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<Record<string, string>> {
+    if (!vercelConnect) throw vercelConnectHttpError(new VercelConnectClientError("vercel_connect_unavailable", 503));
+    const credential = vercelCredentialFor(connection);
+    const derived = deriveVercelConnectSubject({
+      credential,
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      grantKind: grant.kind,
+      subjectUserId: grant.subjectUserId,
+    });
+    const request = vercelTokenRequest({
+      credential,
+      grant,
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      resources: vercelConnectResourcesFor(connection),
+    });
+    try {
+      const token = await vercelConnect.getToken(request, options);
+      if (
+        token.connector.id !== credential.connectorId
+        && token.connector.uid !== credential.connectorUid
+      ) {
+        throw new VercelConnectClientError("vercel_connect_request_failed", 502);
+      }
+      await db.update(connectionGrants).set({
+        externalCredential: vercelGrantReference({
+          credential,
+          token,
+          subjectId: derived.subjectId,
+          verifiedAt: now(),
+        }),
+        status: "active",
+        revokedAt: null,
+        updatedAt: now(),
+      }).where(and(
+        eq(connectionGrants.id, grant.id),
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+      ));
+      return {
+        [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
+      };
+    } catch (error) {
+      if (
+        error instanceof VercelConnectClientError
+        && error.code === "vercel_connect_authorization_required"
+      ) {
+        await db.update(connectionGrants).set({
+          status: "needs_reauthorization",
+          updatedAt: now(),
+        }).where(and(
+          eq(connectionGrants.id, grant.id),
+          eq(connectionGrants.companyId, connection.companyId),
+        ));
+      }
+      throw vercelConnectHttpError(error);
+    }
+  }
+
+  async function vercelGrantForConnection(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ) {
+    const actorUserId = actor?.actorType === "user" ? actor.actorId ?? null : null;
+    if (actorUserId) {
+      const [personal] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, actorUserId),
+      )).limit(1);
+      if (personal) return personal;
+    }
+    const [organization] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, connection.companyId),
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, "organization"),
+      eq(connectionGrants.isDefault, true),
+    )).limit(1);
+    if (!organization) {
+      throw conflict("This Vercel Connect identity has not been authorized", {
+        code: "vercel_connect_authorization_required",
+      });
+    }
+    return organization;
+  }
 
   function allowPrivateRemoteEndpoints() {
     return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
@@ -3740,6 +3987,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         label: ref.label ?? null,
       })),
     ];
+    // Organization grants can mirror connection-owned credentials, and more
+    // than one personal grant can reference the same client registration.
+    // Binding rows are unique per secret/config path, so collapse those mirrors
+    // before replacing the durable projection declarations.
     const bindings = [...new Map(rawBindings.map((ref) => [
       `${ref.secretId}:${ref.configPath}`,
       ref,
@@ -3765,7 +4016,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           ))
       : [];
     const definitionKeyById = new Map(definitions.map((row) => [row.id, row.key]));
-    const userDeclarations = bindings.flatMap((ref) => {
+    const userDeclarations = [...new Map(bindings.flatMap((ref) => {
       const secret = secretById.get(ref.secretId);
       const definitionKey = secret?.scope === "user" && secret.userSecretDefinitionId
         ? definitionKeyById.get(secret.userSecretDefinitionId)
@@ -3780,7 +4031,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             label: ref.label,
           }]
         : [];
-    });
+    }).map((ref) => [`${ref.definitionKey}:${ref.configPath}`, ref])).values()];
     await secrets.syncUserSecretDeclarationsForTarget(
       connection.companyId,
       { targetType: "tool_connection", targetId: connection.id },
@@ -3943,7 +4194,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .select({
         id: connectionGrants.id,
         status: connectionGrants.status,
+        kind: connectionGrants.kind,
+        subjectUserId: connectionGrants.subjectUserId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        externalCredential: connectionGrants.externalCredential,
       })
       .from(connectionGrants)
       .where(and(
@@ -3963,6 +4217,44 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           updatedAt: now,
         })
         .where(inArray(connectionGrants.id, grantsToRevoke.map((row) => row.id)));
+    }
+    let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] = null;
+    if (connection.credentialSource === "vercel_connect" && connection.externalCredential) {
+      let attempted = 0;
+      let revoked = 0;
+      let failures = 0;
+      let appSubjectCleanup: "not_applicable" | "manage_in_vercel" = "not_applicable";
+      for (const grant of grantRows) {
+        const request = vercelTokenRequest({
+          credential: connection.externalCredential,
+          grant,
+          connectionId: connection.id,
+          companyId: connection.companyId,
+          resources: vercelConnectResourcesFor(connection),
+        });
+        vercelConnect?.evict(request);
+        if (grant.externalCredential?.subjectType === "app") {
+          appSubjectCleanup = "manage_in_vercel";
+          continue;
+        }
+        if (grant.externalCredential?.subjectType !== "user") continue;
+        attempted += 1;
+        try {
+          if (!vercelConnect) throw new Error("Vercel Connect unavailable");
+          await vercelConnect.revoke(request);
+          revoked += 1;
+        } catch {
+          failures += 1;
+        }
+      }
+      externalCredentialCleanup = {
+        provider: "vercel_connect",
+        userSubjectsAttempted: attempted,
+        userSubjectsRevoked: revoked,
+        userSubjectFailures: failures,
+        appSubjectCleanup,
+        manageUrl: vercelConnectIntegrationStatus().manageUrl,
+      };
     }
 
     // Bindings are how a credential reaches a runtime, so they go before the
@@ -4220,6 +4512,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         gatewayTokensRevoked,
         gatewaySessionsRevoked,
         applicationArchived: archived.applicationArchived,
+        externalCredentialCleanup,
       },
     };
   }
@@ -4250,9 +4543,84 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return toRuntimeSlot(created);
   }
 
-  async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
+  async function vaultGrantForConnection(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ): Promise<typeof connectionGrants.$inferSelect | null> {
+    const actorUserId = actor?.actorType === "user" ? actor.actorId ?? null : null;
+    if (actorUserId) {
+      const [personal] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, actorUserId),
+      )).limit(1);
+      if (personal) {
+        if (personal.status !== "active") {
+          throw unprocessable("OAuth authorization must be reconnected", {
+            code: "oauth_reauthorization_required",
+            setupUrl: connectionSetupUrl(connection),
+            reconnectUrl: connectionReconnectUrl(connection),
+          });
+        }
+        return personal;
+      }
+    }
+    if (!actorUserId && connection.credentialPolicy === "per_user") {
+      // A personal-only connection is intentionally fixed to one identity.
+      // Background health/catalog checks have no acting user, but may safely
+      // exercise that sole owner-bound grant without turning it into a shared
+      // credential or making it available to a different caller.
+      const personalGrants = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.status, "active"),
+      )).limit(2);
+      if (personalGrants.length === 1) return personalGrants[0]!;
+    }
+    const [organization] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, connection.companyId),
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, "organization"),
+      eq(connectionGrants.isDefault, true),
+    )).limit(1);
+    if (organization?.status === "active") return organization;
+    if (connection.credentialPolicy === "per_user") {
+      throw unprocessable("This connection needs the current user's authorization", {
+        code: "user_authorization_required",
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
+    }
+    return null;
+  }
+
+  async function resolveCredentialHeaders(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<Record<string, string>> {
+    if (connection.credentialSource === "vercel_connect") {
+      const grant = await vercelGrantForConnection(connection, actor);
+      return resolveVercelCredentialHeaders(connection, grant, options);
+    }
+    let grant: typeof connectionGrants.$inferSelect | null = null;
     try {
-      connection = await maybeRefreshOAuthCredentials(connection);
+      if (connection.authKind === "oauth" || connection.credentialPolicy !== "shared") {
+        grant = await vaultGrantForConnection(connection, actor);
+      }
+      if (connection.authKind === "oauth" && grant) {
+        grant = await refreshOAuthGrantCredentials({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          grantId: grant.id,
+          forceRefresh: options.forceRefresh,
+          actor,
+        });
+      } else {
+        connection = await maybeRefreshOAuthCredentials(connection, actor);
+      }
     } catch (error) {
       const scope = credentialScope(connection);
       await audit({
@@ -4278,12 +4646,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       let value: string;
       const configPath = credentialRefConfigPath(ref);
       try {
-        value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
-          consumerType: "tool_connection",
-          consumerId: connection.id,
-          configPath,
-          actorType: "system",
-        });
+        const grantRef = grant?.credentialSecretRefs.find((candidate) => candidate.configPath === configPath);
+        value = grantRef && grant
+          ? (await resolveOAuthGrantSecret(connection, grant, grantRef, actor, undefined)).value
+          : await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
+              consumerType: "tool_connection",
+              consumerId: connection.id,
+              configPath,
+              actorType: "system",
+            });
       } catch (error) {
         await audit({
           companyId: connection.companyId,
@@ -4302,6 +4673,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (ref.placement === "header") {
         headers[ref.key] = `${ref.prefix ?? ""}${value}`;
       }
+    }
+    const oauthAccessRef = grant?.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    if (oauthAccessRef && headers.Authorization === undefined) {
+      headers.Authorization = `Bearer ${(await resolveOAuthGrantSecret(
+        connection,
+        grant!,
+        oauthAccessRef,
+        actor,
+        undefined,
+      )).value}`;
     }
     if (connection.credentialRefs.length > 0 || connection.credentialSecretRefs.length > 0 || Object.keys(oauthConfig(connection)).length > 0) {
       await audit({
@@ -4323,28 +4704,71 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
+    actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
     const composioChild = composioChildConfig(connection);
     const composioSession = composioChild ? await composioSessions.ensureSession(connection.id) : null;
-    const headers = composioSession?.headers
+    let headers = composioSession?.headers
       ?? credentialHeaders
-      ?? { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection) };
-    const endpoint = composioSession?.url ?? remoteEndpoint(connection.config);
+      ?? { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection, actor) };
+    const endpoint = composioSession?.url ?? await resolvedRemoteEndpoint(connection, actor);
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
-    let response = await requestRemoteHttpEndpoint(new URL(endpoint), {
+    const listRequestBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      method: "tools/list",
+      params: {},
+    });
+    const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
+    const sendToolsList = (requestHeaders: Record<string, string>) => sendRemote({
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
-      headers: mcpHttpRequestHeaders(headers),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        method: "tools/list",
-        params: {},
-      }),
+      headers: mcpHttpRequestHeaders(requestHeaders),
+      body: listRequestBody,
     });
+    let usedInitializedSession = connection.config.mcpSessionRequired === true;
+    let response: Response;
+    if (usedInitializedSession) {
+      const sessionHeaders = await initializeMcpHttpSession({
+        send: sendRemote,
+        headers,
+        requestId: "paperclip-catalog-refresh",
+      });
+      response = await sendToolsList(sessionHeaders);
+    } else {
+      response = await sendToolsList(headers);
+      // `tools/list` is read-only, so a 400 can safely be retried after the MCP
+      // initialize handshake. Stateful servers such as Supabase require the
+      // returned Mcp-Session-Id on every non-initialization request.
+      if (response.status === 400) {
+        try {
+          const sessionHeaders = await initializeMcpHttpSession({
+            send: sendRemote,
+            headers,
+            requestId: "paperclip-catalog-refresh",
+          });
+          response = await sendToolsList(sessionHeaders);
+          usedInitializedSession = response.ok;
+        } catch {
+          // Preserve the original HTTP failure below when this was not an MCP
+          // session requirement after all.
+        }
+      }
+    }
+    if (usedInitializedSession && connection.config.mcpSessionRequired !== true) {
+      const nextConfig = { ...connection.config, mcpSessionRequired: true };
+      await db.update(toolConnections).set({
+        config: nextConfig,
+        transportConfig: nextConfig,
+        updatedAt: now(),
+      }).where(and(
+        eq(toolConnections.id, connection.id),
+        eq(toolConnections.companyId, connection.companyId),
+      ));
+    }
     if (response.status === 401 && composioChild) {
       const refreshed = await composioSessions.ensureSession(connection.id, { force: true });
       response = await requestRemoteHttpEndpoint(new URL(refreshed.url), {
@@ -4357,6 +4781,35 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           params: {},
         }),
       });
+    }
+    if (response.status === 401 && connection.credentialSource === "vercel_connect") {
+      const grant = await vercelGrantForConnection(connection, actor);
+      const credential = vercelCredentialFor(connection);
+      const request = vercelTokenRequest({
+        credential,
+        grant,
+        connectionId: connection.id,
+        companyId: connection.companyId,
+        resources: vercelConnectResourcesFor(connection),
+      });
+      vercelConnect?.evict(request);
+      headers = {
+        ...projectedConnectionHeaders(connection),
+        ...await resolveVercelCredentialHeaders(connection, grant, { forceRefresh: true }),
+      };
+      response = await sendToolsList(headers);
+    }
+    if (
+      response.status === 401
+      && connection.authKind === "oauth"
+      && connection.credentialSource === "paperclip_vault"
+      && oauthConfig(connection).strategy !== "paperclip_id_connector"
+    ) {
+      headers = {
+        ...projectedConnectionHeaders(connection),
+        ...await resolveCredentialHeaders(connection, actor, { forceRefresh: true }),
+      };
+      response = await sendToolsList(headers);
     }
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
@@ -4403,7 +4856,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           oauthSupported: Boolean(endpoints),
         });
       }
-      throw new HttpError(502, "Remote app returned an error", { status: response.status });
+      throw new HttpError(502, `Remote app returned HTTP ${response.status}`, { status: response.status });
     }
     const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
     const result = asRecord(asRecord(payload).result);
@@ -4704,8 +5157,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
+    actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
-    if (connection.transport === "mcp_remote") return remoteTools(connection, credentialHeaders);
+    if (connection.transport === "mcp_remote") return remoteTools(connection, credentialHeaders, actor);
     if (isComposioConnection(connection)) {
       await validateComposioConnection(connection);
       return [];
@@ -4746,7 +5200,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     try {
       if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
-        await remoteTools(connection);
+        const credentialHeaders = connection.credentialSource === "vercel_connect"
+          ? await resolveCredentialHeaders(connection, actor, { forceRefresh: true })
+          : undefined;
+        await remoteTools(connection, credentialHeaders, actor);
       } else if (isComposioConnection(connection)) {
         await validateComposioConnection(connection);
       } else {
@@ -4808,7 +5265,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
-      descriptors = await discoverTools(connection, refreshOptions.credentialHeaders);
+      descriptors = await discoverTools(connection, refreshOptions.credentialHeaders, actor);
     } catch (error) {
       const failure = sanitizeHttpFailure(error);
       const updated = await updateConnectionHealth(connection, failure.status, failure.message);
@@ -4835,6 +5292,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey = typeof asRecord(connection.config).sourceTemplateKey === "string"
       ? String(asRecord(connection.config).sourceTemplateKey)
       : null;
+    const sourceApp = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+    const sourceMethod = sourceApp ? connectionMethodForConnection(sourceApp, connection) : null;
+    const sourceCapabilityKey = sourceMethod?.capabilityProfile?.key;
+    const googleProfileValue = sourceMethod?.connectorProfile
+      ?? sourceApp?.methods.find((candidate) =>
+        candidate.connectorProfile
+        && candidate.capabilityProfile?.key === sourceCapabilityKey
+      )?.connectorProfile;
+    const googleProfile = googleProfileValue && isGoogleWorkspaceConnectorProfileId(googleProfileValue)
+      ? googleProfileValue
+      : null;
     const quarantineOnRefresh = !refreshOptions.enableAllByDefault
       && shouldQuarantineNewEntries(connection)
       && (connection.status === "active" || sourceTemplateKey === "posthog");
@@ -4850,8 +5318,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         && (!existing || changed)
         && existing?.status !== "disabled"
         && (!safeDefault || riskLevel !== "read");
-      const gmailPermanentlyBlocked = sourceTemplateKey === "gmail" && isGmailToolPermanentlyBlocked(descriptor);
-      const status = gmailPermanentlyBlocked
+      const googlePermanentlyBlocked = Boolean(googleProfile && !isGoogleWorkspaceToolAllowed(googleProfile, descriptor));
+      const status = googlePermanentlyBlocked
         ? "disabled"
         : shouldQuarantine
           ? "quarantined"
@@ -4860,7 +5328,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             : quarantineOnRefresh && existing?.status === "quarantined"
               ? "quarantined"
               : "active";
-      if (shouldQuarantine && !gmailPermanentlyBlocked) quarantinedCount += 1;
+      if (shouldQuarantine && !googlePermanentlyBlocked) quarantinedCount += 1;
 
       if (existing) {
         const [updated] = await db
@@ -5619,13 +6087,35 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ? oauth.clientId.trim()
       : null;
     if (!clientId) return configured;
-    // Only a client the operator preregistered can have a secret worth sending.
-    // DCR and CIMD clients are public (`token_endpoint_auth_method: none`), so
-    // resolving a secret for them would leak a credential onto the wire.
+    // CIMD clients and public DCR clients have no token-endpoint secret. A DCR
+    // authorization server may instead issue a confidential client (for
+    // example, `client_secret_basic`); in that case the registration secret is
+    // encrypted like every other provider credential and resolved only for the
+    // token endpoint.
     const registrationSource = oauth.clientRegistrationSource;
-    const clientSecretRef = registrationSource === "dcr" || registrationSource === "cimd"
+    const publicRegisteredClient = registrationSource === "cimd"
+      || (registrationSource === "dcr" && oauth.clientTokenEndpointAuthMethod === "none");
+    let credentialSecretRefs = connection.credentialSecretRefs;
+    if (
+      connection.credentialPolicy === "per_user"
+      && actor?.actorType === "user"
+      && actor.actorId
+      && !credentialSecretRefs.some((ref) => ref.configPath === "oauth.client_secret")
+    ) {
+      const [personalGrant] = await db.select({
+        credentialSecretRefs: connectionGrants.credentialSecretRefs,
+      }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, actor.actorId),
+        eq(connectionGrants.status, "active"),
+      )).limit(1);
+      credentialSecretRefs = personalGrant?.credentialSecretRefs ?? credentialSecretRefs;
+    }
+    const clientSecretRef = publicRegisteredClient
       ? undefined
-      : connection.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_secret");
+      : credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_secret");
     const clientSecret = clientSecretRef
       ? await secrets.resolveSecretValue(
           connection.companyId,
@@ -5827,6 +6317,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let scopes = normalizeOauthScopes(metadata.scopes_supported);
     let codeChallengeMethodsSupported = normalizeOauthScopes(metadata.code_challenge_methods_supported);
     let tokenEndpointAuthMethodsSupported = normalizeOauthScopes(metadata.token_endpoint_auth_methods_supported);
+    let grantTypesSupported = normalizeOauthScopes(metadata.grant_types_supported);
     let clientIdMetadataDocumentSupported = metadata.client_id_metadata_document_supported === true;
     // A document that carries the authorization endpoint itself *is* the
     // authorization-server metadata, so its own `issuer` is the canonical one.
@@ -5867,6 +6358,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (tokenEndpointAuthMethodsSupported.length === 0) {
         tokenEndpointAuthMethodsSupported = normalizeOauthScopes(authMetadata.token_endpoint_auth_methods_supported);
       }
+      if (grantTypesSupported.length === 0) {
+        grantTypesSupported = normalizeOauthScopes(authMetadata.grant_types_supported);
+      }
       if (!clientIdMetadataDocumentSupported) {
         clientIdMetadataDocumentSupported = authMetadata.client_id_metadata_document_supported === true;
       }
@@ -5881,6 +6375,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       registrationUrl,
       codeChallengeMethodsSupported,
       tokenEndpointAuthMethodsSupported,
+      grantTypesSupported,
       metadataUrl,
       issuer,
       resource,
@@ -6237,9 +6732,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     record: Record<string, unknown>,
     field: "redirect_uris" | "grant_types" | "response_types",
     expected: string[],
-    options: { allowAdditional?: boolean } = {},
+    options: { allowAdditional?: boolean; allowOmitted?: boolean } = {},
   ) {
-    if (record[field] === undefined) throw invalidOAuthDcrResponse(field, "missing");
+    if (record[field] === undefined) {
+      if (options.allowOmitted) return;
+      throw invalidOAuthDcrResponse(field, "missing");
+    }
     const value = record[field];
     if (
       !Array.isArray(value)
@@ -6267,6 +6765,48 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return value;
   }
 
+  type OAuthTokenEndpointAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
+
+  function selectOAuthDcrTokenEndpointAuthMethod(
+    supported: string[] | undefined,
+  ): OAuthTokenEndpointAuthMethod {
+    if (!supported?.length || supported.includes("none")) return "none";
+    // When a confidential client is required, preserve the provider's advertised
+    // ordering. Miro advertises both methods but only completes its MCP exchange
+    // for the first one (`client_secret_post`), while Supabase and Hugging Face
+    // advertise `client_secret_basic` first. Treating Basic as a global preference
+    // creates a valid-looking registration that fails only after user consent.
+    for (const method of supported) {
+      if (method === "client_secret_basic" || method === "client_secret_post") return method;
+    }
+    throw unprocessable("OAuth provider does not support a compatible dynamic client authentication method", {
+      code: "oauth_dcr_client_auth_unsupported",
+      supportedMethods: supported,
+    });
+  }
+
+  function storedOAuthTokenEndpointAuthMethod(
+    oauth: Record<string, unknown>,
+    clientSecret: string | null | undefined,
+  ): OAuthTokenEndpointAuthMethod {
+    const method = oauth.clientTokenEndpointAuthMethod;
+    if (method === "none" || method === "client_secret_basic" || method === "client_secret_post") {
+      return method;
+    }
+    const advertised = Array.isArray(oauth.tokenEndpointAuthMethodsSupported)
+      ? oauth.tokenEndpointAuthMethodsSupported.filter((value): value is string => typeof value === "string")
+      : [];
+    // Manual OAuth clients do not carry a DCR-selected method. Follow the
+    // authorization server's advertised preference when it offers a
+    // confidential-client method; Xero, for example, documents Basic auth and
+    // rejects an otherwise valid code when the secret is posted in the body.
+    if (clientSecret && advertised.includes("client_secret_basic")) return "client_secret_basic";
+    if (clientSecret && advertised.includes("client_secret_post")) return "client_secret_post";
+    // Existing manually configured and preconfigured clients predate the
+    // persisted method field and already use client_secret_post successfully.
+    return clientSecret ? "client_secret_post" : "none";
+  }
+
   async function registerOAuthClient(input: {
     connection: typeof toolConnections.$inferSelect;
     endpoints: OAuthProviderEndpoints;
@@ -6286,22 +6826,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         code: "oauth_pkce_s256_required",
       });
     }
-    if (
-      input.endpoints.tokenEndpointAuthMethodsSupported?.length
-      && !input.endpoints.tokenEndpointAuthMethodsSupported.includes("none")
-    ) {
-      throw unprocessable("OAuth provider does not support public dynamic clients", {
-        code: "oauth_dcr_public_client_unsupported",
-      });
-    }
+    const tokenEndpointAuthMethod = selectOAuthDcrTokenEndpointAuthMethod(
+      input.endpoints.tokenEndpointAuthMethodsSupported,
+    );
 
     const host = new URL(input.redirectUri).host;
     const requestedMetadata = {
       client_name: `Paperclip (${host})`,
       redirect_uris: [input.redirectUri],
-      grant_types: ["authorization_code", "refresh_token"],
+      grant_types: [
+        "authorization_code",
+        ...(!input.endpoints.grantTypesSupported?.length
+          || input.endpoints.grantTypesSupported.includes("refresh_token")
+          ? ["refresh_token"]
+          : []),
+      ],
       response_types: ["code"],
-      token_endpoint_auth_method: "none",
+      token_endpoint_auth_method: tokenEndpointAuthMethod,
       // RFC 7591: Paperclip's callback is a server-side HTTPS endpoint, so this
       // is a `web` client, not a `native` one. Some authorization servers reject
       // an https redirect URI when the default (`web`) is left implicit, and
@@ -6327,27 +6868,45 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       maxLength: MAX_OAUTH_DCR_CLIENT_ID_LENGTH,
     })!;
     const clientSecret = parseOAuthDcrString(record, "client_secret", {
-      required: false,
+      required: tokenEndpointAuthMethod !== "none",
       maxLength: MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH,
     });
-    // Some authorization servers add a first-party routing callback to the
-    // registered redirect set. Paperclip never navigates to that URI, and PKCE
-    // still binds codes to this client, so accept a bounded superset while
-    // requiring our exact callback to remain registered. Grants and response
-    // types stay exact because Paperclip must not adopt unsupported flows.
+    // Some authorization servers add provider-owned metadata to the registered
+    // client. Paperclip still uses only the exact redirect, grant and response
+    // types it requested, so accept bounded supersets while requiring every
+    // requested value to remain present. Hugging Face, for example, adds the
+    // device-code grant to an otherwise valid authorization-code registration.
     assertOAuthDcrArray(record, "redirect_uris", requestedMetadata.redirect_uris, { allowAdditional: true });
-    assertOAuthDcrArray(record, "grant_types", requestedMetadata.grant_types);
-    assertOAuthDcrArray(record, "response_types", requestedMetadata.response_types);
+    // RFC 7591 registration responses do not consistently echo every accepted
+    // request field. Supabase, for example, returns only the client material and
+    // redirect URIs. Redirect binding remains mandatory; omitted grant/response
+    // metadata inherits the values Paperclip requested. Additional provider-owned
+    // values do not widen Paperclip's behavior because they are never persisted as
+    // a flow choice or sent in authorization/token requests.
+    assertOAuthDcrArray(record, "grant_types", requestedMetadata.grant_types, {
+      allowAdditional: true,
+      allowOmitted: true,
+    });
+    assertOAuthDcrArray(record, "response_types", requestedMetadata.response_types, {
+      allowAdditional: true,
+      allowOmitted: true,
+    });
     if (
-      record.token_endpoint_auth_method !== requestedMetadata.token_endpoint_auth_method
+      record.token_endpoint_auth_method !== undefined
+      && record.token_endpoint_auth_method !== requestedMetadata.token_endpoint_auth_method
     ) {
       throw invalidOAuthDcrResponse("token_endpoint_auth_method", "registered_value_mismatch");
     }
     const clientIdIssuedAt = parseOAuthDcrTimestamp(record, "client_id_issued_at");
-    const clientSecretExpiresAt = parseOAuthDcrTimestamp(record, "client_secret_expires_at");
-    if (clientSecretExpiresAt !== null && clientSecret === null) {
+    const returnedClientSecretExpiresAt = parseOAuthDcrTimestamp(record, "client_secret_expires_at");
+    // A few public-client registrars (including Mixpanel) return the RFC 7591
+    // `0` sentinel even though they issued no secret. It carries no credential
+    // lifetime in that case, so normalize it away. A positive expiry without a
+    // secret is still contradictory and remains a hard failure.
+    if (returnedClientSecretExpiresAt !== null && returnedClientSecretExpiresAt > 0 && clientSecret === null) {
       throw invalidOAuthDcrResponse("client_secret_expires_at", "client_secret_missing");
     }
+    const clientSecretExpiresAt = clientSecret ? returnedClientSecretExpiresAt : null;
     const existingClientSecretRef = oauthSecretRef(input.connection, "oauth.client_secret");
     const nextCredentialSecretRefs = input.connection.credentialSecretRefs.filter(
       (ref) => ref.configPath !== "oauth.client_secret",
@@ -6383,7 +6942,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         resource: input.endpoints.resource ?? oauth.resource ?? null,
         clientId,
         clientRegistrationSource: "dcr" satisfies OAuthClientRegistrationSource,
-        clientTokenEndpointAuthMethod: "none",
+        clientTokenEndpointAuthMethod: tokenEndpointAuthMethod,
         clientRedirectUri: input.redirectUri,
         // Registered client material is only valid for the issuer/resource pair
         // it was minted against. `assertOAuthClientBinding` re-registers when any
@@ -6506,6 +7065,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const oauth = oauthConfig(connection);
     if (typeof oauth.clientId !== "string" || !oauth.clientId.trim()) return false;
     const source = typeof oauth.clientRegistrationSource === "string" ? oauth.clientRegistrationSource : null;
+    // Older interrupted setup flows could accidentally round-trip a DCR client
+    // through the customer-client form and relabel it `manual`. Ownership is the
+    // durable proof that Paperclip minted that client. Force a fresh registration
+    // instead of preserving the damaged binding forever.
+    if (source === "manual" && connection.ownership === "dcr") return false;
     // A URL client id that now resolves only to a private network is unusable by
     // an external authorization server. Treat the stored binding as stale so a
     // retry can replace it with a dynamically registered client.
@@ -6627,6 +7191,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const oauth = oauthConfig(input.connection);
     if (
       oauth.clientRegistrationSource === "manual"
+      && input.connection.ownership !== "dcr"
       && typeof oauth.clientId === "string"
       && oauth.clientId.trim()
     ) {
@@ -6698,6 +7263,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     tokenUrl: string;
     clientId: string;
     clientSecret?: string | null;
+    tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
     grantType?: "authorization_code" | "refresh_token" | "client_credentials";
     scopes?: string[];
     redirectUri?: string | null;
@@ -6720,8 +7286,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       body.set("redirect_uri", input.redirectUri ?? "");
       body.set("code_verifier", input.codeVerifier ?? "");
     }
-    body.set("client_id", input.clientId);
-    if (input.clientSecret) body.set("client_secret", input.clientSecret);
+    const tokenEndpointAuthMethod = input.tokenEndpointAuthMethod
+      ?? (input.clientSecret ? "client_secret_post" : "none");
+    if (tokenEndpointAuthMethod !== "client_secret_basic") body.set("client_id", input.clientId);
+    if (tokenEndpointAuthMethod === "client_secret_post") {
+      if (!input.clientSecret) {
+        throw unprocessable("OAuth client secret is missing for client_secret_post authentication", {
+          code: "oauth_client_secret_missing",
+        });
+      }
+      body.set("client_secret", input.clientSecret);
+    }
     // RFC 8707: repeat the resource indicator on the token request so the
     // authorization server audience-restricts the access token (and any refresh
     // exchange) to this MCP server.
@@ -6735,9 +7310,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // working on a deployment that is itself served over plaintext HTTP.
       firstPartyOrigin: originOf(input.redirectUri),
     });
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (tokenEndpointAuthMethod === "client_secret_basic") {
+      if (!input.clientSecret) {
+        throw unprocessable("OAuth client secret is missing for client_secret_basic authentication", {
+          code: "oauth_client_secret_missing",
+        });
+      }
+      const formEncode = (value: string) => new URLSearchParams({ value }).toString().slice("value=".length);
+      headers.Authorization = `Basic ${Buffer.from(
+        `${formEncode(input.clientId)}:${formEncode(input.clientSecret)}`,
+        "utf8",
+      ).toString("base64")}`;
+    }
     const response = await fetchRemoteHttpUrl(tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers,
       body,
     });
     const payload = await response.json().catch(() => ({})) as unknown;
@@ -6976,6 +7564,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         tokenUrl: oauth.tokenUrl,
         clientId: client.clientId,
         clientSecret: client.clientSecret,
+        tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(oauth, client.clientSecret),
         grantType,
         scopes: normalizeOauthScopes(oauth.scopes).length > 0 ? normalizeOauthScopes(oauth.scopes) : normalizeOauthScopes(oauth.scope),
         refreshToken,
@@ -7102,6 +7691,472 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return updated;
   }
 
+  function oauthGrantConfig(grant: typeof connectionGrants.$inferSelect) {
+    return asRecord(asRecord(grant.providerTenant).oauth);
+  }
+
+  function withoutOAuthGrantRefreshLease(oauth: Record<string, unknown>) {
+    const { refreshLease: _refreshLease, ...rest } = oauth;
+    return rest;
+  }
+
+  function oauthGrantExpiresAtMs(
+    grant: typeof connectionGrants.$inferSelect,
+    connection: typeof toolConnections.$inferSelect,
+  ): number | null {
+    const grantExpiresAt = oauthGrantConfig(grant).accessTokenExpiresAt;
+    const value = typeof grantExpiresAt === "string"
+      ? grantExpiresAt
+      : oauthConfig(connection).expiresAt;
+    if (typeof value !== "string") return null;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  async function getOAuthGrantRow(input: {
+    companyId: string;
+    connectionId: string;
+    grantId: string;
+  }) {
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.id, input.grantId),
+      eq(connectionGrants.companyId, input.companyId),
+      eq(connectionGrants.connectionId, input.connectionId),
+    )).limit(1);
+    if (!grant) throw notFound("Connection authorization not found");
+    return grant;
+  }
+
+  async function resolveOAuthGrantSecret(
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    ref: ToolCredentialSecretRef,
+    actor: ActorInfo | undefined,
+    accessContext: { issueId?: string | null; heartbeatRunId?: string | null } | undefined,
+  ) {
+    const [secret] = await db.select({
+      scope: companySecrets.scope,
+      ownerUserId: companySecrets.ownerUserId,
+      userSecretDefinitionId: companySecrets.userSecretDefinitionId,
+      latestVersion: companySecrets.latestVersion,
+    }).from(companySecrets).where(and(
+      eq(companySecrets.id, ref.secretId),
+      eq(companySecrets.companyId, connection.companyId),
+    )).limit(1);
+    if (!secret) throw notFound("OAuth credential secret not found");
+    const consumerContext = {
+      consumerType: "tool_connection" as const,
+      consumerId: connection.id,
+      configPath: ref.configPath,
+      actorType: actor?.actorType ?? "system" as const,
+      actorId: actor?.actorId ?? null,
+      responsibleUserId: grant.subjectUserId,
+      issueId: accessContext?.issueId,
+      heartbeatRunId: accessContext?.heartbeatRunId,
+    };
+    if (secret.scope !== "user") {
+      return {
+        value: await secrets.resolveSecretValue(
+          connection.companyId,
+          ref.secretId,
+          ref.versionSelector ?? "latest",
+          consumerContext,
+        ),
+        latestVersion: secret.latestVersion,
+      };
+    }
+    if (
+      grant.kind !== "user"
+      || !grant.subjectUserId
+      || secret.ownerUserId !== grant.subjectUserId
+      || !secret.userSecretDefinitionId
+    ) {
+      throw unprocessable("Personal authorization has an invalid credential", {
+        code: "grant_credential_invalid",
+        connectionId: connection.id,
+        grantId: grant.id,
+        credential: ref.configPath,
+      });
+    }
+    const resolved = await secrets.resolveUserSecretValue(connection.companyId, {
+      definitionId: secret.userSecretDefinitionId,
+      responsibleUserId: grant.subjectUserId,
+      version: ref.versionSelector ?? "latest",
+      required: ref.required ?? true,
+    }, consumerContext);
+    if (!resolved) throw unprocessable("Personal OAuth credential is not configured", {
+      code: "user_secret_missing",
+      connectionId: connection.id,
+      grantId: grant.id,
+      credential: ref.configPath,
+    });
+    return { value: resolved.value, latestVersion: secret.latestVersion };
+  }
+
+  async function clearOAuthGrantRefreshLease(
+    grant: typeof connectionGrants.$inferSelect,
+    leaseId: string,
+  ) {
+    const latest = await getOAuthGrantRow({
+      companyId: grant.companyId,
+      connectionId: grant.connectionId,
+      grantId: grant.id,
+    });
+    const oauth = oauthGrantConfig(latest);
+    if (asRecord(oauth.refreshLease).id !== leaseId) return latest;
+    const providerTenant = {
+      ...(latest.providerTenant ?? {}),
+      oauth: withoutOAuthGrantRefreshLease(oauth),
+    };
+    const [updated] = await db.update(connectionGrants).set({
+      providerTenant,
+      updatedAt: now(),
+    }).where(and(
+      eq(connectionGrants.id, latest.id),
+      eq(connectionGrants.companyId, latest.companyId),
+      sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${leaseId}`,
+    )).returning();
+    return updated ?? getOAuthGrantRow({
+      companyId: grant.companyId,
+      connectionId: grant.connectionId,
+      grantId: grant.id,
+    });
+  }
+
+  async function acquireOAuthGrantRefreshLease(
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    forceRefresh: boolean,
+  ): Promise<{ grant: typeof connectionGrants.$inferSelect; leaseId: string | null }> {
+    const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
+    const initialUpdatedAt = grant.updatedAt.getTime();
+    while (true) {
+      const latest = await getOAuthGrantRow({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        grantId: grant.id,
+      });
+      if (latest.status !== "active") {
+        throw unprocessable("OAuth authorization must be reconnected", {
+          code: "oauth_reauthorization_required",
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        });
+      }
+      const expiresAtMs = oauthGrantExpiresAtMs(latest, connection);
+      if (
+        (!forceRefresh && (expiresAtMs === null || expiresAtMs > Date.now() + 60_000))
+        || (forceRefresh && latest.updatedAt.getTime() > initialUpdatedAt && !asRecord(oauthGrantConfig(latest).refreshLease).id)
+      ) {
+        return { grant: latest, leaseId: null };
+      }
+
+      const oauth = oauthGrantConfig(latest);
+      const currentLease = asRecord(oauth.refreshLease);
+      const currentLeaseId = typeof currentLease.id === "string" && currentLease.id
+        ? currentLease.id
+        : null;
+      const currentLeaseExpiresAt = typeof currentLease.expiresAt === "string"
+        ? Date.parse(currentLease.expiresAt)
+        : Number.NaN;
+      const leaseIsActive = currentLeaseId !== null
+        && Number.isFinite(currentLeaseExpiresAt)
+        && currentLeaseExpiresAt > Date.now();
+      if (!currentLeaseId) {
+        const leaseId = randomUUID();
+        const providerTenant = {
+          ...(latest.providerTenant ?? {}),
+          oauth: {
+            ...withoutOAuthGrantRefreshLease(oauth),
+            refreshLease: {
+              id: leaseId,
+              expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString(),
+            },
+          },
+        };
+        const [claimed] = await db.update(connectionGrants).set({
+          providerTenant,
+          updatedAt: now(),
+        }).where(and(
+          eq(connectionGrants.id, latest.id),
+          eq(connectionGrants.companyId, latest.companyId),
+          eq(connectionGrants.status, "active"),
+          sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' is null`,
+        )).returning();
+        if (claimed) return { grant: claimed, leaseId };
+      }
+      if (currentLeaseId && !leaseIsActive) {
+        throw unprocessable("The previous OAuth refresh did not finish. Reconnect this app before retrying.", {
+          code: "oauth_refresh_outcome_unknown",
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        });
+      }
+      if (Date.now() >= waitDeadline) {
+        throw conflict("OAuth credential refresh is already in progress", {
+          code: "oauth_refresh_in_progress",
+          retryable: true,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, OAUTH_REFRESH_LEASE_POLL_MS));
+    }
+  }
+
+  async function refreshOAuthGrantCredentials(input: {
+    companyId: string;
+    connectionId: string;
+    grantId: string;
+    forceRefresh?: boolean;
+    actor?: ActorInfo;
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+  }): Promise<typeof connectionGrants.$inferSelect> {
+    const connection = await getConnectionRow(input.connectionId, input.companyId);
+    const initialGrant = await getOAuthGrantRow(input);
+    const oauth = oauthConfig(connection);
+    const oauthProvider = typeof oauth.provider === "string" ? oauth.provider : null;
+    const oauthTokenUrl = typeof oauth.tokenUrl === "string" ? oauth.tokenUrl : null;
+    if (
+      connection.authKind !== "oauth"
+      || connection.credentialSource !== "paperclip_vault"
+      || oauth.strategy === "paperclip_id_connector"
+      || !oauthTokenUrl
+      || !oauthProvider
+    ) {
+      return initialGrant;
+    }
+    const expiresAtMs = oauthGrantExpiresAtMs(initialGrant, connection);
+    if (!input.forceRefresh && (expiresAtMs === null || expiresAtMs > Date.now() + 60_000)) {
+      return initialGrant;
+    }
+
+    return singleFlight(oauthGrantRefreshFlights, initialGrant.id, async () => {
+      const lease = await acquireOAuthGrantRefreshLease(connection, initialGrant, input.forceRefresh === true);
+      if (!lease.leaseId) return lease.grant;
+      try {
+        const grant = lease.grant;
+        const refreshRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+        if (!refreshRef) {
+          throw unprocessable("OAuth credentials have expired and no refresh token is available", {
+            code: "oauth_refresh_missing",
+            setupUrl: connectionSetupUrl(connection),
+            reconnectUrl: connectionReconnectUrl(connection),
+          });
+        }
+        const refreshSecret = await resolveOAuthGrantSecret(
+          connection,
+          grant,
+          refreshRef,
+          input.actor,
+          input,
+        );
+        const credentialActor: ActorInfo | undefined = grant.kind === "user" && grant.subjectUserId
+          ? { actorType: "user", actorId: grant.subjectUserId }
+          : input.actor;
+        const client = await oauthClientForConnection(connection, oauthProvider, credentialActor);
+        if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${oauthProvider}`);
+        const grantOauth = oauthGrantConfig(grant);
+        let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
+        try {
+          token = await exchangeOAuthToken({
+            tokenUrl: oauthTokenUrl,
+            clientId: client.clientId,
+            clientSecret: client.clientSecret,
+            tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(oauth, client.clientSecret),
+            grantType: "refresh_token",
+            scopes: normalizeOauthScopes(grantOauth.scopes).length > 0
+              ? normalizeOauthScopes(grantOauth.scopes)
+              : normalizeOauthScopes(oauth.scopes).length > 0
+                ? normalizeOauthScopes(oauth.scopes)
+                : normalizeOauthScopes(oauth.scope),
+            refreshToken: refreshSecret.value,
+            resource: typeof oauth.resource === "string" && oauth.resource ? oauth.resource : null,
+          });
+        } catch (error) {
+          if (error instanceof HttpError && asRecord(error.details).code === "oauth_reauthorization_required") {
+            const retainedCredentialSecretRefs = grant.credentialSecretRefs.filter(
+              (ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token",
+            );
+            const providerTenant = {
+              ...(grant.providerTenant ?? {}),
+              oauth: {
+                ...withoutOAuthGrantRefreshLease(grantOauth),
+                accessTokenExpiresAt: undefined,
+              },
+            };
+            const [marked] = await db.update(connectionGrants).set({
+              status: "needs_reauthorization",
+              providerTenant,
+              credentialSecretRefs: retainedCredentialSecretRefs,
+              updatedAt: now(),
+            }).where(and(
+              eq(connectionGrants.id, grant.id),
+              eq(connectionGrants.companyId, grant.companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
+              sql`exists (
+                select 1 from ${companySecrets}
+                where ${companySecrets.id} = ${refreshRef.secretId}
+                  and ${companySecrets.companyId} = ${connection.companyId}
+                  and ${companySecrets.latestVersion} = ${refreshSecret.latestVersion}
+              )`,
+            )).returning();
+            if (!marked) {
+              const latest = await getOAuthGrantRow(input);
+              const latestExpiresAt = oauthGrantExpiresAtMs(latest, connection);
+              if (latest.status === "active" && latestExpiresAt && latestExpiresAt > Date.now() + 60_000) return latest;
+              throw conflict("OAuth credentials changed while refresh was in progress. Retry the request.", {
+                code: "oauth_refresh_superseded",
+                retryable: true,
+              });
+            }
+            if (marked.kind === "organization") {
+              const latestConnection = await getConnectionRow(connection.id, connection.companyId);
+              const [reauthorizationRequired] = await db.update(toolConnections).set({
+                status: "draft",
+                enabled: false,
+                credentialSecretRefs: latestConnection.credentialSecretRefs.filter(
+                  (ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token",
+                ),
+                credentialRefs: latestConnection.credentialRefs.filter(
+                  (ref) => ref.name !== "oauth.access_token" && ref.name !== "oauth.refresh_token",
+                ),
+                updatedAt: now(),
+              }).where(and(
+                eq(toolConnections.id, latestConnection.id),
+                eq(toolConnections.companyId, latestConnection.companyId),
+              )).returning();
+              await syncCredentialBindings(reauthorizationRequired);
+            } else {
+              const activeGrantRefs = await db.select({
+                refs: connectionGrants.credentialSecretRefs,
+              }).from(connectionGrants).where(and(
+                eq(connectionGrants.companyId, connection.companyId),
+                eq(connectionGrants.connectionId, connection.id),
+                eq(connectionGrants.status, "active"),
+              ));
+              await syncCredentialBindings(connection, activeGrantRefs.flatMap((row) => row.refs));
+            }
+            throw new HttpError(error.status, error.message, {
+              ...asRecord(error.details),
+              setupUrl: connectionSetupUrl(connection),
+              reconnectUrl: connectionReconnectUrl(connection),
+            });
+          }
+          throw error;
+        }
+
+        let nextRefreshRef: ToolCredentialSecretRef | null = null;
+        if (token.refreshToken) {
+          nextRefreshRef = await createOrRotateOAuthSecret({
+            companyId: connection.companyId,
+            connection,
+            configPath: "oauth.refresh_token",
+            label: "OAuth refresh token",
+            value: token.refreshToken,
+            actor: credentialActor,
+            existingRefs: grant.credentialSecretRefs,
+            ownerUserId: grant.kind === "user" ? grant.subjectUserId ?? undefined : undefined,
+          });
+        }
+        const accessRef = await createOrRotateOAuthSecret({
+          companyId: connection.companyId,
+          connection,
+          configPath: "oauth.access_token",
+          label: "OAuth access token",
+          value: token.accessToken,
+          actor: credentialActor,
+          existingRefs: grant.credentialSecretRefs,
+          ownerUserId: grant.kind === "user" ? grant.subjectUserId ?? undefined : undefined,
+        });
+        const nextCredentialSecretRefs = [
+          ...grant.credentialSecretRefs.filter((ref) =>
+            ref.configPath !== "oauth.access_token"
+            && (!nextRefreshRef || ref.configPath !== "oauth.refresh_token")
+          ),
+          accessRef,
+          ...(nextRefreshRef ? [nextRefreshRef] : []),
+        ];
+        const expiresAt = token.expiresIn
+          ? new Date(Date.now() + token.expiresIn * 1000).toISOString()
+          : null;
+        const providerTenant = {
+          ...(grant.providerTenant ?? {}),
+          oauth: {
+            ...withoutOAuthGrantRefreshLease(grantOauth),
+            strategy: typeof grantOauth.strategy === "string" ? grantOauth.strategy : "direct_oauth",
+            accessTokenExpiresAt: expiresAt ?? undefined,
+            scopes: normalizeOauthScopes(token.scope ?? grantOauth.scopes ?? oauth.scopes ?? oauth.scope),
+            tokenType: token.tokenType,
+            refreshedAt: now().toISOString(),
+          },
+        };
+        const [updated] = await db.update(connectionGrants).set({
+          providerTenant,
+          credentialSecretRefs: nextCredentialSecretRefs,
+          status: "active",
+          updatedAt: now(),
+        }).where(and(
+          eq(connectionGrants.id, grant.id),
+          eq(connectionGrants.companyId, grant.companyId),
+          eq(connectionGrants.status, "active"),
+          sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
+        )).returning();
+        if (!updated) {
+          throw conflict("OAuth credentials changed while refresh was in progress. Retry the request.", {
+            code: "oauth_refresh_superseded",
+            retryable: true,
+          });
+        }
+        if (grant.kind === "organization") {
+          const latestConnection = await getConnectionRow(connection.id, connection.companyId);
+          const latestOauth = oauthConfig(latestConnection);
+          const nextConfig = {
+            ...latestConnection.config,
+            oauth: {
+              ...withoutOAuthRefreshLease(latestOauth),
+              expiresAt,
+              scope: token.scope ?? latestOauth.scope ?? null,
+              tokenType: token.tokenType,
+              refreshedAt: now().toISOString(),
+            },
+            providerMetadata: {
+              ...asRecord(latestConnection.config.providerMetadata),
+              oauth: {
+                expiresAt,
+                scope: token.scope ?? latestOauth.scope ?? null,
+                tokenType: token.tokenType,
+              },
+            },
+          };
+          await db.update(toolConnections).set({
+            config: nextConfig,
+            transportConfig: nextConfig,
+            updatedAt: now(),
+          }).where(and(
+            eq(toolConnections.id, latestConnection.id),
+            eq(toolConnections.companyId, latestConnection.companyId),
+          ));
+        }
+        const previousKeys = new Set(grant.credentialSecretRefs.map((ref) => `${ref.secretId}:${ref.configPath}`));
+        const nextKeys = new Set(nextCredentialSecretRefs.map((ref) => `${ref.secretId}:${ref.configPath}`));
+        if (previousKeys.size !== nextKeys.size || [...previousKeys].some((key) => !nextKeys.has(key))) {
+          const activeGrantRefs = await db.select({
+            refs: connectionGrants.credentialSecretRefs,
+          }).from(connectionGrants).where(and(
+            eq(connectionGrants.companyId, connection.companyId),
+            eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.status, "active"),
+          ));
+          await syncCredentialBindings(connection, activeGrantRefs.flatMap((row) => row.refs));
+        }
+        return updated;
+      } finally {
+        await clearOAuthGrantRefreshLease(lease.grant, lease.leaseId).catch(() => undefined);
+      }
+    });
+  }
+
   async function maybeRefreshOAuthCredentials(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
@@ -7140,7 +8195,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
-    if (input.applicationId) {
+    let requestedResumeConnection: typeof toolConnections.$inferSelect | null = null;
+    if (input.resumeConnectionId) {
+      const [connection] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.id, input.resumeConnectionId),
+        eq(toolConnections.companyId, companyId),
+      ));
+      if (!connection) throw notFound("Incomplete app connection not found");
+      if (connection.status !== "draft") {
+        throw conflict("Only an incomplete app connection can resume setup", {
+          code: "connection_setup_not_incomplete",
+        });
+      }
+      if (input.applicationId && input.applicationId !== connection.applicationId) {
+        throw badRequest("The app and draft connection do not match");
+      }
+      const [application] = await db.select().from(toolApplications).where(and(
+        eq(toolApplications.id, connection.applicationId),
+        eq(toolApplications.companyId, companyId),
+      ));
+      if (!application) throw notFound("App not found");
+      requestedResumeConnection = connection;
+      existingApplication = application;
+    } else if (input.applicationId) {
       const [row] = await db.select().from(toolApplications).where(and(
         eq(toolApplications.id, input.applicationId),
         eq(toolApplications.companyId, companyId),
@@ -7148,52 +8225,97 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!row) throw notFound("App not found");
       existingApplication = row;
     } else {
-      // Removal intentionally retains the archived application/connection as
-      // history. A fresh gallery click has no applicationId, so recover that
-      // retained identity by its company-unique name and source instead of
-      // inserting a duplicate application that the unique index rejects.
+      // Removal and interrupted setup intentionally retain their
+      // application/connection rows. A fresh gallery click has no
+      // applicationId, so recover that retained identity by its company-unique
+      // name and source instead of inserting a duplicate application that the
+      // unique index rejects. Active applications are excluded: connecting a
+      // second account still requires its own name/application identity.
       const requestedName = input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-      const [archivedApplication] = await db
+      const recoverableApplicationStatuses = galleryEntry
+        ? ["draft", "archived"] as const
+        : ["archived"] as const;
+      const [recoverableApplication] = await db
         .select()
         .from(toolApplications)
         .where(and(
           eq(toolApplications.companyId, companyId),
           eq(toolApplications.name, requestedName),
-          eq(toolApplications.status, "archived"),
+          inArray(toolApplications.status, recoverableApplicationStatuses),
         ))
+        .orderBy(desc(toolApplications.updatedAt))
         .limit(1);
-      const archivedSource = archivedApplication?.metadata
-        ? archivedApplication.metadata.sourceTemplateKey ?? archivedApplication.metadata.galleryKey ?? archivedApplication.metadata.source
+      const recoverableSource = recoverableApplication?.metadata
+        ? recoverableApplication.metadata.sourceTemplateKey
+          ?? recoverableApplication.metadata.galleryKey
+          ?? recoverableApplication.metadata.source
         : null;
       const requestedSource = galleryEntry?.slug ?? (input.link ? "link" : null);
-      if (archivedApplication && requestedSource && archivedSource === requestedSource) {
-        existingApplication = archivedApplication;
+      if (recoverableApplication && requestedSource && recoverableSource === requestedSource) {
+        existingApplication = recoverableApplication;
       }
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
+    // Compatibility for the original Sheets robot flow, whose clients predate
+    // method selection and identify the method by its spreadsheet allowlist.
+    const inferredMethodKey = !input.connectionMethodKey
+      && galleryEntry?.slug === "google-sheets"
+      && Array.isArray(input.configValues?.allowedSpreadsheetIds)
+      ? "local"
+      : input.connectionMethodKey;
     if (!galleryEntry && input.connectionMethodKey) throw badRequest("Connection method selection requires a gallery app");
-    if (galleryEntry && getAvailableConnectionMethods(galleryEntry).length > 1 && !input.connectionMethodKey) {
+    if (galleryEntry && getAvailableConnectionMethods(galleryEntry).length > 1 && !inferredMethodKey) {
       throw badRequest("Choose a connection method for this app");
     }
-    const method = galleryEntry ? connectionMethodFor(galleryEntry, input.connectionMethodKey) : null;
+    const method = galleryEntry ? connectionMethodFor(galleryEntry, inferredMethodKey) : null;
+    if (galleryEntry && input.link) {
+      const acceptsProviderGeneratedUrl = method?.transport === "mcp_remote"
+        && method.auth === "none"
+        && !method.defaults?.serverUrl
+        && !method.defaults?.serverUrlTemplate;
+      if (!acceptsProviderGeneratedUrl) {
+        throw badRequest(`${galleryEntry.name} does not accept a provider-generated connection URL`);
+      }
+      if (!getAppDefinitionForUrl(input.link, [galleryEntry])) {
+        throw badRequest(`That connection URL does not belong to ${galleryEntry.name}`);
+      }
+    }
+    if (requestedResumeConnection && galleryEntry) {
+      const storedConnectionSource = requestedResumeConnection.config?.sourceTemplateKey
+        ?? requestedResumeConnection.transportConfig?.sourceTemplateKey;
+      const storedApplicationSource = existingApplication?.metadata?.sourceTemplateKey
+        ?? existingApplication?.metadata?.galleryKey;
+      if (storedConnectionSource !== galleryEntry.slug && storedApplicationSource !== galleryEntry.slug) {
+        throw badRequest("The selected provider does not match this incomplete connection");
+      }
+    }
     // Reconnect is not a second identity decision. Removed connections retain
     // their row precisely so the next credential can be attached to the same
     // identity and history. Resolve that retained row before interpreting the
     // request so a client default cannot silently turn a personal connection
     // into an organization connection (or vice versa).
-    const [retainedConnection] = existingApplication
+    const canResumeInterruptedDraft = Boolean(requestedResumeConnection) || (
+      !input.applicationId
+      && Boolean(galleryEntry)
+      && existingApplication?.status === "draft"
+    );
+    const retainedConnectionStatuses = canResumeInterruptedDraft
+      ? ["draft", "archived"] as const
+      : ["archived"] as const;
+    const [recoveredConnection] = !requestedResumeConnection && existingApplication
       ? await db
           .select()
           .from(toolConnections)
           .where(and(
             eq(toolConnections.companyId, companyId),
             eq(toolConnections.applicationId, existingApplication.id),
-            eq(toolConnections.status, "archived"),
+            inArray(toolConnections.status, retainedConnectionStatuses),
           ))
           .orderBy(desc(toolConnections.updatedAt))
           .limit(1)
       : [undefined];
+    const retainedConnection = requestedResumeConnection ?? recoveredConnection;
     const retainedGrantKind: ConnectionGrantKind | null = retainedConnection
       ? retainedConnection.credentialPolicy === "per_user"
         ? "user"
@@ -7204,11 +8326,84 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       throw badRequest(`${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`);
     }
     const transport = method?.transport ?? "mcp_remote";
-    const normalizedMethodConfig = galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY || !method
+    const credentialSource: ToolConnectionCredentialSource = input.credentialSource ?? "paperclip_vault";
+    if (retainedConnection && retainedConnection.credentialSource !== credentialSource) {
+      throw conflict("Changing credential source requires a new app connection", {
+        code: "credential_source_migration_not_supported",
+      });
+    }
+    let externalCredential: VercelConnectCredentialReference | null = null;
+    if (credentialSource === "vercel_connect") {
+      const integration = vercelConnectIntegrationStatus();
+      if (!integration.enabled || !integration.configured || !vercelConnect) {
+        throw unprocessable("Vercel Connect setup is not available on this Paperclip instance", {
+          code: "vercel_connect_unavailable",
+        });
+      }
+      if (!galleryEntry || !method || method.transport !== "mcp_remote" || method.auth === "none") {
+        throw badRequest("Vercel Connect is available only for reviewed remote MCP app methods");
+      }
+      const reviewed = method.credentialSources?.vercelConnect;
+      if (!reviewed) {
+        throw unprocessable(`${galleryEntry.name} has not been reviewed for Vercel Connect`, {
+          code: "vercel_connect_method_not_reviewed",
+        });
+      }
+      const expectedPrincipalMode = method.auth === "oauth" ? "user" : "app";
+      if (!reviewed.principalModes.includes(expectedPrincipalMode)) {
+        throw unprocessable("This connector principal mode has not been reviewed for this app", {
+          code: "vercel_connect_principal_not_reviewed",
+        });
+      }
+      if (expectedPrincipalMode === "app" && requestedGrantKind !== "organization") {
+        throw badRequest("App-subject Vercel connectors can only back an organization identity");
+      }
+      let metadata;
+      try {
+        metadata = await vercelConnect.getConnectorMetadata(input.vercelConnect!.connector);
+      } catch (error) {
+        throw vercelConnectHttpError(error);
+      }
+      const service = metadata.service.trim().toLowerCase();
+      if (!reviewed.services.map((value) => value.toLowerCase()).includes(service)) {
+        throw badRequest(`That Vercel connector is for ${metadata.service}, not ${galleryEntry.name}`, {
+          code: "vercel_connect_service_mismatch",
+        });
+      }
+      if (expectedPrincipalMode === "app") {
+        const [connectorInUse] = await db.select({ id: toolConnections.id }).from(toolConnections).where(and(
+          eq(toolConnections.credentialSource, "vercel_connect"),
+          ne(toolConnections.status, "archived"),
+          sql`${toolConnections.externalCredential}->>'connectorUid' = ${metadata.uid}`,
+          ...(retainedConnection ? [ne(toolConnections.id, retainedConnection.id)] : []),
+        )).limit(1);
+        if (connectorInUse) {
+          throw conflict("App-subject Vercel connectors are dedicated to one Paperclip connection. Create or attach a separate connector in Vercel.", {
+            code: "vercel_connect_app_connector_in_use",
+          });
+        }
+      }
+      externalCredential = {
+        provider: "vercel_connect",
+        connectorId: metadata.id,
+        connectorUid: metadata.uid,
+        service: metadata.service,
+        connectorType: metadata.type,
+        principalMode: expectedPrincipalMode,
+        headerName: reviewed.header.name,
+        headerPrefix: reviewed.header.prefix ?? null,
+        scopes: [...reviewed.scopes],
+      };
+    }
+    const isGoogleSheetsRobotMethod = galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY && method?.key === "local";
+    const normalizedMethodConfig = isGoogleSheetsRobotMethod || !method
       ? null
       : normalizeConnectionMethodConfig(method, input.configValues);
+    const remoteUrlCredential = transport === "mcp_remote" && input.link
+      ? splitRemoteUrlCredential(input.link)
+      : null;
     const baseConfig = transport === "mcp_remote"
-      ? { url: normalizedMethodConfig?.url ?? method?.defaults?.serverUrl ?? input.link ?? "" }
+      ? { url: normalizedMethodConfig?.url ?? method?.defaults?.serverUrl ?? remoteUrlCredential?.publicUrl ?? input.link ?? "" }
       : { templateId: method?.defaults?.templateKey };
     let config: Record<string, unknown> = galleryEntry
       ? {
@@ -7224,11 +8419,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
     if (method?.oauthStrategy === "paperclip_id_connector") {
+      const connectorProfile = method.connectorProfile;
+      if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) {
+        throw badRequest("This app has an invalid Google connector profile");
+      }
+      const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
       config.oauth = {
         strategy: method.oauthStrategy,
-        provider: "gmail",
+        provider: galleryEntry?.slug,
+        connectorProfile,
         resource: method.defaults?.serverUrl,
-        scopes: [...GMAIL_CONNECTOR_SCOPES],
+        scopes: [...profile.scopes],
       };
       config.quarantineNewEntries = true;
     }
@@ -7247,7 +8448,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         clientCompanyId: companyId,
       };
     }
-    if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
+    if (isGoogleSheetsRobotMethod) {
       const availability = googleSheetsRobotEmailFromEnv();
       if (!availability.available) {
         throw unprocessable(availability.reason, { code: "google_sheets_unavailable" });
@@ -7302,19 +8503,58 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         actor,
       )
       : null;
+    const retainedConfig = asRecord(retainedConnection?.config);
+    const retainedMethodKey = retainedConfig.connectionMethodKey;
+    const retainedSource = retainedConfig.sourceTemplateKey
+      ?? asRecord(retainedConnection?.transportConfig).sourceTemplateKey;
+    // Setup forms never receive stored secret values. Treat an omitted value as
+    // "keep the existing secret" only while resuming the exact same curated
+    // provider and method. This prevents a retry from detaching a client secret
+    // or API key, without carrying credentials across a method/provider change.
+    const canRetainCredentialMaterial = Boolean(
+      retainedConnection
+      && galleryEntry
+      && retainedSource === galleryEntry.slug
+      && retainedMethodKey === method?.key,
+    );
+    const retainedCredentialSecretRefs = canRetainCredentialMaterial
+      ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ?? retainedConnection?.credentialSecretRefs ?? [])
+      : [];
     // Only the personal path changes the policy; every existing gallery app keeps
     // the shared default it has today.
-    const credentialPolicy: ToolConnectionCredentialPolicy | undefined = personalIdentityUserId
+      const credentialPolicy: ToolConnectionCredentialPolicy | undefined = personalIdentityUserId
       ? "per_user"
-      : undefined;
+        : undefined;
+    const connectionOwnership = method?.oauthStrategy === "paperclip_id_connector" ? "platform_shared" : "customer";
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = retainedConnection ?? null;
 
     try {
-      const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry, method?.key) : linkCredentialFields(credentialValues);
+      const credentialFields = credentialSource === "vercel_connect"
+        ? []
+        : galleryEntry
+          ? credentialFieldsFor(galleryEntry, method?.key)
+          : linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
+        const retainedSecretRef = retainedCredentialSecretRefs.find(
+          (ref) => ref.configPath === field.configPath,
+        );
+        if (!value && retainedSecretRef) {
+          credentialSecretRefs.push(retainedSecretRef);
+          if (field.placement === "header" && field.key) {
+            credentialRefs.push({
+              name: field.configPath,
+              secretId: retainedSecretRef.secretId,
+              version: retainedSecretRef.versionSelector ?? "latest",
+              placement: "header",
+              key: field.key,
+              prefix: field.prefix ?? null,
+            });
+          }
+          continue;
+        }
         if (!value && field.required !== false) {
           throw badRequest(`Missing credential value for ${field.configPath}`);
         }
@@ -7346,6 +8586,32 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       }
 
+      if (remoteUrlCredential?.secretUrl) {
+        const secret = await secrets.create(companyId, {
+          name: `${name} MCP server URL ${randomUUID().slice(0, 8)}`,
+          key: `tool_app.${randomUUID()}.remote_url`,
+          provider: "local_encrypted",
+          value: remoteUrlCredential.secretUrl,
+          description: `Credential-bearing MCP server URL for ${name}.`,
+        }, actorForSecret(actor));
+        createdSecretIds.push(secret.id);
+        credentialSecretRefs.push({
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: REMOTE_URL_SECRET_CONFIG_PATH,
+          required: true,
+          label: "MCP server URL",
+        });
+        credentialRefs.push({
+          name: REMOTE_URL_SECRET_CONFIG_PATH,
+          secretId: secret.id,
+          version: "latest",
+          placement: "url",
+          key: "url",
+          prefix: null,
+        });
+      }
+
       // A preregistered OAuth client secret is not a request header — it is only
       // ever sent to the token endpoint — so it gets a secret ref with no
       // credential ref, keeping it out of `projectedConnectionHeaders`.
@@ -7365,12 +8631,26 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           required: false,
           label: "OAuth client secret",
         });
+      } else if (input.oauthClient) {
+        const retainedOAuth = asRecord(retainedConfig.oauth);
+        const clientIdUnchanged = retainedOAuth.clientId === input.oauthClient.clientId.trim();
+        const retainedClientSecretRef = clientIdUnchanged
+          ? retainedCredentialSecretRefs.find((ref) => ref.configPath === "oauth.client_secret")
+          : undefined;
+        if (retainedClientSecretRef) credentialSecretRefs.push(retainedClientSecretRef);
       }
 
+      const safeApplicationDescription = galleryEntry?.description
+        ?? `Connected app at ${remoteUrlCredential?.publicUrl ?? input.link}`;
       if (existingApplication) {
         if (existingApplication.status !== "active") {
           [applicationRow] = await db.update(toolApplications)
-            .set({ status: "draft", archivedAt: null, updatedAt: new Date() })
+            .set({
+              status: "draft",
+              archivedAt: null,
+              ...(!galleryEntry ? { description: safeApplicationDescription } : {}),
+              updatedAt: new Date(),
+            })
             .where(eq(toolApplications.id, existingApplication.id))
             .returning();
         } else {
@@ -7381,7 +8661,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           companyId,
           applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
           name,
-          description: galleryEntry?.description ?? `Connected app at ${input.link}`,
+          description: safeApplicationDescription,
           type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
           status: "draft",
           metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
@@ -7408,6 +8688,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transportConfig: config,
           credentialRefs,
           credentialSecretRefs: connectionCredentialSecretRefs,
+          credentialSource,
+          externalCredential,
           // Identity is immutable for a retained connection. A fresh
           // connection still derives it from the explicit Access choice.
           credentialPolicy: revivedConnectionPrevious.credentialPolicy,
@@ -7422,7 +8704,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           name,
           uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
+          ownership: connectionOwnership,
           authKind: genericAuthKind,
+          credentialSource,
+          externalCredential,
           transport,
           status: "draft",
           enabled: false,
@@ -7491,6 +8776,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       } else {
         await ensureDefaultOrganizationGrant(connectionRow);
+        if (credentialSource === "vercel_connect") {
+          const derived = deriveVercelConnectSubject({
+            credential: externalCredential!,
+            connectionId: connectionRow.id,
+            companyId,
+            grantKind: "organization",
+          });
+          await db.update(connectionGrants).set({
+            externalCredential: {
+              provider: "vercel_connect",
+              subjectType: externalCredential!.principalMode,
+              ...(derived.subjectId ? { subjectId: derived.subjectId } : {}),
+            },
+            credentialSecretRefs: [],
+            updatedAt: now(),
+          }).where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, connectionRow.id),
+            eq(connectionGrants.kind, "organization"),
+            eq(connectionGrants.isDefault, true),
+          ));
+        }
       }
       await syncCredentialBindings(connectionRow, personalIdentityUserId ? credentialSecretRefs : []);
       await ensureRuntimeSlot(connectionRow);
@@ -7586,6 +8893,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transportConfig: revivedConnectionPrevious.transportConfig,
           credentialRefs: revivedConnectionPrevious.credentialRefs,
           credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+          credentialSource: revivedConnectionPrevious.credentialSource,
+          externalCredential: revivedConnectionPrevious.externalCredential,
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
       } else if (connectionRow) {
@@ -7730,6 +9039,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     const enabledRows = await assertCatalogEntriesForConnection(companyId, connection.id, enabledIds);
     const askFirstRows = await assertCatalogEntriesForConnection(companyId, connection.id, input.askFirstCatalogEntryIds);
+    if (enabledRows.some((entry) => entry.status === "disabled")) {
+      throw badRequest("Disabled actions cannot be enabled");
+    }
     if (reviewedIds.length > 0) {
       await assertCatalogEntriesForConnection(companyId, connection.id, reviewedIds);
       const quarantinedRows = await db
@@ -7998,6 +9310,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot be reconnected");
+    if (connection.credentialSource === "vercel_connect") {
+      throw conflict("Manage this connector in Vercel Connect, then run a Paperclip health check to verify it.", {
+        code: "vercel_connect_managed_externally",
+        manageUrl: vercelConnectIntegrationStatus().manageUrl,
+      });
+    }
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
@@ -8177,22 +9495,90 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     )) {
       throw forbidden("Only the addressed user can authorize this connection request");
     }
+    if (connection.credentialSource === "vercel_connect") {
+      if (!vercelConnect) throw vercelConnectHttpError(new VercelConnectClientError("vercel_connect_unavailable", 503));
+      const credential = vercelCredentialFor(connection);
+      if (connection.authKind !== "oauth" || credential.principalMode !== "user") {
+        throw badRequest("This Vercel connector does not use browser authorization");
+      }
+      const binding = starterBinding;
+      if (!binding.actorType || !binding.actorId) {
+        throw forbidden("Vercel Connect authorization requires an authenticated actor");
+      }
+      const grantKind: ConnectionGrantKind = authorizationSubjectUserId ? "user" : "organization";
+      const derived = deriveVercelConnectSubject({
+        credential,
+        connectionId: connection.id,
+        companyId,
+        grantKind,
+        subjectUserId: authorizationSubjectUserId,
+      });
+      const state = randomOauthToken();
+      let authorization;
+      try {
+        authorization = await vercelConnect.startAuthorization({
+          connector: credential.connectorUid,
+          subject: derived.subject,
+          scopes: credential.scopes,
+          resources: vercelConnectResourcesFor(connection),
+        }, vercelConnectCallbackUrl(input.redirectUri, state));
+      } catch (error) {
+        throw vercelConnectHttpError(error);
+      }
+      const remoteExpiry = authorization.expiresAt ? new Date(authorization.expiresAt) : null;
+      const expiresAt = remoteExpiry && Number.isFinite(remoteExpiry.getTime())
+        ? new Date(Math.min(remoteExpiry.getTime(), now().getTime() + 10 * 60 * 1000))
+        : new Date(now().getTime() + 10 * 60 * 1000);
+      await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, now()));
+      await db.insert(toolOauthStates).values({
+        state,
+        companyId,
+        connectionId: connection.id,
+        // Vercel owns its verifier. This marker only dispatches the consumed
+        // one-time state to the Vercel callback completion path.
+        codeVerifier: "vercel-connect",
+        createdByActorType: binding.actorType,
+        createdByActorId: binding.actorId,
+        createdBySessionId: binding.sessionId,
+        subjectUserId: authorizationSubjectUserId,
+        requestedScopes: [...credential.scopes],
+        returnTo: input.returnTo,
+        issueId: intentLink?.issueId ?? input.issueId,
+        interactionId: intentLink?.id,
+        expiresAt,
+      });
+      return {
+        connectionId: connection.id,
+        provider: `vercel-connect:${credential.service}`,
+        authorizationUrl: authorization.url,
+        expiresAt: expiresAt.toISOString(),
+        issuer: "https://vercel.com/connect",
+        resource: galleryMethod?.defaults?.serverUrl ?? null,
+        registrationSource: null,
+      };
+    }
     if (galleryMethod?.oauthStrategy === "paperclip_id_connector") {
+      const connectorProfile = galleryMethod.connectorProfile;
+      if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) {
+        throw badRequest("This app has an invalid Google connector profile");
+      }
+      const googleProfile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
+      const providerName = galleryEntry?.name ?? "Google Workspace";
       if (!gmailConnector) {
-        throw unprocessable("Gmail connections are not available on this Paperclip instance yet", {
+        throw unprocessable(`${providerName} connections through Paperclip are not available on this instance yet`, {
           code: "paperclip_id_connector_unavailable",
         });
       }
       const binding = starterBinding;
       if (!binding.actorType || !binding.actorId) {
-        throw forbidden("Gmail sign-in requires an authenticated actor");
+        throw forbidden(`${providerName} sign-in requires an authenticated actor`);
       }
       const subjectUserId = authorizationSubjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
       if (!subjectUserId) {
-        throw forbidden("Agent-started Gmail sign-in requires an authorized user subject");
+        throw forbidden(`Agent-started ${providerName} sign-in requires an authorized user subject`);
       }
       if (binding.actorType === "user" && subjectUserId !== binding.actorId) {
-        throw forbidden("Board users may only authorize their own Gmail identity");
+        throw forbidden(`Board users may only authorize their own ${providerName} identity`);
       }
       await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, now()));
       const state = randomOauthToken();
@@ -8203,6 +9589,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const session = await gmailConnector.startAuthorization({
         subject: subjectUserId,
         companyId,
+        profile: connectorProfile,
         returnUri: returnUri.toString(),
         returnState: state,
       });
@@ -8221,7 +9608,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         createdByActorId: binding.actorId,
         createdBySessionId: binding.sessionId,
         subjectUserId,
-        requestedScopes: [...GMAIL_CONNECTOR_SCOPES],
+        requestedScopes: [...googleProfile.scopes],
         returnTo: input.returnTo,
         issueId: intentLink?.issueId ?? input.issueId,
         interactionId: intentLink?.id,
@@ -8304,6 +9691,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ? requestedScopes ?? []
       : input.scopes ?? endpoints.scopes;
     if (authorizationScopes.length > 0) authorizationUrl.searchParams.set("scope", authorizationScopes.join(" "));
+    const reviewedAuthorizationParams = galleryMethod?.defaults?.oauthAuthorizationParams;
+    if (reviewedAuthorizationParams?.access_type) authorizationUrl.searchParams.set("access_type", reviewedAuthorizationParams.access_type);
+    if (reviewedAuthorizationParams?.prompt) authorizationUrl.searchParams.set("prompt", reviewedAuthorizationParams.prompt);
 
     if (authorizationSubjectUserId && input.issueId && binding.actorType === "agent") {
       const idempotencyKey = `connection-authorization:${connection.id}:${authorizationSubjectUserId}`;
@@ -8550,6 +9940,51 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ));
   }
 
+  async function finishOAuthCatalogWithRecommendedDefaults(input: {
+    connection: typeof toolConnections.$inferSelect;
+    catalog: ToolCatalogEntry[];
+    suggestedDefaults: ConnectToolAppResult["suggestedDefaults"];
+    actor?: ActorInfo;
+  }) {
+    const installs = await db.select().from(toolConnectionInstalls).where(and(
+      eq(toolConnectionInstalls.companyId, input.connection.companyId),
+      eq(toolConnectionInstalls.connectionId, input.connection.id),
+    ));
+    const companyInstall = installs.some((install) => install.targetType === "company");
+    const agentIds = installs
+      .filter((install) => install.targetType === "agent")
+      .map((install) => install.targetId);
+    const access: FinishToolApp["access"] = companyInstall || agentIds.length === 0
+      ? "all_agents"
+      : { agentIds };
+    const askFirstRiskLevels = new Set(
+      Array.isArray(input.suggestedDefaults.askFirstRiskLevels)
+        ? input.suggestedDefaults.askFirstRiskLevels.filter(
+            (riskLevel): riskLevel is string => typeof riskLevel === "string",
+          )
+        : [],
+    );
+    const enabledCatalog = input.catalog.filter((entry) => entry.status === "active");
+    const finished = await finishGalleryAppConnection(input.connection.companyId, input.connection.id, {
+      enabledCatalogEntryIds: enabledCatalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: enabledCatalog
+        .filter((entry) => askFirstRiskLevels.has(entry.riskLevel))
+        .map((entry) => entry.id),
+      access,
+    }, input.actor);
+    if (installs.length === 0) {
+      await db.insert(toolConnectionInstalls).values({
+        companyId: input.connection.companyId,
+        connectionId: input.connection.id,
+        targetType: "company",
+        targetId: input.connection.companyId,
+        createdByAgentId: input.actor?.actorType === "agent" ? input.actor.actorId ?? null : null,
+        createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId ?? null : null,
+      }).onConflictDoNothing();
+    }
+    return finished;
+  }
+
   async function completePaperclipIdGmailCallback(input: {
     state: string;
     claimId?: string | null;
@@ -8557,42 +9992,47 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     actor?: ActorInfo;
   }): Promise<ConnectToolAppResult> {
     const stateRow = await consumeOAuthState(input.state, input.actor);
-    if (input.error) {
-      await rejectPendingOAuthInteraction(stateRow, input.actor);
-      throw new HttpError(400, "Google authorization did not complete. Start a new Gmail connection to try again.", {
-        code: input.error === "access_denied" ? "oauth_authorization_denied" : "paperclip_id_connector_failed",
-      });
-    }
-    if (!input.claimId) throw badRequest("Gmail callback is missing a claim identifier");
-    if (!gmailConnector) {
-      throw unprocessable("Gmail connections are not available on this Paperclip instance yet", {
-        code: "paperclip_id_connector_unavailable",
-      });
-    }
     let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
     const method = galleryEntry ? connectionMethodForConnection(galleryEntry, connection) : null;
+    const providerName = galleryEntry?.name ?? "Google Workspace";
+    if (input.error) {
+      await rejectPendingOAuthInteraction(stateRow, input.actor);
+      throw new HttpError(400, `Google authorization did not complete. Start a new ${providerName} connection to try again.`, {
+        code: input.error === "access_denied" ? "oauth_authorization_denied" : "paperclip_id_connector_failed",
+      });
+    }
+    if (!input.claimId) throw badRequest(`${providerName} callback is missing a claim identifier`);
+    if (!gmailConnector) {
+      throw unprocessable(`${providerName} connections through Paperclip are not available on this instance yet`, {
+        code: "paperclip_id_connector_unavailable",
+      });
+    }
     const subjectUserId = stateRow.subjectUserId;
     if (method?.oauthStrategy !== "paperclip_id_connector" || !subjectUserId) {
-      throw badRequest("OAuth state does not belong to a Gmail connector flow");
+      throw badRequest("OAuth state does not belong to a Google connector flow");
     }
+    const connectorProfile = method.connectorProfile;
+    if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) throw badRequest("Google connector profile is invalid");
+    const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
     const credentials = await gmailConnector.claim({
       subject: subjectUserId,
       companyId: stateRow.companyId,
+      profile: connectorProfile,
       claimId: input.claimId,
     });
     const refreshToken = credentials.refreshToken;
     if (!refreshToken) {
-      throw unprocessable("Google did not return offline access. Reconnect Gmail and grant both requested scopes.", {
+      throw unprocessable(`Google did not return offline access. Reconnect ${providerName} and grant the requested scopes.`, {
         code: "oauth_refresh_missing",
       });
     }
 
     await db.transaction(async (tx) => {
-      // Keep Gmail credential persistence serialized with membership suspension,
-      // downgrade, and removal. A successful claim is only durable while the
-      // initiating user still holds live connection-management authority.
+      // Keep connector credential persistence serialized with membership
+      // suspension, downgrade, and removal. A successful claim is only durable
+      // while the initiating user still holds connection-management authority.
       const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, connection.companyId),
         eq(companyMemberships.principalType, "user"),
@@ -8601,7 +10041,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ne(companyMemberships.membershipRole, "viewer"),
       )).limit(1).for("update");
       if (!membership) {
-        throw forbidden("Your company membership no longer permits connection changes. Restore non-viewer access before you connect Gmail again.");
+        throw forbidden(`Your company membership no longer permits connection changes. Restore non-viewer access before you connect ${providerName} again.`);
       }
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
@@ -8616,7 +10056,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId: connection.companyId,
         connection,
         configPath: "oauth.access_token",
-        label: "Gmail access token",
+        label: `${providerName} access token`,
         value: credentials.accessToken,
         actor: input.actor,
         existingRefs,
@@ -8626,7 +10066,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId: connection.companyId,
         connection,
         configPath: "oauth.refresh_token",
-        label: "Gmail refresh token",
+        label: `${providerName} refresh token`,
         value: refreshToken,
         actor: input.actor,
         existingRefs,
@@ -8639,7 +10079,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ];
       const grantValues = {
         providerTenant: {
-          name: "Gmail",
+          name: providerName,
           externalId: credentials.subject,
           oauth: {
             strategy: "paperclip_id_connector",
@@ -8673,9 +10113,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         oauth: {
           ...oauthConfig(connection),
           strategy: "paperclip_id_connector",
-          provider: "gmail",
+          provider: galleryEntry?.slug,
+          connectorProfile,
+          connectorSubjectUserId: subjectUserId,
           resource: method.defaults?.serverUrl,
-          scopes: [...GMAIL_CONNECTOR_SCOPES],
+          scopes: [...profile.scopes],
         },
       };
       [connection] = await tx.update(toolConnections).set({
@@ -8718,6 +10160,153 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
       suggestedDefaults: recommendedDefaultsForApp(galleryEntry!, method.key),
+      auth: null,
+    };
+  }
+
+  async function completeVercelConnectCallback(input: {
+    state: string;
+    error?: string | null;
+    actor?: ActorInfo;
+  }): Promise<ConnectToolAppResult> {
+    const stateRow = await consumeOAuthState(input.state, input.actor);
+    if (stateRow.codeVerifier !== "vercel-connect") {
+      throw badRequest("OAuth state does not belong to a Vercel Connect flow");
+    }
+    if (input.error) {
+      await rejectPendingOAuthInteraction(stateRow, input.actor);
+      throw new HttpError(400, "Vercel Connect authorization did not complete. Start a new authorization to try again.", {
+        code: input.error === "access_denied" ? "oauth_authorization_denied" : "vercel_connect_authorization_required",
+      });
+    }
+    if (!vercelConnect) throw vercelConnectHttpError(new VercelConnectClientError("vercel_connect_unavailable", 503));
+    let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+    const credential = vercelCredentialFor(connection);
+    if (credential.principalMode !== "user" || connection.authKind !== "oauth") {
+      throw badRequest("Vercel Connect callback does not match this connection");
+    }
+    const grantKind: ConnectionGrantKind = stateRow.subjectUserId ? "user" : "organization";
+    if (stateRow.subjectUserId) {
+      const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, connection.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, stateRow.subjectUserId),
+        eq(companyMemberships.status, "active"),
+        ne(companyMemberships.membershipRole, "viewer"),
+      )).limit(1);
+      if (!membership) {
+        throw forbidden("Your company membership no longer permits connection changes. Restore non-viewer access before authorizing this connection.");
+      }
+    }
+    const [existingGrant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, connection.companyId),
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, grantKind),
+      grantKind === "user"
+        ? eq(connectionGrants.subjectUserId, stateRow.subjectUserId!)
+        : eq(connectionGrants.isDefault, true),
+    )).limit(1);
+    const derived = deriveVercelConnectSubject({
+      credential,
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      grantKind,
+      subjectUserId: stateRow.subjectUserId,
+    });
+    const request = vercelTokenRequest({
+      credential,
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      resources: vercelConnectResourcesFor(connection),
+      grant: {
+        kind: grantKind,
+        subjectUserId: stateRow.subjectUserId,
+        externalCredential: existingGrant?.externalCredential,
+      },
+    });
+    let token;
+    try {
+      token = await vercelConnect.getToken(request, { forceRefresh: true });
+    } catch (error) {
+      throw vercelConnectHttpError(error);
+    }
+    if (token.connector.id !== credential.connectorId && token.connector.uid !== credential.connectorUid) {
+      throw new HttpError(502, "Vercel Connect returned a token for a different connector.", {
+        code: "vercel_connect_connector_mismatch",
+      });
+    }
+    const externalGrant = vercelGrantReference({
+      credential,
+      token,
+      subjectId: derived.subjectId,
+      verifiedAt: now(),
+    });
+    const grantValues = {
+      providerTenant: token.tenantId
+        ? { name: credential.service, externalId: token.tenantId }
+        : { name: credential.service },
+      credentialSecretRefs: [],
+      externalCredential: externalGrant,
+      status: "active" as const,
+      isDefault: grantKind === "organization",
+      revokedAt: null,
+      revokedByAgentId: null,
+      revokedByUserId: null,
+      updatedAt: now(),
+    };
+    if (existingGrant) {
+      await db.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingGrant.id));
+    } else {
+      await db.insert(connectionGrants).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        kind: grantKind,
+        subjectUserId: stateRow.subjectUserId,
+        ...grantValues,
+        createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId ?? null : null,
+      });
+    }
+    [connection] = await db.update(toolConnections).set({
+      status: "active",
+      enabled: true,
+      credentialRefs: [],
+      credentialSecretRefs: [],
+      updatedAt: now(),
+    }).where(and(
+      eq(toolConnections.id, connection.id),
+      eq(toolConnections.companyId, connection.companyId),
+    )).returning();
+    await db.update(toolApplications).set({ status: "active", updatedAt: now() })
+      .where(eq(toolApplications.id, connection.applicationId));
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+      ? connection.config.sourceTemplateKey
+      : null;
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+    if (!galleryEntry) throw badRequest("Vercel Connect connection is missing its reviewed app definition");
+    const method = connectionMethodForConnection(galleryEntry, connection);
+    const refresh = await refreshCatalog(connection.id, input.actor, {
+      enableAllByDefault: true,
+      credentialHeaders: {
+        ...projectedConnectionHeaders(connection),
+        [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
+      },
+    });
+    const suggestedDefaults = recommendedDefaultsForApp(galleryEntry, method.key);
+    const finished = await finishOAuthCatalogWithRecommendedDefaults({
+      connection,
+      catalog: refresh.catalog,
+      suggestedDefaults,
+      actor: input.actor,
+    });
+    const [application] = await db.select().from(toolApplications)
+      .where(eq(toolApplications.id, connection.applicationId));
+    return {
+      connectionId: connection.id,
+      application: toApplication(application),
+      connection: finished.connection,
+      catalog: refresh.catalog,
+      actions: groupedActions(refresh.catalog),
+      suggestedDefaults,
       auth: null,
     };
   }
@@ -8769,11 +10358,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       tokenUrl: endpoints.tokenUrl,
       clientId: client.clientId,
       clientSecret: client.clientSecret,
+      tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(
+        oauthConfig(connection),
+        client.clientSecret,
+      ),
       redirectUri: input.redirectUri,
       codeVerifier: stateRow.codeVerifier,
       code: input.code,
       resource: endpoints.resource,
     });
+    const connectedAt = now();
+    const expiresAt = token.expiresIn
+      ? new Date(connectedAt.getTime() + token.expiresIn * 1000).toISOString()
+      : null;
     if (stateRow.subjectUserId) {
       let personalCredentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs = [];
       await db.transaction(async (tx) => {
@@ -8830,6 +10427,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
 
         const grantValues = {
+          providerTenant: {
+            ...(existingUserGrant?.providerTenant ?? {}),
+            oauth: {
+              ...asRecord(asRecord(existingUserGrant?.providerTenant).oauth),
+              strategy: "direct_oauth",
+              accessTokenExpiresAt: expiresAt ?? undefined,
+              scopes: normalizeOauthScopes(token.scope ?? stateRow.requestedScopes),
+              tokenType: token.tokenType,
+              refreshedAt: connectedAt.toISOString(),
+            },
+          },
           credentialSecretRefs: nextCredentialSecretRefs,
           status: "active" as const,
           revokedAt: null,
@@ -8851,7 +10459,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           });
         }
         personalCredentialSecretRefs = nextCredentialSecretRefs;
-        const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
         const nextConfig = {
           ...connection.config,
           oauth: {
@@ -8869,7 +10476,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             expiresAt,
             scope: token.scope,
             tokenType: token.tokenType,
-            connectedAt: new Date().toISOString(),
+            connectedAt: connectedAt.toISOString(),
           },
           providerMetadata: {
             ...asRecord(connection.config.providerMetadata),
@@ -8941,15 +10548,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
       if (!application) throw new Error("OAuth connection application was not found");
+      const suggestedDefaults = galleryEntry
+        ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
+        : { access: "all_agents" as const, askFirstRiskLevels: [] };
+      const finished = await finishOAuthCatalogWithRecommendedDefaults({
+        connection,
+        catalog: refresh.catalog,
+        suggestedDefaults,
+        actor: input.actor,
+      });
       return {
         connectionId: refresh.connection.id,
         application: toApplication(application),
-        connection: refresh.connection,
+        connection: finished.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry
-          ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
-          : { access: "all_agents", askFirstRiskLevels: [] },
+        suggestedDefaults,
         auth: null,
       };
     }
@@ -9003,7 +10617,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
         if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
       }
-      const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
       const nextConfig = {
         ...connection.config,
         oauth: {
@@ -9024,7 +10637,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           expiresAt,
           scope: token.scope,
           tokenType: token.tokenType,
-          connectedAt: new Date().toISOString(),
+          connectedAt: connectedAt.toISOString(),
         },
         providerMetadata: {
           ...asRecord(connection.config.providerMetadata),
@@ -9071,19 +10684,26 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     await checkConnectionHealth(connection.id, input.actor);
     const refresh = await refreshCatalog(connection.id, input.actor, { enableAllByDefault: true });
     const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+    const suggestedDefaults = galleryEntry ? recommendedDefaultsForApp(
+      galleryEntry,
+      connectionMethodForConnection(galleryEntry, connection).key,
+    ) : {
+      access: "all_agents" as const,
+      askFirstRiskLevels: [],
+    };
+    const finished = await finishOAuthCatalogWithRecommendedDefaults({
+      connection,
+      catalog: refresh.catalog,
+      suggestedDefaults,
+      actor: input.actor,
+    });
     return {
       connectionId: refresh.connection.id,
       application: toApplication(application),
-      connection: refresh.connection,
+      connection: finished.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
-      suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(
-        galleryEntry,
-        connectionMethodForConnection(galleryEntry, connection).key,
-      ) : {
-        access: "all_agents",
-        askFirstRiskLevels: [],
-      },
+      suggestedDefaults,
       auth: null,
     };
   }
@@ -9114,7 +10734,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       eq(connectionGrants.subjectUserId, actorUserId),
     )).limit(1);
 
-    if (input.grantKind === "user") {
+    if (connection.credentialSource === "vercel_connect") {
+      const [organizationGrant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.isDefault, true),
+      )).limit(1);
+      const selectedGrant = input.grantKind === "user" ? personalGrant : organizationGrant;
+      if (!selectedGrant || selectedGrant.status !== "active" || !selectedGrant.externalCredential) {
+        throw conflict("The selected Vercel Connect identity is missing. Authorize this connection again.");
+      }
+      const expectedPolicy = input.grantKind === "user" ? "per_user" : "shared";
+      if (connection.credentialPolicy !== expectedPolicy) {
+        throw conflict("Vercel Connect identity scope is fixed when the connector is attached. Create a new connection to change it.");
+      }
+    } else if (input.grantKind === "user") {
       if (!personalGrant || personalGrant.status !== "active" || personalGrant.credentialSecretRefs.length === 0) {
         throw conflict("Your connected identity is missing. Connect this app again before choosing Just me.");
       }
@@ -9515,7 +11150,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     completePaperclipIdGmailCallback,
 
+    completeVercelConnectCallback,
+
     completeOAuthCallback,
+    refreshOAuthGrantCredentials,
     finalizeOAuthAccess,
 
     listExamples: async (companyId: string): Promise<ToolExampleSummary[]> => {
@@ -9890,7 +11528,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return {
         connection: { id: connection.id, uid: connection.uid },
         grants: grants.map((grant) => ({
-          ...grant,
+          ...toConnectionGrant(grant),
           members: members.filter((member) => member.grantId === grant.id),
           delegations: delegations.filter((delegation) => delegation.grantId === grant.id),
         })),
@@ -10039,7 +11677,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         reasonCode: "audience_replaced",
         details: { grantId: grant.id, memberCount: members.length, memberUserIds: requested },
       });
-      return { ...grant, members };
+      return { ...toConnectionGrant(grant), members };
     },
 
     createConnectionGrantDelegation: async (
@@ -10165,7 +11803,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         reasonCode: "grant_created",
         details: { grantId: grant.id, kind: grant.kind, isDefault: grant.isDefault },
       });
-      return grant;
+      return toConnectionGrant(grant);
     },
 
     revokeConnectionGrant: async (idOrUid: string, grantId: string, actor?: ActorInfo) => {
@@ -10178,7 +11816,30 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       )).limit(1);
       if (!currentGrant) throw notFound("Connection grant not found");
       let providerRevocation = "not_applicable";
-      if (oauthConfig(connection).strategy === "paperclip_id_connector" && currentGrant.subjectUserId && gmailConnector) {
+      if (connection.credentialSource === "vercel_connect" && connection.externalCredential) {
+        const request = vercelTokenRequest({
+          credential: connection.externalCredential,
+          grant: currentGrant,
+          connectionId: connection.id,
+          companyId: connection.companyId,
+          resources: vercelConnectResourcesFor(connection),
+        });
+        vercelConnect?.evict(request);
+        if (currentGrant.externalCredential?.subjectType === "app") {
+          providerRevocation = "manage_in_vercel";
+        } else if (currentGrant.externalCredential?.subjectType === "user") {
+          try {
+            if (!vercelConnect) throw new Error("Vercel Connect unavailable");
+            await vercelConnect.revoke(request);
+            providerRevocation = "success";
+          } catch {
+            providerRevocation = "failed";
+          }
+        }
+      } else if (oauthConfig(connection).strategy === "paperclip_id_connector" && gmailConnector) {
+        const connectorOauth = oauthConfig(connection);
+        const connectorSubject = currentGrant.subjectUserId ?? readConfigString(connectorOauth, "connectorSubjectUserId");
+        const connectorProfile = readConfigString(connectorOauth, "connectorProfile");
         const tokenRef = currentGrant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")
           ?? currentGrant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
         if (tokenRef) {
@@ -10195,9 +11856,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
                 actorId: binding.actorId,
               },
             );
+            if (!connectorSubject || !connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) {
+              throw new Error("Google connector binding is incomplete");
+            }
             await gmailConnector.revoke({
-              subject: currentGrant.subjectUserId,
+              subject: connectorSubject,
               companyId: connection.companyId,
+              profile: connectorProfile,
               token,
             });
             providerRevocation = "success";
@@ -10251,7 +11916,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         reasonCode: "grant_revoked",
         details: { grantId: grant.id, kind: grant.kind, providerRevocation },
       });
-      return grant;
+      return toConnectionGrant(grant);
     },
 
     getConnectionUsage: async (idOrUid: string, range: "7d" | "30d", companyId?: string) => {

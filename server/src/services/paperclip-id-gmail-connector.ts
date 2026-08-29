@@ -9,12 +9,18 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
+import {
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isGoogleWorkspaceConnectorProfileId,
+  type GoogleWorkspaceConnectorProfileId,
+} from "@paperclipai/shared";
 
 export const GMAIL_MCP_URL = "https://gmailmcp.googleapis.com/mcp/v1";
 export const GMAIL_CONNECTOR_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
 ] as const;
+export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipIdConnectorEnvironment = "development" | "staging" | "production";
 export type PaperclipIdConnectorOperation = "session" | "claim" | "refresh" | "revoke";
@@ -36,12 +42,15 @@ export type SealedGmailCredentials = {
   scopes: string[];
   subject: string;
   companyId: string;
+  profile?: string;
 };
+
+export type SealedGoogleWorkspaceCredentials = SealedGmailCredentials;
 
 type SealedEnvelope = {
   v: 1;
   alg: "X25519-HKDF-SHA256-A256GCM";
-  purpose: "gmail-initial-tokens" | "gmail-access-token";
+  purpose: "gmail-initial-tokens" | "gmail-access-token" | "google-workspace-initial-tokens" | "google-workspace-access-token";
   epk: string;
   iv: string;
   ct: string;
@@ -53,6 +62,8 @@ type ConnectorResponse = {
   scopes?: unknown;
   claimId?: unknown;
   sealed?: unknown;
+  profiles?: unknown;
+  protocolVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipIdConnectorOperation, string> = {
@@ -127,7 +138,7 @@ export function createPaperclipIdGmailConnector(input: {
 
   async function call(
     operation: PaperclipIdConnectorOperation,
-    claims: { subject: string; companyId: string; returnUri?: string; returnState?: string; claimId?: string },
+    claims: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri?: string; returnState?: string; claimId?: string },
     secret?: { field: "refreshToken" | "token"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
@@ -146,6 +157,7 @@ export function createPaperclipIdGmailConnector(input: {
     if (claims.returnUri !== undefined) payload.ruri = claims.returnUri;
     if (claims.returnState !== undefined) payload.rst = claims.returnState;
     if (claims.claimId !== undefined) payload.cl = claims.claimId;
+    if (claims.profile !== undefined) payload.prf = claims.profile;
     if (secret) payload.sh = await sha256Base64Url(secret.value);
     const body = {
       request: signRequest(payload, signingKey),
@@ -182,25 +194,51 @@ export function createPaperclipIdGmailConnector(input: {
     purpose: SealedEnvelope["purpose"],
     subject: string,
     companyId: string,
+    profile: GoogleWorkspaceConnectorProfileId,
   ): SealedGmailCredentials {
     const envelope = parseEnvelope(response.sealed, purpose);
-    const credentials = unseal(envelope, sealKey, config.instanceId, config.environment);
+    const credentials = unseal(
+      envelope,
+      sealKey,
+      config.instanceId,
+      config.environment,
+      purpose.startsWith("google-workspace-") ? profile : undefined,
+    );
     if (credentials.subject !== subject || credentials.companyId !== companyId) {
       throw new PaperclipIdConnectorError("Paperclip ID Gmail credential binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
-    if (!sameStringSet(credentials.scopes, GMAIL_CONNECTOR_SCOPES)) {
+    if (credentials.profile && credentials.profile !== profile) {
+      throw new PaperclipIdConnectorError("Paperclip ID connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
+    }
+    if (!sameStringSet(credentials.scopes, GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes)) {
       throw new PaperclipIdConnectorError("Paperclip ID Gmail scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
     return credentials;
   }
 
   return {
-    async startAuthorization(values: { subject: string; companyId: string; returnUri: string; returnState: string }) {
-      const response = await call("session", values);
+    async getCapabilities(): Promise<GoogleWorkspaceConnectorProfileId[]> {
+      const endpoint = new URL("/api/connect/capabilities", `${config.baseUrl}/`).toString();
+      let response: Response;
+      try {
+        response = await request(endpoint, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+      } catch {
+        return [];
+      }
+      if (!response.ok) return [];
+      const payload = await response.json().catch(() => null) as ConnectorResponse | null;
+      if (payload?.protocolVersion !== 2) return [];
+      return Array.isArray(payload?.profiles)
+        ? payload.profiles.filter((value): value is GoogleWorkspaceConnectorProfileId => typeof value === "string" && isGoogleWorkspaceConnectorProfileId(value))
+        : [];
+    },
+    async startAuthorization(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri: string; returnState: string }) {
+      const profile = values.profile ?? "gmail.draft";
+      const response = await call("session", { ...values, profile });
       if (typeof response.authorizationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipIdConnectorError("Paperclip ID Gmail connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
       }
-      if (!sameStringSet(response.scopes, GMAIL_CONNECTOR_SCOPES)) {
+      if (!sameStringSet(response.scopes, GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes)) {
         throw new PaperclipIdConnectorError("Paperclip ID Gmail connector returned an invalid scope set", "CONNECTOR_BAD_RESPONSE");
       }
       const authorizationUrl = new URL(response.authorizationUrl);
@@ -209,24 +247,42 @@ export function createPaperclipIdGmailConnector(input: {
       }
       return { authorizationUrl: authorizationUrl.toString(), expiresAt: response.expiresAt };
     },
-    async claim(values: { subject: string; companyId: string; claimId: string }) {
-      return openCredentials(await call("claim", values), "gmail-initial-tokens", values.subject, values.companyId);
+    async claim(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; claimId: string }) {
+      const profile = values.profile ?? "gmail.draft";
+      return openCredentials(await call("claim", { ...values, profile }), sealPurpose("initial", profile), values.subject, values.companyId, profile);
     },
-    async refresh(values: { subject: string; companyId: string; refreshToken: string }) {
+    async refresh(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; refreshToken: string }) {
+      const profile = values.profile ?? "gmail.draft";
       return openCredentials(
-        await call("refresh", values, { field: "refreshToken", value: values.refreshToken }),
-        "gmail-access-token",
+        await call("refresh", { ...values, profile }, { field: "refreshToken", value: values.refreshToken }),
+        sealPurpose("access", profile),
         values.subject,
         values.companyId,
+        profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; token: string }) {
-      await call("revoke", values, { field: "token", value: values.token });
+    async revoke(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; token: string }) {
+      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
     },
   };
 }
 
 export type PaperclipIdGmailConnector = ReturnType<typeof createPaperclipIdGmailConnector>;
+export type PaperclipIdGoogleWorkspaceConnector = PaperclipIdGmailConnector;
+
+let capabilityCache: { key: string; expiresAt: number; profiles: GoogleWorkspaceConnectorProfileId[] } | null = null;
+
+export async function paperclipIdGoogleConnectorCapabilitiesFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<GoogleWorkspaceConnectorProfileId[]> {
+  const config = paperclipIdGmailConnectorConfigFromEnv(env);
+  if (!config) return [];
+  const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
+  if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
+  const profiles = await createPaperclipIdGmailConnector({ config }).getCapabilities();
+  capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  return profiles;
+}
 
 function signRequest(payload: Record<string, unknown>, key: KeyObject): string {
   const header = { alg: "EdDSA", typ: JWS_TYP };
@@ -271,6 +327,7 @@ function unseal(
   recipientPrivateKey: KeyObject,
   instanceId: string,
   environment: string,
+  profile?: GoogleWorkspaceConnectorProfileId,
 ): SealedGmailCredentials {
   try {
     const ephemeralRaw = Buffer.from(envelope.epk, "base64url");
@@ -283,7 +340,9 @@ function unseal(
     const recipientJwk = createPublicKey(recipientPrivateKey).export({ format: "jwk" }) as { x?: string };
     if (!recipientJwk.x) throw badEnvelope();
     const recipientRaw = Buffer.from(recipientJwk.x, "base64url");
-    const aad = Buffer.from([1, SEAL_ALGORITHM, envelope.purpose, instanceId, environment].join("\n"), "utf8");
+    const aadFields: Array<string | number> = [1, SEAL_ALGORITHM, envelope.purpose, instanceId, environment];
+    if (profile) aadFields.push(profile);
+    const aad = Buffer.from(aadFields.join("\n"), "utf8");
     const key = Buffer.from(hkdfSync(
       "sha256",
       diffieHellman({ privateKey: recipientPrivateKey, publicKey: ephemeralKey }),
@@ -318,6 +377,14 @@ function unseal(
 
 function badEnvelope() {
   return new PaperclipIdConnectorError("Paperclip ID Gmail connector returned an invalid sealed credential", "CONNECTOR_BAD_RESPONSE");
+}
+
+function sealPurpose(
+  kind: "initial" | "access",
+  profile: GoogleWorkspaceConnectorProfileId,
+): SealedEnvelope["purpose"] {
+  if (profile === "gmail.draft") return kind === "initial" ? "gmail-initial-tokens" : "gmail-access-token";
+  return kind === "initial" ? "google-workspace-initial-tokens" : "google-workspace-access-token";
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

@@ -294,6 +294,9 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("already resolved");
     await expect(service.request(claims, "unknown-service"))
       .rejects.toThrow("is not available");
+    expect((await service.search(claims, "github")).results).toEqual([]);
+    await expect(service.request(claims, "github"))
+      .rejects.toThrow("is not available");
   });
 
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {

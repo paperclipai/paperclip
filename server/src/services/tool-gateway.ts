@@ -56,13 +56,25 @@ import type {
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
 } from "@paperclipai/shared";
+import {
+  isGoogleWorkspaceConnectorProfileId,
+  type GoogleWorkspaceConnectorProfileId,
+} from "@paperclipai/shared";
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import {
+  initializeMcpHttpSession,
+  mcpHttpRequestHeaders,
+  parseMcpHttpResponseBody,
+} from "./mcp-http.js";
 import { projectedConnectionHeaders } from "./tool-access.js";
 import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { guardedRemoteHttpFetch, type GuardedRemoteHttpFetchOptions } from "./remote-http-fetch.js";
+import {
+  REMOTE_URL_SECRET_CONFIG_PATH,
+  remoteUrlCredentialMatchesPublicUrl,
+} from "./remote-url-credentials.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -80,6 +92,13 @@ import {
   PaperclipIdConnectorError,
   type PaperclipIdGmailConnector,
 } from "./paperclip-id-gmail-connector.js";
+import {
+  createVercelConnectClient,
+  vercelGrantReference,
+  vercelTokenRequest,
+  VercelConnectClientError,
+  type VercelConnectClient,
+} from "./vercel-connect.js";
 import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
@@ -799,6 +818,21 @@ export function createToolGatewayService(
     composioClientFactory?: (apiKey: string) => ComposioClient;
     /** Test seam for refreshing personal Gmail grants. */
     paperclipIdGmailConnector?: PaperclipIdGmailConnector | null;
+    /** Refreshes customer-owned/DCR OAuth grants before remote MCP execution. */
+    oauthGrantRefresher?: (input: {
+      companyId: string;
+      connectionId: string;
+      grantId: string;
+      forceRefresh?: boolean;
+      actor?: {
+        actorType?: "agent" | "user" | "system" | "plugin";
+        actorId?: string | null;
+      };
+      issueId?: string | null;
+      heartbeatRunId?: string | null;
+    }) => Promise<typeof connectionGrants.$inferSelect>;
+    /** Test seam for resolving Vercel Connect credentials. */
+    vercelConnectClient?: VercelConnectClient | null;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -826,6 +860,9 @@ export function createToolGatewayService(
       ? createPaperclipIdGmailConnector({ config: gmailConnectorConfig, now: options.now })
       : null);
   const gmailRefreshFlights = new Map<string, Promise<typeof connectionGrants.$inferSelect>>();
+  const vercelConnect = options.vercelConnectClient === undefined
+    ? createVercelConnectClient()
+    : options.vercelConnectClient;
   const composioSessions = createComposioSessionManager(db, {
     composioClientFactory: options.composioClientFactory,
     now: options.now ? () => new Date(options.now!()) : undefined,
@@ -2198,6 +2235,44 @@ export function createToolGatewayService(
     return parsed.toString();
   }
 
+  async function resolvedRemoteEndpoint(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+  ): Promise<string> {
+    const publicEndpoint = remoteEndpoint(connection.config ?? {});
+    const ref = (connection.credentialRefs ?? []).find((candidate) => candidate.placement === "url");
+    if (!ref) return publicEndpoint;
+    const grantRef = grantRefForCredential(grant, ref);
+    if (!grantRef) {
+      throw new ToolGatewayHttpError(
+        422,
+        "A configured credential secret could not be resolved.",
+        "mcp_remote_missing_secret",
+        { connectionId: connection.id, credential: REMOTE_URL_SECRET_CONFIG_PATH },
+      );
+    }
+    const value = await resolveGrantSecretValue(
+      session,
+      connection,
+      grant,
+      grantRef,
+      REMOTE_URL_SECRET_CONFIG_PATH,
+    );
+    if (!remoteUrlCredentialMatchesPublicUrl(publicEndpoint, value)) {
+      throw new ToolGatewayHttpError(
+        422,
+        "The stored MCP URL credential no longer matches this connection.",
+        "mcp_remote_url_credential_mismatch",
+        { connectionId: connection.id },
+      );
+    }
+    return parseRemoteHttpEndpoint(
+      value,
+      (message, code) => new ToolGatewayHttpError(422, message, code),
+    ).toString();
+  }
+
   function allowPrivateRemoteEndpoints() {
     return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
   }
@@ -2431,7 +2506,7 @@ export function createToolGatewayService(
 
   async function markRemoteConnectionHealth(
     connection: typeof toolConnections.$inferSelect,
-    status: "ok" | "error" | "missing_secret",
+    status: "ok" | "error" | "missing_secret" | "degraded",
     message: string | null,
   ) {
     const now = new Date();
@@ -2448,7 +2523,7 @@ export function createToolGatewayService(
       .where(eq(toolConnections.id, connection.id));
   }
 
-  function grantRefForHeader(
+  function grantRefForCredential(
     grant: typeof connectionGrants.$inferSelect,
     ref: McpConnectionCredentialRef,
   ): ToolCredentialSecretRef | undefined {
@@ -2524,13 +2599,27 @@ export function createToolGatewayService(
     return resolved.value;
   }
 
-  async function maybeRefreshPaperclipIdGmailGrant(
+  async function maybeRefreshPaperclipIdGoogleGrant(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
   ): Promise<typeof connectionGrants.$inferSelect> {
     const oauth = asRecord(asRecord(connection.config)?.oauth);
     if (oauth?.strategy !== "paperclip_id_connector") return grant;
+    const configuredProfile = oauth.connectorProfile;
+    const connectorProfile: GoogleWorkspaceConnectorProfileId = configuredProfile === undefined
+      ? "gmail.draft"
+      : typeof configuredProfile === "string" && isGoogleWorkspaceConnectorProfileId(configuredProfile)
+        ? configuredProfile
+        : (() => {
+            throw new ToolGatewayHttpError(422, "Google authorization has an invalid connector profile", "google_connector_profile_invalid", {
+              connectionId: connection.id,
+              grantId: grant.id,
+            });
+          })();
+    const connectorSubject = typeof oauth.connectorSubjectUserId === "string"
+      ? oauth.connectorSubjectUserId
+      : grant.subjectUserId;
     const grantOauth = asRecord(asRecord(grant.providerTenant)?.oauth);
     const expiresAt = typeof grantOauth?.accessTokenExpiresAt === "string"
       ? Date.parse(grantOauth.accessTokenExpiresAt)
@@ -2540,10 +2629,10 @@ export function createToolGatewayService(
     const existingFlight = gmailRefreshFlights.get(grant.id);
     if (existingFlight) return existingFlight;
     const refresh = (async () => {
-      if (!gmailConnector || !grant.subjectUserId) {
+      if (!gmailConnector || !connectorSubject) {
         await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
           .where(eq(connectionGrants.id, grant.id));
-        throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+        throw new ToolGatewayHttpError(409, "Google authorization must be reconnected", "google_reauthorization_required", {
           connectionId: connection.id,
           grantId: grant.id,
         });
@@ -2553,7 +2642,7 @@ export function createToolGatewayService(
       if (!accessRef || !refreshRef) {
         await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
           .where(eq(connectionGrants.id, grant.id));
-        throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+        throw new ToolGatewayHttpError(409, "Google authorization must be reconnected", "google_reauthorization_required", {
           connectionId: connection.id,
           grantId: grant.id,
         });
@@ -2561,8 +2650,9 @@ export function createToolGatewayService(
       const refreshToken = await resolveGrantSecretValue(session, connection, grant, refreshRef);
       try {
         const credentials = await gmailConnector.refresh({
-          subject: grant.subjectUserId,
+          subject: connectorSubject,
           companyId: connection.companyId,
+          profile: connectorProfile,
           refreshToken,
         });
         await secrets.rotate(accessRef.secretId, { value: credentials.accessToken });
@@ -2583,7 +2673,7 @@ export function createToolGatewayService(
           .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.status, "active")))
           .returning();
         if (!updated) {
-          throw new ToolGatewayHttpError(409, "Gmail authorization is no longer active", "gmail_reauthorization_required", {
+          throw new ToolGatewayHttpError(409, "Google authorization is no longer active", "google_reauthorization_required", {
             connectionId: connection.id,
             grantId: grant.id,
           });
@@ -2594,12 +2684,12 @@ export function createToolGatewayService(
         if (error instanceof PaperclipIdConnectorError && error.code === "REAUTHORIZATION_REQUIRED") {
           await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(options.now?.() ?? Date.now()) })
             .where(eq(connectionGrants.id, grant.id));
-          throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+          throw new ToolGatewayHttpError(409, "Google authorization must be reconnected", "google_reauthorization_required", {
             connectionId: connection.id,
             grantId: grant.id,
           });
         }
-        throw new ToolGatewayHttpError(502, "Gmail authorization could not be refreshed", "gmail_refresh_failed", {
+        throw new ToolGatewayHttpError(502, "Google authorization could not be refreshed", "google_refresh_failed", {
           connectionId: connection.id,
           grantId: grant.id,
         });
@@ -2617,12 +2707,133 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
+    resolveOptions: { forceRefresh?: boolean } = {},
   ): Promise<Record<string, string>> {
-    grant = await maybeRefreshPaperclipIdGmailGrant(session, connection, grant);
+    if (connection.credentialSource === "vercel_connect") {
+      if (!connection.externalCredential || !vercelConnect) {
+        throw new ToolGatewayHttpError(503, "Vercel Connect is not configured", "vercel_connect_unavailable", {
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+      const request = vercelTokenRequest({
+        credential: connection.externalCredential,
+        grant,
+        connectionId: connection.id,
+        companyId: connection.companyId,
+      });
+      try {
+        const token = await vercelConnect.getToken(request, resolveOptions);
+        if (
+          token.connector.id !== connection.externalCredential.connectorId
+          && token.connector.uid !== connection.externalCredential.connectorUid
+        ) {
+          throw new VercelConnectClientError("vercel_connect_request_failed", 502);
+        }
+        await db.update(connectionGrants).set({
+          externalCredential: vercelGrantReference({
+            credential: connection.externalCredential,
+            token,
+            subjectId: grant.externalCredential?.subjectId,
+            verifiedAt: new Date(options.now?.() ?? Date.now()),
+          }),
+          status: "active",
+          revokedAt: null,
+          updatedAt: new Date(options.now?.() ?? Date.now()),
+        }).where(and(
+          eq(connectionGrants.id, grant.id),
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        ));
+        return {
+          [connection.externalCredential.headerName]:
+            `${connection.externalCredential.headerPrefix ?? ""}${token.token}`,
+        };
+      } catch (error) {
+        if (
+          error instanceof VercelConnectClientError
+          && error.code === "vercel_connect_authorization_required"
+        ) {
+          await db.update(connectionGrants).set({
+            status: "needs_reauthorization",
+            updatedAt: new Date(options.now?.() ?? Date.now()),
+          }).where(and(
+            eq(connectionGrants.id, grant.id),
+            eq(connectionGrants.companyId, connection.companyId),
+          ));
+          const responsibleUserId = grant.kind === "user"
+            ? grant.subjectUserId
+            : session.responsibleUserId;
+          if (responsibleUserId) {
+            await createUserAuthorizationInteraction(
+              session,
+              connection,
+              responsibleUserId,
+              grant.kind,
+            );
+          }
+        }
+        const code = error instanceof VercelConnectClientError
+          ? error.code
+          : "vercel_connect_request_failed";
+        const status = error instanceof VercelConnectClientError ? error.status : 502;
+        const message = error instanceof VercelConnectClientError
+          ? error.message
+          : "Vercel Connect could not resolve this credential.";
+        await markRemoteConnectionHealth(
+          connection,
+          code === "vercel_connect_unavailable"
+            || code === "vercel_connect_auth_failed"
+            || code === "vercel_connect_installation_required"
+            ? "degraded"
+            : "error",
+          message,
+        );
+        throw new ToolGatewayHttpError(status, message, code, {
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+    }
+    grant = await maybeRefreshPaperclipIdGoogleGrant(session, connection, grant);
+    const oauth = asRecord(asRecord(connection.config)?.oauth);
+    if (
+      connection.authKind === "oauth"
+      && connection.credentialSource === "paperclip_vault"
+      && oauth?.strategy !== "paperclip_id_connector"
+      && options.oauthGrantRefresher
+    ) {
+      try {
+        grant = await options.oauthGrantRefresher({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          grantId: grant.id,
+          forceRefresh: resolveOptions.forceRefresh,
+          actor: {
+            actorType: session.actorType ?? (session.agentId ? "agent" : "system"),
+            actorId: session.actorId ?? session.agentId,
+          },
+          issueId: session.issueId,
+          heartbeatRunId: session.runId,
+        });
+      } catch (error) {
+        if (error instanceof ToolGatewayHttpError) throw error;
+        const record = asRecord(error);
+        const details = asRecord(record?.details) ?? {};
+        const status = typeof record?.status === "number" ? record.status : 502;
+        const reasonCode = typeof details.code === "string" ? details.code : "oauth_refresh_failed";
+        const message = error instanceof Error ? error.message : "OAuth authorization could not be refreshed";
+        throw new ToolGatewayHttpError(status, message, reasonCode, {
+          ...details,
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+    }
     const headers: Record<string, string> = {};
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
-      const grantRef = grantRefForHeader(grant, ref);
+      const grantRef = grantRefForCredential(grant, ref);
       if (!grantRef) continue;
       try {
         const value = await resolveGrantSecretValue(
@@ -2711,17 +2922,19 @@ export function createToolGatewayService(
     const credentialSecretVersions: ConnectedCredentialVersionSnapshot[] = [];
 
     for (const ref of connection.credentialRefs ?? []) {
-      if (ref.placement !== "header") continue;
+      if (ref.placement !== "header" && ref.placement !== "url") continue;
       const typedRef = ref as McpConnectionCredentialRef;
-      const grantRef = grantRefForHeader(grant, typedRef);
+      const grantRef = grantRefForCredential(grant, typedRef);
       if (!grantRef) continue;
-      const configPath = `credentials.${typedRef.name}`;
+      const configPath = typedRef.placement === "url"
+        ? REMOTE_URL_SECRET_CONFIG_PATH
+        : `credentials.${typedRef.name}`;
       headerCredentialVersions.push(await resolveConnectedCredentialVersion(connection, {
         secretId: grantRef.secretId,
         versionSelector: grantRef.versionSelector,
         configPath,
         refHash: credentialVersionRefHash({
-          kind: "header",
+          kind: typedRef.placement === "url" ? "url" : "header",
           name: typedRef.name,
           secretId: grantRef.secretId,
           placement: typedRef.placement,
@@ -2757,6 +2970,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     userId: string,
+    grantKind: "organization" | "user" = "user",
   ) {
     if (!session.issueId || !session.agentId || !session.runId) return;
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
@@ -2765,10 +2979,14 @@ export function createToolGatewayService(
     const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
     const payload = {
       version: 1 as const,
-      prompt: `Connect your ${connection.name} account to continue`,
-      acceptLabel: "Connect account",
+      prompt: grantKind === "organization"
+        ? `Reconnect the ${connection.name} organization identity to continue`
+        : `Connect your ${connection.name} account to continue`,
+      acceptLabel: grantKind === "organization" ? "Reconnect organization" : "Connect account",
       rejectLabel: "Not now",
-      detailsMarkdown: "This run needs your personal authorization. Paperclip will not use another user's identity.",
+      detailsMarkdown: grantKind === "organization"
+        ? "Vercel Connect reports that the shared organization identity needs authorization."
+        : "This run needs your personal authorization. Paperclip will not use another user's identity.",
       target: {
         type: "custom" as const,
         key: `connection:${connection.uid}:user:${userId}`,
@@ -2810,8 +3028,10 @@ export function createToolGatewayService(
       effectiveResolverPolicySource: "requested",
       idempotencyKey,
       sourceRunId: session.runId,
-      title: `Connect your ${connection.name}`,
-      summary: "Personal authorization is required before this run can continue.",
+      title: grantKind === "organization" ? `Reconnect ${connection.name}` : `Connect your ${connection.name}`,
+      summary: grantKind === "organization"
+        ? "Organization authorization is required before this run can continue."
+        : "Personal authorization is required before this run can continue.",
       createdByAgentId: session.agentId,
       addresseeUserId: userId,
       payload,
@@ -3538,11 +3758,19 @@ export function createToolGatewayService(
     result: unknown,
     transport: "mcp_http" | "local_stdio" = "mcp_http",
     spawnedLocalProcess = false,
+    sourceTemplateKey?: string | null,
   ) {
     const record = asRecord(result);
     if (!record) throw malformedRemoteMcpResponse();
+    const providerContent = normalizeMcpContent(record.content);
+    const googleWorkspacePermissionDenied = record.isError === true
+      && (sourceTemplateKey === "gmail" || sourceTemplateKey?.startsWith("google-") === true)
+      && /caller does not have permission/i.test(providerContent);
+    const content = googleWorkspacePermissionDenied
+      ? "Google rejected this call. Google Workspace MCP is a Developer Preview: enroll the signed-in Workspace account and this OAuth client's Google Cloud project in Google's Developer Preview Program, wait for Google's registration confirmation, then reconnect and try again."
+      : providerContent;
     return {
-      content: normalizeMcpContent(record.content),
+      content,
       data: {
         content: record.content,
         structuredContent: record.structuredContent ?? null,
@@ -3572,7 +3800,7 @@ export function createToolGatewayService(
           scopeRevision: composioScopeRevision,
         })
       : null;
-    let endpoint = composioSession?.url ?? remoteEndpoint(connection.config ?? {});
+    let endpoint = composioSession?.url ?? await resolvedRemoteEndpoint(session, connection, grant);
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -3605,6 +3833,27 @@ export function createToolGatewayService(
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     try {
+      const dispatchRemote = (target: string, init: RequestInit) => options.remoteHttpRequest
+        ? options.remoteHttpRequest(target, init)
+        : guardedRemoteHttpFetch(target, init, {
+            ...remoteHttpFetchOptions(),
+            // This call site owns a caller-set budget that can exceed the
+            // transport's default response deadline, so hand it down rather than
+            // letting the tighter default cut a legitimately slow tool short.
+            responseTimeoutMs: ms,
+          });
+      let requestHeaders = headers;
+      if (connection.config.mcpSessionRequired === true) {
+        requestHeaders = await initializeMcpHttpSession({
+          send: (init) => dispatchRemote(endpoint, {
+            ...init,
+            redirect: "manual",
+            signal: controller.signal,
+          }),
+          headers,
+          requestId,
+        });
+      }
       // The guard runs inside this call and the connection is pinned to the
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
@@ -3614,7 +3863,7 @@ export function createToolGatewayService(
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
         // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(headers),
+        headers: mcpHttpRequestHeaders(requestHeaders),
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -3626,15 +3875,7 @@ export function createToolGatewayService(
           },
         }),
       };
-      let response = options.remoteHttpRequest
-        ? await options.remoteHttpRequest(endpoint, requestInit)
-        : await guardedRemoteHttpFetch(endpoint, requestInit, {
-            ...remoteHttpFetchOptions(),
-            // This call site owns a caller-set budget that can exceed the
-            // transport's default response deadline, so hand it down rather than
-            // letting the tighter default cut a legitimately slow tool short.
-            responseTimeoutMs: ms,
-          });
+      let response = await dispatchRemote(endpoint, requestInit);
       if (response.status === 401 && composioChild) {
         composioSession = await composioSessions.ensureSession(connection.id, {
           tools: [entry.toolName],
@@ -3647,12 +3888,52 @@ export function createToolGatewayService(
         headers = builtHeaders.headers;
         headerSummary = builtHeaders.summary;
         const retryInit = { ...requestInit, headers: mcpHttpRequestHeaders(headers) };
-        response = options.remoteHttpRequest
-          ? await options.remoteHttpRequest(endpoint, retryInit)
-          : await guardedRemoteHttpFetch(endpoint, retryInit, {
-              ...remoteHttpFetchOptions(),
-              responseTimeoutMs: ms,
-            });
+        response = await dispatchRemote(endpoint, retryInit);
+      }
+      const oauth = asRecord(asRecord(connection.config)?.oauth);
+      if (
+        response.status === 401
+        && connection.authKind === "oauth"
+        && connection.credentialSource === "paperclip_vault"
+        && oauth?.strategy !== "paperclip_id_connector"
+        && options.oauthGrantRefresher
+      ) {
+        credentialHeaders = {
+          ...projectedConnectionHeaders(connection),
+          ...await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true }),
+        };
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+        response = await dispatchRemote(endpoint, {
+          ...requestInit,
+          headers: mcpHttpRequestHeaders(headers),
+        });
+      }
+      if (response.status === 401 && connection.credentialSource === "vercel_connect") {
+        if (!connection.externalCredential || !vercelConnect) {
+          throw new ToolGatewayHttpError(503, "Vercel Connect is not configured", "vercel_connect_unavailable", {
+            connectionId: connection.id,
+          });
+        }
+        const tokenRequest = vercelTokenRequest({
+          credential: connection.externalCredential,
+          grant,
+          connectionId: connection.id,
+          companyId: connection.companyId,
+        });
+        vercelConnect.evict(tokenRequest);
+        credentialHeaders = {
+          ...projectedConnectionHeaders(connection),
+          ...await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true }),
+        };
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+        response = await dispatchRemote(endpoint, {
+          ...requestInit,
+          headers: mcpHttpRequestHeaders(headers),
+        });
       }
       const body = await readBoundedRemoteResponse(response);
       execution.response = {
@@ -3707,7 +3988,10 @@ export function createToolGatewayService(
       if (resultElicitation) {
         await requestElicitationForRecordedToolCall({ session, tool, invocationId, request: resultElicitation });
       }
-      const result = normalizeMcpToolResult(payloadRecord.result);
+      const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+        ? connection.config.sourceTemplateKey
+        : null;
+      const result = normalizeMcpToolResult(payloadRecord.result, "mcp_http", false, sourceTemplateKey);
       await markRemoteConnectionHealth(connection, "ok", "Remote MCP server responded to tools/call.");
       return { result, headerSummary, execution };
     } catch (error) {

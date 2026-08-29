@@ -6,6 +6,8 @@ import {
   agents,
   approvals,
   companies,
+  companySecretBindings,
+  companySecrets,
   connectionGrants,
   createDb,
   heartbeatRuns,
@@ -23,6 +25,8 @@ import {
   toolPolicies,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import type { VercelConnectClient } from "../services/vercel-connect.js";
+import { secretService } from "../services/secrets.js";
 import {
   createToolGatewayService,
   ToolGatewayHttpError,
@@ -174,6 +178,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolCatalogEntries);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
+    await db.delete(companySecrets);
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -862,6 +867,301 @@ describeEmbeddedPostgres("tool gateway service", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("initializes a fresh Streamable HTTP session before a stateful tools/call", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      config: { url: "https://example.invalid/mcp", mcpSessionRequired: true },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read tools",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const requests: Array<{ method: string; sessionId: string | null; protocolVersion: string | null }> = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const payload = JSON.parse(String(init.body)) as { method?: string; id?: string };
+        const headers = new Headers(init.headers);
+        requests.push({
+          method: payload.method ?? "",
+          sessionId: headers.get("mcp-session-id"),
+          protocolVersion: headers.get("mcp-protocol-version"),
+        });
+        if (payload.method === "initialize") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "stateful", version: "1" },
+            },
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json", "mcp-session-id": "session-123" },
+          });
+        }
+        if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { content: [{ type: "text", text: "stateful ok" }] },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect(requests).toEqual([
+      { method: "initialize", sessionId: null, protocolVersion: null },
+      { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
+      { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
+    ]);
+  });
+
+  it("explains Google Workspace preview enrollment when a tool call is denied", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      config: {
+        url: "https://drivemcp.googleapis.com/mcp/v1",
+        sourceTemplateKey: "google-drive",
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow Drive reads",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const requestBody = JSON.parse(String(init.body)) as { id: string };
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestBody.id,
+          result: {
+            isError: true,
+            content: [{ type: "text", text: "The caller does not have permission" }],
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect((result.result as { content?: string }).content).toContain(
+      "enroll the signed-in Workspace account and this OAuth client's Google Cloud project",
+    );
+  });
+
+  it("injects Vercel tokens at dispatch and refreshes exactly once after an upstream 401", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      credentialSource: "vercel_connect",
+      externalCredential: {
+        provider: "vercel_connect",
+        connectorId: "scl_posthog",
+        connectorUid: "posthog-paperclip",
+        service: "posthog",
+        connectorType: "api-key",
+        principalMode: "app",
+        headerName: "Authorization",
+        headerPrefix: "Bearer ",
+        scopes: ["*"],
+      },
+      credentialRefs: [],
+      credentialSecretRefs: [],
+    }).where(eq(toolConnections.id, connection.id));
+    await db.update(connectionGrants).set({
+      externalCredential: { provider: "vercel_connect", subjectType: "app" },
+      credentialSecretRefs: [],
+    }).where(eq(connectionGrants.connectionId, connection.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow Vercel-backed reads",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+
+    const getToken = vi.fn<VercelConnectClient["getToken"]>(async (_request, options) => ({
+      token: options?.forceRefresh ? "fresh-provider-bearer" : "stale-provider-bearer",
+      tokenId: options?.forceRefresh ? "stk_fresh" : "stk_stale",
+      expiresAt: Date.now() + 60_000,
+      connector: { id: "scl_posthog", uid: "posthog-paperclip", type: "api-key" },
+    }));
+    const evict = vi.fn<VercelConnectClient["evict"]>();
+    const vercelConnectClient: VercelConnectClient = {
+      getConnectorMetadata: vi.fn(),
+      getToken,
+      startAuthorization: vi.fn(),
+      revoke: vi.fn(),
+      evict,
+    };
+    const authorizationHeaders: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      vercelConnectClient,
+      remoteHttpRequest: async (_url, init) => {
+        authorizationHeaders.push(new Headers(init.headers).get("authorization") ?? "");
+        if (authorizationHeaders.length === 1) return new Response(null, { status: 401 });
+        const requestBody = JSON.parse(String(init.body)) as { id: string };
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestBody.id,
+          result: { content: [{ type: "text", text: "posthog result" }] },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect(authorizationHeaders).toEqual([
+      "Bearer stale-provider-bearer",
+      "Bearer fresh-provider-bearer",
+    ]);
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(getToken.mock.calls[1]?.[1]).toEqual({ forceRefresh: true });
+    expect(evict).toHaveBeenCalledTimes(1);
+
+    const [storedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    const [storedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+    const audits = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id));
+    const calls = await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, company.id));
+    const persisted = JSON.stringify({ storedConnection, storedGrant, audits, calls });
+    expect(persisted).not.toContain("stale-provider-bearer");
+    expect(persisted).not.toContain("fresh-provider-bearer");
+    expect(storedGrant?.externalCredential).toMatchObject({ tokenId: "stk_fresh" });
+  });
+
+  it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    const accessSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Customer OAuth access token",
+      key: `gateway.oauth.${randomUUID()}`,
+      value: "stale-customer-token",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: accessSecret.id,
+      targetType: "tool_connection",
+      targetId: connection.id,
+      configPath: "oauth.access_token",
+    });
+    await db.update(toolConnections).set({
+      authKind: "oauth",
+      credentialSource: "paperclip_vault",
+      config: {
+        url: "https://example.invalid/mcp",
+        oauth: {
+          provider: "fixture",
+          tokenUrl: "https://example.invalid/oauth/token",
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    const [grant] = await db.select().from(connectionGrants).where(eq(
+      connectionGrants.connectionId,
+      connection.id,
+    ));
+    await db.update(connectionGrants).set({
+      credentialSecretRefs: [{
+        secretId: accessSecret.id,
+        versionSelector: "latest",
+        configPath: "oauth.access_token",
+        required: true,
+        label: "OAuth access token",
+      }],
+      providerTenant: {
+        oauth: {
+          strategy: "direct_oauth",
+          accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+      },
+    }).where(eq(connectionGrants.id, grant.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow customer OAuth reads",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+
+    const oauthGrantRefresher: NonNullable<ToolGatewayServiceOptions["oauthGrantRefresher"]> = vi.fn(async (input) => {
+      if (input.forceRefresh) {
+        await secretService(db).rotate(accessSecret.id, { value: "fresh-customer-token" });
+      }
+      return db.select().from(connectionGrants).where(eq(connectionGrants.id, input.grantId))
+        .then((rows) => rows[0]!);
+    });
+    const authorizationHeaders: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher,
+      remoteHttpRequest: async (_url, init) => {
+        authorizationHeaders.push(new Headers(init.headers).get("authorization") ?? "");
+        if (authorizationHeaders.length === 1) return new Response(null, { status: 401 });
+        const requestBody = JSON.parse(String(init.body)) as { id: string };
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestBody.id,
+          result: { content: [{ type: "text", text: "customer OAuth result" }] },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect(authorizationHeaders).toEqual([
+      "Bearer stale-customer-token",
+      "Bearer fresh-customer-token",
+    ]);
+    expect(oauthGrantRefresher).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
   });
 
   it("fails clearly when remote MCP elicitation has no issue interaction path", async () => {

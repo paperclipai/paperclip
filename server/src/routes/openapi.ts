@@ -955,6 +955,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
+  "GET /api/tools/vercel-connect/callback",
   "GET /api/connection-intents/{interactionId}/setup-options",
   "POST /api/connection-intents/{interactionId}/phase",
   "POST /api/connection-intents/{interactionId}/complete",
@@ -7594,6 +7595,13 @@ registerCurrentRoute({
   path: "/api/tools/oauth/paperclip-id/callback",
   tags: ["tool-access"],
   summary: "Handle a brokered Paperclip ID OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/vercel-connect/callback",
+  tags: ["tool-access"],
+  summary: "Handle a managed Vercel Connect OAuth callback",
 });
 
 registerCurrentRoute({

@@ -91,6 +91,8 @@ type FixtureOptions = {
   authorizationEndpoint?: string;
   /** Advertise this exact string as `token_endpoint` (PAP-17099). */
   tokenEndpoint?: string;
+  /** Confidential-client authentication methods advertised by discovery. */
+  tokenEndpointAuthMethods?: string[];
   /** Value the token endpoint returns as the issuer, for `iss` tests. */
   tools?: unknown[];
   /**
@@ -170,7 +172,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
     ...(options.dcr === false ? {} : { registration_endpoint: `${ISSUER}/register` }),
     ...(options.cimd ? { client_id_metadata_document_supported: true } : {}),
     code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
+    token_endpoint_auth_methods_supported: options.tokenEndpointAuthMethods ?? ["none"],
     scopes_supported: ["mcp:read", "mcp:write"],
   });
 
@@ -296,6 +298,8 @@ function createRouteApp(
   deployment?: {
     deploymentMode: "authenticated" | "local_trusted";
     deploymentExposure: "public" | "private";
+    remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
+    remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
   },
   requestLogger?: express.RequestHandler,
 ) {
@@ -405,6 +409,123 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(profiles).toEqual([]);
   });
 
+  it("vaults a credential-bearing MCP URL and never returns or logs its token", async () => {
+    const secretUrl = `${MCP_URL}?token=zapier-secret&region=us`;
+    const publicUrl = `${MCP_URL}?region=us`;
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      requests.push(String(url));
+      if (String(url) === secretUrl && (init?.method ?? "GET").toUpperCase() === "POST") {
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: FIXTURE_TOOLS },
+        });
+      }
+      return jsonResponse({ error: "not_found" }, 404);
+    });
+    const company = await createCompany(db);
+    const app = createRouteApp(db, {
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: secretUrl, name: "Token URL fixture" })
+      .expect(201);
+
+    expect(requests).toContain(secretUrl);
+    expect(JSON.stringify(response.body)).not.toContain("zapier-secret");
+    expect(response.body.connection.config.url).toBe(publicUrl);
+    expect(response.body.connection.transportConfig.url).toBe(publicUrl);
+    expect(response.body.connection.credentialRefs).toEqual([
+      expect.objectContaining({ placement: "url", name: "remote.url", key: "url" }),
+    ]);
+
+    const [connection] = await db.select().from(toolConnections).where(eq(
+      toolConnections.id,
+      response.body.connectionId,
+    ));
+    expect(connection!.config.url).toBe(publicUrl);
+    expect(connection!.credentialSecretRefs).toEqual([
+      expect.objectContaining({ configPath: "remote.url", label: "MCP server URL" }),
+    ]);
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(JSON.stringify(await db.select().from(activityLog))).not.toContain("zapier-secret");
+  });
+
+  it("keeps a generated Zapier URL attached to the curated Zapier identity", async () => {
+    const secretUrl = "https://mcp.zapier.com/api/v1/connect?token=zapier-secret";
+    const publicUrl = "https://mcp.zapier.com/api/v1/connect";
+    const company = await createCompany(db);
+    const app = createRouteApp(db, {
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      remoteHttpRequest: async (url, init) => {
+        if (url === secretUrl && (init.method ?? "GET").toUpperCase() === "POST") {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: { tools: FIXTURE_TOOLS },
+          });
+        }
+        return jsonResponse({ error: "not_found" }, 404);
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "zapier",
+        connectionMethodKey: "generated-url",
+        link: secretUrl,
+        name: "Zapier for the company",
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    expect(response.body.connection.config).toMatchObject({
+      url: publicUrl,
+      sourceTemplateKey: "zapier",
+      connectionMethodKey: "generated-url",
+    });
+    expect(JSON.stringify(response.body)).not.toContain("zapier-secret");
+
+    const [application] = await db.select().from(toolApplications).where(eq(
+      toolApplications.id,
+      response.body.application.id,
+    ));
+    expect(application).toMatchObject({
+      applicationKey: expect.stringMatching(/^app-gallery:zapier:/),
+      metadata: expect.objectContaining({
+        sourceTemplateKey: "zapier",
+        galleryKey: "zapier",
+      }),
+    });
+  });
+
+  it("rejects a generated URL for curated methods that do not declare one", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db, {
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "notion",
+        connectionMethodKey: "mcp-oauth",
+        link: "https://mcp.notion.com/mcp",
+      })
+      .expect(400);
+
+    expect(response.body.error).toContain("does not accept a provider-generated connection URL");
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+  });
+
   it("emits DNS guidance for a real NXDOMAIN failure", async () => {
     const company = await createCompany(db);
     const app = createRouteApp(db, {
@@ -457,6 +578,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
     vi.stubEnv("BETTER_AUTH_URL", "");
     vi.stubEnv("BETTER_AUTH_BASE_URL", "");
+    vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "");
     const app = createRouteApp(db, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
@@ -1112,6 +1234,75 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     });
     const tokenRequest = fixture.requestsTo("/token").at(-1)!;
     expect((tokenRequest.body as URLSearchParams).get("client_secret")).toBe("operator-secret");
+  });
+
+  it("uses a preregistered client secret stored on a personal user grant", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth", dcr: false });
+    const company = await createCompany(db);
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "owner" })
+      .where(eq(companyMemberships.companyId, company.id));
+    const service = toolAccessService(db);
+
+    const connected = await service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture personal manual client",
+      authMode: "oauth",
+      grantKind: "user",
+      oauthClient: { clientId: "operator-client", clientSecret: "operator-secret" },
+    }, { actorType: "user", actorId: "board-user" });
+    const [storedConnection] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(storedConnection!.credentialPolicy).toBe("per_user");
+    expect(storedConnection!.credentialSecretRefs).toEqual([]);
+
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+    const code = fixture.issueAuthorizationCode(start.authorizationUrl);
+    await service.completeOAuthCallback({
+      state: new URL(start.authorizationUrl).searchParams.get("state")!,
+      code,
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+
+    const tokenRequest = fixture.requestsTo("/token").at(-1)!;
+    expect((tokenRequest.body as URLSearchParams).get("client_secret")).toBe("operator-secret");
+  });
+
+  it("uses Basic authentication for a manual client when discovery advertises it", async () => {
+    const fixture = installMcpOAuthFixture({
+      auth: "oauth",
+      dcr: false,
+      tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post"],
+    });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture manual Basic client",
+      authMode: "oauth",
+      oauthClient: { clientId: "operator-client", clientSecret: "operator-secret" },
+    });
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+
+    const code = fixture.issueAuthorizationCode(start.authorizationUrl);
+    await service.completeOAuthCallback({
+      state: new URL(start.authorizationUrl).searchParams.get("state")!,
+      code,
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+
+    const tokenRequest = fixture.requestsTo("/token").at(-1)!;
+    expect(tokenRequest.headers.authorization).toMatch(/^Basic /);
+    expect((tokenRequest.body as URLSearchParams).get("client_secret")).toBeNull();
   });
 
   it("refuses a callback whose iss names a different authorization server", async () => {

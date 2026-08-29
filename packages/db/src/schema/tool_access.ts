@@ -28,6 +28,7 @@ import type {
   ToolCatalogEntryStatus,
   ToolConnectionHealthStatus,
   ToolConnectionAuthKind,
+  ToolConnectionCredentialSource,
   ToolConnectionKind,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
@@ -61,6 +62,8 @@ import type {
   ToolRiskLevel,
   ToolRuntimeKind,
   ToolRuntimeSlotStatus,
+  VercelConnectCredentialReference,
+  VercelConnectGrantReference,
 } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { approvals } from "./approvals.js";
@@ -119,6 +122,8 @@ export const toolConnections = pgTable(
     ownership: text("ownership").$type<ToolConnectionOwnership>().notNull().default("customer"),
     transport: text("transport").$type<ToolConnectionTransport>().notNull(),
     authKind: text("auth_kind").$type<ToolConnectionAuthKind>().notNull().default("none"),
+    credentialSource: text("credential_source").$type<ToolConnectionCredentialSource>().notNull().default("paperclip_vault"),
+    externalCredential: jsonb("external_credential").$type<VercelConnectCredentialReference>(),
     credentialPolicy: text("credential_policy").$type<ToolConnectionCredentialPolicy>().notNull().default("shared"),
     status: text("status").$type<ToolConnectionStatus>().notNull().default("draft"),
     enabled: boolean("enabled").notNull().default(false),
@@ -141,6 +146,12 @@ export const toolConnections = pgTable(
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
     check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio')`),
     check("tool_connections_auth_kind_check", sql`${table.authKind} in ('oauth', 'api_key', 'none')`),
+    check("tool_connections_credential_source_check", sql`${table.credentialSource} in ('paperclip_vault', 'vercel_connect')`),
+    check("tool_connections_credential_source_one_of_check", sql`(
+      (${table.credentialSource} = 'paperclip_vault' and ${table.externalCredential} is null)
+      or
+      (${table.credentialSource} = 'vercel_connect' and ${table.externalCredential} is not null and jsonb_array_length(${table.credentialRefs}) = 0 and jsonb_array_length(${table.credentialSecretRefs}) = 0)
+    )`),
     check("tool_connections_credential_policy_check", sql`${table.credentialPolicy} in ('shared', 'per_user', 'per_user_with_fallback')`),
     index("tool_connections_company_idx").on(table.companyId),
     index("tool_connections_application_idx").on(table.applicationId),
@@ -166,9 +177,15 @@ export const connectionGrants = pgTable(
         accessTokenExpiresAt?: string;
         scopes?: string[];
         tokenType?: string;
+        refreshedAt?: string;
+        refreshLease?: {
+          id?: string;
+          expiresAt?: string;
+        };
       };
     }>(),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
+    externalCredential: jsonb("external_credential").$type<VercelConnectGrantReference>(),
     status: text("status").$type<ConnectionGrantStatus>().notNull().default("active"),
     isDefault: boolean("is_default").notNull().default(false),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
@@ -183,6 +200,7 @@ export const connectionGrants = pgTable(
   (table) => [
     check("connection_grants_kind_check", sql`${table.kind} in ('organization', 'user')`),
     check("connection_grants_status_check", sql`${table.status} in ('active', 'revoked', 'expired', 'needs_reauthorization')`),
+    check("connection_grants_credential_source_one_of_check", sql`${table.externalCredential} is null or jsonb_array_length(${table.credentialSecretRefs}) = 0`),
     check("connection_grants_subject_check", sql`(${table.kind} = 'user' and ${table.subjectUserId} is not null) or (${table.kind} = 'organization' and ${table.subjectUserId} is null)`),
     check("connection_grants_default_check", sql`${table.isDefault} = false or ${table.kind} = 'organization'`),
     foreignKey({

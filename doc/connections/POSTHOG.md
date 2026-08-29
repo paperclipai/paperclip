@@ -7,11 +7,16 @@ Paperclip connects to PostHog's hosted MCP service at
 - a PostHog personal API key stored as a Paperclip secret and sent as an
   `Authorization: Bearer ...` header.
 
+The retained [Vercel Connect](./VERCEL-CONNECT.md) implementation can reference
+a connector managed in Vercel without storing a PostHog bearer. That preview's
+new-connection UI is currently withheld; the supported product path remains
+PostHog OAuth or an API key managed directly by Paperclip.
+
 Paperclip does not silently fall back from OAuth to an API key. The selected
 method is saved on the connection and reused for reconnects.
 
 This curated connection is the polished route and is what most users should use:
-it provides branding, project selection, read-only/feature/tool/mode controls,
+it provides branding and optional project/read-only/feature/tool controls,
 field validation, and tailored guidance. None of it is *required* to reach
 PostHog's MCP server. Since [PAP-17087](/PAP/issues/PAP-17087), PostHog can also
 be connected generically from **Connect your own MCP server** by pasting
@@ -33,7 +38,7 @@ sequenceDiagram
     participant M as mcp.posthog.com
     participant O as oauth.posthog.com
 
-    A->>P: Choose PostHog sign-in and project
+    A->>P: Choose PostHog sign-in
     P->>M: Discover protected-resource metadata
     M-->>P: Authorization server metadata URL
     P->>O: Discover endpoints and register OAuth client
@@ -43,7 +48,7 @@ sequenceDiagram
     O-->>P: Redirect to /api/tools/oauth/callback
     P->>O: Exchange authorization code
     O-->>P: Access and refresh tokens
-    P->>M: tools/list with project and configured options
+    P->>M: tools/list with optional project and catalog controls
     M-->>P: PostHog tool catalog
 ```
 
@@ -68,12 +73,12 @@ values for either.
 
 1. In **Apps → Browse**, choose **PostHog**.
 2. Explicitly choose **Sign in with PostHog** or **Use a personal API key**.
-3. Enter the numeric PostHog project ID.
-4. Leave **Read-only mode** off to expose the full PostHog action catalog.
-   Turn it on when the connection should never offer actions that change data.
-5. The default setup requests all feature groups and tools. Open **Advanced**
-   only to narrow the catalog with **Feature groups** or **Individual tools**.
-   Paperclip fixes the advanced response mode to individual tools so each
+3. Continue directly with PostHog's defaults. No project ID is required.
+4. Open **Advanced** only when you need to pin the connection to a numeric
+   project ID, force **Read-only mode**, use a customer-owned OAuth app, or
+   narrow the catalog with **Feature groups** or **Individual tools**.
+5. The default setup requests all feature groups and tools. Paperclip fixes
+   the advanced response mode to individual tools so each
    action can be governed; CLI mode is unavailable until nested execution is
    governed.
 6. For OAuth, continue through browser consent. For API-key setup, create a
@@ -83,9 +88,12 @@ values for either.
    **Ask first**, and unknown PostHog tools default to write risk so they inherit
    that approval gate unless the operator changes the selection.
 
-Paperclip sends the project scope as the `x-posthog-project-id` managed header.
-It sends configured `readonly`, `features`, `tools`, and `mode` values as query
-parameters. Leaving the optional feature and tool filters blank exposes the
+When configured, Paperclip sends the optional project pin as the
+`x-posthog-project-id` managed header. Without it, PostHog keeps an active
+project and exposes its project-switching tool. Pinning removes that switching
+capability. Paperclip sends configured `readonly`, `features`, `tools`, and
+internally managed `mode` values as query parameters. Leaving the optional
+feature and tool filters blank exposes the
 full catalog. The managed header is identical during catalog discovery and tool
 execution, and a caller cannot override it. PostHog documents these options in its [MCP
 overview](https://posthog.com/docs/model-context-protocol) and [MCP

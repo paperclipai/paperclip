@@ -70,14 +70,14 @@ export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
-export type VercelConnectPrincipalMode = "app" | "user";
+export type ToolConnectionCredentialSource = "paperclip_vault" | "vercel_connect";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
 export type ConnectionGrantKind = "organization" | "user";
 export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
 export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback";
 export type ConnectionGrantMemberSubjectType = "user";
-export type ToolCredentialPlacement = "header" | "env";
+export type ToolCredentialPlacement = "header" | "env" | "url";
 
 export interface McpConnectionCredentialRef {
   name: string;
@@ -108,6 +108,39 @@ export interface ToolRedactedValueSummary {
   artifactId?: string | null;
 }
 
+export type VercelConnectPrincipalMode = "app" | "user";
+
+/** Durable, non-secret connector provenance safe to return to the board UI. */
+export interface VercelConnectCredentialSummary {
+  provider: "vercel_connect";
+  connectorId: string;
+  connectorUid: string;
+  service: string;
+  connectorType: string;
+  principalMode: VercelConnectPrincipalMode;
+  headerName: string;
+  headerPrefix?: string | null;
+  scopes: string[];
+}
+
+export type VercelConnectCredentialReference = VercelConnectCredentialSummary;
+
+/** Redacted issuance metadata. Subject ids, bearer values, claims and vendor metadata are omitted. */
+export interface VercelConnectGrantSummary {
+  provider: "vercel_connect";
+  subjectType: "app" | "user";
+  installationId?: string;
+  tenantId?: string;
+  tokenId?: string;
+  expiresAt?: string;
+  lastVerifiedAt?: string;
+}
+
+/** Server-only persisted form; API mappers must remove the pseudonymous subject id. */
+export interface VercelConnectGrantReference extends VercelConnectGrantSummary {
+  subjectId?: string;
+}
+
 export interface ToolApplication {
   id: string;
   companyId: string;
@@ -135,6 +168,8 @@ export interface ToolConnection {
   ownership: ToolConnectionOwnership;
   transport: ToolConnectionTransport;
   authKind: ToolConnectionAuthKind;
+  credentialSource: ToolConnectionCredentialSource;
+  externalCredential?: VercelConnectCredentialSummary | null;
   credentialPolicy: ToolConnectionCredentialPolicy;
   status?: ToolConnectionStatus;
   transportConfig: Record<string, unknown>;
@@ -172,9 +207,15 @@ export interface ConnectionGrant {
       accessTokenExpiresAt?: string;
       scopes?: string[];
       tokenType?: string;
+      refreshedAt?: string;
+      refreshLease?: {
+        id?: string;
+        expiresAt?: string;
+      };
     };
   } | null;
   credentialSecretRefs: ToolCredentialSecretRef[];
+  externalCredential?: VercelConnectGrantSummary | null;
   status: ConnectionGrantStatus;
   isDefault: boolean;
   createdByAgentId: string | null;
@@ -313,6 +354,14 @@ export interface ToolConnectionRemovalSummary {
   gatewayTokensRevoked: number;
   gatewaySessionsRevoked: number;
   applicationArchived: boolean;
+  externalCredentialCleanup?: {
+    provider: "vercel_connect";
+    userSubjectsAttempted: number;
+    userSubjectsRevoked: number;
+    userSubjectFailures: number;
+    appSubjectCleanup: "not_applicable" | "manage_in_vercel";
+    manageUrl: string;
+  } | null;
 }
 
 export interface ToolConnectionRemovalResult {

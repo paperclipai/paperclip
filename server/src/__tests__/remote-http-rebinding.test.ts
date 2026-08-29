@@ -116,6 +116,29 @@ function rebindingLookup(): { lookup: () => Promise<Array<{ address: string; fam
 }
 
 describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
+  it("sends a stable default User-Agent and preserves an explicit caller value", async () => {
+    const seen: Array<string | undefined> = [];
+    const upstream = await startServer((req, res) => {
+      seen.push(req.headers["user-agent"]);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+    const options = {
+      allowPrivateNetwork: false,
+      lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
+      socketFactory: network.factory,
+      error: guardError,
+    };
+
+    await guardedRemoteHttpFetch(`http://${REBIND_HOST}/mcp`, {}, options);
+    await guardedRemoteHttpFetch(`http://${REBIND_HOST}/mcp`, {
+      headers: { "user-agent": "Caller/2.0" },
+    }, options);
+
+    expect(seen).toEqual(["Paperclip/1.0", "Caller/2.0"]);
+  });
+
   it("turns a platform-fetch DNS cause into the stable DNS code", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND missing.invalid"), {
       code: "ENOTFOUND",

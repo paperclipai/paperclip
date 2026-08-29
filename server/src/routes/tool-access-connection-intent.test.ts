@@ -3,7 +3,7 @@ import { connectionIntentOAuthOutcomeHtml } from "./tool-access.js";
 
 describe("connection intent OAuth callback document", () => {
   it.each(["connected", "declined", "failed"] as const)(
-    "posts only the interaction id and %s outcome to the same-origin opener",
+    "posts only the interaction id and %s outcome to the opener",
     (outcome) => {
       const html = connectionIntentOAuthOutcomeHtml({
         interactionId: "interaction-123",
@@ -12,7 +12,7 @@ describe("connection intent OAuth callback document", () => {
       });
 
       expect(html).toContain(
-        "window.opener.postMessage(message,window.location.origin)",
+        "window.opener.postMessage(message,targetOrigin)",
       );
       expect(html).toContain('"interactionId":"interaction-123"');
       expect(html).toContain(`"outcome":"${outcome}"`);
@@ -22,6 +22,17 @@ describe("connection intent OAuth callback document", () => {
       );
     },
   );
+
+  it("can return a localhost callback outcome to the numeric-loopback opener", () => {
+    const html = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: "issue-456",
+      outcome: "connected",
+      openerOrigin: "http://127.0.0.1:3200/apps/connect",
+    });
+
+    expect(html).toContain('const targetOrigin="http://127.0.0.1:3200"');
+  });
 
   it("closes the popup when an opener exists and otherwise returns to the same task", () => {
     const html = connectionIntentOAuthOutcomeHtml({

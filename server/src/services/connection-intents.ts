@@ -8,9 +8,11 @@ import {
   issues,
 } from "@paperclipai/db";
 import {
+  APP_STORE_DEFINITIONS,
   CONNECTABLE_APP_DEFINITIONS,
   connectionIntentPayloadSchema,
   getAvailableConnectionMethods,
+  getAppStoreDefinition,
   getConnectableAppDefinition,
   type ConnectionIntentInteraction,
   type ConnectionIntentSetupOptions,
@@ -219,7 +221,7 @@ export function connectionIntentService(db: Db) {
     const { run, agent } = await loadRunContext(claims);
     const normalized = query.trim().toLocaleLowerCase();
     const inventory = await connectionInventory(run.companyId);
-    const results = await Promise.all(CONNECTABLE_APP_DEFINITIONS
+    const results = await Promise.all(APP_STORE_DEFINITIONS
       .filter((app) => !normalized
         || app.slug.toLocaleLowerCase().includes(normalized)
         || app.name.toLocaleLowerCase().includes(normalized)
@@ -265,7 +267,7 @@ export function connectionIntentService(db: Db) {
     serviceSlug: string,
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
-    const app = getConnectableAppDefinition(serviceSlug);
+    const app = getAppStoreDefinition(serviceSlug);
     if (!app || app.availability?.available === false || getAvailableConnectionMethods(app).length === 0) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);
     }

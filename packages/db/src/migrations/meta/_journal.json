@@ -1618,6 +1618,13 @@
       "when": 1787922607497,
       "tag": "0232_fixed_hannibal_king",
       "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1787922658738,
+      "tag": "0233_living_dreaming_celestial",
+      "breakpoints": true
     }
   ]
 }

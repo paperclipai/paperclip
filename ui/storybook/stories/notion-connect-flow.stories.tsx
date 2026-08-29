@@ -68,6 +68,7 @@ function notionConnection(overrides: Partial<ToolConnection> = {}): ToolConnecti
     transport: "mcp_remote",
     authKind: "oauth",
     credentialPolicy: "per_user",
+    credentialSource: "paperclip_vault",
     status: "active",
     transportConfig: { url: "https://mcp.notion.com/mcp" },
     config: {

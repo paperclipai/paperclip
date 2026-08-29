@@ -3,12 +3,13 @@ import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
 import {
-  CONNECTABLE_APP_DEFINITIONS,
+  APP_STORE_DEFINITIONS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
   type PermissionKey,
+  type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
   createConnectionGrantDelegationSchema,
@@ -48,16 +49,18 @@ import {
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
-import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
+import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
-import { paperclipIdGmailConnectorConfigFromEnv } from "../services/paperclip-id-gmail-connector.js";
+import type { VercelConnectClient } from "../services/vercel-connect.js";
+import { paperclipIdGoogleConnectorCapabilitiesFromEnv } from "../services/paperclip-id-gmail-connector.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
 } from "../services/tool-access.js";
 import { isLoopbackHost } from "../url-utils.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { redactRemoteUrlCredential } from "../services/remote-url-credentials.js";
 import { wakeConnectionIntentAfterResolution } from "./connection-intents.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 
@@ -136,6 +139,7 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   interactionId: string;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
+  openerOrigin?: string | null;
 }) {
   // The callback window is only a signal. Connection identity and every
   // authorization URL stay server-side; the opener refreshes the task from the
@@ -149,7 +153,19 @@ export function connectionIntentOAuthOutcomeHtml(input: {
     ? `/issues/${encodeURIComponent(input.issueId)}`
     : "/issues";
   const fallback = JSON.stringify(issuePath);
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};if(window.opener&&window.opener!==window){window.opener.postMessage(message,window.location.origin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
+  const openerOrigin = (() => {
+    if (!input.openerOrigin) return null;
+    try {
+      const parsed = new URL(input.openerOrigin);
+      return (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password
+        ? parsed.origin
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+  const targetOrigin = JSON.stringify(openerOrigin ?? "");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
 export function toolAccessRoutes(
@@ -164,6 +180,7 @@ export function toolAccessRoutes(
     remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
     composioClientFactory?: (apiKey: string) => ComposioClient;
+    vercelConnectClient?: VercelConnectClient | null;
     connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
   } = {},
 ) {
@@ -231,6 +248,7 @@ export function toolAccessRoutes(
       interactionId: string;
       issueId: string | null;
       outcome: "connected" | "declined" | "failed";
+      openerOrigin?: string | null;
     },
   ) {
     res.type("html").send(connectionIntentOAuthOutcomeHtml(input));
@@ -266,6 +284,18 @@ export function toolAccessRoutes(
       ) {
         return null;
       }
+      // A few otherwise standards-compliant DCR servers reject numeric
+      // loopback redirect hosts while accepting localhost. In local-trusted
+      // mode both names reach the same loopback-only process, so advertise the
+      // interoperable spelling and retain the browser's exact origin as OAuth
+      // state for popup postMessage below.
+      if (
+        (options.deploymentMode ?? "local_trusted") === "local_trusted"
+        && parsed.protocol === "http:"
+        && parsed.hostname !== "localhost"
+      ) {
+        parsed.hostname = "localhost";
+      }
       return parsed.origin;
     } catch {
       return null;
@@ -283,6 +313,17 @@ export function toolAccessRoutes(
     return new URL("/api/tools/oauth/callback", baseUrl).toString();
   }
 
+  function oauthBrowserOrigin(req: Request) {
+    const host = req.get("host")?.trim();
+    if (!host) return null;
+    try {
+      const parsed = new URL(`${req.protocol}://${host}`);
+      return isLoopbackHost(parsed.hostname) ? parsed.origin : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function oauthAppPath(
     companyId: string,
     connectionId: string,
@@ -295,6 +336,40 @@ export function toolAccessRoutes(
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
     return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
+  }
+
+  /**
+   * A failed first authorization is still an incomplete setup, not an app
+   * configuration task. Send it back to the same exact draft so the operator
+   * can retry the missing checkpoint. Reauthorization of an already-active
+   * connection keeps the established detail-page recovery route.
+   */
+  async function oauthRecoveryPath(
+    connection: ToolConnection,
+    outcome: "failed" | "denied",
+    code?: string | null,
+  ) {
+    const detailSetupPath = await oauthAppPath(connection.companyId, connection.id, "setup");
+    const params = new URLSearchParams({ oauth: outcome });
+    if (code) params.set("code", code);
+    const source = connection.config?.sourceTemplateKey
+      ?? connection.transportConfig?.sourceTemplateKey;
+    if (connection.status !== "draft" || typeof source !== "string" || !source.trim()) {
+      return `${detailSetupPath}?${params.toString()}`;
+    }
+
+    const appsSegment = detailSetupPath.indexOf("/apps/");
+    const companyPrefix = appsSegment >= 0 ? detailSetupPath.slice(0, appsSegment) : "";
+    const setupParams = new URLSearchParams({
+      source,
+      resume: connection.id,
+      oauth: outcome,
+    });
+    if (code) setupParams.set("code", code);
+    const setupRoute = connection.credentialSource === "vercel_connect"
+      ? "/apps/vercel-connect"
+      : "/apps/connect";
+    return `${companyPrefix}${setupRoute}?${setupParams.toString()}`;
   }
 
   const access = accessService(db);
@@ -587,29 +662,37 @@ export function toolAccessRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
-    const gmailAvailable = paperclipIdGmailConnectorConfigFromEnv() !== null;
+    const googleConnectorProfiles = new Set(await paperclipIdGoogleConnectorCapabilitiesFromEnv());
+    const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
-      apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
-        app.slug === "google-sheets"
-          ? {
-              ...app,
-              ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY,
-              availability: googleSheetsAvailability.available
-                ? { available: true, robotEmail: googleSheetsAvailability.robotEmail }
-                : { available: false, reason: googleSheetsAvailability.reason },
-            }
-          : app.slug === "gmail"
-            ? {
-                ...app,
-                ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY,
-                availability: gmailAvailable
-                  ? { available: true }
-                  : { available: false, reason: "Gmail is not available on this Paperclip instance yet." },
-              }
-            : { ...app, ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY },
-      ),
+      credentialSources: {
+        vercelConnect: {
+          available: vercelConnect.enabled && vercelConnect.configured,
+          enabled: vercelConnect.enabled,
+          authentication: vercelConnect.authentication,
+          manageUrl: vercelConnect.manageUrl,
+          reason: vercelConnect.enabled
+            ? vercelConnect.configured
+              ? null
+              : "Vercel Connect needs workload OIDC or PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN."
+            : "Vercel Connect setup is disabled on this Paperclip instance.",
+        },
+      },
+      apps: APP_STORE_DEFINITIONS.map((app) => {
+        const methods = app.methods.filter((method) =>
+          method.oauthStrategy !== "paperclip_id_connector"
+          || Boolean(method.connectorProfile && googleConnectorProfiles.has(method.connectorProfile as never))
+        );
+        return {
+          ...app,
+          methods,
+          ownershipAvailability: {
+            ...DEFAULT_OWNERSHIP_AVAILABILITY,
+            platform_shared: methods.some((method) => method.oauthStrategy === "paperclip_id_connector"),
+          },
+        };
+      }),
     });
   });
 
@@ -681,7 +764,8 @@ export function toolAccessRoutes(
         entityId: result.connectionId,
         details: {
           galleryKey: req.body.galleryKey ?? null,
-          link: req.body.link ?? null,
+          credentialSource: result.connection.credentialSource,
+          link: typeof req.body.link === "string" ? redactRemoteUrlCredential(req.body.link) : null,
           applicationId: result.application.id,
           catalogEntryCount: result.catalog.length,
           readOnlyActionCount: result.actions.readOnly.length,
@@ -735,6 +819,7 @@ export function toolAccessRoutes(
     const result = await svc.startOAuth(existing.companyId, existing.id, {
       redirectUri: oauthRedirectUri(req),
       actor: getActorInfo(req),
+      returnTo: oauthBrowserOrigin(req) ?? undefined,
       ...(subjectUserId ? { subjectUserId } : {}),
       ...(req.body?.interactionId ? { interactionId: req.body.interactionId } : {}),
     });
@@ -787,6 +872,7 @@ export function toolAccessRoutes(
           interactionId: pendingState.interactionId,
           issueId: pendingState.issueId,
           outcome: "connected",
+          openerOrigin: pendingState.returnTo,
         });
         return;
       }
@@ -814,13 +900,110 @@ export function toolAccessRoutes(
           interactionId: pendingState.interactionId,
           issueId: pendingState.issueId,
           outcome,
+          openerOrigin: pendingState.returnTo,
         });
         return;
       }
-      const params = new URLSearchParams({ oauth: details?.code === "oauth_authorization_denied" ? "denied" : "failed" });
-      if (typeof details?.code === "string") params.set("code", details.code);
-      const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
-      res.redirect(303, `${setupPath}?${params.toString()}`);
+      const outcome = details?.code === "oauth_authorization_denied" ? "denied" : "failed";
+      res.redirect(303, await oauthRecoveryPath(
+        pendingConnection,
+        outcome,
+        typeof details?.code === "string" ? details.code : null,
+      ));
+    }
+  });
+
+  router.get("/tools/vercel-connect/callback", async (req, res) => {
+    assertBoard(req);
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const error = typeof req.query.error === "string" ? req.query.error : null;
+    const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
+      throw badRequest("Invalid or expired Vercel Connect state");
+    }
+    const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
+    const pendingConnectionIntent = await isConnectionIntent(pendingState.interactionId);
+    if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
+      await assertToolConnectionAccess(req, pendingConnection);
+    } else {
+      await assertToolConnectionConfigureAccess(req, pendingConnection);
+    }
+    const acceptsHtml = req.get("accept")?.includes("text/html") === true;
+    try {
+      const result = await svc.completeVercelConnectCallback({
+        state,
+        error,
+        actor: getActorInfo(req),
+      });
+      await logActivity(db, {
+        companyId: result.connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_connected",
+        entityType: "tool_connection",
+        entityId: result.connection.id,
+        details: {
+          applicationId: result.application.id,
+          catalogEntryCount: result.catalog.length,
+          provider: "vercel_connect",
+        },
+      });
+      if (acceptsHtml && pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+        await finishConnectionIntentOAuth({
+          interactionId: pendingState.interactionId,
+          connectionId: result.connection.id,
+          userId: req.actor.userId,
+          outcome: "connected",
+          canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+          bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+        });
+        sendConnectionIntentOAuthOutcome(res, {
+          interactionId: pendingState.interactionId,
+          issueId: pendingState.issueId,
+          outcome: "connected",
+          openerOrigin: pendingState.returnTo,
+        });
+        return;
+      }
+      if (acceptsHtml) {
+        const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
+        res.redirect(303, `${testPath}?success=1`);
+        return;
+      }
+      res.json(result);
+    } catch (callbackError) {
+      if (!acceptsHtml) throw callbackError;
+      const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
+        ? callbackError.details as Record<string, unknown>
+        : null;
+      const callbackCode = typeof details?.code === "string" ? details.code : "vercel_connect_callback_failed";
+      await logActivity(db, {
+        companyId: pendingState.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_failed",
+        entityType: "tool_connection",
+        entityId: pendingState.connectionId,
+        details: { code: callbackCode, provider: "vercel_connect" },
+      });
+      if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+        const outcome = callbackCode === "oauth_authorization_denied" ? "declined" : "failed";
+        await finishConnectionIntentOAuth({
+          interactionId: pendingState.interactionId,
+          userId: req.actor.userId,
+          outcome,
+          canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+          bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+        });
+        sendConnectionIntentOAuthOutcome(res, {
+          interactionId: pendingState.interactionId,
+          issueId: pendingState.issueId,
+          outcome,
+          openerOrigin: pendingState.returnTo,
+        });
+        return;
+      }
+      res.redirect(303, await oauthRecoveryPath(pendingConnection, "failed", callbackCode));
     }
   });
 
@@ -900,15 +1083,15 @@ export function toolAccessRoutes(
           interactionId: pendingState.interactionId,
           issueId: pendingState.issueId,
           outcome,
+          openerOrigin: pendingState.returnTo,
         });
         return;
       }
-      const params = new URLSearchParams({
-        oauth: callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
-      });
-      params.set("code", callbackFailureCode);
-      const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
-      res.redirect(303, `${setupPath}?${params.toString()}`);
+      res.redirect(303, await oauthRecoveryPath(
+        pendingConnection,
+        callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
+        callbackFailureCode,
+      ));
       return;
     }
     await logActivity(db, {
@@ -936,6 +1119,7 @@ export function toolAccessRoutes(
         interactionId: pendingState.interactionId,
         issueId: pendingState.issueId,
         outcome: "connected",
+        openerOrigin: pendingState.returnTo,
       });
       return;
     }

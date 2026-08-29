@@ -176,13 +176,16 @@ describe("AppDefinition catalog",()=>{
    }
   }
  });
- it("does not advertise a managed Gmail read-only method before profile-scoped connector support",()=>{
+ it("advertises managed Gmail methods with their profile-scoped grants",()=>{
   const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail");
   const managedMethods=gmail?.methods.filter((method)=>method.oauthStrategy==="paperclip_id_connector")??[];
-  expect(managedMethods.map((method)=>method.key)).toEqual(["paperclip-draft"]);
-  expect(managedMethods[0]?.defaults?.scopesHint).toEqual([
-   "https://www.googleapis.com/auth/gmail.readonly",
-   "https://www.googleapis.com/auth/gmail.compose",
+  expect(managedMethods.map((method)=>method.key)).toEqual(["paperclip-read","paperclip-draft"]);
+  expect(managedMethods.map((method)=>[method.connectorProfile,method.defaults?.scopesHint])).toEqual([
+   ["gmail.read",["https://www.googleapis.com/auth/gmail.readonly"]],
+   ["gmail.draft",[
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+   ]],
   ]);
  });
  it("configures Shopify's official tenant-scoped Storefront MCP without OAuth",()=>{const method=APP_DEFINITIONS.find((app)=>app.slug==="shopify")?.methods[0];expect(method).toMatchObject({key:"storefront-mcp",auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/mcp"},tenantFields:[expect.objectContaining({key:"storeDomain",required:true})]});expect(resolveConnectionMethodServerUrl(method!,{storeDomain:"paperclip-demo.myshopify.com"})).toBe("https://paperclip-demo.myshopify.com/api/mcp");expect(resolveConnectionMethodServerUrl(method!,{})).toBeNull()});

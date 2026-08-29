@@ -44,16 +44,37 @@ export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
+export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
+export const vercelConnectCredentialSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  connectorId: z.string().trim().min(1).max(255),
+  connectorUid: z.string().trim().min(1).max(255),
+  service: z.string().trim().min(1).max(255),
+  connectorType: z.string().trim().min(1).max(255),
+  principalMode: z.enum(["app", "user"]),
+  headerName: z.string().trim().min(1).max(160),
+  headerPrefix: z.string().max(120).nullable().optional(),
+  scopes: z.array(z.string().trim().min(1).max(500)).max(50),
+}).strict();
+export const vercelConnectGrantSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  subjectType: z.enum(["app", "user"]),
+  installationId: z.string().trim().min(1).max(255).optional(),
+  tenantId: z.string().trim().min(1).max(255).optional(),
+  tokenId: z.string().trim().min(1).max(255).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+  lastVerifiedAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
 export const connectionGrantKindSchema = z.enum(["organization", "user"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
 export const createConnectionGrantDelegationSchema = z.object({
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
 });
 export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
 export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
-export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
+export const toolCredentialPlacementSchema = z.enum(["header", "env", "url"]);
 export const toolConnectionKindSchema = z.enum(TOOL_CONNECTION_KINDS);
 export const toolConnectionHealthStatusSchema = z.enum(TOOL_CONNECTION_HEALTH_STATUSES);
 export const toolCatalogEntryKindSchema = z.enum(TOOL_CATALOG_ENTRY_KINDS);
@@ -197,6 +218,7 @@ export const connectionGrantSchema = z.object({
     }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
+  externalCredential: vercelConnectGrantSummarySchema.nullable().optional(),
   status: connectionGrantStatusSchema,
   isDefault: z.boolean(),
   createdByAgentId: z.string().guid().nullable(),
@@ -210,6 +232,9 @@ export const connectionGrantSchema = z.object({
 }).superRefine((grant, ctx) => {
   if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
+  }
+  if (grant.externalCredential && grant.credentialSecretRefs.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialSecretRefs"], message: "External grants cannot also contain Paperclip secret references" });
   }
 });
 
@@ -366,8 +391,12 @@ export const connectToolAppSchema = z.object({
   applicationId: z.string().guid().optional(),
   /** Pending connection request this setup should resolve after authorization. */
   interactionId: z.string().uuid().optional(),
+  /** Exact draft to continue after an interrupted setup. */
+  resumeConnectionId: z.string().guid().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
+  credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
+  vercelConnect: z.object({ connector: z.string().trim().min(1).max(255) }).strict().optional(),
   /**
    * Which identity this credential becomes (PAP-17835). `user` means "Just me":
    * the credential is committed to the caller's own personal grant and never to
@@ -385,9 +414,30 @@ export const connectToolAppSchema = z.object({
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
     });
   }
+  if (value.resumeConnectionId && !value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["resumeConnectionId"],
+      message: "Only gallery app setup can resume a draft connection",
+    });
+  }
+  const source = value.credentialSource ?? "paperclip_vault";
+  if (source === "vercel_connect") {
+    if (!value.vercelConnect) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "A Vercel connector UID is required" });
+    }
+    if (value.credentialValues && Object.keys(value.credentialValues).length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialValues"], message: "Vercel-backed connections cannot include provider credentials" });
+    }
+    if (value.oauthClient) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient"], message: "Vercel-backed connections cannot include OAuth client credentials" });
+    }
+  } else if (value.vercelConnect) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "Vercel connector metadata requires the vercel_connect credential source" });
+  }
 }).refine(
-  (value) => Boolean(value.galleryKey) !== Boolean(value.link),
-  { message: "Provide exactly one of galleryKey or link" },
+  (value) => Boolean(value.galleryKey) || Boolean(value.link),
+  { message: "Provide a galleryKey or link" },
 );
 
 export type ConnectToolApp = z.infer<typeof connectToolAppSchema>;

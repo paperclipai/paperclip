@@ -29,6 +29,37 @@
   "redirectConstraints": "https-or-loopback-http",
   "methods": [
     {
+      "key": "paperclip-read",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_id_connector",
+      "connectorProfile": "gmail.read",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Search and read messages, threads, drafts, and labels."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed Google OAuth for read-only Gmail access.",
+      "defaults": {
+        "serverUrl": "https://gmailmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly"
+        ]
+      },
+      "guidanceMd": "Connect Gmail with read-only access. Sending, deleting, moving, and relabeling mail are not enabled.",
+      "warnings": [
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
       "key": "customer-read-oauth",
       "label": "Use your own Google OAuth app",
       "transport": "mcp_remote",

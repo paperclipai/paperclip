@@ -17,7 +17,14 @@ those conveniences and nothing else. It must not create a second connection,
 change ownership, or be necessary for health, catalog, or governance — a curated
 route and the generic route converge on the same connection and review pipeline.
 
-Every connector built with this playbook is a **plane P2** connection — a resource token in the instance vault, acquired via the connect broker, never a sign-in authenticator. Before writing a connector, read [Identity vs. connections](./README.md#identity-vs-connections) for the P1/P2/P3 boundary and the D7 standing rule (sign-in tokens are never reused as resource tokens; id.paperclip.ing never stores resource tokens; no connections hub on the ID service).
+Every connector built with this playbook is a **plane P2** connection — a
+resource credential governed by the Paperclip instance, never a sign-in
+authenticator. The default durable authority is the instance vault. Reviewed
+remote MCP methods may opt in to [Vercel Connect](./VERCEL-CONNECT.md), where
+durable provider credentials remain in the operator's Vercel account and
+Paperclip resolves short-lived tokens at invocation time. Before writing a
+connector, read [Identity vs. connections](./README.md#identity-vs-connections)
+for the P1/P2/P3 boundary and the D7 standing rule.
 
 ## Output
 
@@ -68,7 +75,9 @@ Choose one auth mode:
 - App-installation: bot/app token, GitHub App installation, Slack bot token, or similar installation credential.
 - None: public/read-only systems or first-party fixtures that do not require vendor credentials.
 
-Credentials always live in `company_secrets` with redacted metadata and versioned material. The catalog entry records the secret binding shape, not the secret value:
+Credentials normally live in `company_secrets` with redacted metadata and
+versioned material. The catalog entry records the secret binding shape, not the
+secret value:
 
 ```json
 {
@@ -92,6 +101,16 @@ Credentials always live in `company_secrets` with redacted metadata and versione
 ```
 
 Do not add durable vendor credentials to agent env, project env, runtime env, adapter config, issue comments, screenshots, logs, fixture JSON, or plugin config. Agents receive a run-scoped gateway token; Paperclip resolves the vendor credential server-side and audits the call.
+
+For a Vercel-eligible method, add reviewed `credentialSources.vercelConnect`
+metadata: allowed Vercel service identifiers, the `app` or `user` principal
+mode, exact token scopes, and the header placement. This is an allowlist, not a
+copy of Vercel's connector form. Only authenticated `mcp_remote` methods qualify.
+Do not infer Paperclip ownership from Vercel's “Managed” label. A Vercel-backed
+connection remains `customer`/`dcr` according to the existing Paperclip model.
+The resulting connection has an external connector ref and zero Paperclip
+credential secret refs; its grants likewise use external metadata or secret
+refs, never both.
 
 ## Step 4: Author The AppDefinition
 
@@ -342,6 +361,12 @@ must include all three of the following (they are part of the template below):
 3. **Administrator setup instructions.** Step-by-step: what (if anything) an
    admin must register — callback URLs? client credentials? nothing, for DCR? —
    where to register it, and how to verify the connection works end to end.
+4. **Provider consent interaction guards.** During browser smoke tests, do not
+   classify a disabled consent button as an OAuth failure until the page has
+   received a real pointer or keyboard interaction and any documented delay has
+   elapsed. For example, Sentry intentionally enables its upstream `Approve`
+   button one second after the first interaction. Record this separately from
+   Paperclip callback, token-exchange, and MCP health failures.
 
 ## Template
 
