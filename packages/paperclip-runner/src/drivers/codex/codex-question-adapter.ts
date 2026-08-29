@@ -194,7 +194,10 @@ function codexOptions(value: unknown): NormalizedQuestionOptions | undefined {
       }
       usedIds.add(id);
     }
-    nativeValues.set(id, nativeLabel);
+    nativeValues.set(
+      id,
+      structuredClone("value" in option ? option.value : nativeLabel),
+    );
     return {
       id,
       label: exactOptionLabel(nativeLabel, index),

@@ -149,6 +149,48 @@ describe("Codex structured question adapter", () => {
     });
   });
 
+  it("returns native option values instead of their display labels", () => {
+    const responseContext = createCodexQuestionResponseContext();
+    const input = normalizeCodexQuestionSetWithContext("tool/requestUserInput", {
+      questions: [{
+        id: "environment",
+        question: "Where?",
+        options: [{
+          id: "production",
+          label: "Production (recommended)",
+          value: "prod-us-east-1",
+        }],
+      }],
+    }, responseContext)!;
+    const request: HarnessRuntimeRequest = {
+      requestId: "request-native-option-value",
+      requestKind: "user_input",
+      method: "tool/requestUserInput",
+      turnId: "turn-1",
+      itemId: "item-1",
+      status: "pending",
+      prompt: "Codex requests user input.",
+      details: {},
+      input,
+      origin: { adapter: "codex", method: "tool/requestUserInput" },
+    };
+
+    expect(input.questions[0]?.options?.[0]?.label).toBe(
+      "Production (recommended)",
+    );
+    expect(runtimeRequestResponseWithContext(request, {
+      action: "submit",
+      response: {
+        schema: "paperclip.question_response.v1",
+        answers: {
+          environment: { selectedOptionIds: ["production"] },
+        },
+      },
+    }, responseContext)).toEqual({
+      answers: { environment: { answers: ["prod-us-east-1"] } },
+    });
+  });
+
   it("fails closed instead of truncating oversized native forms", () => {
     expect(() => normalizeCodexQuestionSet("tool/requestUserInput", {
       questions: Array.from({ length: 65 }, (_, index) => ({
