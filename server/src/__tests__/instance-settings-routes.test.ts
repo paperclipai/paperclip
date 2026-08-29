@@ -1199,6 +1199,89 @@ describe("instance settings routes", () => {
       ]);
     });
 
+    it("queues an overlapping DELETE behind a POST whose audit transaction is still pending, so the audit order and the live state always agree", async () => {
+      // Model the real drain state instead of a canned return value, so
+      // this test can prove the applied state, the audit rows, and the
+      // response all agree even when the earlier request's transaction
+      // resolves after the later request's would have.
+      const liveState = { draining: false };
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({
+        startedAt: "2026-08-29T00:00:00.000Z",
+        expiresAt: null,
+      });
+      mockHeartbeatService.applyTaskDrain.mockImplementation(() => {
+        liveState.draining = true;
+      });
+      mockHeartbeatService.stopTaskDrain.mockImplementation(() => {
+        const wasActive = liveState.draining;
+        liveState.draining = false;
+        return { wasActive };
+      });
+      mockHeartbeatService.getTaskDrainStatus.mockImplementation(() => ({
+        draining: liveState.draining,
+        startedAt: liveState.draining ? "2026-08-29T00:00:00.000Z" : null,
+        expiresAt: null,
+        activeRuns: 0,
+        pendingWakes: 0,
+        quiescent: true,
+      }));
+
+      // The POST's transaction call blocks until the test releases it. The
+      // DELETE's transaction call, if it is ever reached, commits at once —
+      // so if the route let the two requests race, the DELETE would commit
+      // its audit row, and reach stopTaskDrain, first.
+      const transactionCalls: string[] = [];
+      let releasePostTransaction: (() => void) | undefined;
+      let sawFirstCall = false;
+      mockDb.transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => {
+        if (!sawFirstCall) {
+          sawFirstCall = true;
+          transactionCalls.push("post-start");
+          return new Promise((resolve) => {
+            releasePostTransaction = () => {
+              transactionCalls.push("post-commit");
+              resolve(fn(TX_SENTINEL));
+            };
+          });
+        }
+        transactionCalls.push("delete-start-and-commit");
+        return fn(TX_SENTINEL);
+      });
+
+      const app = await createApp(adminActor);
+
+      // supertest only sends the request once something calls .then() on
+      // it, so kick both off eagerly instead of waiting for the final
+      // Promise.all below to do it — otherwise neither request would even
+      // reach the (still-pending) POST transaction during the wait.
+      const postPromise = request(app).post("/api/instance/task-drain").send({});
+      postPromise.then(() => {}, () => {});
+      const deletePromise = request(app).delete("/api/instance/task-drain");
+      deletePromise.then(() => {}, () => {});
+      // Give both requests time to reach as far as they can go before the
+      // POST's transaction is released.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(transactionCalls).toEqual(["post-start"]);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+
+      releasePostTransaction?.();
+      const [postRes, deleteRes] = await Promise.all([postPromise, deletePromise]);
+
+      expect(postRes.status).toBe(200);
+      expect(deleteRes.status).toBe(200);
+      // The DELETE's transaction only starts once the POST's has committed
+      // and the POST has already applied its drain — audit order matches
+      // application order.
+      expect(transactionCalls).toEqual(["post-start", "post-commit", "delete-start-and-commit"]);
+      // The DELETE observed the drain the POST applied, so its audit row
+      // and its response correctly report an active drain, and the live
+      // state ends idle — not stuck "draining" from a stale POST that
+      // applied after the DELETE that was meant to be the final word.
+      expect(deleteRes.body).toEqual({ wasActive: true });
+      expect(liveState.draining).toBe(false);
+    });
+
     it("rejects a board actor without instance admin rights", async () => {
       const app = await createApp(nonAdminActor);
 
