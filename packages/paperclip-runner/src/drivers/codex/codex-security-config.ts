@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
-const SKILLLESS_PERMISSION_PROFILE = "paperclip-runner-workspace-only";
-const PLANNING_PERMISSION_PROFILE = "paperclip-runner-workspace-read-only";
+export const CODEX_SKILLLESS_PERMISSION_PROFILE = "paperclip-runner-workspace-only";
+export const CODEX_PLANNING_PERMISSION_PROFILE = "paperclip-runner-workspace-read-only";
 
 const SKILLLESS_BASE_CONFIG = {
   "skills.include_instructions": false,
@@ -14,7 +14,7 @@ const SKILLLESS_BASE_CONFIG = {
   "features.image_generation": false,
 } as const;
 
-function commandEnvironment(
+export function codexCommandEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   const environment: Record<string, string> = {};
@@ -90,20 +90,20 @@ export function createIsolatedCodexAppServerArgs(
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     `":workspace_roots"={"."="read"}`,
   ].join(",");
-  const commandEnv = Object.entries(commandEnvironment(source))
+  const commandEnv = Object.entries(codexCommandEnvironment(source))
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");
   return [
     "-c",
-    `default_permissions=${tomlString(SKILLLESS_PERMISSION_PROFILE)}`,
+    `default_permissions=${tomlString(CODEX_SKILLLESS_PERMISSION_PROFILE)}`,
     "-c",
-    `permissions.${SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
+    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
     "-c",
-    `permissions.${SKILLLESS_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=false`,
     "-c",
-    `permissions.${PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${PLANNING_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=false`,
     "-c",
     `shell_environment_policy.inherit="none"`,
     "-c",
@@ -125,8 +125,8 @@ export function createSecuredCodexThreadParams(
 ): Record<string, unknown> {
   const permissionProfile =
     mode === "plan"
-      ? PLANNING_PERMISSION_PROFILE
-      : SKILLLESS_PERMISSION_PROFILE;
+      ? CODEX_PLANNING_PERMISSION_PROFILE
+      : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return {
     cwd: workingDirectory,
     config: collaborationThreadConfig(

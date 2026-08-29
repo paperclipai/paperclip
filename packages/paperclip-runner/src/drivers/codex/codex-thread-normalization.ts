@@ -72,7 +72,7 @@ export function parseCodexThreadGoal(value: unknown): HarnessThreadGoal | null {
   };
 }
 
-function threadStatus(value: unknown): string {
+export function codexThreadStatus(value: unknown): string {
   if (typeof value === "string") return value;
   return text(record(value).type, "unknown");
 }
@@ -102,7 +102,7 @@ export function codexThreadLineage(value: unknown): HarnessThreadLineageEntry {
       ) || null,
     role:
       text(thread.agentRole, text(spawn.agent_role ?? spawn.agentRole)) || null,
-    status: threadStatus(thread.status),
+    status: codexThreadStatus(thread.status),
   };
 }
 
@@ -116,7 +116,7 @@ export interface BindableCodexNotification {
   params: Record<string, unknown>;
 }
 
-function supportedCodexNotificationMethod(method: string): boolean {
+export function isSupportedCodexNotificationMethod(method: string): boolean {
   return (
     method === "turn/started" ||
     method === "turn/completed" ||
@@ -155,7 +155,7 @@ export function isBoundCodexNotification(
   notification: BindableCodexNotification,
   binding: CodexNotificationBinding,
 ): boolean {
-  if (!supportedCodexNotificationMethod(notification.method)) return false;
+  if (!isSupportedCodexNotificationMethod(notification.method)) return false;
   const params = record(notification.params);
   const claimedRunId = text(params.runId, text(params.paperclipRunId));
   if (claimedRunId.length > 0 && claimedRunId !== binding.runId) return false;

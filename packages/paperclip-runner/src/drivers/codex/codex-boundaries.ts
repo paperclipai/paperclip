@@ -116,7 +116,7 @@ function pathContains(parent: string, candidate: string): boolean {
   );
 }
 
-function boundedCodexValue(value: unknown, depth = 0): unknown {
+export function boundedCodexValue(value: unknown, depth = 0): unknown {
   if (depth > 8) return { truncated: true, reason: "maximum depth" };
   if (typeof value === "string") {
     return value.length <= MAX_RETAINED_CODEX_STRING_CHARS

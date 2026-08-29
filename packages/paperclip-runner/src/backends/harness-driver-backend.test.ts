@@ -200,11 +200,14 @@ describe("HarnessDriverBackend", () => {
   it("passes the persisted harness driver kind through recovery", async () => {
     let recoveredDriverKind: string | null = null;
     let recoveredProviderIdentity: PersistedHarnessSession["providerIdentity"];
+    let recoveredDispositionAllowance: boolean | undefined;
     const recoveryDriver: HarnessDriver = {
       ...driver,
       async recoverSession(snapshot) {
         recoveredDriverKind = snapshot.driverKind;
         recoveredProviderIdentity = snapshot.providerIdentity;
+        recoveredDispositionAllowance =
+          snapshot.dispositionOnlyRecoveryConsumed;
         return { recovered: true, session: new FakeHarnessSession() };
       },
     };
@@ -216,6 +219,7 @@ describe("HarnessDriverBackend", () => {
       providerSessionId: "provider-1",
       providerIdentity,
       providerRecoveryPolicy: "allow_replacement_after_governed_wait",
+      dispositionOnlyRecoveryConsumed: true,
       identity: { runId: "run-2", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
     }, {
       signal: new AbortController().signal,
@@ -223,6 +227,37 @@ describe("HarnessDriverBackend", () => {
     expect(recovery.recovered).toBe(true);
     expect(recoveredDriverKind).toBe("fake");
     expect(recoveredProviderIdentity).toEqual(providerIdentity);
+    expect(recoveredDispositionAllowance).toBe(true);
+  });
+
+  it("preserves a consumed disposition allowance in native snapshots", async () => {
+    class ConsumedRecoverySession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return {
+          ...(await super.snapshot()),
+          dispositionOnlyRecoveryConsumed: true,
+        };
+      }
+    }
+    const backend = new HarnessDriverBackend({
+      ...driver,
+      async openSession() {
+        return new ConsumedRecoverySession();
+      },
+    });
+    const session = await backend.openSession({
+      identity: {
+        runId: "run-consumed-recovery",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+    });
+
+    await expect(session.snapshot()).resolves.toMatchObject({
+      dispositionOnlyRecoveryConsumed: true,
+    });
   });
 
   it("forwards the native bootstrap signal to the harness driver", async () => {
@@ -329,11 +364,9 @@ describe("HarnessDriverBackend", () => {
       terminalTurns: [{ turnId: "turn-1", fingerprint: "terminal-1" }],
     };
 
-    const recoveryOptions = { signal: new AbortController().signal };
-    const firstRecovery = await backend.recoverSession(
-      settledSnapshot,
-      recoveryOptions,
-    );
+    const firstRecovery = await backend.recoverSession(settledSnapshot, {
+      signal: new AbortController().signal,
+    });
     expect(firstRecovery.recovered).toBe(true);
     const firstSession = firstRecovery.session!;
     const firstRecoveredSnapshot = await firstSession.snapshot();
@@ -348,10 +381,9 @@ describe("HarnessDriverBackend", () => {
       turnId: "turn-1",
     });
 
-    const secondRecovery = await backend.recoverSession(
-      firstRecoveredSnapshot,
-      recoveryOptions,
-    );
+    const secondRecovery = await backend.recoverSession(firstRecoveredSnapshot, {
+      signal: new AbortController().signal,
+    });
     expect(secondRecovery.recovered).toBe(true);
     const secondSession = secondRecovery.session!;
     await expect(secondSession.snapshot()).resolves.toMatchObject({

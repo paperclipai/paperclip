@@ -2591,21 +2591,24 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it("starts a continuation after the driver clears a stale active terminal turn", async () => {
+  it("retries disposition recovery when the driver releases an absent bound provider turn", async () => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
       sessionId: "driver-recovery",
       identity,
       providerSessionId: "provider-recovery",
       cursor: "1",
-      activeTurnId: "turn-already-terminal",
-      terminalTurns: [{ turnId: "turn-already-terminal", fingerprint: "terminal-fingerprint" }],
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-work", fingerprint: "terminal-fingerprint" }],
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-missing-disposition",
       pendingRuntimeRequests: [],
       lineage: [],
     };
     const recoveredSnapshot: PersistedNativeSession = {
       ...checkpoint,
-      activeTurnId: null,
+      dispositionOnlyRecoveryConsumed: false,
+      dispositionOnlyRecoveryTurnId: null,
     };
     const terminalEvent: PrpEvent = {
       schema: "paperclip.prp.event.v1",
@@ -2647,6 +2650,292 @@ describe("executeNativeSession recovery", () => {
       async recoverSession() { return { recovered: true, session }; },
     };
     const bySource = new Map<string, PrpEvent[]>();
+    const replayedPages: PrpEvent[][] = [];
+    const replayEvents = vi.fn(async (replay: Parameters<ControlPlanePort["replayEvents"]>[0]) => {
+      const list = bySource.get(replay.sourceInstanceId) ?? [];
+      const events = structuredClone(list.filter((event) => event.sourceSeq > replay.afterSourceSeq));
+      replayedPages.push(events);
+      return {
+        events,
+        highestContiguousSourceSeq: highestContiguous(list),
+      };
+    });
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() { return structuredClone(checkpoint); },
+      async checkpointSession() {},
+      async appendEvent(event) {
+        const list = bySource.get(event.sourceInstanceId) ?? [];
+        list.push(structuredClone(event));
+        bySource.set(event.sourceInstanceId, list);
+        return {
+          cursor: list.length,
+          highestContiguousSourceSeq: highestContiguous(list),
+          disposition: "committed",
+        };
+      },
+      replayEvents,
+      async completeRun() {},
+    };
+
+    await expect(executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+    })).resolves.toMatchObject({ turnId: "turn-continuation", providerSessionId: "provider-recovery" });
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(replayEvents).toHaveBeenCalledWith({
+      runId: identity.runId,
+      sourceInstanceId: "runner-recovery",
+      afterSourceSeq: 0,
+      limit: 1_000,
+    });
+    expect(replayedPages.every((events) => events.length === 0)).toBe(true);
+    const recoveryEnvelope = JSON.parse(
+      startTurn.mock.calls[0]![0].message.text,
+    ) as { task: { prompt: string } };
+    expect(recoveryEnvelope.task.prompt).toContain(
+      "semantic-result recovery for a prior completed provider turn",
+    );
+    expect(recoveryEnvelope.task.prompt).toContain(
+      "Do not repeat implementation, tests, research, or the final answer",
+    );
+    expect(recoveryEnvelope.task.prompt).not.toContain(input.task.prompt);
+
+    checkpoint.dispositionOnlyRecoveryTurnId = undefined;
+    recoveredSnapshot.dispositionOnlyRecoveryTurnId = undefined;
+    startTurn.mockClear();
+    bySource.clear();
+    bySource.set("runner-recovery", [{
+      ...terminalEvent,
+      sourceEventId: "runner-recovery:stale-terminal",
+      turnId: "turn-stale-unbound",
+    }]);
+
+    await expect(executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+    })).resolves.toMatchObject({
+      turnId: "turn-continuation",
+      providerSessionId: "provider-recovery",
+    });
+    expect(startTurn).toHaveBeenCalledOnce();
+  });
+
+  it("consumes an adopted completed disposition turn without starting another turn", async () => {
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: "provider-recovery",
+      cursor: "1",
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-work", fingerprint: "work-terminal" }],
+      dispositionOnlyRecoveryConsumed: false,
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const recoveredSnapshot: PersistedNativeSession = {
+      ...checkpoint,
+      cursor: "2",
+      terminalTurns: [
+        ...checkpoint.terminalTurns!,
+        { turnId: "turn-disposition", fingerprint: "disposition-terminal" },
+      ],
+      dispositionOnlyRecoveryConsumed: true,
+    };
+    const terminalEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "provider-recovery:2",
+      sourceSeq: 2,
+      sourceInstanceId: "provider-recovery",
+      sourceKind: "provider",
+      runId: identity.runId,
+      normalizedSessionId: identity.sessionId,
+      turnId: "turn-disposition",
+      eventType: "turn.completed",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-09T00:00:01.000Z",
+      payload: {},
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));
+    let dispositionTerminalCommitted = false;
+    let prematureDispositionCheckpoint = false;
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+      },
+      async *events() { yield terminalEvent; },
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(recoveredSnapshot); },
+      async close() {},
+    };
+    const events: PrpEvent[] = [];
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "recovery-backend",
+          version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+        };
+      },
+      async openSession() { throw new Error("must recover the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() { return structuredClone(checkpoint); },
+      async checkpointSession(snapshot) {
+        if (
+          snapshot.terminalTurns?.some((turn) => turn.turnId === "turn-disposition")
+          && !dispositionTerminalCommitted
+        ) prematureDispositionCheckpoint = true;
+      },
+      async appendEvent(event) {
+        events.push(structuredClone(event));
+        if (event.eventType === "turn.completed" && event.turnId === "turn-disposition") {
+          dispositionTerminalCommitted = true;
+        }
+        return {
+          cursor: events.length,
+          highestContiguousSourceSeq: highestContiguous(events),
+          disposition: "committed",
+        };
+      },
+      async replayEvents(replay) {
+        return {
+          events: structuredClone(events.filter((event) =>
+            event.sourceInstanceId === replay.sourceInstanceId
+            && event.sourceSeq > replay.afterSourceSeq
+          )),
+          highestContiguousSourceSeq: highestContiguous(events),
+        };
+      },
+      async completeRun() {},
+    };
+
+    await expect(executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      resolveMissingResult: async () => result,
+    })).resolves.toMatchObject({
+      result,
+      turnId: "turn-disposition",
+    });
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(prematureDispositionCheckpoint).toBe(false);
+    expect(events.map((event) => event.eventType)).toEqual([
+      "turn.completed",
+      "run.result.accepted",
+      "run.terminal",
+    ]);
+  });
+
+  it("resolves a proposal-less durable disposition terminal through control-plane policy", async () => {
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: "provider-recovery",
+      cursor: "1",
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-work", fingerprint: "work-terminal" }],
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-disposition",
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const terminalEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "runner-recovery:run-native:4",
+      sourceSeq: 4,
+      sourceInstanceId: "runner-recovery",
+      sourceKind: "provider",
+      runId: identity.runId,
+      normalizedSessionId: identity.sessionId,
+      turnId: "turn-disposition",
+      eventType: "turn.completed",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-09T00:00:01.000Z",
+      payload: {},
+    };
+    const resultProposalEvent: PrpEvent = {
+      ...terminalEvent,
+      sourceEventId: "runner-recovery:run-native:3",
+      sourceSeq: 3,
+      eventType: "run.result.proposed",
+      payload: result,
+    };
+    const originalTaskTerminal: PrpEvent = {
+      ...terminalEvent,
+      sourceEventId: "runner-recovery:run-native:2",
+      sourceSeq: 2,
+      turnId: "turn-work",
+    };
+    const originalTaskProposal: PrpEvent = {
+      ...resultProposalEvent,
+      sourceEventId: "runner-recovery:run-native:1",
+      sourceSeq: 1,
+      turnId: "turn-work",
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));
+    let recoveredSubmissionOwned = true;
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+      },
+      async *events() { yield structuredClone(terminalEvent); },
+      startTurn,
+      async result() { return null; },
+      async snapshot() {
+        return {
+          ...structuredClone(checkpoint),
+          dispositionOnlyRecoveryConsumed: recoveredSubmissionOwned,
+          terminalTurns: recoveredSubmissionOwned
+            ? [
+                ...structuredClone(checkpoint.terminalTurns ?? []),
+                {
+                  turnId: "turn-disposition",
+                  fingerprint: "disposition-terminal",
+                },
+              ]
+            : structuredClone(checkpoint.terminalTurns),
+        };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "recovery-backend",
+          version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+        };
+      },
+      async openSession() { throw new Error("must recover the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const bySource = new Map<string, PrpEvent[]>([
+      ["runner-recovery", [
+        structuredClone(originalTaskProposal),
+        structuredClone(originalTaskTerminal),
+      ]],
+    ]);
     const port: ControlPlanePort = {
       async openRun() {},
       async loadSessionCheckpoint() { return structuredClone(checkpoint); },
@@ -2671,23 +2960,177 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
-    await expect(executeNativeSession({
+    const execute = () => executeNativeSession({
       input,
       backend,
       controlPlane: port,
       runnerInstanceId: "runner-recovery",
       controlPlaneInstanceId: "control-recovery",
-    })).resolves.toMatchObject({ turnId: "turn-continuation", providerSessionId: "provider-recovery" });
-    expect(startTurn).toHaveBeenCalledOnce();
-    const recoveryEnvelope = JSON.parse(
-      startTurn.mock.calls[0]![0].message.text,
-    ) as { task: { prompt: string } };
-    expect(recoveryEnvelope.task.prompt).toContain(
-      "semantic-result recovery for a prior completed provider turn",
+      resolveMissingResult: async ({ terminalEvent: replayed }) => {
+        expect(replayed).toEqual(terminalEvent);
+        return result;
+      },
+    });
+    await expect(execute()).resolves.toMatchObject({
+      result,
+      turnId: "turn-disposition",
+    });
+    bySource.set("runner-recovery", [
+      structuredClone(originalTaskProposal),
+      structuredClone(originalTaskTerminal),
+      structuredClone(resultProposalEvent),
+      structuredClone(terminalEvent),
+    ]);
+    // Provider recovery may clear a legacy pre-acceptance marker when thread
+    // history has no matching turn. Durable replay remains authoritative and
+    // must still prevent a duplicate disposition submission.
+    recoveredSubmissionOwned = false;
+
+    await expect(execute()).resolves.toMatchObject({
+      result,
+      turnId: "turn-disposition",
+    });
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(bySource.get("runner-recovery")).toEqual([
+      originalTaskProposal,
+      originalTaskTerminal,
+      resultProposalEvent,
+      terminalEvent,
+    ]);
+    expect(bySource.get("control-recovery")?.map((event) => event.eventType)).toEqual([
+      "run.result.accepted",
+      "run.terminal",
+    ]);
+
+  });
+
+  it("resolves a checkpointed result-less disposition without resubmitting when its terminal event is missing", async () => {
+    const workProposal: PrpEvent = {
+      ...runnerEvent(1, "run.result.proposed", result),
+      turnId: "turn-work",
+    };
+    const workTerminal: PrpEvent = {
+      ...runnerEvent(2, "turn.completed"),
+      turnId: "turn-work",
+    };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: "provider-recovery",
+      cursor: "3",
+      activeTurnId: null,
+      terminalTurns: [
+        { turnId: "turn-work", fingerprint: "work-terminal" },
+        { turnId: "turn-disposition", fingerprint: "disposition-terminal" },
+      ],
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-disposition",
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const recoveredCheckpoint: PersistedNativeSession = structuredClone(checkpoint);
+    const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));
+    const events = vi.fn(() => (async function* () {
+      throw new Error("checkpoint fallback must not consume provider events");
+    })());
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+      },
+      events,
+      startTurn,
+      async result() { return null; },
+      async snapshot() { return structuredClone(recoveredCheckpoint); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "recovery-backend",
+          version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+        };
+      },
+      async openSession() { throw new Error("must recover the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const bySource = new Map<string, PrpEvent[]>([
+      ["runner-recovery", [workProposal, workTerminal]],
+    ]);
+    const completeRun = vi.fn(async () => undefined);
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() { return structuredClone(checkpoint); },
+      async checkpointSession() {},
+      async appendEvent(event) {
+        const list = bySource.get(event.sourceInstanceId) ?? [];
+        list.push(structuredClone(event));
+        bySource.set(event.sourceInstanceId, list);
+        return {
+          cursor: list.length,
+          highestContiguousSourceSeq: highestContiguous(list),
+          disposition: "committed",
+        };
+      },
+      async replayEvents(replay) {
+        const list = bySource.get(replay.sourceInstanceId) ?? [];
+        return {
+          events: structuredClone(list.filter((event) => event.sourceSeq > replay.afterSourceSeq)),
+          highestContiguousSourceSeq: highestContiguous(list),
+        };
+      },
+      completeRun,
+    };
+
+    const execute = () => executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      resolveMissingResult: async ({ turnId, terminalEvent }) => {
+        expect(turnId).toBe("turn-disposition");
+        expect(terminalEvent).toMatchObject({
+          sourceInstanceId: "control-recovery",
+          sourceKind: "control_plane",
+          runId: identity.runId,
+          normalizedSessionId: identity.sessionId,
+          turnId: "turn-disposition",
+          eventType: "turn.completed",
+          payload: {
+            recovery: "checkpointed_resultless_disposition",
+            terminalFingerprint: "disposition-terminal",
+          },
+        });
+        return result;
+      },
+    });
+    await expect(execute()).resolves.toMatchObject({
+      result,
+      turnId: "turn-disposition",
+    });
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(completeRun).toHaveBeenCalledOnce();
+    expect(bySource.get("runner-recovery")).toEqual([
+      workProposal,
+      workTerminal,
+    ]);
+    expect(bySource.get("control-recovery")?.map((event) => event.eventType)).toEqual([
+      "run.result.accepted",
+      "run.terminal",
+    ]);
+
+    recoveredCheckpoint.terminalTurns![1]!.fingerprint = "conflicting-terminal";
+    await expect(execute()).rejects.toThrow(
+      "native_disposition_recovery_checkpoint_conflict",
     );
-    expect(recoveryEnvelope.task.prompt).toContain(
-      "Do not repeat implementation, tests, research, or the final answer",
-    );
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(completeRun).toHaveBeenCalledOnce();
   });
 
   it("recovers a completed checkpoint and appends only a missing control terminal fact", async () => {

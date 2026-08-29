@@ -617,6 +617,126 @@ async function reconcileRecoveryCursor(input: {
   return { ...input.checkpoint, cursor: String(persistedHighWater) };
 }
 
+async function replayCheckpointedTurnTerminal(input: {
+  controlPlane: ControlPlanePort;
+  runId: string;
+  sourceInstanceId: string;
+  priorTerminalTurnIds: readonly string[];
+  expectedTurnId?: string | null;
+}): Promise<{ terminal: PrpEvent; hasPriorResultProposal: boolean } | null> {
+  let afterSourceSeq = 0;
+  const terminals: PrpEvent[] = [];
+  const latestResultProposalByTurn = new Map<string, number>();
+  const priorTerminalTurnIds = new Set(input.priorTerminalTurnIds);
+  while (true) {
+    const replay = await input.controlPlane.replayEvents({
+      runId: input.runId,
+      sourceInstanceId: input.sourceInstanceId,
+      afterSourceSeq,
+      limit: 1_000,
+    });
+    if (replay.events.length === 0) {
+      // Disposition recovery owns the newest durable provider terminal. An
+      // older task turn may also have a valid proposal, but selecting it would
+      // finalize stale work and strand the actual recovery terminal.
+      const terminal = [...terminals]
+        .sort((left, right) => right.sourceSeq - left.sourceSeq)[0] ?? null;
+      const proposalSequence = latestResultProposalByTurn.get(terminal?.turnId ?? "") ?? 0;
+      return terminal === null
+        ? null
+        : {
+            terminal,
+            hasPriorResultProposal:
+              proposalSequence > 0 && proposalSequence < terminal.sourceSeq,
+          };
+    }
+    for (const event of replay.events) {
+      if (event.turnId && event.eventType === "run.result.proposed") {
+        latestResultProposalByTurn.set(
+          event.turnId,
+          Math.max(
+            latestResultProposalByTurn.get(event.turnId) ?? 0,
+            event.sourceSeq,
+          ),
+        );
+      }
+      if (
+        event.turnId &&
+        isTurnTerminal(event) &&
+        (
+          input.expectedTurnId !== undefined && input.expectedTurnId !== null
+            ? event.turnId === input.expectedTurnId
+            : !priorTerminalTurnIds.has(event.turnId)
+        )
+      ) {
+        terminals.push(structuredClone(event));
+      }
+    }
+    const pageHighWater = replay.events.reduce(
+      (highest, event) => Math.max(highest, event.sourceSeq),
+      afterSourceSeq,
+    );
+    if (pageHighWater <= afterSourceSeq) {
+      throw new Error("native_recovery_replay_did_not_advance");
+    }
+    afterSourceSeq = pageHighWater;
+  }
+}
+
+function checkpointedResultlessDispositionFallback(input: {
+  persisted: PersistedNativeSession;
+  recovered: PersistedNativeSession;
+  controlPlaneInstanceId: string;
+}): PrpEvent | null {
+  const turnId = input.persisted.dispositionOnlyRecoveryTurnId;
+  if (
+    !input.persisted.dispositionOnlyRecoveryConsumed
+    || input.persisted.semanticResult
+    || input.persisted.activeTurnId
+    || typeof turnId !== "string"
+    || turnId.length === 0
+  ) return null;
+  const persistedTerminal = input.persisted.terminalTurns?.filter(
+    (terminal) => terminal.turnId === turnId,
+  ) ?? [];
+  if (persistedTerminal.length !== 1 || persistedTerminal[0]!.fingerprint.length === 0) {
+    return null;
+  }
+  const recoveredTurnId = input.recovered.dispositionOnlyRecoveryTurnId;
+  const recoveredTerminal = input.recovered.terminalTurns?.filter(
+    (terminal) => terminal.turnId === recoveredTurnId,
+  ) ?? [];
+  if (
+    !input.recovered.dispositionOnlyRecoveryConsumed
+    || input.recovered.semanticResult
+    || input.recovered.activeTurnId
+    || recoveredTurnId !== turnId
+    || recoveredTerminal.length !== 1
+    || recoveredTerminal[0]!.fingerprint !== persistedTerminal[0]!.fingerprint
+    || canonicalJson(input.recovered.identity) !== canonicalJson(input.persisted.identity)
+  ) {
+    throw new Error("native_disposition_recovery_checkpoint_conflict");
+  }
+  return {
+    schema: "paperclip.prp.event.v1",
+    sourceEventId: `${input.controlPlaneInstanceId}:${input.persisted.identity.runId}:checkpointed-disposition-terminal`,
+    sourceSeq: 1,
+    sourceInstanceId: input.controlPlaneInstanceId,
+    sourceKind: "control_plane",
+    runId: input.persisted.identity.runId,
+    normalizedSessionId: input.persisted.identity.sessionId,
+    turnId,
+    eventType: "turn.completed",
+    schemaVersion: 1,
+    priority: 0,
+    emittedAt: new Date().toISOString(),
+    payload: {
+      recovery: "checkpointed_resultless_disposition",
+      terminalFingerprint: persistedTerminal[0]!.fingerprint,
+    },
+  };
+}
+
 /**
  * Package-owned normalized session loop. Paperclip supplies persistence and
  * authority through ControlPlanePort; provider/session behavior stays here.
@@ -866,6 +986,16 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
       await persistCheckpoint(snapshot, signal);
     };
     const recoveredSnapshot = await session.snapshot();
+    const recoveredActiveTurnId = recovered
+      ? recoveredSnapshot.activeTurnId ?? null
+      : persistedSession?.activeTurnId ?? null;
+    const adoptedDispositionTerminal = Boolean(
+      recovered
+      && recoveredSnapshot.dispositionOnlyRecoveryConsumed
+      && !recoveredActiveTurnId
+      && (recoveredSnapshot.terminalTurns?.length ?? 0)
+        > (persistedSession?.terminalTurns?.length ?? 0)
+    );
     if (continuityBreak) {
       await options.onContinuityBreak?.({
         ...continuityBreak,
@@ -874,7 +1004,15 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
           recoveredSnapshot.providerSessionId ?? null,
       });
     }
-    await persistCheckpoint(recoveredSnapshot);
+    // recoverSession may adopt a provider terminal and enqueue its normalized
+    // event before returning. Do not checkpoint that terminal fingerprint
+    // until consumeTurn has durably appended the event: if this process dies
+    // first, retaining the older checkpoint lets the next recovery adopt and
+    // emit the same provider terminal again instead of reconstructing a closed
+    // session with no event to finalize.
+    if (!adoptedDispositionTerminal) {
+      await persistCheckpoint(recoveredSnapshot);
+    }
 
     let consumed = {
       event: null as PrpEvent | null,
@@ -893,34 +1031,96 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
         }
       : null;
     if (!completed) {
-      const consumptionAbort = new AbortController();
-      const consuming = consumeTurn(
-        session,
-        options.controlPlane,
-        options.timeoutMs ?? 900_000,
-        options.runtimeInputLiveWindowMs ?? DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
-        closeSession,
-        quarantineSession,
-        options.resolveGovernedWait,
-        consumptionAbort.signal,
-      );
-      // Event consumption must begin before startTurn so an eager provider cannot
-      // outrun us. Observe its rejection immediately, though: if startTurn or
-      // checkpointing fails first, the outer finally closes the session and the
-      // abandoned consumer will reject when its stream closes. Without a handler
-      // that later rejection becomes process-fatal under Node's strict policy.
-      void consuming.catch(() => undefined);
       // A recovered driver is authoritative about whether a provider turn is
       // still active. In particular, drivers normalize the checkpoint race
       // where a terminal fingerprint was persisted before activeTurnId was
       // cleared. Falling back to the older control-plane checkpoint here
       // resurrects that terminal turn and waits forever for an event that was
       // already consumed.
-      const recoveredActiveTurnId = recovered
-        ? recoveredSnapshot.activeTurnId ?? null
-        : persistedSession?.activeTurnId ?? null;
+      const dispositionRecoveryWasSubmitted = Boolean(
+        recovered
+        && persistedSession?.dispositionOnlyRecoveryConsumed
+        && !recoveredSnapshot.semanticResult
+        && !recoveredActiveTurnId
+      );
+      const dispositionRecoveryTurnId =
+        persistedSession?.dispositionOnlyRecoveryTurnId
+        ?? recoveredSnapshot.dispositionOnlyRecoveryTurnId
+        ?? null;
+      const recoveredDispositionTurnObserved = Boolean(
+        dispositionRecoveryTurnId
+        && recoveredSnapshot.terminalTurns?.some(
+          (terminal) => terminal.turnId === dispositionRecoveryTurnId,
+        )
+      );
+      const dispositionRecoveryStillOwned = Boolean(
+        dispositionRecoveryWasSubmitted
+        && recoveredSnapshot.dispositionOnlyRecoveryConsumed
+        && dispositionRecoveryTurnId !== null
+        && recoveredDispositionTurnObserved
+      );
+      const replayedDisposition =
+        dispositionRecoveryWasSubmitted && dispositionRecoveryTurnId !== null
+        ? await replayCheckpointedTurnTerminal({
+            controlPlane: options.controlPlane,
+            runId: input.binding.runId,
+            sourceInstanceId: options.runnerInstanceId,
+            priorTerminalTurnIds: (persistedSession?.terminalTurns ?? [])
+              .map((terminal) => terminal.turnId),
+            expectedTurnId: dispositionRecoveryTurnId,
+          })
+        : null;
+      // Durable replay remains authoritative. If it has no terminal, an exact
+      // consumed marker bound to the same terminal fingerprint in both
+      // checkpoints proves provider completion without reconstructing provider
+      // output. Give only that non-provider fact to control-plane policy; a
+      // mismatch fails closed and a null policy result fails finalization.
+      const dispositionFallback =
+        dispositionRecoveryWasSubmitted && replayedDisposition === null && persistedSession
+          ? checkpointedResultlessDispositionFallback({
+              persisted: persistedSession,
+              recovered: recoveredSnapshot,
+              controlPlaneInstanceId: options.controlPlaneInstanceId,
+            })
+          : null;
+      const checkpointedDispositionTerminal =
+        replayedDisposition !== null || dispositionFallback !== null;
+      const recoveryTerminal = replayedDisposition?.terminal ?? dispositionFallback;
+      const consumptionAbort = new AbortController();
+      const consuming = recoveryTerminal === null
+        ? consumeTurn(
+            session,
+            options.controlPlane,
+            options.timeoutMs ?? 900_000,
+            options.runtimeInputLiveWindowMs ?? DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
+            closeSession,
+            quarantineSession,
+            options.resolveGovernedWait,
+            consumptionAbort.signal,
+          )
+        : Promise.resolve({
+            event: recoveryTerminal,
+            eventCount: 0,
+            highestContiguousSourceSeq:
+              replayedDisposition === null ? 0 : recoveryTerminal.sourceSeq,
+            governedResult: null,
+          });
+      // Event consumption must begin before startTurn so an eager provider cannot
+      // outrun us. Observe its rejection immediately, though: if startTurn or
+      // checkpointing fails first, the outer finally closes the session and the
+      // abandoned consumer will reject when its stream closes. Without a handler
+      // that later rejection becomes process-fatal under Node's strict policy.
+      void consuming.catch(() => undefined);
       try {
-        if (!recovered || !recoveredActiveTurnId) {
+        if (
+          !recovered
+          || (
+            !recoveredActiveTurnId
+            && !adoptedDispositionTerminal
+            && !checkpointedDispositionTerminal
+            && !dispositionRecoveryStillOwned
+          )
+        ) {
           const modelEnvelope = buildNativeModelEnvelope(input);
           const dispositionOnlyRecovery = Boolean(
             recovered &&
