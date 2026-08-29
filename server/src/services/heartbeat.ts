@@ -12888,30 +12888,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // the same promise startNextQueuedRunForAgent already tracks in
   // activeRunExecutionPromises, so getTaskDrainStatus() keeps reporting the
   // run as active until the release finishes.
+  //
+  // The run row, the wakeup request, and the issue execution lock all guard
+  // the same claim, so one transaction commits all three writes together. A
+  // partial write (for example the run flips to "queued" but the wakeup or
+  // issue update then fails) would let the execution promise clear from
+  // activeRunExecutionPromises while the wakeup stayed "claimed" or the
+  // issue stayed locked to a queued run — task-drain status would then read
+  // quiescent while the database still held part of the old claim.
   async function releaseRunClaimedJustBeforeSuppression(runId: string) {
     const now = new Date();
-    const released = await db
-      .update(heartbeatRuns)
-      .set({ status: "queued", startedAt: null, responsibleUserId: null, updatedAt: now })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!released) return;
+    await db.transaction(async (tx) => {
+      const released = await tx
+        .update(heartbeatRuns)
+        .set({ status: "queued", startedAt: null, responsibleUserId: null, updatedAt: now })
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!released) return;
 
-    await setWakeupStatus(released.wakeupRequestId, "queued", { claimedAt: null });
+      if (released.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({ status: "queued", claimedAt: null, updatedAt: now })
+          .where(eq(agentWakeupRequests.id, released.wakeupRequestId));
+      }
 
-    const context = parseObject(released.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId);
-    if (issueId) {
-      await db
-        .update(issues)
-        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-        .where(and(
-          eq(issues.id, issueId),
-          eq(issues.companyId, released.companyId),
-          eq(issues.executionRunId, released.id),
-        ));
-    }
+      const context = parseObject(released.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+          .where(and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, released.companyId),
+            eq(issues.executionRunId, released.id),
+          ));
+      }
+    });
   }
 
   async function cancelQueuedRunForBlockedDependencies(

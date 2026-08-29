@@ -218,4 +218,84 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .then((rows) => rows[0] ?? null);
     expect(finished?.status).toBe("succeeded");
   }, 20_000);
+
+  // Wraps db.transaction so the callback's tx object throws the moment code
+  // calls tx.update(failingTable) — this makes releaseRunClaimedJustBeforeSuppression's
+  // real Postgres transaction roll back exactly like a genuine write failure
+  // partway through, without touching any other table's update path.
+  function withFailingTransactionalUpdate(realDb: typeof db, failingTable: unknown) {
+    return new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop !== "transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>) =>
+          target.transaction((tx) => {
+            const txProxy = new Proxy(tx as object, {
+              get(txTarget, txProp, txReceiver) {
+                if (txProp === "update") {
+                  return (table: unknown) => {
+                    if (table === failingTable) {
+                      throw new Error("simulated transactional write failure");
+                    }
+                    return (txTarget as any).update(table);
+                  };
+                }
+                return Reflect.get(txTarget, txProp, txReceiver);
+              },
+            });
+            return fn(txProxy);
+          });
+      },
+    }) as typeof db;
+  }
+
+  for (const [label, failingTable] of [
+    ["the wakeup-request update", agentWakeupRequests],
+    ["the issue-lock update", issues],
+  ] as const) {
+    it(`keeps the run claimed instead of partially releasing it when ${label} fails`, async () => {
+      const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+      const failingDb = withFailingTransactionalUpdate(db, failingTable);
+      const heartbeat = heartbeatService(failingDb);
+
+      const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+        const payload = event.payload as { runId?: string; status?: string };
+        if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+          startTaskDrain({});
+        }
+      });
+
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+      } finally {
+        unsubscribe();
+      }
+
+      // The transaction rolled back, so the run must still read exactly as
+      // claimQueuedRun left it: "running" with its claim fields set. A
+      // non-atomic release would show "queued" here instead — the bug this
+      // test guards against.
+      const run = await db
+        .select({ status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("running");
+      expect(run?.startedAt).not.toBeNull();
+
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("claimed");
+
+      const issue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBe(runId);
+    }, 20_000);
+  }
 });
