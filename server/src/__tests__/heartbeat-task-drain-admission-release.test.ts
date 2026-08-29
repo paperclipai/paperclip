@@ -429,4 +429,73 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       expect(statusAfterReap.quiescent).toBe(true);
     }, 20_000);
   }
+
+  // Wraps a db handle (which may already be wrapped by
+  // withFailingTransactionalUpdate) so a call to db.insert(table) throws
+  // once armed.value is true. Lets a test fail one specific later cleanup
+  // step without touching any insert that happens earlier.
+  function withFailingInsertWhenArmed(realDb: typeof db, table: unknown, armed: { value: boolean }) {
+    return new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop !== "insert") return Reflect.get(target, prop, receiver);
+        return (insertTable: unknown) => {
+          if (armed.value && insertTable === table) {
+            throw new Error("simulated insert failure");
+          }
+          return (target as any).insert(insertTable);
+        };
+      },
+    }) as typeof db;
+  }
+
+  it("clears the stuck claim-release marker even when later reap cleanup rejects", async () => {
+    const { companyId, runId } = await seedQueuedRun();
+    // Reuse the same setup as "leaves the run claimed instead of a partial
+    // write" above: both the release transaction and the fallback's own
+    // transaction fail, so the run stays "running" and its claim-release
+    // marker keeps task drain non-quiescent until the orphan reaper picks
+    // the run up.
+    const transactionFailingDb = withFailingTransactionalUpdate(db, { 0: issues, 1: agentWakeupRequests });
+    const armedRunEventInsertFailure = { value: false };
+    const failingDb = withFailingInsertWhenArmed(transactionFailingDb, heartbeatRunEvents, armedRunEventInsertFailure);
+    const heartbeat = heartbeatService(failingDb);
+
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = event.payload as { runId?: string; status?: string };
+      if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+        startTaskDrain({});
+      }
+    });
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+    }
+
+    const claimedStatus = getTaskDrainStatus();
+    expect(claimedStatus.activeRuns).toBeGreaterThanOrEqual(1);
+    expect(claimedStatus.quiescent).toBe(false);
+
+    // Arm the failure only now, so it hits the reap loop's own run-event
+    // insert — a cleanup step that runs after the run's row already reaches
+    // a terminal status — instead of any insert during the claim race above.
+    armedRunEventInsertFailure.value = true;
+    await expect(heartbeat.reapOrphanedRuns()).rejects.toThrow("simulated insert failure");
+
+    // The run's row reached "failed" before the injected failure, and the
+    // marker must have cleared right after that point, not only after every
+    // later cleanup step succeeds — the bug this test guards against.
+    const reapedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(reapedRun?.status).toBe("failed");
+
+    const statusAfterFailedReap = getTaskDrainStatus();
+    expect(statusAfterFailedReap.activeRuns).toBe(0);
+    expect(statusAfterFailedReap.quiescent).toBe(true);
+  }, 20_000);
 });
