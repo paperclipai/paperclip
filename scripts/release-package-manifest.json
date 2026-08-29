@@ -7,7 +7,7 @@
   {
     "dir": "packages/adapters/aider-local",
     "name": "@paperclipai/adapter-aider-local",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/adapters/claude-local",
