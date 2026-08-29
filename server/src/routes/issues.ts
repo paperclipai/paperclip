@@ -8670,6 +8670,7 @@ export function issueRoutes(
         ...issue,
         deduplicated: true,
         deduplicationReason,
+        ...(req.body.blockParentUntilDone ? { parentBlockerAdded: true } : {}),
         relatedWork: referenceSummary,
         referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
@@ -8809,6 +8810,7 @@ export function issueRoutes(
 
     res.status(201).json({
       ...issue,
+      ...(req.body.blockParentUntilDone ? { parentBlockerAdded: true } : {}),
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });

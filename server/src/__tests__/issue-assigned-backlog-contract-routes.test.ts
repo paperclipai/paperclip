@@ -295,7 +295,7 @@ describe("assigned backlog creation contract", () => {
         blockParentUntilDone: true,
       }),
     );
-    expect(res.body).toEqual(expect.objectContaining({ parentId }));
+    expect(res.body).toEqual(expect.objectContaining({ parentId, parentBlockerAdded: true }));
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

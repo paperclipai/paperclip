@@ -190,9 +190,18 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       status: "todo",
       parentId,
     });
+    const ordinaryChildId = await insertIssue({
+      companyId,
+      identifier: "PBN-3",
+      title: "Open child without blocker relation",
+      status: "todo",
+      parentId,
+    });
     await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === parentId);
+    const result = await svc.list(companyId);
+    const parent = result.find((issue) => issue.id === parentId);
+    const ordinaryChild = result.find((issue) => issue.id === ordinaryChildId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "none",
@@ -203,6 +212,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       stalledBlockerCount: 0,
       attentionBlockerCount: 0,
       blockingTreeLive: false,
+    });
+    expect(ordinaryChild?.blockerAttention).toMatchObject({
+      state: "none",
+      reason: null,
+      unresolvedBlockerCount: 0,
+      unresolvedBlockerIssueIds: [],
     });
   });
 

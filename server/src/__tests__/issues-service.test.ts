@@ -4115,6 +4115,45 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  it("adds the parent blocker relation when a recent-title dedup receives the flag", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Dedup parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const first = await svc.create(companyId, {
+      title: "Deduplicated child",
+      status: "todo",
+      priority: "medium",
+      parentId,
+      allowDuplicate: false,
+    });
+    const second = await svc.create(companyId, {
+      title: "  deduplicated   child ",
+      status: "todo",
+      priority: "medium",
+      parentId,
+      allowDuplicate: false,
+      blockParentUntilDone: true,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect((await svc.getRelationSummaries(parentId)).blockedBy).toEqual([
+      expect.objectContaining({ id: first.id, title: "Deduplicated child" }),
+    ]);
+  });
+
   it("rejects blockParentUntilDone on create without parentId", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
