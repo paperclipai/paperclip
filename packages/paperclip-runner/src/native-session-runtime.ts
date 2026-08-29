@@ -124,6 +124,7 @@ async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Pr
 async function runAbortableOperationWithin<T>(input: {
   timeoutMs: number;
   timeoutMessage: string;
+  timeoutError?: () => Error;
   operation: (signal: AbortSignal) => Promise<T>;
   onLateResolution?: (value: T) => Promise<void> | void;
 }): Promise<T> {
@@ -151,7 +152,7 @@ async function runAbortableOperationWithin<T>(input: {
       operation,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          const error = new Error(input.timeoutMessage);
+          const error = input.timeoutError?.() ?? new Error(input.timeoutMessage);
           timedOut = true;
           timeoutError = error;
           reject(error);
@@ -183,6 +184,13 @@ async function disposeUnadmittedSession(
   await settlesWithin(closeSettlement, FAILED_OPERATION_SETTLEMENT_GRACE_MS);
 }
 
+class NativeSessionFinalizationTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`native session finalization timed out after ${timeoutMs}ms`);
+    this.name = "NativeSessionFinalizationTimeoutError";
+  }
+}
+
 async function finalizeWithin<T>(input: {
   timeoutMs: number;
   operation: (signal: AbortSignal) => Promise<T>;
@@ -190,7 +198,25 @@ async function finalizeWithin<T>(input: {
   return runAbortableOperationWithin({
     ...input,
     timeoutMessage: `native session finalization timed out after ${input.timeoutMs}ms`,
+    timeoutError: () => new NativeSessionFinalizationTimeoutError(input.timeoutMs),
   });
+}
+
+async function finalizeIdempotentControlPlaneWithin<T>(input: {
+  timeoutMs: number;
+  operation: (signal: AbortSignal) => Promise<T>;
+}): Promise<T> {
+  try {
+    return await finalizeWithin(input);
+  } catch (error) {
+    if (!(error instanceof NativeSessionFinalizationTimeoutError)) throw error;
+    // Only the deterministic control-plane transaction enters this retry.
+    // Its event ids and completion dedupe key make the second settlement an
+    // authoritative acknowledgement of any first-attempt commit. Provider
+    // result resolution and checkpointing are deliberately outside this
+    // boundary and are never started a second time.
+    return finalizeWithin(input);
+  }
 }
 
 async function quarantineRetainedSession(
@@ -908,15 +934,17 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
       const terminalEvent = await consuming;
       consumed = terminalEvent;
     }
-    const durableExecutionResult = await finalizeWithin({
-      timeoutMs: options.timeoutMs ?? 900_000,
+    const finalizationTimeoutMs = options.timeoutMs ?? 900_000;
+    const preparedFinalization = await finalizeWithin({
+      timeoutMs: finalizationTimeoutMs,
       operation: async (signal) => {
-        if (completed === null) {
+        let settledCompletion = completed;
+        if (settledCompletion === null) {
           const terminalEvent = consumed.event;
           if (terminalEvent === null) {
             throw new Error("native_finalization_missing: session returned no terminal event");
           }
-          completed = consumed.governedResult === null
+          settledCompletion = consumed.governedResult === null
             ? await session.result()
             : {
                 result: consumed.governedResult,
@@ -930,34 +958,45 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
                 turnId: terminalEvent.turnId ?? null,
               };
           signal.throwIfAborted();
-          if (completed === null && options.resolveMissingResult) {
+          if (settledCompletion === null && options.resolveMissingResult) {
             const recoveredResult = await options.resolveMissingResult({
               turnId: terminalEvent.turnId ?? null,
               terminalEvent,
             });
             signal.throwIfAborted();
             if (recoveredResult !== null) {
-              completed = {
+              settledCompletion = {
                 result: recoveredResult,
-                terminal: terminalFromEvent(terminalEvent, recoveredResult.reportedWorkDisposition),
+                terminal: terminalFromEvent(
+                  terminalEvent,
+                  recoveredResult.reportedWorkDisposition,
+                ),
                 turnId: terminalEvent.turnId ?? null,
               };
             }
           }
+          // Do not publish the resolved result to the retryable phase until its
+          // checkpoint has settled. A timed-out checkpoint therefore cannot be
+          // skipped by a second attempt.
           await checkpoint(signal);
+          signal.throwIfAborted();
+          completed = settledCompletion;
         }
-        if (completed === null) {
+        if (settledCompletion === null) {
           throw new Error("native_finalization_missing: session returned no semantic result");
         }
         let terminal: PrpTerminalState;
         if (consumed.governedResult !== null) {
-          terminal = completed.terminal;
+          terminal = settledCompletion.terminal;
         } else if (completionSnapshot?.semanticResult && completionSnapshot.terminal) {
           terminal = completionSnapshot.terminal;
         } else {
-          terminal = terminalFromEvent(consumed.event!, completed.result.reportedWorkDisposition);
+          terminal = terminalFromEvent(
+            consumed.event!,
+            settledCompletion.result.reportedWorkDisposition,
+          );
         }
-        const eventTurnId = completed.turnId
+        const eventTurnId = settledCompletion.turnId
           ?? persistedSession?.activeTurnId
           ?? persistedSession?.terminalTurns?.at(-1)?.turnId
           ?? consumed.event?.turnId;
@@ -980,10 +1019,28 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
           emittedAt: new Date().toISOString(),
           payload,
         });
-        const expectedControlEvents = [
-          controlEvent(1, "run.result.accepted", { result: completed.result }),
-          controlEvent(2, "run.terminal", terminal as unknown as Record<string, unknown>),
-        ];
+        return {
+          completed: settledCompletion,
+          terminal,
+          expectedControlEvents: [
+            controlEvent(1, "run.result.accepted", {
+              result: settledCompletion.result,
+            }),
+            controlEvent(
+              2,
+              "run.terminal",
+              terminal as unknown as Record<string, unknown>,
+            ),
+          ],
+        };
+      },
+    });
+    const baselineControlEventSequences = new Set<number>();
+    const accountedControlEventSequences = new Set<number>();
+    let baselineControlReplayCaptured = false;
+    const durableExecutionResult = await finalizeIdempotentControlPlaneWithin({
+      timeoutMs: finalizationTimeoutMs,
+      operation: async (signal) => {
         const controlReplay = await options.controlPlane.replayEvents({
           runId: input.binding.runId,
           sourceInstanceId: options.controlPlaneInstanceId,
@@ -993,7 +1050,7 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
         signal.throwIfAborted();
         const replayBySequence = new Map(controlReplay.events.map((event) => [event.sourceSeq, event]));
         for (const existing of controlReplay.events) {
-          const expected = expectedControlEvents[existing.sourceSeq - 1];
+          const expected = preparedFinalization.expectedControlEvents[existing.sourceSeq - 1];
           if (
             expected === undefined
             || existing.eventType !== expected.eventType
@@ -1002,31 +1059,53 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
             throw new Error(`native_control_event_replay_conflict:${existing.sourceSeq}`);
           }
         }
+        if (!baselineControlReplayCaptured) {
+          for (const existing of controlReplay.events) {
+            baselineControlEventSequences.add(existing.sourceSeq);
+          }
+          baselineControlReplayCaptured = true;
+        } else {
+          for (const existing of controlReplay.events) {
+            if (
+              !baselineControlEventSequences.has(existing.sourceSeq)
+              && !accountedControlEventSequences.has(existing.sourceSeq)
+            ) {
+              accountedControlEventSequences.add(existing.sourceSeq);
+              consumed.eventCount += 1;
+            }
+          }
+        }
         consumed.highestContiguousSourceSeq = Math.max(
           consumed.highestContiguousSourceSeq,
           controlReplay.highestContiguousSourceSeq,
         );
-        for (const event of expectedControlEvents) {
+        for (const event of preparedFinalization.expectedControlEvents) {
           if (replayBySequence.has(event.sourceSeq)) continue;
           const receipt = await options.controlPlane.appendEvent(event, { signal });
           signal.throwIfAborted();
-          consumed.eventCount += receipt.disposition === "committed" ? 1 : 0;
+          if (
+            receipt.disposition === "committed"
+            && !accountedControlEventSequences.has(event.sourceSeq)
+          ) {
+            accountedControlEventSequences.add(event.sourceSeq);
+            consumed.eventCount += 1;
+          }
           consumed.highestContiguousSourceSeq = Math.max(
             consumed.highestContiguousSourceSeq,
             receipt.highestContiguousSourceSeq,
           );
         }
         await options.controlPlane.completeRun({
-          result: completed.result,
-          terminal,
-          turnId: completed.turnId,
+          result: preparedFinalization.completed.result,
+          terminal: preparedFinalization.terminal,
+          turnId: preparedFinalization.completed.turnId,
           callerResultId: `${options.runnerInstanceId}:${input.binding.runId}:result`,
           callerDedupeKey: `${input.binding.runId}:${input.completionContract.sha256}`,
         }, { signal });
         return {
-          result: completed.result,
-          terminal,
-          turnId: completed.turnId,
+          result: preparedFinalization.completed.result,
+          terminal: preparedFinalization.terminal,
+          turnId: preparedFinalization.completed.turnId,
           normalizedSessionId,
           driverKind: descriptor.name,
           nativeEventCount: consumed.eventCount,

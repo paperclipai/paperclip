@@ -424,6 +424,8 @@ describe("executeNativeSession recovery", () => {
   );
 
   it.each([
+    "provider result",
+    "completion checkpoint",
     "control-plane replay",
     "final event append",
     "run completion",
@@ -438,6 +440,9 @@ describe("executeNativeSession recovery", () => {
           markFinalizationStalled = resolve;
         });
         let stalledSignal: AbortSignal | undefined;
+        let resultCalls = 0;
+        let resultResolved = false;
+        let completionCheckpointCalls = 0;
         const close = vi.fn(async () => undefined);
         const session: NativeSession = {
           identity: () => identity,
@@ -452,7 +457,15 @@ describe("executeNativeSession recovery", () => {
           },
           async *events() { yield runnerEvent(1, "turn.completed"); },
           async startTurn() { return { turnId: "turn-recovery" }; },
-          async result() { return { result, terminal, turnId: "turn-recovery" }; },
+          async result() {
+            resultCalls += 1;
+            if (stalledBoundary === "provider result") {
+              markFinalizationStalled();
+              return await never;
+            }
+            resultResolved = true;
+            return { result, terminal, turnId: "turn-recovery" };
+          },
           async snapshot() {
             return {
               backendKind: "mock",
@@ -480,7 +493,14 @@ describe("executeNativeSession recovery", () => {
         };
         const port: ControlPlanePort = {
           async openRun() {},
-          async checkpointSession() {},
+          async checkpointSession(_snapshot, operationOptions) {
+            if (stalledBoundary === "completion checkpoint" && resultResolved) {
+              completionCheckpointCalls += 1;
+              stalledSignal = operationOptions?.signal;
+              markFinalizationStalled();
+              await never;
+            }
+          },
           async appendEvent(event, operationOptions) {
             if (
               stalledBoundary === "final event append"
@@ -528,14 +548,161 @@ describe("executeNativeSession recovery", () => {
           "native session finalization timed out after 10ms",
         );
         await finalizationStalled;
+        if (stalledBoundary !== "provider result") {
+          expect(stalledSignal?.aborted).toBe(false);
+        }
+
+        await vi.advanceTimersByTimeAsync(20);
+        await rejection;
+
+        if (stalledBoundary !== "provider result") {
+          expect(stalledSignal?.aborted).toBe(true);
+        }
+        expect(resultCalls).toBe(1);
+        if (stalledBoundary === "completion checkpoint") {
+          expect(completionCheckpointCalls).toBe(1);
+        }
+        expect(close).toHaveBeenCalledOnce();
+        expect(retainedSessions).toEqual([session, null]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    "final event append",
+    "run completion",
+  ] as const)(
+    "confirms durable completion when %s commits before its acknowledgement stalls",
+    async (stalledBoundary) => {
+      vi.useFakeTimers();
+      try {
+        const never = new Promise<never>(() => undefined);
+        let markFinalizationStalled = () => {};
+        const finalizationStalled = new Promise<void>((resolve) => {
+          markFinalizationStalled = resolve;
+        });
+        let stalledOnce = false;
+        let stalledSignal: AbortSignal | undefined;
+        const events: PrpEvent[] = [];
+        let durableCompletion: unknown = null;
+        const session: NativeSession = {
+          identity: () => identity,
+          async capabilities() {
+            return {
+              resume: true,
+              typedEvents: true,
+              steering: false,
+              interruption: true,
+              structuredResult: true,
+            };
+          },
+          async *events() { yield runnerEvent(1, "turn.completed"); },
+          async startTurn() { return { turnId: "turn-recovery" }; },
+          async result() { return { result, terminal, turnId: "turn-recovery" }; },
+          async snapshot() {
+            return {
+              backendKind: "mock",
+              sessionId: identity.sessionId,
+              identity,
+              providerSessionId: "provider-recovery",
+              cursor: "1",
+              activeTurnId: null,
+              pendingRuntimeRequests: [],
+              lineage: [],
+            };
+          },
+          async close() {},
+        };
+        const backend: NativeSessionBackend = {
+          async descriptor() {
+            return {
+              kind: "mock",
+              name: "durable-finalization-backend",
+              version: "1",
+              capabilities: await session.capabilities(),
+            };
+          },
+          async openSession() { return session; },
+        };
+        const port: ControlPlanePort = {
+          async openRun() {},
+          async checkpointSession() {},
+          async appendEvent(event, operationOptions) {
+            const appended = structuredClone(event as PrpEvent);
+            const existing = events.find((candidate) =>
+              candidate.sourceInstanceId === appended.sourceInstanceId
+              && candidate.sourceSeq === appended.sourceSeq
+            );
+            if (existing === undefined) events.push(appended);
+            if (
+              stalledBoundary === "final event append"
+              && appended.sourceKind === "control_plane"
+              && !stalledOnce
+            ) {
+              stalledOnce = true;
+              stalledSignal = operationOptions?.signal;
+              markFinalizationStalled();
+              return await never;
+            }
+            const sourceEvents = events.filter(
+              (candidate) => candidate.sourceInstanceId === appended.sourceInstanceId,
+            );
+            return {
+              cursor: events.length,
+              highestContiguousSourceSeq: highestContiguous(sourceEvents),
+              disposition: existing === undefined ? "committed" : "duplicate",
+            };
+          },
+          async replayEvents(replay) {
+            const sourceEvents = events.filter(
+              (event) => event.sourceInstanceId === replay.sourceInstanceId,
+            );
+            return {
+              events: structuredClone(sourceEvents.filter(
+                (event) => event.sourceSeq > replay.afterSourceSeq,
+              )),
+              highestContiguousSourceSeq: highestContiguous(sourceEvents),
+            };
+          },
+          async completeRun(completion, operationOptions) {
+            if (durableCompletion === null) {
+              durableCompletion = structuredClone(completion);
+            } else {
+              expect(completion).toEqual(durableCompletion);
+            }
+            if (stalledBoundary === "run completion" && !stalledOnce) {
+              stalledOnce = true;
+              stalledSignal = operationOptions?.signal;
+              markFinalizationStalled();
+              await never;
+            }
+          },
+        };
+
+        const execution = executeNativeSession({
+          input,
+          backend,
+          controlPlane: port,
+          runnerInstanceId: "runner-recovery",
+          controlPlaneInstanceId: "control-recovery",
+          timeoutMs: 10,
+        });
+        await finalizationStalled;
         expect(stalledSignal?.aborted).toBe(false);
 
         await vi.advanceTimersByTimeAsync(10);
-        await rejection;
 
+        await expect(execution).resolves.toMatchObject({
+          result,
+          terminal,
+          nativeEventCount: 3,
+        });
         expect(stalledSignal?.aborted).toBe(true);
-        expect(close).toHaveBeenCalledOnce();
-        expect(retainedSessions).toEqual([session, null]);
+        expect(durableCompletion).toMatchObject({ result, terminal });
+        expect(events.filter((event) => event.sourceKind === "control_plane"))
+          .toHaveLength(2);
       } finally {
         vi.useRealTimers();
       }
