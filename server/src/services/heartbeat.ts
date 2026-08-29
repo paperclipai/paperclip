@@ -12846,6 +12846,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return claimed;
   }
 
+  // startNextQueuedRunForAgent checks admission suppression once, then claims
+  // runs (sets status "running"), then dispatches each to executeRun, which
+  // checks suppression again before it does any work. Suppression (task
+  // drain, worktree mode, a database restore) can start in the gap between
+  // those two checks. When executeRun's check catches that, the run is
+  // already claimed — release it back to "queued" so it does not keep a
+  // running execution lock that nothing will ever process. This runs inside
+  // the same promise startNextQueuedRunForAgent already tracks in
+  // activeRunExecutionPromises, so getTaskDrainStatus() keeps reporting the
+  // run as active until the release finishes.
+  async function releaseRunClaimedJustBeforeSuppression(runId: string) {
+    const now = new Date();
+    const released = await db
+      .update(heartbeatRuns)
+      .set({ status: "queued", startedAt: null, responsibleUserId: null, updatedAt: now })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!released) return;
+
+    await setWakeupStatus(released.wakeupRequestId, "queued", { claimedAt: null });
+
+    const context = parseObject(released.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (issueId) {
+      await db
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, released.companyId),
+          eq(issues.executionRunId, released.id),
+        ));
+    }
+  }
+
   async function cancelQueuedRunForBlockedDependencies(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -14183,7 +14219,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function executeRun(runId: string) {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    if ((await getSchedulingSuppression()).suppressed) {
+      await releaseRunClaimedJustBeforeSuppression(runId);
+      return;
+    }
 
     let run = await getRun(runId);
     if (!run) return;
