@@ -870,7 +870,11 @@ const activeWakeupPromises = new Set<Promise<unknown>>();
 // signal. Track the runId here instead. getTaskDrainStatus() folds this set
 // into its active-run count, so it keeps reporting a non-quiescent instance
 // for this run. There is no in-process retry for a fallback that already
-// failed once, so an entry here clears only when the process restarts.
+// failed once, so the run's row stays "running" until reapOrphanedRuns picks
+// it up as an orphan and finalizes it — that is also where this marker gets
+// removed (see the delete call at the end of its per-run loop). An entry
+// here only outlives that reap, and so only clears on a process restart, if
+// the reaper itself never runs again for this run.
 const stuckClaimReleaseRunIds = new Set<string>();
 // Thrown by executeRun's task-drain suppression branch when both the atomic
 // claim release and its fallback fail a durable write for the same run. The
@@ -14069,6 +14073,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+      // This run's row just reached a terminal status above, together with
+      // its wakeup and issue lock. If its claim release earlier failed
+      // durably (see stuckClaimReleaseRunIds above), drop that marker now —
+      // the durable state it stood in for is resolved, so keeping it would
+      // report this instance as non-quiescent forever, until a restart.
+      stuckClaimReleaseRunIds.delete(run.id);
     }
 
     if (reaped.length > 0) {

@@ -387,6 +387,46 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       const status = getTaskDrainStatus();
       expect(status.activeRuns).toBeGreaterThanOrEqual(1);
       expect(status.quiescent).toBe(false);
+
+      // The run's row is still "running", so the orphan reaper (which the
+      // failing-transaction proxy no longer intercepts past call index 1)
+      // finds it, finalizes the run, wakeup, and issue lock for real, and
+      // this fix drops the in-memory marker along with them. Before the
+      // fix, this marker survived the reap and quiescent stayed false
+      // until the process restarted.
+      const reapResult = await heartbeat.reapOrphanedRuns();
+      expect(reapResult.runIds).toContain(runId);
+
+      const reapedRun = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(reapedRun?.status).toBe("failed");
+      expect(reapedRun?.errorCode).toBe("process_lost");
+
+      const reapedWakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(reapedWakeup?.status).toBe("failed");
+
+      // The issue is still "todo" and assigned to the same agent, so the
+      // reaper's normal self-heal path queues a fresh recovery run for it
+      // instead of leaving the lock empty — that recovery is unrelated to
+      // this fix and stays queued (not running) because the drain is still
+      // active, so it does not itself count toward activeRuns below.
+      const reapedIssue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(reapedIssue?.executionRunId).not.toBe(runId);
+
+      const statusAfterReap = getTaskDrainStatus();
+      expect(statusAfterReap.activeRuns).toBe(0);
+      expect(statusAfterReap.quiescent).toBe(true);
     }, 20_000);
   }
 });
