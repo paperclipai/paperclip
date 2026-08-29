@@ -8,10 +8,52 @@ import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
 
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import {
+  createPaperclipRunnerAuthorizedToolSet,
+  type PaperclipSemanticToolDefinition,
+} from "../../vendor/paperclip-runner/index.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const RUNNER_VERSION = "paperclip-runner-v1";
+
+interface NativeRunnerProviderLaunch {
+  readonly command: string;
+  readonly args: string[];
+  readonly providerVersion?: string;
+}
+
+interface NativeRunnerPrepareInput {
+  readonly cwd: string;
+  readonly model: string | null;
+  readonly resumeProviderSessionId: string | null;
+  readonly completionContract: { revision: string; criterionIds: string[] };
+  readonly semanticTools: readonly PaperclipSemanticToolDefinition[];
+  readonly providerLaunch?: NativeRunnerProviderLaunch;
+}
+
+export function buildNativeRunnerPreparePayload(
+  input: NativeRunnerPrepareInput,
+): Record<string, unknown> {
+  return {
+    provider: {
+      provider: "codex",
+      driver: "codex_app_server",
+      providerVersion: input.providerLaunch?.providerVersion ?? "codex-app-server-v1",
+      command: input.providerLaunch?.command ?? "codex",
+      args: input.providerLaunch?.args ?? ["app-server"],
+      cwd: input.cwd,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.resumeProviderSessionId
+        ? { providerSessionId: input.resumeProviderSessionId }
+        : {}),
+      instructions: "",
+      approvalPolicy: "never",
+    },
+    completionContract: input.completionContract,
+    authorizedTools: createPaperclipRunnerAuthorizedToolSet(input.semanticTools),
+  };
+}
 
 function executableName(): string {
   return process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
@@ -152,11 +194,7 @@ export async function executeNativeCodexRunner(input: {
   /** Internal test seam; production always uses the instance runtime root. */
   runtimeRoot?: string;
   /** Internal conformance seam; production always launches `codex app-server`. */
-  providerLaunch?: {
-    command: string;
-    args: string[];
-    providerVersion?: string;
-  };
+  providerLaunch?: NativeRunnerProviderLaunch;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn: (meta: {
     pid: number;
@@ -191,23 +229,14 @@ export async function executeNativeCodexRunner(input: {
     runnerDigest,
   });
 
-  prepared.queueCommand("run.prepare", {
-    provider: {
-      provider: "codex",
-      driver: "codex_app_server",
-      providerVersion: input.providerLaunch?.providerVersion ?? "codex-app-server-v1",
-      command: input.providerLaunch?.command ?? "codex",
-      args: input.providerLaunch?.args ?? ["app-server"],
-      cwd: input.cwd,
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.resumeProviderSessionId
-        ? { providerSessionId: input.resumeProviderSessionId }
-        : {}),
-      instructions: "",
-      approvalPolicy: "never",
-    },
+  prepared.queueCommand("run.prepare", buildNativeRunnerPreparePayload({
+    cwd: input.cwd,
+    model: input.model,
+    resumeProviderSessionId: input.resumeProviderSessionId,
     completionContract: input.completionContract,
-  }, `prepare_${input.runId}`);
+    semanticTools: prepared.semanticTools,
+    ...(input.providerLaunch ? { providerLaunch: input.providerLaunch } : {}),
+  }), `prepare_${input.runId}`);
   prepared.queueCommand("session.open", {}, `open_${input.runId}`);
   prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`);
 

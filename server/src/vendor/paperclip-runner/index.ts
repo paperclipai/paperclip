@@ -19,6 +19,7 @@ export type {
   PaperclipSemanticToolCall,
   PaperclipSemanticToolDefinition,
   PaperclipSemanticToolResult,
+  PaperclipRunnerAuthorizedToolSet,
   PaperclipQuestionSet,
   PaperclipRuntimeInputRequest,
   PrpEvent,
@@ -38,6 +39,8 @@ const runner = await import(sourceUrl.href) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
+export const createPaperclipRunnerAuthorizedToolSet =
+  runner.createPaperclipRunnerAuthorizedToolSet;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse = runner.parsePaperclipQuestionResponse;
 export const validatePrpEvent = runner.validatePrpEvent;

@@ -56,10 +56,142 @@ fn has_task_context_tool(message: &Value) -> bool {
         .is_some_and(|tools| {
             tools.iter().any(|tool| {
                 tool.get("name").and_then(Value::as_str) == Some("get_task_context")
-                    && tool.get("description").and_then(Value::as_str) == Some("Read task context.")
+                    && tool
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .is_some_and(|description| !description.trim().is_empty())
                     && tool.pointer("/inputSchema/type").and_then(Value::as_str) == Some("object")
             })
         })
+}
+
+fn matches_task_context_result(result: &Value, expected_canonical: Option<&Value>) -> bool {
+    let Some(expected) = expected_canonical else {
+        return result == &json!({"ok": true, "task": {"id": "task-1"}});
+    };
+    if result.get("ok") != Some(&json!(true))
+        || result.get("operationId").and_then(Value::as_str) != Some("get_task_context")
+        || result.get("callId").and_then(Value::as_str) != Some("semantic-call-1")
+    {
+        return false;
+    }
+    [
+        ("/value/company/id", "/companyId"),
+        ("/value/actor/id", "/actorId"),
+        ("/value/activeTask/id", "/taskId"),
+        ("/value/run/id", "/runId"),
+    ]
+    .into_iter()
+    .all(|(actual_pointer, expected_pointer)| {
+        let actual = result.pointer(actual_pointer).and_then(Value::as_str);
+        let expected = expected.pointer(expected_pointer).and_then(Value::as_str);
+        actual.is_some_and(|value| !value.is_empty()) && actual == expected
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread_start(tool: Value) -> Value {
+        json!({
+            "method": "thread/start",
+            "params": {"dynamicTools": [tool]},
+        })
+    }
+
+    #[test]
+    fn task_context_tool_accepts_any_non_empty_description() {
+        let message = thread_start(json!({
+            "name": "get_task_context",
+            "description": "Read the active task, actor, wake context, ancestors, and budget summary.",
+            "inputSchema": {"type": "object"},
+        }));
+
+        assert!(has_task_context_tool(&message));
+    }
+
+    #[test]
+    fn task_context_tool_rejects_blank_descriptions_and_wrong_schemas() {
+        for tool in [
+            json!({
+                "name": "get_task_context",
+                "description": "   ",
+                "inputSchema": {"type": "object"},
+            }),
+            json!({
+                "name": "get_task_context",
+                "description": "Read task context.",
+                "inputSchema": {"type": "string"},
+            }),
+            json!({
+                "name": "get_task_history",
+                "description": "Read task context.",
+                "inputSchema": {"type": "object"},
+            }),
+        ] {
+            assert!(!has_task_context_tool(&thread_start(tool)));
+        }
+    }
+
+    #[test]
+    fn task_context_result_preserves_exact_legacy_fixture_by_default() {
+        assert!(matches_task_context_result(
+            &json!({"ok": true, "task": {"id": "task-1"}}),
+            None,
+        ));
+        assert!(!matches_task_context_result(
+            &json!({
+                "ok": true,
+                "operationId": "get_task_context",
+                "callId": "semantic-call-1",
+                "value": {
+                    "company": {"id": "company-1"},
+                    "actor": {"id": "actor-1"},
+                    "activeTask": {"id": "task-1"},
+                    "run": {"id": "run-1"},
+                },
+            }),
+            None,
+        ));
+    }
+
+    #[test]
+    fn task_context_result_accepts_only_the_expected_canonical_binding() {
+        let expected = json!({
+            "companyId": "company-1",
+            "actorId": "actor-1",
+            "taskId": "task-1",
+            "runId": "run-1",
+        });
+        let canonical = json!({
+            "ok": true,
+            "operationId": "get_task_context",
+            "callId": "semantic-call-1",
+            "value": {
+                "company": {"id": "company-1"},
+                "actor": {"id": "actor-1"},
+                "activeTask": {"id": "task-1"},
+                "run": {"id": "run-1"},
+            },
+        });
+
+        assert!(matches_task_context_result(&canonical, Some(&expected)));
+        assert!(!matches_task_context_result(
+            &json!({
+                "ok": true,
+                "operationId": "get_task_context",
+                "callId": "semantic-call-1",
+                "value": {
+                    "company": {"id": "company-1"},
+                    "actor": {"id": "actor-1"},
+                    "activeTask": {"id": "wrong-task"},
+                    "run": {"id": "run-1"},
+                },
+            }),
+            Some(&expected),
+        ));
+    }
 }
 
 fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Result<()> {
@@ -210,6 +342,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
+        .map(|value| serde_json::from_str::<Value>(&value))
+        .transpose()?;
     let hold_turn = args.iter().any(|value| value == "--hold-turn");
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
@@ -359,7 +494,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(Value::as_str)
                 .ok_or("semantic tool response omitted content text")?;
             let result: Value = serde_json::from_str(text)?;
-            if result != json!({"ok": true, "task": {"id": "task-1"}}) {
+            if !matches_task_context_result(&result, expected_canonical_task_context.as_ref()) {
                 return Err("semantic tool response changed the operation result".into());
             }
             log_call(call_log.as_deref(), &format!("tool-response:{text}"))?;
