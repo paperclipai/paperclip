@@ -486,6 +486,106 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "contains adapter stdin EPIPE when the child closes its pipe before a deferred write",
+    async () => {
+      let resolvePipeClosed!: () => void;
+      const pipeClosed = new Promise<void>((resolve) => {
+        resolvePipeClosed = resolve;
+      });
+      let resolveStdinError!: (code: string | undefined) => void;
+      const stdinError = new Promise<string | undefined>((resolve) => {
+        resolveStdinError = resolve;
+      });
+      let listenerCountBeforeObserver = -1;
+      const runId = randomUUID();
+      const result = await runChildProcess(
+        runId,
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.stdin.once('close', () => {",
+            "  process.stdout.write('stdin-closed\\n');",
+            "  setTimeout(() => process.exit(0), 500);",
+            "});",
+            "process.stdin.destroy();",
+          ].join("\n"),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          stdin: "x".repeat(16 * 1024 * 1024),
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async (_stream, chunk) => {
+            if (chunk.includes("stdin-closed")) resolvePipeClosed();
+          },
+          onSpawn: async () => {
+            await pipeClosed;
+            const running = runningProcesses.get(runId);
+            const stdin = running?.child.stdin;
+            expect(stdin).toBeTruthy();
+            listenerCountBeforeObserver = stdin!.listenerCount("error");
+            stdin!.once("error", (err: NodeJS.ErrnoException) => {
+              resolveStdinError(err.code);
+            });
+          },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(listenerCountBeforeObserver).toBeGreaterThan(0);
+      expect(await stdinError).toBe("EPIPE");
+    },
+  );
+
+  it("reports an unexpected adapter stdin error without throwing from the event handler", async () => {
+    const runId = randomUUID();
+    const loggedErrors: Array<{ err: unknown; id: string; message: string }> = [];
+    const expectedError = Object.assign(new Error("synthetic stdin failure"), { code: "EIO" });
+
+    const result = await runChildProcess(
+      runId,
+      process.execPath,
+      [
+        "-e",
+        "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        stdin: "done",
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onLogError: (err, id, message) => {
+          loggedErrors.push({ err, id, message });
+        },
+        onSpawn: async () => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          const running = runningProcesses.get(runId);
+          const stdin = running?.child.stdin;
+          expect(stdin).toBeTruthy();
+          try {
+            stdin!.emit("error", expectedError);
+          } catch {
+            // The pre-fix implementation has no listener. Its synchronous throw
+            // is converted into the onSpawn rejection that this assertion catches.
+          }
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(loggedErrors).toContainEqual({
+      err: expectedError,
+      id: runId,
+      message: "adapter child stdin stream error",
+    });
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 

@@ -3386,6 +3386,16 @@ export async function runChildProcess(
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        const stdin = child.stdin;
+        if (opts.stdin != null && stdin) {
+          // Attach before onSpawn can await persistence. The child may close its
+          // pipe during that gap, and an unhandled stream error would terminate
+          // the control plane instead of failing only this adapter run.
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            if (err.code === "EPIPE") return;
+            onLogError(err, runId, "adapter child stdin stream error");
+          });
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
@@ -3500,10 +3510,9 @@ export async function runChildProcess(
             });
         });
 
-        const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
           void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
+            if (child.killed || stdin.destroyed || !stdin.writable) return;
             stdin.write(opts.stdin as string);
             stdin.end();
           });
