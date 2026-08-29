@@ -24,6 +24,8 @@ import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { toolAccessService } from "./tool-access.js";
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -72,6 +74,36 @@ export function connectionIntentService(db: Db) {
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, userId),
       ))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !membership
+      || membership.status !== "active"
+      || !membership.membershipRole
+      || membership.membershipRole === "viewer"
+    ) {
+      throw forbidden("Addressed user is no longer authorized for company write access");
+    }
+  }
+
+  async function lockCurrentUserWriteAccess(
+    tx: DbTransaction,
+    companyId: string,
+    userId: string,
+    bypassCurrentMembershipCheck = false,
+  ) {
+    if (bypassCurrentMembershipCheck) return;
+    const membership = await tx
+      .select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      ))
+      .for("update")
       .then((rows) => rows[0] ?? null);
     if (
       !membership
@@ -380,30 +412,58 @@ export function connectionIntentService(db: Db) {
       grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
     );
     const organizationGrant = grants.find((grant) => grant.kind === "organization" && grant.status === "active");
-    if (personalGrant) {
-      await access.createConnectionGrantDelegation(connection.id, personalGrant.id, payload.requestingAgentId, userId);
-    } else if (!organizationGrant) {
+    if (!personalGrant && !organizationGrant) {
       throw conflict("This connection has no usable identity grant");
-    } else if (!options.canManageOrganizationGrant) {
+    }
+    if (!personalGrant && !options.canManageOrganizationGrant) {
       throw forbidden("Sharing a company connection requires connection-management authority");
     }
 
-    const installs = await access.listConnectionInstalls(connection.id, loaded.issue.companyId);
-    const requestedInstall = { targetType: "agent" as const, targetId: payload.requestingAgentId };
-    const additiveInstalls = installs.some((install) =>
-      install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId
-    ) ? installs : [...installs, requestedInstall];
-    await access.putConnectionInstalls(connection.id, { installs: additiveInstalls }, {
-      actorType: "user",
-      actorId: userId,
-    });
+    const selectedConnection = connection;
+    return db.transaction(async (tx) => {
+      // Membership downgrade/removal takes the same row lock. Whichever side
+      // commits first is authoritative: a completed revocation makes this
+      // revalidation fail, while completion holds authority through every
+      // install/delegation and the intent-resolution write.
+      await lockCurrentUserWriteAccess(
+        tx,
+        loaded.issue.companyId,
+        userId,
+        options.bypassCurrentMembershipCheck,
+      );
+      const txDb = tx as unknown as Db;
+      const txAccess = toolAccessService(txDb);
+      const txInteractions = issueThreadInteractionService(txDb);
 
-    return interactions.resolveConnectionIntent(
-      loaded.issue,
-      interactionId,
-      { version: 1, outcome: "connected", connectionId: connection.id },
-      { userId },
-    );
+      if (personalGrant) {
+        await txAccess.createConnectionGrantDelegation(
+          selectedConnection.id,
+          personalGrant.id,
+          payload.requestingAgentId,
+          userId,
+        );
+      }
+
+      const installs = await txAccess.listConnectionInstalls(
+        selectedConnection.id,
+        loaded.issue.companyId,
+      );
+      const requestedInstall = { targetType: "agent" as const, targetId: payload.requestingAgentId };
+      const additiveInstalls = installs.some((install) =>
+        install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId
+      ) ? installs : [...installs, requestedInstall];
+      await txAccess.putConnectionInstalls(selectedConnection.id, { installs: additiveInstalls }, {
+        actorType: "user",
+        actorId: userId,
+      });
+
+      return txInteractions.resolveConnectionIntent(
+        loaded.issue,
+        interactionId,
+        { version: 1, outcome: "connected", connectionId: selectedConnection.id },
+        { userId },
+      );
+    });
   }
 
   async function decline(

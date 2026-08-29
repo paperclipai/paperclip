@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -60,6 +60,7 @@ describe("wakeConnectionIntentAfterResolution", () => {
 
 describeEmbeddedPostgres("connectionIntentService", () => {
   let db!: ReturnType<typeof createDb>;
+  let connectionString!: string;
   let cleanup: (() => Promise<void>) | undefined;
   let claims!: RuntimeToolsTokenClaims;
   let runId!: string;
@@ -67,7 +68,8 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   beforeAll(async () => {
     const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-connection-intents-");
     cleanup = tempDb.cleanup;
-    db = createDb(tempDb.connectionString);
+    connectionString = tempDb.connectionString;
+    db = createDb(connectionString);
     const companyId = randomUUID();
     const agentId = randomUUID();
     const goalId = randomUUID();
@@ -136,6 +138,24 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   afterAll(async () => {
     await cleanup?.();
   });
+
+  async function waitForBlockedMembershipLock() {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [waiting] = await db.execute<{ waiting: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity
+          WHERE state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%company_memberships%'
+            AND query ILIKE '%for update%'
+        ) AS waiting
+      `);
+      if (waiting?.waiting) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
+  }
 
   it("searches first-party definitions without leaking run identity", async () => {
     const result = await connectionIntentService(db).search(claims, "notion");
@@ -270,6 +290,120 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.request(claims, "unknown-service"))
       .rejects.toThrow("is not available");
   });
+
+  it("serializes intent completion behind addressed-user membership revocation", async () => {
+    const completionDb = createDb(connectionString, { maxConnections: 1 });
+    const revocationDb = createDb(connectionString, { maxConnections: 1 });
+    const service = connectionIntentService(completionDb);
+    const pending = await service.request(claims, "slack");
+    const [application] = await db.insert(toolApplications).values({
+      companyId: claims.company_id,
+      applicationKey: `slack-${randomUUID()}`,
+      name: "Slack",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "slack" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: claims.company_id,
+      applicationId: application!.id,
+      name: "Shared Slack",
+      uid: `slack/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { sourceTemplateKey: "slack" },
+      transportConfig: { sourceTemplateKey: "slack" },
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId: claims.company_id,
+      connectionId: connection!.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+    });
+    let releaseRevocation!: () => void;
+    const revocationMayCommit = new Promise<void>((resolve) => {
+      releaseRevocation = resolve;
+    });
+    let membershipLocked!: () => void;
+    const membershipIsLocked = new Promise<void>((resolve) => {
+      membershipLocked = resolve;
+    });
+    let revocation: Promise<void> | null = null;
+    let completion: Promise<{ value: unknown; error: unknown }> | null = null;
+
+    try {
+      revocation = revocationDb.transaction(async (tx) => {
+        await tx
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, claims.company_id),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, claims.responsible_user_id),
+          ))
+          .for("update");
+        membershipLocked();
+        await revocationMayCommit;
+        await tx
+          .update(companyMemberships)
+          .set({ membershipRole: "viewer", updatedAt: new Date() })
+          .where(and(
+            eq(companyMemberships.companyId, claims.company_id),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, claims.responsible_user_id),
+          ));
+      });
+
+      await membershipIsLocked;
+      completion = service.complete(
+        pending.interactionId!,
+        connection!.id,
+        claims.responsible_user_id,
+        { canManageOrganizationGrant: true },
+      ).then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+
+      expect(await waitForBlockedMembershipLock()).toBe(true);
+      await expect(db.select().from(toolConnectionInstalls).where(
+        eq(toolConnectionInstalls.connectionId, connection!.id),
+      )).resolves.toHaveLength(0);
+      await expect(db.select().from(issueThreadInteractions).where(
+        eq(issueThreadInteractions.id, pending.interactionId!),
+      )).resolves.toEqual([expect.objectContaining({ status: "pending" })]);
+
+      releaseRevocation();
+      await revocation;
+      const outcome = await completion;
+      expect(outcome.value).toBeNull();
+      expect(outcome.error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("no longer authorized"),
+      });
+      await expect(db.select().from(toolConnectionInstalls).where(
+        eq(toolConnectionInstalls.connectionId, connection!.id),
+      )).resolves.toHaveLength(0);
+      await expect(db.select().from(issueThreadInteractions).where(
+        eq(issueThreadInteractions.id, pending.interactionId!),
+      )).resolves.toEqual([expect.objectContaining({ status: "pending" })]);
+    } finally {
+      releaseRevocation();
+      await revocation?.catch(() => undefined);
+      await completion?.catch(() => undefined);
+      await db.update(companyMemberships).set({ membershipRole: "member", status: "active" }).where(and(
+        eq(companyMemberships.companyId, claims.company_id),
+        eq(companyMemberships.principalId, claims.responsible_user_id),
+      ));
+      await completionDb.$client.end({ timeout: 0 }).catch(() => undefined);
+      await revocationDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
 
   it("revalidates the responsible user's active write membership for every token use", async () => {
     const service = connectionIntentService(db);
