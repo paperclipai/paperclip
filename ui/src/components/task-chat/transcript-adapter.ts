@@ -472,7 +472,13 @@ export function buildTurnSummary(
     else if (entry.kind === "diff") {
       if (entry.changeType === "add") added += 1;
       else if (entry.changeType === "remove") removed += 1;
-    } else if (entry.kind === "result") {
+    } else if (
+      entry.kind === "result" &&
+      entry.subtype !== "paperclip_runner_session_usage"
+    ) {
+      // Session-cumulative measurements remain visible in the expanded
+      // transcript, but they can include earlier runs. Only run-scoped usage
+      // belongs in this turn (and therefore in a merged-turn total).
       tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
     }
   }

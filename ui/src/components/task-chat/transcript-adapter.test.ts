@@ -258,6 +258,33 @@ describe("buildTurnSummary tool counting", () => {
     ];
     expect(buildTurnSummary(entries).toolCount).toBe(3);
   });
+
+  it("keeps session-cumulative runner usage out of run summaries", () => {
+    const runUsage = {
+      kind: "result",
+      ts: TS,
+      subtype: "paperclip_runner_usage",
+      inputTokens: 40,
+      outputTokens: 10,
+    } as TranscriptEntry;
+    const sessionUsage = {
+      kind: "result",
+      ts: TS,
+      subtype: "paperclip_runner_session_usage",
+      inputTokens: 800,
+      outputTokens: 200,
+    } as TranscriptEntry;
+
+    expect(buildTurnSummary([runUsage, sessionUsage]).tokensLabel).toBe(
+      "50 tokens",
+    );
+    expect(
+      buildMergedTurnSummary([
+        { entries: [runUsage] },
+        { entries: [sessionUsage] },
+      ]).tokensLabel,
+    ).toBe("50 tokens");
+  });
 });
 
 describe("deriveRunStatusLabel with generic tail updates", () => {
