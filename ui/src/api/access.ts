@@ -143,6 +143,7 @@ export type CompanyMembersResponse = {
     canManageMembers: boolean;
     canInviteUsers: boolean;
     canApproveJoinRequests: boolean;
+    canManageAgentGrants: boolean;
   };
 };
 

@@ -21,8 +21,10 @@ import {
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
+  type UpdateAgentGrants,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
+  updateAgentGrantsSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
@@ -3940,6 +3942,81 @@ export function agentRoutes(
     });
 
     res.json(await buildAgentDetail(agent));
+  });
+
+  router.patch("/agents/:id/grants", validate(updateAgentGrantsSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId === existing.id) {
+        res.status(403).json({ error: "Agents cannot edit their own grants" });
+        return;
+      }
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.companyId !== existing.companyId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      if (actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only CEO can manage permissions" });
+        return;
+      }
+    } else {
+      assertBoard(req);
+      assertCompanyAccess(req, existing.companyId);
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "users:manage_permissions",
+        resource: { type: "company", companyId: existing.companyId },
+      });
+      if (!decision.allowed) {
+        throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+    }
+
+    if (existing.status === "pending_approval") {
+      res.status(409).json({ error: "Agent grants are frozen before board approval" });
+      return;
+    }
+
+    const payload = req.body as UpdateAgentGrants;
+    const grants = payload.grants.map((grant) => ({
+      permissionKey: grant.permissionKey,
+      scope: grant.scope ?? null,
+    }));
+
+    const membership = await access.getMembership(existing.companyId, "agent", existing.id);
+    if (!membership) {
+      await access.ensureMembership(existing.companyId, "agent", existing.id, "member", "active");
+    }
+    await access.setPrincipalGrants(
+      existing.companyId,
+      "agent",
+      existing.id,
+      grants,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.grants_updated",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        permissionKeys: grants.map((grant) => grant.permissionKey),
+        grantCount: grants.length,
+      },
+    });
+
+    res.json(await buildAgentDetail(existing));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {

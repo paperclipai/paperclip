@@ -1178,6 +1178,7 @@ async function loadCompanyAccessSummary(
       canManageMembers: false,
       canInviteUsers: false,
       canApproveJoinRequests: false,
+      canManageAgentGrants: false,
     };
   }
   if (isLocalImplicit(req)) {
@@ -1186,6 +1187,7 @@ async function loadCompanyAccessSummary(
       canManageMembers: true,
       canInviteUsers: true,
       canApproveJoinRequests: true,
+      canManageAgentGrants: true,
     };
   }
   const userId = req.actor.userId ?? null;
@@ -1206,6 +1208,7 @@ async function loadCompanyAccessSummary(
     canManageMembers,
     canInviteUsers,
     canApproveJoinRequests,
+    canManageAgentGrants: canManageMembers,
   };
 }
 

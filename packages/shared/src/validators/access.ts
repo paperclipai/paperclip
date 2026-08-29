@@ -93,16 +93,24 @@ export const createBoardApiKeySchema = z.object({
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 
+export const principalGrantsPayloadSchema = z.array(
+  z.object({
+    permissionKey: z.enum(PERMISSION_KEYS),
+    scope: z.record(z.string(), z.unknown()).optional().nullable(),
+  }),
+);
+
 export const updateMemberPermissionsSchema = z.object({
-  grants: z.array(
-    z.object({
-      permissionKey: z.enum(PERMISSION_KEYS),
-      scope: z.record(z.string(), z.unknown()).optional().nullable(),
-    }),
-  ),
+  grants: principalGrantsPayloadSchema,
 });
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
+
+export const updateAgentGrantsSchema = z.object({
+  grants: principalGrantsPayloadSchema,
+});
+
+export type UpdateAgentGrants = z.infer<typeof updateAgentGrantsSchema>;
 
 const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
 

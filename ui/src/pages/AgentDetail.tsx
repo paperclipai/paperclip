@@ -31,6 +31,7 @@ import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { PrincipalGrantsEditor } from "@/components/PrincipalGrantsEditor";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -2301,6 +2302,17 @@ function ConfigurationTab({
           </div>
         </div>
       </div> : null}
+      {content === "configuration" && companyId ? (
+        <PrincipalGrantsEditor
+          companyId={companyId}
+          agentId={agent.id}
+          currentGrants={(agent.access?.grants ?? []).map((grant) => ({
+            permissionKey: grant.permissionKey,
+            scope: grant.scope ?? null,
+          }))}
+          disabled={updatePermissions.isPending}
+        />
+      ) : null}
     </div>
   );
 }

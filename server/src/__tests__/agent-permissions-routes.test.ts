@@ -65,6 +65,7 @@ const mockAccessService = vi.hoisted(() => ({
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
   listPrincipalGrants: vi.fn(),
+  setPrincipalGrants: vi.fn(),
   setPrincipalPermission: vi.fn(),
 }));
 
@@ -307,6 +308,7 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.getMembership.mockReset();
     mockAccessService.ensureMembership.mockReset();
     mockAccessService.listPrincipalGrants.mockReset();
+    mockAccessService.setPrincipalGrants.mockReset();
     mockAccessService.setPrincipalPermission.mockReset();
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
@@ -370,6 +372,7 @@ describe.sequential("agent permission routes", () => {
     });
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
+    mockAccessService.setPrincipalGrants.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
@@ -1762,5 +1765,241 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  describe("PATCH /agents/:id/grants", () => {
+    const grantsPayload = {
+      grants: [
+        { permissionKey: "agents:configure", scope: null },
+        { permissionKey: "tasks:assign" },
+      ],
+    };
+
+    it("replaces agent grants for a permitted board user and echoes the resulting grants", async () => {
+      const resultingGrants = [
+        {
+          id: "grant-1",
+          companyId,
+          principalType: "agent",
+          principalId: agentId,
+          permissionKey: "agents:configure",
+          scope: null,
+          grantedByUserId: "board-user",
+          createdAt: new Date("2026-03-19T00:00:00.000Z"),
+          updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+        },
+        {
+          id: "grant-2",
+          companyId,
+          principalType: "agent",
+          principalId: agentId,
+          permissionKey: "tasks:assign",
+          scope: null,
+          grantedByUserId: "board-user",
+          createdAt: new Date("2026-03-19T00:00:00.000Z"),
+          updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+        },
+      ];
+      mockAccessService.listPrincipalGrants.mockResolvedValue(resultingGrants);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.setPrincipalGrants).toHaveBeenCalledWith(
+        companyId,
+        "agent",
+        agentId,
+        [
+          { permissionKey: "agents:configure", scope: null },
+          { permissionKey: "tasks:assign", scope: null },
+        ],
+        "board-user",
+      );
+      expect(res.body.access.grants.map((grant: { permissionKey: string }) => grant.permissionKey)).toEqual([
+        "agents:configure",
+        "tasks:assign",
+      ]);
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId,
+        action: "agent.grants_updated",
+        entityType: "agent",
+        entityId: agentId,
+        details: {
+          permissionKeys: ["agents:configure", "tasks:assign"],
+          grantCount: 2,
+        },
+      }));
+    });
+
+    it("rejects grant edits for board users without users:manage_permissions", async () => {
+      mockAccessService.canUser.mockResolvedValue(false);
+
+      const app = await createApp({
+        type: "board",
+        userId: "member-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(403);
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("rejects grant edits from non-CEO agent actors", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "actor-agent",
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Only CEO can manage permissions");
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent actors editing their own grants", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agents cannot edit their own grants");
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("allows CEO agent actors to edit peer agent grants without self-service", async () => {
+      const ceoAgent = { ...baseAgent, id: "ceo-agent", role: "ceo" };
+      mockAgentService.getById.mockImplementation(async (id: string) =>
+        id === "ceo-agent" ? ceoAgent : baseAgent,
+      );
+
+      const app = await createApp({
+        type: "agent",
+        agentId: "ceo-agent",
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send({ grants: [{ permissionKey: "agents:configure" }] }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.setPrincipalGrants).toHaveBeenCalledWith(
+        companyId,
+        "agent",
+        agentId,
+        [{ permissionKey: "agents:configure", scope: null }],
+        null,
+      );
+    });
+
+    it("returns 404 for an unknown agent", async () => {
+      mockAgentService.getById.mockResolvedValue(null);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(404);
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+    });
+
+    it("hides agents in other companies from cross-company agent keys", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "ceo-agent",
+        companyId: "33333333-3333-4333-8333-333333333333",
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe("Agent not found");
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+    });
+
+    it("rejects grant edits for pending approval agents", async () => {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "pending_approval" });
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send(grantsPayload));
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain("frozen before board approval");
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("rejects payloads with unknown permission keys", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}/grants`)
+        .send({ grants: [{ permissionKey: "not:a:key" }] }));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Validation error");
+      expect(mockAccessService.setPrincipalGrants).not.toHaveBeenCalled();
+    });
   });
 });
