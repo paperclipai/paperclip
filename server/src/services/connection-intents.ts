@@ -383,48 +383,11 @@ export function connectionIntentService(db: Db) {
       options.bypassCurrentMembershipCheck,
     );
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
-    let inventory = await connectionInventory(loaded.issue.companyId);
-    let connection = inventory.connections.find((candidate) => candidate.id === connectionId);
-    if (!connection || sourceSlugForConnection(connection, inventory.applicationsById) !== payload.serviceSlug) {
-      throw notFound("Connection does not match this intent");
-    }
-    if (connection.status !== "active" || !connection.enabled) {
-      throw conflict("Finish and test this connection before using it for the task");
-    }
-
-    let { grants } = await access.listConnectionGrants(connection.id, loaded.issue.companyId);
-    const pendingPersonalGrant = grants.find((grant) =>
-      grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
-    );
-    if (connection.authKind === "oauth" && pendingPersonalGrant) {
-      await access.finalizeOAuthAccess(
-        loaded.issue.companyId,
-        connection.id,
-        { grantKind: "user" },
-        { actorType: "user", actorId: userId },
-      );
-      inventory = await connectionInventory(loaded.issue.companyId);
-      connection = inventory.connections.find((candidate) => candidate.id === connectionId);
-      if (!connection) throw notFound("Connection disappeared while finishing authorization");
-      ({ grants } = await access.listConnectionGrants(connection.id, loaded.issue.companyId));
-    }
-    const personalGrant = grants.find((grant) =>
-      grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
-    );
-    const organizationGrant = grants.find((grant) => grant.kind === "organization" && grant.status === "active");
-    if (!personalGrant && !organizationGrant) {
-      throw conflict("This connection has no usable identity grant");
-    }
-    if (!personalGrant && !options.canManageOrganizationGrant) {
-      throw forbidden("Sharing a company connection requires connection-management authority");
-    }
-
-    const selectedConnection = connection;
     return db.transaction(async (tx) => {
       // Membership downgrade/removal takes the same row lock. Whichever side
       // commits first is authoritative: a completed revocation makes this
-      // revalidation fail, while completion holds authority through every
-      // install/delegation and the intent-resolution write.
+      // revalidation fail, while completion holds authority through OAuth
+      // finalization, every install/delegation, and intent resolution.
       await lockCurrentUserWriteAccess(
         tx,
         loaded.issue.companyId,
@@ -434,6 +397,59 @@ export function connectionIntentService(db: Db) {
       const txDb = tx as unknown as Db;
       const txAccess = toolAccessService(txDb);
       const txInteractions = issueThreadInteractionService(txDb);
+      let selectedConnection = await txAccess.getConnection(connectionId, loaded.issue.companyId);
+      const selectedApplication = await txAccess.getApplication(
+        selectedConnection.applicationId,
+        loaded.issue.companyId,
+      );
+      if (sourceSlugForConnection(
+        selectedConnection,
+        new Map([[selectedApplication.id, selectedApplication]]),
+      ) !== payload.serviceSlug) {
+        throw notFound("Connection does not match this intent");
+      }
+      if (selectedConnection.status !== "active" || !selectedConnection.enabled) {
+        throw conflict("Finish and test this connection before using it for the task");
+      }
+
+      let { grants } = await txAccess.listConnectionGrants(
+        selectedConnection.id,
+        loaded.issue.companyId,
+      );
+      const pendingPersonalGrant = grants.find((grant) =>
+        grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
+      );
+      if (selectedConnection.authKind === "oauth" && pendingPersonalGrant) {
+        // txAccess is bound to the outer transaction. Its internal transactions
+        // become savepoints, so activation, credential bindings, the all-agents
+        // profile, and the company install roll back with any later failure.
+        await txAccess.finalizeOAuthAccess(
+          loaded.issue.companyId,
+          selectedConnection.id,
+          { grantKind: "user" },
+          { actorType: "user", actorId: userId },
+        );
+        selectedConnection = await txAccess.getConnection(
+          selectedConnection.id,
+          loaded.issue.companyId,
+        );
+        ({ grants } = await txAccess.listConnectionGrants(
+          selectedConnection.id,
+          loaded.issue.companyId,
+        ));
+      }
+      const personalGrant = grants.find((grant) =>
+        grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
+      );
+      const organizationGrant = grants.find((grant) =>
+        grant.kind === "organization" && grant.status === "active"
+      );
+      if (!personalGrant && !organizationGrant) {
+        throw conflict("This connection has no usable identity grant");
+      }
+      if (!personalGrant && !options.canManageOrganizationGrant) {
+        throw forbidden("Sharing a company connection requires connection-management authority");
+      }
 
       if (personalGrant) {
         await txAccess.createConnectionGrantDelegation(

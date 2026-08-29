@@ -5,6 +5,8 @@ import {
   agents,
   companies,
   companyMemberships,
+  companySecretBindings,
+  companySecrets,
   connectionGrantDelegations,
   connectionGrants,
   createDb,
@@ -15,6 +17,9 @@ import {
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
+  toolProfileBindings,
+  toolProfiles,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { wakeConnectionIntentAfterResolution } from "../routes/connection-intents.js";
@@ -291,7 +296,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("is not available");
   });
 
-  it("serializes intent completion behind addressed-user membership revocation", async () => {
+  it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {
     const raceCompanyId = randomUUID();
     const raceAgentId = randomUUID();
     const raceGoalId = randomUUID();
@@ -371,24 +376,77 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const [connection] = await db.insert(toolConnections).values({
       companyId: raceClaims.company_id,
       applicationId: application!.id,
-      name: "Shared Notion",
+      name: "Personal Notion OAuth",
       uid: `notion-race/${randomUUID()}`,
       transport: "mcp_remote",
-      authKind: "api_key",
+      authKind: "oauth",
       credentialPolicy: "shared",
       status: "active",
       enabled: true,
       healthStatus: "ok",
-      config: { sourceTemplateKey: "notion" },
-      transportConfig: { sourceTemplateKey: "notion" },
+      config: { sourceTemplateKey: "notion", connectionMethodKey: "mcp-oauth" },
+      transportConfig: { sourceTemplateKey: "notion", connectionMethodKey: "mcp-oauth" },
+    }).returning();
+    const [secretDefinition] = await db.insert(userSecretDefinitions).values({
+      companyId: raceClaims.company_id,
+      key: `notion-oauth-${randomUUID()}`,
+      name: "Notion OAuth access token",
+    }).returning();
+    const [accessSecret] = await db.insert(companySecrets).values({
+      companyId: raceClaims.company_id,
+      scope: "user",
+      ownerUserId: raceClaims.responsible_user_id,
+      userSecretDefinitionId: secretDefinition!.id,
+      key: `notion-oauth-${randomUUID()}`,
+      name: `Notion OAuth ${randomUUID()}`,
     }).returning();
     await db.insert(connectionGrants).values({
       companyId: raceClaims.company_id,
       connectionId: connection!.id,
-      kind: "organization",
+      kind: "user",
+      subjectUserId: raceClaims.responsible_user_id,
+      credentialSecretRefs: [{
+        secretId: accessSecret!.id,
+        versionSelector: "latest",
+        configPath: "oauth.access_token",
+        required: true,
+        label: "OAuth access token",
+      }],
       status: "active",
-      isDefault: true,
+      isDefault: false,
     });
+    const expectNoOAuthCompletionWrites = async () => {
+      await expect(db.select().from(toolConnections).where(
+        eq(toolConnections.id, connection!.id),
+      )).resolves.toEqual([expect.objectContaining({
+        credentialPolicy: "shared",
+        credentialRefs: [],
+        credentialSecretRefs: [],
+        status: "active",
+        enabled: true,
+      })]);
+      await expect(db.select().from(companySecretBindings).where(and(
+        eq(companySecretBindings.companyId, raceClaims.company_id),
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connection!.id),
+      ))).resolves.toHaveLength(0);
+      await expect(db.select().from(toolProfiles).where(and(
+        eq(toolProfiles.companyId, raceClaims.company_id),
+        eq(toolProfiles.profileKey, `app:${connection!.id}`),
+      ))).resolves.toHaveLength(0);
+      await expect(db.select().from(toolProfileBindings).where(
+        eq(toolProfileBindings.companyId, raceClaims.company_id),
+      )).resolves.toHaveLength(0);
+      await expect(db.select().from(toolConnectionInstalls).where(
+        eq(toolConnectionInstalls.connectionId, connection!.id),
+      )).resolves.toHaveLength(0);
+      await expect(db.select().from(connectionGrantDelegations).where(
+        eq(connectionGrantDelegations.companyId, raceClaims.company_id),
+      )).resolves.toHaveLength(0);
+      await expect(db.select().from(issueThreadInteractions).where(
+        eq(issueThreadInteractions.id, pending.interactionId!),
+      )).resolves.toEqual([expect.objectContaining({ status: "pending" })]);
+    };
     let releaseRevocation!: () => void;
     const revocationMayCommit = new Promise<void>((resolve) => {
       releaseRevocation = resolve;
@@ -435,12 +493,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       );
 
       expect(await waitForBlockedMembershipLock()).toBe(true);
-      await expect(db.select().from(toolConnectionInstalls).where(
-        eq(toolConnectionInstalls.connectionId, connection!.id),
-      )).resolves.toHaveLength(0);
-      await expect(db.select().from(issueThreadInteractions).where(
-        eq(issueThreadInteractions.id, pending.interactionId!),
-      )).resolves.toEqual([expect.objectContaining({ status: "pending" })]);
+      await expectNoOAuthCompletionWrites();
 
       releaseRevocation();
       await revocation;
@@ -450,12 +503,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         status: 403,
         message: expect.stringContaining("no longer authorized"),
       });
-      await expect(db.select().from(toolConnectionInstalls).where(
-        eq(toolConnectionInstalls.connectionId, connection!.id),
-      )).resolves.toHaveLength(0);
-      await expect(db.select().from(issueThreadInteractions).where(
-        eq(issueThreadInteractions.id, pending.interactionId!),
-      )).resolves.toEqual([expect.objectContaining({ status: "pending" })]);
+      await expectNoOAuthCompletionWrites();
     } finally {
       releaseRevocation();
       await revocation?.catch(() => undefined);
