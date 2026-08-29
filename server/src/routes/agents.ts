@@ -2227,8 +2227,9 @@ export function agentRoutes(
   // The default CEO instructions assume the core paperclip skills (board
   // coordination, planning, hiring, memory). Union them into every
   // skills-capable CEO hire/create so a fresh CEO never starts with an empty
-  // desired-skill set that contradicts its own instructions. Callers can still
-  // remove any of them afterwards via the per-agent skills sync.
+  // desired-skill set that contradicts its own instructions. Optional role
+  // skills remain removable afterwards. Legacy adapters separately guarantee
+  // the Paperclip operational skill as a runtime invariant.
   function defaultRoleSkillSelections(
     role: string | null | undefined,
     adapterType: string,

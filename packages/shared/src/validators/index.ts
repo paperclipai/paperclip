@@ -701,7 +701,10 @@ export {
 } from "./finance.js";
 
 export {
+  ASSET_NAMESPACE_MAX_LENGTH,
+  ASSET_NAMESPACE_RULE,
   createAssetImageMetadataSchema,
+  sanitizeAssetNamespace,
   type CreateAssetImageMetadata,
 } from "./asset.js";
 

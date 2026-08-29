@@ -103,7 +103,6 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
-            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -124,7 +123,7 @@ describe("GET /invites/:token", () => {
     expect(res.status).toBe(200);
     expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme Robotics");
-    expect(res.body.companyBrandColor).toBe("#114488");
+    expect(res.body).not.toHaveProperty("companyBrandColor");
     expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
   }, 10_000);
@@ -152,7 +151,6 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
-            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -196,7 +194,6 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
-            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -244,7 +241,6 @@ describe("GET /invites/:token", () => {
     };
     const companyBranding = {
       name: "Acme Robotics",
-      brandColor: "#114488",
       logoAssetId: "logo-1",
     };
     const logoAsset = {

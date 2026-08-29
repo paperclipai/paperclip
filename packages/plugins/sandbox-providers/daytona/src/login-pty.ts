@@ -15,17 +15,12 @@
 // home cannot add a second shell token or a second command.
 //
 // Session home: the module revalidates the descriptor and the home shape, then
-// creates the exact UUID directory as a NEW directory with mode 0700, owned by the
-// login user. The inspection and the creation open the filesystem root, then walk
-// each path component with a no-follow, directory-only open, so a symlink at any
-// ancestor (the login root or a directory above it) fails closed. A single
-// composite `stat` or `mkdir` follows a symlink at an ancestor; the per-component
-// walk does not. The creation creates the login root if the root is absent and the
-// UUID directory as a NEW directory, both relative to an open trusted descriptor.
-// The module rejects a pre-existing target, a symlink, a non-directory, a wrong
-// owner, and a wrong mode. It uses no recursive delete. It re-checks the directory
-// with a no-symlink walk before it opens the terminal and again before it sends the
-// launch input, so a symlink swapped in after creation fails before the launch.
+// creates the session home directory with one `mkdir -p` command. The command
+// runs inside the sandbox, so it holds no authority over a host file and no
+// authority to call the Paperclip API. The sandbox contract in
+// `SANDBOX-REQUIREMENTS.md` treats a check that only inspects state inside the
+// sandbox as a non-boundary control, so this module keeps no owner check, no
+// mode check, and no link-type check for the session home.
 //
 // Dependency boundary: this provider plugin ships standalone (the workspace
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
@@ -49,8 +44,6 @@
 // or OSC 8 handling; the login parser owns that handling.
 
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import { sendPtyInputInChunks } from "./pty-chunked-input.js";
 
@@ -84,9 +77,6 @@ const LOGIN_COMMAND_BY_KEY: Readonly<Record<LoginCommandKey, string>> = {
   claude: "claude setup-token",
   codex: "codex login --device-auth",
 };
-
-/** The octal mode string for a new session home directory. */
-const LOGIN_HOME_MODE = "700";
 
 /** The fixed root for a login session home. */
 const LOGIN_SESSION_HOME_ROOT = "/tmp/paperclip-adapter-login";
@@ -220,40 +210,16 @@ export interface DaytonaSandboxExec {
   ): Promise<DaytonaExecResult>;
 }
 
-/** One no-follow inspection of a filesystem path. */
-export interface LoginHomeInspection {
-  /** True when the path exists (as any type). */
-  exists: boolean;
-  /** True when the path itself is a symbolic link. */
-  isSymlink: boolean;
-  /** True when the path itself is a directory. */
-  isDirectory: boolean;
-  /** The octal permission string, for example `700`. Empty when the path is absent. */
-  mode: string;
-  /** The owner user id, or null when the path is absent. */
-  ownerUid: number | null;
-}
-
 /**
- * The narrow filesystem surface the session home operations need. The production
- * surface runs commands on the sandbox; a unit test injects a fake. The inspection
- * and the creation walk each path component with a no-follow open, so a symlink at
- * any ancestor fails closed and a symlink at the target reports the link.
+ * The narrow filesystem surface the session home operation needs. The production
+ * surface runs a command on the sandbox; a unit test injects a fake.
  */
 export interface DaytonaLoginHomeFs {
-  /** Resolves the user id of the login user that runs the pseudo-terminal. */
-  loginUserId(): Promise<number>;
   /**
-   * Inspects `path` without following a symlink at the target or at any ancestor.
-   * It rejects (throws) when an ancestor is a symlink or a non-directory.
+   * Creates `path` as a directory, plus a missing parent directory. It does not
+   * fail when the directory already exists.
    */
-  inspect(path: string): Promise<LoginHomeInspection>;
-  /**
-   * Creates `path` as a NEW directory with the octal `mode`. It creates the login
-   * root ancestor if the root is absent. It fails when the target path exists or
-   * when an ancestor is a symlink. It follows no composite pathname.
-   */
-  createDirectory(path: string, mode: string): Promise<void>;
+  createDirectory(path: string): Promise<void>;
 }
 
 /** The options for the Daytona login PTY session. */
@@ -276,11 +242,6 @@ const LOGIN_PTY_ROWS = 30;
  */
 const PTY_COMMAND_TERMINATOR = "\r";
 
-/** Normalizes an octal permission string to its numeric value for comparison. */
-function octalMode(value: string): number {
-  return Number.parseInt(value, 8);
-}
-
 /**
  * Revalidates the launch descriptor. It fails closed when the command key is
  * outside the closed set or the session home shape is wrong. A unit test that
@@ -297,58 +258,11 @@ function assertDescriptor(descriptor: LoginPtyLaunchDescriptor): void {
 }
 
 /**
- * Creates and validates the exact session home directory. It rejects a
- * pre-existing target (including a symlink), creates the directory as a NEW
- * directory with mode 0700, then verifies the directory type, the no-symlink
- * state, the mode, and the login-user ownership. It uses no recursive delete.
- */
-async function prepareSessionHome(fs: DaytonaLoginHomeFs, sessionHome: string): Promise<void> {
-  const loginUid = await fs.loginUserId();
-
-  // Reject a pre-existing target. A no-follow inspection reports a symlink, a
-  // file, or a directory as present, so any pre-existing target fails here.
-  const before = await fs.inspect(sessionHome);
-  if (before.exists) {
-    throw new Error(LOGIN_PTY_HOME_REJECTED);
-  }
-
-  // Create the exact directory as a NEW directory with mode 0700. The create
-  // fails when the path exists, so the create never follows a symlink.
-  await fs.createDirectory(sessionHome, LOGIN_HOME_MODE);
-
-  // Verify the created directory. Reject a symlink, a non-directory, a wrong
-  // owner, and a wrong mode. Do not delete on a rejection; the sandbox is
-  // ephemeral and the provider uses no recursive delete.
-  const after = await fs.inspect(sessionHome);
-  if (
-    !after.exists ||
-    after.isSymlink ||
-    !after.isDirectory ||
-    after.ownerUid !== loginUid ||
-    octalMode(after.mode) !== octalMode(LOGIN_HOME_MODE)
-  ) {
-    throw new Error(LOGIN_PTY_HOME_REJECTED);
-  }
-}
-
-/**
- * Re-checks the directory with a no-symlink check. It rejects a symlink and a
- * non-directory, so a symlink swapped in after creation fails before the launch.
- */
-async function assertHomeStillSafe(fs: DaytonaLoginHomeFs, sessionHome: string): Promise<void> {
-  const now = await fs.inspect(sessionHome);
-  if (!now.exists || now.isSymlink || !now.isDirectory) {
-    throw new Error(LOGIN_PTY_HOME_REJECTED);
-  }
-}
-
-/**
  * Opens a Daytona PTY session for `descriptor` and returns it as a
  * {@link LoginPtySession}. The function revalidates the descriptor and the home
- * shape, creates and validates the session home, opens a real pseudo-terminal,
- * re-checks the directory before the launch, composes the safe launch line, and
- * sends it. The session streams the raw terminal output, delivers delayed input,
- * and stops the child.
+ * shape, creates the session home, opens a real pseudo-terminal, composes the
+ * safe launch line, and sends it. The session streams the raw terminal output,
+ * delivers delayed input, and stops the child.
  *
  * The function decodes the terminal bytes as a UTF-8 stream, so a multibyte
  * character that splits across two output chunks stays whole. It buffers the
@@ -361,10 +275,9 @@ export async function openDaytonaLoginPtySession(
   options?: DaytonaLoginPtyOptions,
 ): Promise<LoginPtySession> {
   assertDescriptor(descriptor);
-  // Create and validate the session home before the terminal opens.
-  await prepareSessionHome(fs, descriptor.sessionHome);
-  // Re-check the directory with a no-symlink check before `createPty`.
-  await assertHomeStillSafe(fs, descriptor.sessionHome);
+  // Create the session home. `mkdir -p` succeeds when the directory already
+  // exists, so a repeat login for the same home needs no extra check.
+  await fs.createDirectory(descriptor.sessionHome);
 
   const decoder = new TextDecoder("utf-8");
   let listener: ((chunk: string) => void) | null = null;
@@ -387,9 +300,6 @@ export async function openDaytonaLoginPtySession(
   });
 
   await handle.waitForConnection();
-  // Re-check the directory with a no-symlink check immediately before the launch
-  // input, so a symlink swapped in after creation fails before `sendInput`.
-  await assertHomeStillSafe(fs, descriptor.sessionHome);
   // Replace the interactive shell with the login command, so the pseudo-terminal
   // runs the command directly. The runner then writes the delayed browser code
   // to the command, not to a shell.
@@ -434,63 +344,15 @@ export async function openDaytonaLoginPtySession(
 }
 
 /**
- * The inspection helper source. The provider reads it from its own script file and
- * runs it on the sandbox as `<login-profile-preamble> && node -e <script> <path>`.
- * The preamble sources the login profiles first, so `node` resolves on an image
- * that exposes node only through a login profile. The sandbox already runs node
- * for the Paperclip bridge, so the helper needs no extra runtime. The helper
- * source lives in `scripts/login-home-inspect.cjs`, so no large script stays as a
- * string literal in this module. The helper opens the filesystem root, then walks
- * each ancestor of the final path component with a no-follow, directory-only open,
- * and reads the final component with `lstat`.
- *
- * The helper prints one line and sets one exit code:
- * - a missing ancestor or a missing final component prints `ABSENT` and exits 0;
- * - an existing final component prints `<type>|<octal-mode>|<uid>` and exits 0,
- *   where `<type>` is `symlink`, `directory`, or `other`;
- * - a symlink or a non-directory at any ancestor prints nothing and exits 3, so
- *   the caller fails closed on an ancestor symlink.
- */
-const LOGIN_HOME_INSPECT_SCRIPT = readFileSync(
-  fileURLToPath(new URL("./scripts/login-home-inspect.cjs", import.meta.url)),
-  "utf8",
-);
-
-/**
- * The creation helper source. The provider reads it from its own script file and
- * runs it on the sandbox as
- * `<login-profile-preamble> && node -e <script> <path> <octal-mode>`. The preamble
- * sources the login profiles first, so `node` resolves on an image that exposes
- * node only through a login profile. The helper source lives in
- * `scripts/login-home-create.cjs`. The helper opens the filesystem
- * root, then walks each ancestor above the login root with a no-follow,
- * directory-only open. It creates the login root (the second-to-last component) if
- * the root is absent, then opens the root with a no-follow open, so a symlink at
- * the root fails closed. It creates the final component as a NEW directory relative
- * to the root descriptor, so a pre-existing target fails and the create never
- * follows a symlink. It exits 0 on success and non-zero on every failure.
- *
- * The no-follow open of the root after the create closes the swap window: an
- * attacker that replaces the root with a symlink between the create and the open
- * fails the open.
- */
-const LOGIN_HOME_CREATE_SCRIPT = readFileSync(
-  fileURLToPath(new URL("./scripts/login-home-create.cjs", import.meta.url)),
-  "utf8",
-);
-
-/**
- * The login-profile preamble for a node helper command. Daytona's
+ * The login-profile preamble for a sandbox exec command. Daytona's
  * `executeCommand` runs the command in a non-login shell, so the shell does not
- * source `/etc/profile` on its own. The Daytona reference image puts `node` on
- * the PATH through `/etc/profile.d`, which only a login profile sources. The
- * login pseudo-terminal resolves the login command through the same profiles, so
- * the helper sources the login profiles first and a non-login shell then resolves
- * `node`. This keeps the helper runtime and the login PTY capability consistent:
- * an image that exposes `node` only through a login profile runs the helper. The
- * main exec path uses the same profile chain (see `buildLoginShellScript` in
- * `plugin.ts`). Each source line fails open (`|| true`), so a missing profile
- * does not fail the helper.
+ * source `/etc/profile` on its own. The Daytona reference image puts a CLI on the
+ * PATH through `/etc/profile.d`, which only a login profile sources. The login
+ * pseudo-terminal resolves the login command through the same profiles, so this
+ * preamble sources the login profiles first, and a non-login shell then resolves
+ * the same CLI set. The main exec path uses the same profile chain (see
+ * `buildLoginShellScript` in `plugin.ts`). Each source line fails open
+ * (`|| true`), so a missing profile does not fail the command.
  */
 const LOGIN_PROFILE_PREAMBLE = [
   "if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi",
@@ -500,69 +362,25 @@ const LOGIN_PROFILE_PREAMBLE = [
 ].join(" && ");
 
 /**
- * Composes a `node` helper command that runs after the login-profile preamble.
- * The preamble puts `node` on the PATH, then the `&&` chain runs `node -e` with
- * the already shell-encoded argument list. The `node` exit code becomes the
- * command exit code, and `2>/dev/null` suppresses only the node stderr. The
- * caller passes an argument string that is already shell-encoded.
+ * Composes a sandbox exec command that runs after the login-profile preamble.
+ * The preamble runs first, then the `&&` chain runs `command`.
  */
-function composeNodeHelperCommand(encodedArgs: string): string {
-  return `${LOGIN_PROFILE_PREAMBLE} && node -e ${encodedArgs} 2>/dev/null`;
+function composeLoginProfileCommand(command: string): string {
+  return `${LOGIN_PROFILE_PREAMBLE} && ${command}`;
 }
 
 /**
- * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs a
- * fixed node helper on the sandbox to inspect and create the session home. Each
- * helper opens the filesystem root, then walks each path component with a
- * no-follow, directory-only open, so a symlink at any ancestor fails closed. The
- * inspection reads the final component with `lstat`, so a symlink at the target
- * reports the link. The creation creates the login root if absent and the session
- * home as a NEW directory, both relative to an open trusted descriptor, so no
- * operation follows a composite pathname. The real filesystem operations land
- * against a live sandbox; a unit test injects a fake surface instead.
+ * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs one
+ * `mkdir -p` command on the sandbox to create the session home. The command runs
+ * inside the sandbox, so it holds no authority over a host file and no authority
+ * to call the Paperclip API. The real command lands against a live sandbox; a
+ * unit test injects a fake surface instead.
  */
 export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLoginHomeFs {
   return {
-    async loginUserId(): Promise<number> {
-      const out = await exec.executeCommand("id -u");
-      const uid = Number.parseInt((out.result ?? "").trim(), 10);
-      if (!Number.isInteger(uid)) {
-        throw new Error(LOGIN_PTY_HOME_REJECTED);
-      }
-      return uid;
-    },
-    async inspect(path: string): Promise<LoginHomeInspection> {
-      // Read the file type, the octal mode, and the owner uid with a descriptor
-      // relative no-follow walk. A non-zero exit means a symlink or a non-directory
-      // at an ancestor, so the read fails closed. An `ABSENT` line means the target
-      // does not exist yet, which is the safe precondition for a create.
-      const script = encodePosixShellArg(LOGIN_HOME_INSPECT_SCRIPT);
+    async createDirectory(path: string): Promise<void> {
       const encodedPath = encodePosixShellArg(path);
-      const out = await exec.executeCommand(composeNodeHelperCommand(`${script} ${encodedPath}`));
-      if ((out.exitCode ?? 0) !== 0) {
-        throw new Error(LOGIN_PTY_HOME_REJECTED);
-      }
-      const text = (out.result ?? "").trim();
-      if (text.length === 0 || text === "ABSENT") {
-        return { exists: false, isSymlink: false, isDirectory: false, mode: "", ownerUid: null };
-      }
-      const [fileType = "", mode = "", ownerText = ""] = text.split("|");
-      const ownerUid = Number.parseInt(ownerText, 10);
-      return {
-        exists: true,
-        isSymlink: fileType === "symlink",
-        isDirectory: fileType === "directory",
-        mode,
-        ownerUid: Number.isInteger(ownerUid) ? ownerUid : null,
-      };
-    },
-    async createDirectory(path: string, mode: string): Promise<void> {
-      const script = encodePosixShellArg(LOGIN_HOME_CREATE_SCRIPT);
-      const encodedPath = encodePosixShellArg(path);
-      const encodedMode = encodePosixShellArg(mode);
-      const out = await exec.executeCommand(
-        composeNodeHelperCommand(`${script} ${encodedPath} ${encodedMode}`),
-      );
+      const out = await exec.executeCommand(composeLoginProfileCommand(`mkdir -p ${encodedPath}`));
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);
       }

@@ -96,7 +96,7 @@ export function GatewayDetail() {
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: "Gateways", href: "/apps/gateways" },
       { label: gateway.name },
@@ -129,7 +129,7 @@ export function GatewayDetail() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
   }
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;

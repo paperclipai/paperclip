@@ -11,6 +11,7 @@ type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
   PaperclipJsonValue,
+  PaperclipQuestionResponse,
   PaperclipSemanticActionBinding,
   PaperclipSemanticActionId,
   PaperclipSemanticAuthorizationRecord,

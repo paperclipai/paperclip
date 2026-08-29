@@ -52,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -349,6 +350,25 @@ export async function execute(
   const prevSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
+
+  // The server adds this runtime inventory at the run boundary. Requiring the
+  // marker avoids touching a developer's real Hermes home in direct unit or
+  // library calls that did not opt into Paperclip runtime skills.
+  if (Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
+    try {
+      const selectedSkills = await reconcileHermesPaperclipSkills(config);
+      if (selectedSkills.length > 0) {
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
+      throw err;
+    }
+  }
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:

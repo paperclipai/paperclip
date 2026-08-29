@@ -34,7 +34,6 @@ import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
-import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { logActivity } from "../activity-log.js";
@@ -55,7 +54,6 @@ import {
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
-import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -98,7 +96,6 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
-const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -597,15 +594,6 @@ function agentUiLink(agent: { id: string; name: string | null } | null, prefix: 
   return `[${agent.name ?? agent.id}](/${prefix}/agents/${agent.id})`;
 }
 
-function formatDuration(ms: number | null) {
-  if (ms === null) return "unknown";
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
 function formatIssueLinksForComment(relations: Array<{ identifier?: string | null }>) {
   const identifiers = [
     ...new Set(
@@ -622,36 +610,6 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
       return `[${identifier}](/${prefix}/issues/${identifier})`;
     })
     .join(", ");
-}
-
-function unwrapDatabaseConflictError(error: unknown) {
-  if (!error || typeof error !== "object") return null;
-
-  const candidate = error as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-    message?: string;
-    cause?: unknown;
-  };
-
-  if (
-    typeof candidate.code === "string" ||
-    typeof candidate.constraint === "string" ||
-    typeof candidate.constraint_name === "string"
-  ) {
-    return candidate;
-  }
-
-  const cause = candidate.cause;
-  if (!cause || typeof cause !== "object") return candidate;
-
-  return cause as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-    message?: string;
-  };
 }
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
@@ -794,12 +752,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
-  const runLogStore = getRunLogStore();
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
-
-  const getCurrentUserRedactionOptions = async () => ({
-    enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
-  });
 
   async function getAgent(agentId: string) {
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
@@ -1346,18 +1299,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0]?.issuePrefix ?? "PAP");
   }
 
-  function staleActiveRunOriginFingerprint(companyId: string, runId: string) {
-    return `stale_active_run:${companyId}:${runId}`;
-  }
-
   function isTerminalIssueStatus(status: string | null | undefined) {
     return status === "done" || status === "cancelled";
-  }
-
-  function isRecoveryOriginIssue(issue: typeof issues.$inferSelect) {
-    return Object.values(RECOVERY_ORIGIN_KINDS).includes(
-      issue.originKind as typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS],
-    );
   }
 
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
@@ -1369,21 +1312,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
-  async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
-    const [row] = await db
-      .select()
-      .from(heartbeatRunWatchdogDecisions)
-      .where(
-        and(
-          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-          eq(heartbeatRunWatchdogDecisions.runId, runId),
-          inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
-          gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
-        ),
-      )
-      .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
-      .limit(1);
-    return row ?? null;
+  async function activeOutputDecisionState(companyId: string, runId: string, now = new Date()) {
+    const [quietUntilRows, dismissedRows] = await Promise.all([
+      db
+        .select({
+          decision: heartbeatRunWatchdogDecisions.decision,
+          snoozedUntil: heartbeatRunWatchdogDecisions.snoozedUntil,
+        })
+        .from(heartbeatRunWatchdogDecisions)
+        .where(
+          and(
+            eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, runId),
+            inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+            gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
+          ),
+        )
+        .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+        .limit(1),
+      db
+        .select({ id: heartbeatRunWatchdogDecisions.id })
+        .from(heartbeatRunWatchdogDecisions)
+        .where(
+          and(
+            eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, runId),
+            eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
+          ),
+        )
+        .limit(1),
+    ]);
+    return {
+      dismissedFalsePositive: dismissedRows.length > 0,
+      quietUntilDecision: quietUntilRows[0] ?? null,
+    };
   }
 
   async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
@@ -1392,9 +1354,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         id: issues.id,
         identifier: issues.identifier,
         status: issues.status,
-        priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
-        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(
@@ -1410,51 +1370,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
-  // Returns a `done` stale-run evaluation issue for this run if one exists.
-  // Used to detect when a reviewer closed an alert directly on the board without going through
-  // the watchdog decision API — which would not leave a dismissed_false_positive decision record.
-  //
-  // Scoped to `done` only (not `cancelled`): cancellation is used by other system code paths
-  // and does not imply a reviewer's "false positive" verdict. `done` is the explicit
-  // board-close path used by reviewers acknowledging the alert. A cancelled evaluation is
-  // allowed to re-fire on the next scan; if a reviewer wants permanent suppression they
-  // should mark the alert done or record a watchdog decision.
-  async function findClosedStaleRunEvaluation(companyId: string, runId: string) {
-    const [row] = await db
-      .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
-          eq(issues.originId, runId),
-          visibleIssueCondition(),
-          eq(issues.status, "done"),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt))
-      .limit(1);
-    return row ?? null;
-  }
-
-  // Returns true when a reviewer has already dismissed this run's silence as a false positive.
-  // Used to prevent re-filing after a deliberate close — while still allowing legitimate
-  // re-arm after a "continue" decision's snooze window expires.
-  async function hasDismissedFalsePositiveDecision(companyId: string, runId: string) {
-    const [row] = await db
-      .select({ id: heartbeatRunWatchdogDecisions.id })
-      .from(heartbeatRunWatchdogDecisions)
-      .where(
-        and(
-          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-          eq(heartbeatRunWatchdogDecisions.runId, runId),
-          eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
-        ),
-      )
-      .limit(1);
-    return row != null;
-  }
-
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1462,21 +1377,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
-    const [quietUntilDecision, evaluation] = await Promise.all([
-      latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
+    const [decisionState, evaluation] = await Promise.all([
+      activeOutputDecisionState(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
+    const { dismissedFalsePositive, quietUntilDecision } = decisionState;
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
     const level = run.status !== "running"
       ? "not_applicable"
-      : quietUntilDecision
-        ? "snoozed"
-        : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
-          ? "critical"
-          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
-            ? "suspicious"
-            : "ok";
+      : dismissedFalsePositive
+        ? "not_applicable"
+        : quietUntilDecision
+          ? "snoozed"
+          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+            ? "critical"
+            : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
+              ? "suspicious"
+              : "ok";
     return {
       lastOutputAt: run.lastOutputAt ?? null,
       lastOutputSeq: run.lastOutputSeq ?? 0,
@@ -1488,35 +1406,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       level,
       suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
       criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
-      snoozedUntil: quietUntilDecision?.snoozedUntil ?? null,
+      snoozedUntil: dismissedFalsePositive ? null : quietUntilDecision?.snoozedUntil ?? null,
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
       evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
     };
-  }
-
-  function redactWatchdogEvidenceText(value: string, currentUserRedactionOptions: Awaited<ReturnType<typeof getCurrentUserRedactionOptions>>) {
-    return redactSensitiveText(redactCurrentUserText(value, currentUserRedactionOptions));
-  }
-
-  function truncateEvidenceText(value: string, maxChars = 4000) {
-    if (value.length <= maxChars) return value;
-    return `${value.slice(value.length - maxChars)}\n[truncated earlier evidence]`;
-  }
-
-  async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
-    if (!run.logStore || !run.logRef || !run.logBytes) return "";
-    try {
-      const offset = Math.max(0, run.logBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
-      const result = await runLogStore.read(
-        { store: run.logStore as "local_file", logRef: run.logRef },
-        { offset, limitBytes: ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES },
-      );
-      return result.content;
-    } catch (err) {
-      logger.warn({ err, runId: run.id }, "failed to read stale-run watchdog evidence tail");
-      return "";
-    }
   }
 
   async function resolveStaleRunSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
@@ -1833,267 +1727,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
-  async function resolveStaleRunOwnerAgentId(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    runningAgent: typeof agents.$inferSelect;
-    sourceIssue: typeof issues.$inferSelect | null;
-  }) {
-    const candidateIds: string[] = [];
-    if (input.sourceIssue?.assigneeAgentId) {
-      const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);
-      if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
-    }
-    if (input.runningAgent.reportsTo) candidateIds.push(input.runningAgent.reportsTo);
-    const roleCandidates = await db
-      .select()
-      .from(agents)
-      .where(and(eq(agents.companyId, input.run.companyId), inArray(agents.role, ["cto", "ceo"])))
-      .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
-    candidateIds.push(...roleCandidates.map((agent) => agent.id));
-
-    const seen = new Set<string>();
-    for (const agentId of candidateIds) {
-      if (seen.has(agentId)) continue;
-      seen.add(agentId);
-      const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== input.run.companyId) continue;
-      const budgetBlock = await budgets.getInvocationBlock(input.run.companyId, candidate.id, {
-        issueId: input.sourceIssue?.id ?? null,
-        projectId: input.sourceIssue?.projectId ?? null,
-      });
-      if (
-        (await isAgentInvokable(candidate)) &&
-        isHeartbeatWakeOnDemandEnabled(candidate) &&
-        !budgetBlock
-      ) {
-        return candidate.id;
-      }
-    }
-
-    return null;
-  }
-
-  async function collectStaleRunEvidence(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    runningAgent: typeof agents.$inferSelect;
-    sourceIssue: typeof issues.$inferSelect | null;
-    prefix: string;
-    now: Date;
-  }) {
-    const [tail, recentEvents, childIssues, blockers] = await Promise.all([
-      readRunLogTailForEvidence(input.run),
-      db
-        .select({
-          eventType: heartbeatRunEvents.eventType,
-          level: heartbeatRunEvents.level,
-          message: heartbeatRunEvents.message,
-          createdAt: heartbeatRunEvents.createdAt,
-        })
-        .from(heartbeatRunEvents)
-        .where(and(eq(heartbeatRunEvents.companyId, input.run.companyId), eq(heartbeatRunEvents.runId, input.run.id)))
-        .orderBy(desc(heartbeatRunEvents.id))
-        .limit(8),
-      input.sourceIssue
-        ? db
-          .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
-          .from(issues)
-          .where(and(eq(issues.companyId, input.run.companyId), eq(issues.parentId, input.sourceIssue.id), visibleIssueCondition()))
-          .orderBy(desc(issues.updatedAt))
-          .limit(8)
-        : Promise.resolve([]),
-      input.sourceIssue
-        ? db
-          .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
-          .from(issueRelations)
-          .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-          .where(
-            and(
-              eq(issueRelations.companyId, input.run.companyId),
-              eq(issueRelations.relatedIssueId, input.sourceIssue.id),
-              eq(issueRelations.type, "blocks"),
-            ),
-          )
-          .limit(8)
-        : Promise.resolve([]),
-    ]);
-    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const safeTail = truncateEvidenceText(redactWatchdogEvidenceText(tail, currentUserRedactionOptions));
-    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
-    return {
-      safeTail,
-      silenceAgeMs,
-      recentEvents: recentEvents.reverse().map((event) => ({
-        eventType: event.eventType,
-        level: event.level,
-        createdAt: event.createdAt.toISOString(),
-        message: event.message ? truncateEvidenceText(redactWatchdogEvidenceText(event.message, currentUserRedactionOptions), 300) : null,
-      })),
-      childIssues,
-      blockers,
-    };
-  }
-
-  function buildStaleRunEvaluationDescription(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    runningAgent: typeof agents.$inferSelect;
-    sourceIssue: typeof issues.$inferSelect | null;
-    prefix: string;
-    evidence: Awaited<ReturnType<typeof collectStaleRunEvidence>>;
-    level: "suspicious" | "critical";
-    now: Date;
-  }) {
-    const sourceIssue = input.sourceIssue
-      ? issueUiLink({ identifier: input.sourceIssue.identifier, id: input.sourceIssue.id }, input.prefix)
-      : "none";
-    const recentEvents = input.evidence.recentEvents.length > 0
-      ? input.evidence.recentEvents.map((event) =>
-        `- ${event.createdAt} \`${event.eventType}\`${event.level ? ` ${event.level}` : ""}: ${event.message ?? "(no message)"}`,
-      ).join("\n")
-      : "- none";
-    const childIssues = input.evidence.childIssues.length > 0
-      ? input.evidence.childIssues.map((issue) =>
-        `- ${issueUiLink({ identifier: issue.identifier, id: issue.id }, input.prefix)} \`${issue.status}\`: ${issue.title}`,
-      ).join("\n")
-      : "- none detected";
-    const blockers = input.evidence.blockers.length > 0
-      ? input.evidence.blockers.map((issue) =>
-        `- ${issueUiLink({ identifier: issue.identifier, id: issue.id }, input.prefix)} \`${issue.status}\`: ${issue.title}`,
-      ).join("\n")
-      : "- none detected";
-    return [
-      `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
-      "",
-      "## Run",
-      "",
-      `- Run: ${runUiLink(input.run, input.prefix)}`,
-      `- Agent: ${input.runningAgent.name} (${input.runningAgent.adapterType})`,
-      `- Invocation: ${input.run.invocationSource}${input.run.triggerDetail ? ` / ${input.run.triggerDetail}` : ""}`,
-      `- Source issue: ${sourceIssue}`,
-      `- Started at: ${input.run.startedAt?.toISOString() ?? "unknown"}`,
-      `- Process started at: ${input.run.processStartedAt?.toISOString() ?? "unknown"}`,
-      `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
-      `- Last output sequence: ${input.run.lastOutputSeq ?? 0}`,
-      `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
-      `- Thresholds: suspicious after ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)}, critical after ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)}`,
-      `- Process metadata: pid \`${input.run.processPid ?? "unknown"}\`, process group \`${input.run.processGroupId ?? "unknown"}\`, in-memory handle \`${runningProcesses.has(input.run.id) ? "yes" : "no"}\``,
-      "",
-      "## Last Output Excerpt",
-      "",
-      input.evidence.safeTail ? `\`\`\`text\n${input.evidence.safeTail}\n\`\`\`` : "_No run-log tail was available._",
-      "",
-      "## Recent Run Events",
-      "",
-      recentEvents,
-      "",
-      "## Related Work",
-      "",
-      "Active child issues:",
-      childIssues,
-      "",
-      "Current source blockers:",
-      blockers,
-      "",
-      "## Decision Checklist",
-      "",
-      "- Continue or snooze if the run is intentionally quiet.",
-      "- Ask the run owner for context if work may be delegated outside the transcript.",
-      "- Preserve artifacts, branch state, and useful output before cancellation.",
-      "- Cancel or recover through the explicit run recovery controls when authorized.",
-      "- Close this issue as a false positive only after recording the reason.",
-    ].join("\n");
-  }
-
-  function isUniqueStaleRunEvaluationConflict(error: unknown) {
-    const maybe = unwrapDatabaseConflictError(error);
-    if (!maybe) return false;
-    return maybe.code === "23505" &&
-      (
-        maybe.constraint === "issues_active_stale_run_evaluation_uq" ||
-        maybe.constraint_name === "issues_active_stale_run_evaluation_uq" ||
-        typeof maybe.message === "string" && maybe.message.includes("issues_active_stale_run_evaluation_uq")
-      );
-  }
-
-  async function ensureSourceIssueCommentedForStaleEvaluation(input: {
-    sourceIssue: typeof issues.$inferSelect | null;
-    evaluationIssue: { id: string; identifier: string | null };
-    run: typeof heartbeatRuns.$inferSelect;
-  }) {
-    if (!input.sourceIssue || ["done", "cancelled"].includes(input.sourceIssue.status)) return false;
-    // Idempotency guard: if we've already emitted the escalation comment for this
-    // (sourceIssue, evaluationIssue) pair, skip. Without this, every subsequent scan
-    // cycle while the evaluation issue is still open re-fires the comment and spams
-    // the source-issue thread. The activity log row written below is the persistence
-    // record we check against — a single row per pair is enough to suppress repeats
-    // even after process restarts.
-    const [priorEscalation] = await db
-      .select({ id: activityLog.id })
-      .from(activityLog)
-      .where(
-        and(
-          eq(activityLog.companyId, input.sourceIssue.companyId),
-          eq(activityLog.action, "heartbeat.output_stale_escalated"),
-          eq(activityLog.entityType, "issue"),
-          eq(activityLog.entityId, input.sourceIssue.id),
-          sql`${activityLog.details} ->> 'evaluationIssueId' = ${input.evaluationIssue.id}`,
-        ),
-      )
-      .limit(1);
-    if (priorEscalation) return false;
-    // Evaluation issues are observability-only — do NOT add them to blockedByIssueIds.
-    // They are already parented under the source issue. Adding them as hard blockers
-    // creates a self-amplifying loop: block → silence → new alert → block again.
-    await issuesSvc.addComment(input.sourceIssue.id, [
-      "Paperclip detected critical output silence on this issue's active run.",
-      "",
-      `- Evaluation issue: ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}`,
-      `- Run: \`${input.run.id}\``,
-      "",
-      "Review the evaluation issue above. The active run has not been cancelled.",
-    ].join("\n"), { runId: input.run.id });
-    await logActivity(db, {
-      companyId: input.sourceIssue.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: null,
-      runId: input.run.id,
-      action: "heartbeat.output_stale_escalated",
-      entityType: "issue",
-      entityId: input.sourceIssue.id,
-      details: {
-        source: "recovery.scan_silent_active_runs",
-        evaluationIssueId: input.evaluationIssue.id,
-      },
-    });
-    return true;
-  }
-
-  async function createOrUpdateStaleRunEvaluation(input: {
+  async function inspectSilentActiveRun(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
+    dismissedFalsePositive: boolean;
   }) {
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
-    if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
-      await logActivity(db, {
-        companyId: input.run.companyId,
-        actorType: "system",
-        actorId: "system",
-        agentId: input.run.agentId,
-        runId: input.run.id,
-        action: "heartbeat.output_stale_recovery_recursion_refused",
-        entityType: "heartbeat_run",
-        entityId: input.run.id,
-        details: {
-          source: "recovery.scan_silent_active_runs",
-          sourceIssueId: sourceIssue.id,
-          sourceIssueIdentifier: sourceIssue.identifier,
-          sourceIssueOriginKind: sourceIssue.originKind,
-          existingEvaluationIssueId: existing?.id ?? null,
-        },
-      });
+    if (
+      sourceIssue &&
+      Object.values(RECOVERY_ORIGIN_KINDS).includes(
+        sourceIssue.originKind as typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS],
+      )
+    ) {
       return { kind: "skipped" as const };
     }
     const silenceStartedAt = silenceStartedAtForRun(input.run);
@@ -2117,184 +1765,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
-    // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
+    // Blocked source work can be intentionally quiet. The issue state already carries
+    // the durable waiting signal, so the cleanup scan has nothing to do.
     if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
 
-    // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't re-file.
-    // A "continue" decision with a snooze window is allowed to re-arm normally — only an
-    // explicit dismissed_false_positive blocks all further alerts for this run.
-    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
+    if (input.dismissedFalsePositive) {
       return { kind: "skipped" as const };
     }
 
-    // Dedup: if a prior evaluation issue for this run was closed `done` on the board
-    // without going through the watchdog decision API, no dismissed_false_positive record exists
-    // and the watchdog would re-fire every cycle. Auto-record the suppression now so future
-    // cycles skip immediately via hasDismissedFalsePositiveDecision.
-    //
-    // Exception: if any watchdog decision exists (snooze/continue), a human explicitly opted
-    // in to the watchdog lifecycle — honour that and allow re-arm as designed.
-    //
-    // Concurrency: the check-then-insert runs inside a transaction with a per-(company,run)
-    // advisory lock so two overlapping scans cannot both observe `hasAnyDecision = false`
-    // and both insert a dismissed_false_positive row. The table has no unique constraint
-    // on (companyId, runId, decision), so the advisory lock is the serialization point.
-    const closedEvaluation = await findClosedStaleRunEvaluation(input.run.companyId, input.run.id);
-    if (closedEvaluation) {
-      const autoDismissed = await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`watchdog_dismiss:${input.run.companyId}:${input.run.id}`}, 0))`,
-        );
-        const hasAnyDecision = await tx
-          .select({ id: heartbeatRunWatchdogDecisions.id })
-          .from(heartbeatRunWatchdogDecisions)
-          .where(
-            and(
-              eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
-              eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows.length > 0);
-        if (hasAnyDecision) return false;
-        await tx.insert(heartbeatRunWatchdogDecisions).values({
-          companyId: input.run.companyId,
-          runId: input.run.id,
-          evaluationIssueId: closedEvaluation.id,
-          decision: "dismissed_false_positive",
-          snoozedUntil: null,
-          reason: `Auto-recorded: evaluation issue ${closedEvaluation.identifier} was closed as ${closedEvaluation.status} on the board without a watchdog decision.`,
-          createdByAgentId: null,
-          createdByUserId: null,
-          createdByRunId: null,
-        });
-        return true;
-      });
-      if (autoDismissed) {
-        return { kind: "skipped" as const };
-      }
-    }
-
-    const prefix = await getCompanyIssuePrefix(input.run.companyId);
-    const evidence = await collectStaleRunEvidence({
-      run: input.run,
-      runningAgent,
-      sourceIssue,
-      prefix,
-      now: input.now,
-    });
-    const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
-    if (existing) {
-      if (level === "critical" && existing.priority !== "high") {
-        await issuesSvc.update(existing.id, {
-          priority: "high",
-        });
-        await issuesSvc.addComment(existing.id, [
-          "Critical output silence threshold crossed.",
-          "",
-          `- Run: \`${input.run.id}\``,
-          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
-          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
-        ].join("\n"), { runId: input.run.id });
-        await ensureSourceIssueCommentedForStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-        return { kind: "escalated" as const, evaluationIssueId: existing.id };
-      }
-      if (level === "critical") {
-        await ensureSourceIssueCommentedForStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-      }
-      return { kind: "existing" as const, evaluationIssueId: existing.id };
-    }
-
-    const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
-    const description = buildStaleRunEvaluationDescription({
-      run: input.run,
-      runningAgent,
-      sourceIssue,
-      prefix,
-      evidence,
-      level,
-      now: input.now,
-    });
-    let evaluation: Awaited<ReturnType<typeof issuesSvc.create>>;
-    try {
-      evaluation = await issuesSvc.create(input.run.companyId, {
-        title: `Review silent active run for ${runningAgent.name}`,
-        description,
-        status: "todo",
-        priority: level === "critical" ? "high" : "medium",
-        parentId: sourceIssue && !["done", "cancelled"].includes(sourceIssue.status) ? sourceIssue.id : null,
-        projectId: sourceIssue?.projectId ?? null,
-        goalId: sourceIssue?.goalId ?? null,
-        billingCode: sourceIssue?.billingCode ?? null,
-        assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
-        originKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
-        originId: input.run.id,
-        originRunId: input.run.id,
-        originFingerprint: staleActiveRunOriginFingerprint(input.run.companyId, input.run.id),
-      });
-    } catch (error) {
-      if (!isUniqueStaleRunEvaluationConflict(error)) throw error;
-      const raced = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
-      if (!raced) throw error;
-      return { kind: "existing" as const, evaluationIssueId: raced.id };
-    }
-
-    await logActivity(db, {
-      companyId: input.run.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: ownerAgentId,
-      runId: input.run.id,
-      action: "heartbeat.output_stale_detected",
-      entityType: "issue",
-      entityId: evaluation.id,
-      details: {
-        source: "recovery.scan_silent_active_runs",
-        level,
-        sourceIssueId: sourceIssue?.id ?? null,
-        silenceAgeMs: evidence.silenceAgeMs,
-        lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
-      },
-    });
-    if (level === "critical") {
-      await ensureSourceIssueCommentedForStaleEvaluation({
-        sourceIssue,
-        evaluationIssue: evaluation,
-        run: input.run,
-      });
-    }
-    if (ownerAgentId) {
-      await deps.enqueueWakeup(ownerAgentId, {
-        source: "assignment",
-        triggerDetail: "system",
-        reason: "issue_assigned",
-        payload: withRecoveryModelProfileHint({
-          issueId: evaluation.id,
-          staleRunId: input.run.id,
-          sourceIssueId: sourceIssue?.id ?? null,
-        }, "status_only"),
-        requestedByActorType: "system",
-        requestedByActorId: null,
-        contextSnapshot: withRecoveryModelProfileHint({
-          issueId: evaluation.id,
-          taskId: evaluation.id,
-          wakeReason: "issue_assigned",
-          source: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
-          staleRunId: input.run.id,
-          sourceIssueId: sourceIssue?.id ?? null,
-        }, "status_only"),
-      });
-    }
-    return { kind: "created" as const, evaluationIssueId: evaluation.id };
+    return existing
+      ? { kind: "existing" as const, evaluationIssueId: existing.id }
+      : { kind: "skipped" as const };
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string; issueCreatedAtGte?: Date | null }) {
@@ -2346,14 +1827,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const run of candidates) {
-      if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
+      const decisionState = await activeOutputDecisionState(run.companyId, run.id, now);
+      if (decisionState.quietUntilDecision) {
         result.snoozed += 1;
         continue;
       }
-      const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
-      if (outcome.kind === "created") result.created += 1;
-      else if (outcome.kind === "existing") result.existing += 1;
-      else if (outcome.kind === "escalated") result.escalated += 1;
+      const outcome = await inspectSilentActiveRun({
+        run,
+        now,
+        dismissedFalsePositive: decisionState.dismissedFalsePositive,
+      });
+      if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "folded") result.folded += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {

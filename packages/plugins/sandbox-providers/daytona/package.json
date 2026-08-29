@@ -42,7 +42,7 @@
   ],
   "scripts": {
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "rm -rf dist && tsc && mkdir -p dist/scripts && cp -R src/scripts/. dist/scripts/",
+    "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
     "typecheck": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",

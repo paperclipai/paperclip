@@ -46,6 +46,12 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate migration ordering against target branch
+        run: >-
+          node .github/scripts/check-pr-migration-order.mjs
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
+
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
 
@@ -483,6 +489,8 @@ jobs:
           specs="$(node ./scripts/e2e-shard.mjs \
             --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
           echo "shard ${{ matrix.shard_label }} specs: $specs"
+          # specs is an intentional argument list.
+          # shellcheck disable=SC2086
           pnpm run test:e2e $specs
 
       - name: Upload Playwright report

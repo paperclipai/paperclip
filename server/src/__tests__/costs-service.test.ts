@@ -21,6 +21,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -127,94 +128,90 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
-  const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
-    next();
-  });
-  app.use("/api", costRoutes(makeDb() as any));
-  app.use(errorHandler);
-  return app;
-}
-
-async function createAppWithActor(actor: any) {
-  const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    req.actor = actor;
-    next();
-  });
-  app.use("/api", costRoutes(makeDb() as any));
-  app.use(errorHandler);
-  return app;
-}
-
-async function loadCostParsers() {
-  const { parseCostDateRange, parseCostLimit } = await import("../routes/costs.js");
-  return { parseCostDateRange, parseCostLimit };
-}
-
-beforeEach(() => {
-  vi.resetModules();
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../services/quota-windows.js");
-  vi.doUnmock("../routes/costs.js");
-  vi.doUnmock("../middleware/index.js");
-  registerModuleMocks();
-  vi.clearAllMocks();
-  mockAccessService.decide.mockReset();
-  mockAccessService.decide.mockResolvedValue({
-    allowed: true,
-    action: "company_scope:read",
-    reason: "allow_test",
-    explanation: "Allowed by test mock.",
-  });
-  mockCompanyService.update.mockResolvedValue({
-    id: "company-1",
-    name: "Paperclip",
-    budgetMonthlyCents: 100,
-    spentMonthlyCents: 0,
-  });
-  mockAgentService.getById.mockResolvedValue({
-    id: "agent-1",
-    companyId: "company-1",
-    name: "Budget Agent",
-    budgetMonthlyCents: 100,
-    spentMonthlyCents: 0,
-  });
-  mockAgentService.update.mockResolvedValue({
-    id: "agent-1",
-    companyId: "company-1",
-    name: "Budget Agent",
-    budgetMonthlyCents: 100,
-    spentMonthlyCents: 0,
-  });
-  mockIssueService.getById.mockResolvedValue({
-    id: "issue-1",
-    companyId: "company-1",
-    identifier: "PC1A2-1",
-  });
-  mockIssueService.getByIdentifier.mockResolvedValue({
-    id: "issue-1",
-    companyId: "company-1",
-    identifier: "PC1A2-1",
-  });
-  mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
-});
-
 describe("cost routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [costsRouteModule, middlewareModule] = await Promise.all([
+      vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    return { ...costsRouteModule, errorHandler: middlewareModule.errorHandler };
+  });
+
+  function createApp() {
+    const { costRoutes, errorHandler } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", costRoutes(makeDb() as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createAppWithActor(actor: any) {
+    const { costRoutes, errorHandler } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", costRoutes(makeDb() as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function loadCostParsers() {
+    const { parseCostDateRange, parseCostLimit } = routeModules.value;
+    return { parseCostDateRange, parseCostLimit };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
+    mockCompanyService.update.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+      budgetMonthlyCents: 100,
+      spentMonthlyCents: 0,
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Budget Agent",
+      budgetMonthlyCents: 100,
+      spentMonthlyCents: 0,
+    });
+    mockAgentService.update.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Budget Agent",
+      budgetMonthlyCents: 100,
+      spentMonthlyCents: 0,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PC1A2-1",
+    });
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PC1A2-1",
+    });
+    mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+  });
+
   it("accepts valid ISO date strings", async () => {
-    const { parseCostDateRange } = await loadCostParsers();
+    const { parseCostDateRange } = loadCostParsers();
     expect(parseCostDateRange({
       from: "2026-01-01T00:00:00.000Z",
       to: "2026-01-31T23:59:59.999Z",
@@ -225,17 +222,17 @@ describe("cost routes", () => {
   });
 
   it("returns 400 for an invalid 'from' date string", async () => {
-    const { parseCostDateRange } = await loadCostParsers();
+    const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ from: "not-a-date" })).toThrow(/invalid 'from' date/i);
   });
 
   it("returns 400 for an invalid 'to' date string", async () => {
-    const { parseCostDateRange } = await loadCostParsers();
+    const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ to: "banana" })).toThrow(/invalid 'to' date/i);
   });
 
   it("returns finance summary rows for valid requests", async () => {
-    const app = await createApp();
+    const app = createApp();
     const res = await request(app)
       .get("/api/companies/company-1/costs/finance-summary")
       .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
@@ -250,7 +247,7 @@ describe("cost routes", () => {
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {
-    const app = await createApp();
+    const app = createApp();
     const res = await request(app).get("/api/issues/pc1a2-1/cost-summary");
 
     expect(res.status).toBe(200);
@@ -272,17 +269,17 @@ describe("cost routes", () => {
   });
 
   it("returns 400 for invalid finance event list limits", async () => {
-    const { parseCostLimit } = await loadCostParsers();
+    const { parseCostLimit } = loadCostParsers();
     expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
   });
 
   it("accepts valid finance event list limits", async () => {
-    const { parseCostLimit } = await loadCostParsers();
+    const { parseCostLimit } = loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
-    const app = await createAppWithActor({
+    const app = createAppWithActor({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -299,7 +296,7 @@ describe("cost routes", () => {
   });
 
   it("rejects agent budget updates for board users outside the agent company", async () => {
-    const app = await createAppWithActor({
+    const app = createAppWithActor({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -317,7 +314,7 @@ describe("cost routes", () => {
   });
 
   it("rejects agent budget updates from the target agent without changing the budget policy", async () => {
-    const app = await createAppWithActor({
+    const app = createAppWithActor({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -336,7 +333,7 @@ describe("cost routes", () => {
   });
 
   it("rejects agent budget updates from another same-company agent without changing the budget policy", async () => {
-    const app = await createAppWithActor({
+    const app = createAppWithActor({
       type: "agent",
       agentId: "agent-2",
       companyId: "company-1",
@@ -362,7 +359,7 @@ describe("cost routes", () => {
       budgetMonthlyCents: 2500,
       spentMonthlyCents: 0,
     });
-    const app = await createAppWithActor({
+    const app = createAppWithActor({
       type: "board",
       userId: "board-user",
       source: "session",

@@ -14,9 +14,11 @@ import {
   GIT_ARCHIVE_EXCLUDES,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
+  ReferencedSourceIgnoreScanLimitExceededError,
   readReferencedSourceGitIgnoredPaths,
   resetLocalGitIndexToHead,
   withShallowGitWorkspaceClone,
+  WORKSPACE_GIT_SCAN_SATURATED_CODE,
 } from "./git-workspace-sync.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import {
@@ -147,15 +149,38 @@ export interface SandboxManagedRuntimeAsset {
  *   `resolveReferencedSourceIgnore`).
  * - `other`: `localPath` is not a Git work tree. The staging path keeps
  *   today's fixed heavy-directory excludes.
- * - `failed`: the Git read failed, timed out, or returned output the
- *   resolver could not parse or safely re-relativize. The project is NOT
- *   staged (fail closed) — every site records it as a per-project failure
- *   instead of shipping it unfiltered.
+ * - `failed`: the Git read failed, timed out, breached a parse bound, or
+ *   returned output the resolver could not safely re-relativize. The project
+ *   is NOT staged (fail closed) — every site records it as a per-project
+ *   failure instead of shipping it unfiltered. `reason` is always one of
+ *   {@link REFERENCED_SOURCE_IGNORE_FAILURE_REASONS} — never a raw Git or tar
+ *   diagnostic, an absolute host path, or a basename.
  */
 export type ReferencedSourceIgnoreResolution =
   | { kind: "git"; ignoredPaths: string[] }
   | { kind: "other" }
   | { kind: "failed"; reason: string };
+
+/**
+ * The fixed, allowlisted failure categories a `failed`
+ * {@link ReferencedSourceIgnoreResolution} reports as `reason`. This is the
+ * ENTIRE vocabulary: no absolute host path, no basename, no opaque token, and
+ * no raw Git or tar stderr ever reaches `reason` — only one of these three
+ * stable strings, chosen once at the single construction point in
+ * `resolveReferencedSourceIgnore`. A `failed` resolution always prevents
+ * staging and is always re-resolved before its next use, so two different
+ * underlying failures colliding on the same category (e.g. a timeout and a
+ * malformed-output error both reporting `scanFailed`) never weakens the
+ * fail-closed decision.
+ */
+export const REFERENCED_SOURCE_IGNORE_FAILURE_REASONS = {
+  /** A Git read failed, timed out, was cancelled, or returned malformed output — including a saturated scan queue that never recovered after its retries. */
+  scanFailed: "git-ignore-scan-failed",
+  /** The parsed ignored-entry count or total UTF-8 byte size breached its bound (see `readReferencedSourceGitIgnoredPaths`). */
+  limitExceeded: "git-ignore-scan-limit-exceeded",
+  /** The referenced project's `localPath` is not a descendant of its own Git top level. */
+  toplevelNotDescendant: "git-toplevel-not-descendant",
+} as const;
 
 /**
  * A referenced (additional) project to stage into the run sandbox as a plain,
@@ -240,7 +265,7 @@ function relativizeUnderGitToplevel(input: { toplevel: string; localPath: string
 }
 
 /**
- * Re-relativize root-relative ignored paths (as `git status --ignored`
+ * Re-relativize root-relative ignored paths (as `readReferencedSourceGitIgnoredPaths`
  * reports them, from the repository toplevel) to `offset`, the position of
  * the referenced project's `localPath` under that toplevel. Keeps only the
  * entries that are `offset` itself or a descendant of it — an ignored path
@@ -260,22 +285,77 @@ function reRelativizeIgnoredPathsToLocalPath(input: { ignoredPaths: string[]; of
 }
 
 /**
+ * Bounded backoff before each retry of a saturated Git scan: none before the
+ * first attempt, 1 second before the second, 2 seconds before the third. Three
+ * total attempts (the first plus these two retries) is a liveness parameter,
+ * not a security control — the retry only ever fires for the scheduler's
+ * typed saturation code (see {@link isWorkspaceGitScanSaturatedError}).
+ */
+const REFERENCED_SOURCE_IGNORE_SCAN_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True only when `error` carries the workspace Git scan scheduler's typed
+ * saturation code on its `code` property. Matches the code alone, never
+ * message text — a message can change wording without changing meaning, and
+ * matching text would silently stop retrying (or start retrying the wrong
+ * failure) the moment it did.
+ */
+function isWorkspaceGitScanSaturatedError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === WORKSPACE_GIT_SCAN_SATURATED_CODE
+  );
+}
+
+/**
  * Resolve a referenced project's Git-ignored paths ONCE, before any staging
  * site runs. Called once per project (see `execute.ts`); the sandbox lane,
  * the SSH lane, and the content-signature walk all consume this one result,
  * so they can never apply a different exclusion set to the same project.
  *
- * Fails closed: a Git read error, a timeout, malformed output, or a `localPath`
- * that is not a plain descendant of its own Git toplevel all return `failed`,
- * never an empty ignore list — an empty list means "resolved, nothing extra to
- * exclude", which is a different claim than "the resolution did not run".
+ * Fails closed: a Git read error, a timeout, malformed output, a parse-bound
+ * breach, or a `localPath` that is not a plain descendant of its own Git
+ * toplevel all return `failed`, never an empty ignore list — an empty list
+ * means "resolved, nothing extra to exclude", which is a different claim than
+ * "the resolution did not run".
+ *
+ * Retries ONLY a saturated scan queue (the shared workspace Git operation
+ * scheduler rejecting before spawn because it is at capacity) — a liveness
+ * condition, not an integrity one. Three attempts total, with the bounded
+ * backoff in {@link REFERENCED_SOURCE_IGNORE_SCAN_RETRY_DELAYS_MS}, retried
+ * through the same registered scheduler every time. No direct-spawn fallback
+ * exists: bypassing the scheduler would defeat the process-wide concurrency
+ * limit it enforces. Every other failure — timeout, cancellation, an output
+ * limit, a permission error, malformed output, a real Git failure, or a bound
+ * breach — makes exactly one attempt and fails closed immediately.
  */
 export async function resolveReferencedSourceIgnore(localPath: string): Promise<ReferencedSourceIgnoreResolution> {
-  let scan: Awaited<ReturnType<typeof readReferencedSourceGitIgnoredPaths>>;
-  try {
-    scan = await readReferencedSourceGitIgnoredPaths(localPath);
-  } catch (error) {
-    return { kind: "failed", reason: error instanceof Error ? error.message : String(error) };
+  let scan: Awaited<ReturnType<typeof readReferencedSourceGitIgnoredPaths>> = null;
+  let failureReason: string | null = null;
+  for (let attempt = 0; attempt <= REFERENCED_SOURCE_IGNORE_SCAN_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      scan = await readReferencedSourceGitIgnoredPaths(localPath);
+      failureReason = null;
+      break;
+    } catch (error) {
+      failureReason = error instanceof ReferencedSourceIgnoreScanLimitExceededError
+        ? REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.limitExceeded
+        : REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed;
+      const isLastAttempt = attempt === REFERENCED_SOURCE_IGNORE_SCAN_RETRY_DELAYS_MS.length;
+      if (isLastAttempt || !isWorkspaceGitScanSaturatedError(error)) {
+        break;
+      }
+      await delay(REFERENCED_SOURCE_IGNORE_SCAN_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+  if (failureReason !== null) {
+    return { kind: "failed", reason: failureReason };
   }
   if (!scan) {
     return { kind: "other" };
@@ -285,10 +365,7 @@ export async function resolveReferencedSourceIgnore(localPath: string): Promise<
     localPath: await physicalPath(localPath),
   });
   if (offset === null) {
-    return {
-      kind: "failed",
-      reason: `referenced project path is not a descendant of its own Git top level: ${localPath} under ${scan.toplevel}`,
-    };
+    return { kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.toplevelNotDescendant };
   }
   return {
     kind: "git",

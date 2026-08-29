@@ -91,10 +91,23 @@ vi.mock("../adapters", () => ({
   getUIAdapter: (type: string) => ({
     type,
     label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    ConfigFields: ({ adapterType }: { adapterType: string }) =>
+    // The stand-in also records the two gates the form resolves for every
+    // adapter, so a test can assert the plumbing without rendering a real
+    // adapter's fields.
+    ConfigFields: ({ adapterType, hideInstructionsFile, managedSandboxOnly }: {
+      adapterType: string;
+      hideInstructionsFile?: boolean;
+      managedSandboxOnly?: boolean;
+    }) =>
       adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : null,
+        : (
+          <div
+            data-testid="adapter-config-fields"
+            data-hide-instructions-file={String(hideInstructionsFile === true)}
+            data-managed-sandbox-only={String(managedSandboxOnly === true)}
+          />
+        ),
     buildAdapterConfig: (values: { model?: string }) => ({
       model: values.model || undefined,
     }),
@@ -2685,4 +2698,148 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
   });
 
+});
+
+describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
+  let roots: Root[] = [];
+
+  const MANAGED_AGENT_CONFIG = {
+    cwd: "/srv/agents/cody",
+    command: "claude",
+    engine: "acp",
+    agentCommand: "claude-agent-acp",
+    stateDir: "/srv/agents/cody/acp-state",
+  };
+
+  function setManagedSandboxOnly(enabled: boolean) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: enabled,
+    });
+  }
+
+  /** Every `Field` renders its label in a `<label>`, so this reads the form. */
+  function fieldLabels(container: HTMLElement) {
+    return Array.from(container.querySelectorAll("label")).map((label) => label.textContent?.trim() ?? "");
+  }
+
+  function choosePathButtons(container: HTMLElement) {
+    return Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent?.trim() === "Choose",
+    );
+  }
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    setManagedSandboxOnly(false);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("shows the host path and execution-engine fields when the policy is off", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).toContain("Working directory (deprecated)");
+    expect(labels).toContain("Command");
+    expect(labels).toContain("Execution engine");
+    expect(labels).toContain("ACP server command");
+    expect(labels).toContain("ACP state directory");
+    expect(choosePathButtons(result.container).length).toBeGreaterThan(0);
+
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("false");
+    expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("false");
+  });
+
+  it("hides the host path and execution-engine fields for claude_local when the policy is on", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Execution engine");
+    expect(labels).not.toContain("ACP server command");
+    expect(labels).not.toContain("ACP state directory");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    // The stored values stay untouched: hiding is presentation, and an import
+    // that carries adapter configuration from another instance must still save.
+    expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it("keeps the non-path ACP controls visible when the policy hides the engine choice", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).toContain("ACP session mode");
+    expect(labels).toContain("ACP non-interactive permissions");
+  });
+
+  it("keeps the host-path fields hidden while the policy is still loading", async () => {
+    // A cold cache resolves the policy to false on the first render. The gate
+    // fails closed so a managed instance never flashes a stored host path.
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Execution engine");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it("hides the command field and forces the instructions-file gate for codex_local when the policy is on", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "codex_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
+    expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("true");
+  });
 });

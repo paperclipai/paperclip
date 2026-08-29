@@ -147,6 +147,16 @@ import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+/** React tracks input value on the DOM node; set it the way React will see. */
+function setControlledValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -249,7 +259,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     it("keeps the grow path's questionnaire", async () => {
       const { root } = await openStepOne("grow");
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => t.startsWith("Continue"));
 
       expect(document.body.textContent).toContain("Tell us about your team");
       expect(mockCompaniesApi.create).not.toHaveBeenCalled();
@@ -260,7 +270,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     it("skips it on the create path, creating the company on the way", async () => {
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       const { root } = await openStepOne("create");
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => t.startsWith("Continue"));
 
       expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
       expect(document.body.textContent).toContain("Create your first agent");
@@ -278,20 +288,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // unrendered step cannot pass as an absence.
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       const { root } = await openStepOne("create");
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => t.startsWith("Continue"));
       expect(document.body.textContent).toContain("Create your first agent");
 
-      // Step 3 → 4 needs an agent name; choosing a role fills it.
-      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      // Step 3 → 4 needs an agent name — the one field the step has now.
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
       await act(async () => {
-        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await flushReact();
-      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
-        (o) => o.textContent?.trim() === "CEO",
-      ) as HTMLElement;
-      await act(async () => {
-        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        setControlledValue(agentField, "Ada");
       });
       await flushReact();
       await clickByText((t) => t.startsWith("Next"));
@@ -304,11 +309,72 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // the checklist that actually renders it — stopping at the model step
       // would let a Mission regression pass unseen.
       await clickByText((t) => t.startsWith("Connect"));
-      expect(document.body.textContent).toContain("Review");
-      expect(document.body.textContent).toContain("Organization name");
-      expect(document.body.textContent).toContain("Agent created");
-      expect(document.body.textContent).toContain("Model connected");
+      // The review step is the heading and the woken agent, nothing else: the
+      // checklist that restated the walk in three rows is gone, and with it
+      // the Mission row that could only render unchecked.
+      expect(document.body.textContent).toContain("Let's get started...");
+      expect(document.body.textContent).toContain("Ada is ready to work!");
+      expect(document.body.textContent).not.toContain("Organization name");
+      expect(document.body.textContent).not.toContain("Model connected");
       expect(document.body.textContent).not.toContain("Mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires from a legacy draft that saved an empty role", async () => {
+      // `agentRole: ""` was this field's default before the arc stopped asking
+      // for a role, so every draft saved by an earlier build carries it. `??`
+      // would pass the empty string straight through to the hire's silent
+      // return — the same no-op the default exists to prevent, arriving
+      // through a restored draft instead of a fresh one.
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech", agentRole: "" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+
+      const { root, queryClient } = render();
+      const renderTree = () =>
+        act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+      await renderTree();
+      await flushReact();
+
+      const clickText = async (match: (t: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickText((t) => t.startsWith("Next"));
+      await clickText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      // The mock is declared with no parameters, so index the call rather than
+      // destructuring a zero-length tuple type.
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      expect((hireArgs[1] as { role: string }).role).toBe("general");
 
       await act(async () => root.unmount());
     });
@@ -327,17 +393,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       );
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       const { root } = await openStepOne("create");
-      await clickByText((t) => t.startsWith("Next"));
-      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await clickByText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
       await act(async () => {
-        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await flushReact();
-      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
-        (o) => o.textContent?.trim() === "CEO",
-      ) as HTMLElement;
-      await act(async () => {
-        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        setControlledValue(agentField, "Ada");
       });
       await flushReact();
       await clickByText((t) => t.startsWith("Next"));
@@ -370,7 +431,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStepOne("create");
 
       const nameInput = document.body.querySelector(
-        'input[placeholder="Acme Corp"]',
+        'input[placeholder="e.g. Northwind Labs"]',
       ) as HTMLInputElement;
       await act(async () => {
         nameInput.dispatchEvent(
@@ -401,7 +462,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStepOne("create");
 
       const nameInput = document.body.querySelector(
-        'input[placeholder="Acme Corp"]',
+        'input[placeholder="e.g. Northwind Labs"]',
       ) as HTMLInputElement;
       await act(async () => {
         for (let i = 0; i < 4; i++) {
@@ -425,12 +486,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // not the mission screen it never saw.
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       const { root } = await openStepOne("create");
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => t.startsWith("Continue"));
       expect(document.body.textContent).toContain("Create your first agent");
 
       await clickByText((t) => t.includes("Back"));
 
-      expect(document.body.textContent).toContain("Name your organization");
+      expect(document.body.textContent).toContain("What is the name of your organization?");
       expect(document.body.textContent).not.toContain("Define your mission");
 
       await act(async () => root.unmount());
