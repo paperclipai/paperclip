@@ -1,4 +1,4 @@
-import type { AppDefinition, ToolApplication } from "@paperclipai/shared";
+import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
 
 export type AppGalleryDisplayEntry = AppDefinition & {
   key?: string;
@@ -39,4 +39,10 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
     return slug === "link" ? null : slug;
   }
   return key;
+}
+
+export function appConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
+  if (!connection) return null;
+  const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
+  return typeof source === "string" && source.trim() ? source.trim() : null;
 }

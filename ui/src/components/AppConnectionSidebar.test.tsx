@@ -55,15 +55,18 @@ vi.mock("@/pages/apps/AppLogo", () => ({
   AppLogo: ({
     name,
     brandKey,
+    logoUrl,
     allowRemoteFallback,
   }: {
     name: string;
     brandKey?: string | null;
+    logoUrl?: string | null;
     allowRemoteFallback?: boolean;
   }) => (
     <span
       data-app-logo={name}
       data-brand-key={brandKey ?? ""}
+      data-logo-url={logoUrl ?? ""}
       data-allow-remote-fallback={allowRemoteFallback ? "true" : "false"}
     />
   ),
@@ -244,6 +247,21 @@ describe("AppConnectionSidebar", () => {
     await renderSidebar();
 
     expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
+  });
+
+  it("keeps a customized connection logo when application identity lookup fails", async () => {
+    mockToolsApi.getConnection.mockResolvedValue(connection({
+      name: "Dotta's source control",
+      config: { sourceTemplateKey: "github" },
+    }));
+    mockToolsApi.listApplications.mockRejectedValueOnce(new Error("Application lookup unavailable"));
+
+    await renderSidebar();
+
+    const logo = container.querySelector("[data-app-logo]");
+    expect(logo?.getAttribute("data-brand-key")).toBe("github");
+    expect(logo?.getAttribute("data-logo-url")).toBe("https://example.test/github.png");
+    expect(logo?.getAttribute("data-allow-remote-fallback")).toBe("true");
   });
 
   it("renders application-mode tabs under the not-connected app route", async () => {

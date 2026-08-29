@@ -81,13 +81,19 @@ vi.mock("@/api/tools", () => ({
 vi.mock("./AppLogo", () => ({
   AppLogo: ({
     name,
+    brandKey,
+    logoUrl,
     allowRemoteFallback,
   }: {
     name: string;
+    brandKey?: string | null;
+    logoUrl?: string | null;
     allowRemoteFallback?: boolean;
   }) => (
     <span
       data-app-logo={name}
+      data-brand-key={brandKey ?? ""}
+      data-logo-url={logoUrl ?? ""}
       data-allow-remote-fallback={allowRemoteFallback ? "true" : "false"}
     />
   ),
@@ -434,6 +440,24 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
+  });
+
+  it("keeps a customized connection logo after application identity lookup fails", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Dotta's source control",
+      config: {
+        url: "https://github.example/mcp",
+        sourceTemplateKey: "github",
+      },
+    }));
+    listApplicationsMock.mockRejectedValueOnce(new Error("Application lookup unavailable"));
+
+    await renderAppDetail();
+
+    const logo = container.querySelector("[data-app-logo]");
+    expect(logo?.getAttribute("data-brand-key")).toBe("github");
+    expect(logo?.getAttribute("data-logo-url")).toBe("https://example.com/github.png");
+    expect(logo?.getAttribute("data-allow-remote-fallback")).toBe("true");
   });
 
   it("keeps the unverified-server marker on URL-only connection details", async () => {

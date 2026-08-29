@@ -33,6 +33,7 @@ import { AppLogo } from "./AppLogo";
 import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
   appApplicationSourceSlug,
+  appConnectionSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -162,7 +163,9 @@ export function AppDetail() {
     () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection, application),
     [galleryQuery.data, connection, application],
   );
-  const brandKey = appApplicationSourceSlug(application) ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
+  const brandKey = appApplicationSourceSlug(application)
+    ?? appConnectionSourceSlug(connection)
+    ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
   const userProfileById = useMemo(
     () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
     [userDirectoryQuery.data],
@@ -1003,7 +1006,7 @@ function galleryEntryFor(
   application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
   if (!connection) return null;
-  const sourceSlug = appApplicationSourceSlug(application);
+  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
   if (sourceSlug) {
     const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
     if (keyed) return keyed;

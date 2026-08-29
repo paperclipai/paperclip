@@ -19,6 +19,7 @@ import { isComposioBrokerConnection } from "@/pages/apps/composio-services";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import {
   appApplicationSourceSlug,
+  appConnectionSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -75,7 +76,9 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     connection,
     application ?? undefined,
   );
-  const brandKey = appApplicationSourceSlug(application) ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
+  const brandKey = appApplicationSourceSlug(application)
+    ?? appConnectionSourceSlug(connection)
+    ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
   const reviewConnectionId = connection?.id ?? previousConnection?.id ?? null;
   const attentionItem = reviewConnectionId
     ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
@@ -149,7 +152,7 @@ function galleryEntryFor(
   connection: ToolConnection | undefined,
   application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
-  const sourceSlug = appApplicationSourceSlug(application);
+  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
   if (sourceSlug) {
     const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
     if (keyed) return keyed;
