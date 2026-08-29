@@ -292,34 +292,98 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   });
 
   it("serializes intent completion behind addressed-user membership revocation", async () => {
+    const raceCompanyId = randomUUID();
+    const raceAgentId = randomUUID();
+    const raceGoalId = randomUUID();
+    const raceIssueId = randomUUID();
+    const raceRunId = randomUUID();
+    const raceUserId = `race-user-${randomUUID()}`;
+    await db.insert(companies).values({
+      id: raceCompanyId,
+      name: "Connection intent authority race",
+      issuePrefix: `RACE${randomUUID().slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: raceCompanyId,
+      principalType: "user",
+      principalId: raceUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(goals).values({
+      id: raceGoalId,
+      companyId: raceCompanyId,
+      title: "Connect Notion during authority race",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: raceAgentId,
+      companyId: raceCompanyId,
+      name: "Race agent",
+      role: "researcher",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: raceIssueId,
+      companyId: raceCompanyId,
+      goalId: raceGoalId,
+      title: "Use Notion",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: raceAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: raceRunId,
+      companyId: raceCompanyId,
+      agentId: raceAgentId,
+      status: "running",
+      responsibleUserId: raceUserId,
+      contextSnapshot: { issueId: raceIssueId },
+    });
+    const raceClaims: RuntimeToolsTokenClaims = {
+      sub: raceAgentId,
+      company_id: raceCompanyId,
+      run_id: raceRunId,
+      responsible_user_id: raceUserId,
+      scope: "connection_intents",
+      iat: 1,
+      exp: 2,
+      instance_id: "test",
+    };
     const completionDb = createDb(connectionString, { maxConnections: 1 });
     const revocationDb = createDb(connectionString, { maxConnections: 1 });
     const service = connectionIntentService(completionDb);
-    const pending = await service.request(claims, "slack");
+    const pending = await service.request(raceClaims, "notion");
     const [application] = await db.insert(toolApplications).values({
-      companyId: claims.company_id,
-      applicationKey: `slack-${randomUUID()}`,
-      name: "Slack",
+      companyId: raceClaims.company_id,
+      applicationKey: `notion-race-${randomUUID()}`,
+      name: "Notion",
       type: "mcp_http",
       status: "active",
-      metadata: { sourceTemplateKey: "slack" },
+      metadata: { sourceTemplateKey: "notion" },
     }).returning();
     const [connection] = await db.insert(toolConnections).values({
-      companyId: claims.company_id,
+      companyId: raceClaims.company_id,
       applicationId: application!.id,
-      name: "Shared Slack",
-      uid: `slack/${randomUUID()}`,
+      name: "Shared Notion",
+      uid: `notion-race/${randomUUID()}`,
       transport: "mcp_remote",
       authKind: "api_key",
       credentialPolicy: "shared",
       status: "active",
       enabled: true,
       healthStatus: "ok",
-      config: { sourceTemplateKey: "slack" },
-      transportConfig: { sourceTemplateKey: "slack" },
+      config: { sourceTemplateKey: "notion" },
+      transportConfig: { sourceTemplateKey: "notion" },
     }).returning();
     await db.insert(connectionGrants).values({
-      companyId: claims.company_id,
+      companyId: raceClaims.company_id,
       connectionId: connection!.id,
       kind: "organization",
       status: "active",
@@ -342,9 +406,9 @@ describeEmbeddedPostgres("connectionIntentService", () => {
           .select({ id: companyMemberships.id })
           .from(companyMemberships)
           .where(and(
-            eq(companyMemberships.companyId, claims.company_id),
+            eq(companyMemberships.companyId, raceClaims.company_id),
             eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, claims.responsible_user_id),
+            eq(companyMemberships.principalId, raceClaims.responsible_user_id),
           ))
           .for("update");
         membershipLocked();
@@ -353,9 +417,9 @@ describeEmbeddedPostgres("connectionIntentService", () => {
           .update(companyMemberships)
           .set({ membershipRole: "viewer", updatedAt: new Date() })
           .where(and(
-            eq(companyMemberships.companyId, claims.company_id),
+            eq(companyMemberships.companyId, raceClaims.company_id),
             eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, claims.responsible_user_id),
+            eq(companyMemberships.principalId, raceClaims.responsible_user_id),
           ));
       });
 
@@ -363,7 +427,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       completion = service.complete(
         pending.interactionId!,
         connection!.id,
-        claims.responsible_user_id,
+        raceClaims.responsible_user_id,
         { canManageOrganizationGrant: true },
       ).then(
         (value) => ({ value, error: null }),
@@ -396,10 +460,6 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       releaseRevocation();
       await revocation?.catch(() => undefined);
       await completion?.catch(() => undefined);
-      await db.update(companyMemberships).set({ membershipRole: "member", status: "active" }).where(and(
-        eq(companyMemberships.companyId, claims.company_id),
-        eq(companyMemberships.principalId, claims.responsible_user_id),
-      ));
       await completionDb.$client.end({ timeout: 0 }).catch(() => undefined);
       await revocationDb.$client.end({ timeout: 0 }).catch(() => undefined);
     }
