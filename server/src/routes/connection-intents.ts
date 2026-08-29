@@ -199,13 +199,12 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   const service = connectionIntentService(db);
   const access = accessService(db);
 
+  function bypassCurrentMembershipCheck(req: Request) {
+    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+  }
+
   async function canManageCompanyConnections(req: Request, companyId: string) {
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-    const membership = Array.isArray(req.actor.memberships)
-      ? req.actor.memberships.find((item) => item.companyId === companyId && item.status === "active")
-      : null;
-    if (!membership || !membership.membershipRole || membership.membershipRole === "viewer") return false;
-    if (membership.membershipRole === "owner" || membership.membershipRole === "admin") return true;
+    if (bypassCurrentMembershipCheck(req)) return true;
     return Boolean(req.actor.userId && await access.hasPermission(
       companyId,
       "user",
@@ -252,7 +251,9 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
       res.status(422).json({ error: "phase must be requested, authorizing, or needs_retry" });
       return;
     }
-    res.json(await service.updatePhase(req.params.interactionId as string, phase, userId));
+    res.json(await service.updatePhase(req.params.interactionId as string, phase, userId, {
+      bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+    }));
   });
 
   router.post("/connection-intents/:interactionId/complete", async (req, res) => {
@@ -260,6 +261,7 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
     const input = completeConnectionIntentSchema.parse(req.body);
     const interaction = await service.complete(loaded.interaction.id, input.connectionId, userId, {
       canManageOrganizationGrant: await canManageCompanyConnections(req, loaded.issue.companyId),
+      bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
     });
     await logActivity(db, {
       companyId: loaded.issue.companyId,
@@ -281,7 +283,9 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   router.post("/connection-intents/:interactionId/decline", async (req, res) => {
     const { loaded, userId } = await addressedIntent(req);
     const input = declineConnectionIntentSchema.parse(req.body ?? {});
-    const interaction = await service.decline(loaded.interaction.id, userId, input.reason);
+    const interaction = await service.decline(loaded.interaction.id, userId, input.reason, {
+      bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+    });
     await logActivity(db, {
       companyId: loaded.issue.companyId,
       actorType: "user",

@@ -295,6 +295,37 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }
   });
 
+  it("rejects every addressed-user mutation after write membership is revoked", async () => {
+    const service = connectionIntentService(db);
+    const pending = await service.request(claims, "posthog");
+    expect(pending.interactionId).toBeTruthy();
+    try {
+      await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(
+        companyMemberships.principalId,
+        claims.responsible_user_id,
+      ));
+      await expect(service.updatePhase(
+        pending.interactionId!,
+        "authorizing",
+        claims.responsible_user_id,
+      )).rejects.toThrow("no longer authorized for company write access");
+      await expect(service.decline(
+        pending.interactionId!,
+        claims.responsible_user_id,
+      )).rejects.toThrow("no longer authorized for company write access");
+      await expect(service.complete(
+        pending.interactionId!,
+        randomUUID(),
+        claims.responsible_user_id,
+      )).rejects.toThrow("no longer authorized for company write access");
+    } finally {
+      await db.update(companyMemberships).set({ membershipRole: "member", status: "active" }).where(eq(
+        companyMemberships.principalId,
+        claims.responsible_user_id,
+      ));
+    }
+  });
+
   it("rejects cross-company claims and tokens after the run ends", async () => {
     const service = connectionIntentService(db);
     await expect(service.search({ ...claims, company_id: randomUUID() }, "notion"))

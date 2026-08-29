@@ -55,6 +55,34 @@ export function connectionIntentService(db: Db) {
   const interactions = issueThreadInteractionService(db);
   const access = toolAccessService(db);
 
+  async function assertCurrentUserWriteAccess(
+    companyId: string,
+    userId: string,
+    bypassCurrentMembershipCheck = false,
+  ) {
+    if (bypassCurrentMembershipCheck) return;
+    const membership = await db
+      .select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !membership
+      || membership.status !== "active"
+      || !membership.membershipRole
+      || membership.membershipRole === "viewer"
+    ) {
+      throw forbidden("Addressed user is no longer authorized for company write access");
+    }
+  }
+
   async function loadRunContext(claims: RuntimeToolsTokenClaims) {
     const run = await db
       .select({
@@ -309,11 +337,19 @@ export function connectionIntentService(db: Db) {
     interactionId: string,
     connectionId: string,
     userId: string,
-    options: { canManageOrganizationGrant?: boolean } = {},
+    options: {
+      canManageOrganizationGrant?: boolean;
+      bypassCurrentMembershipCheck?: boolean;
+    } = {},
   ) {
     const loaded = await loadIntent(interactionId);
     if (loaded.interaction.status !== "pending") throw conflict("Connection intent is already resolved");
     if (loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can connect this service");
+    await assertCurrentUserWriteAccess(
+      loaded.issue.companyId,
+      userId,
+      options.bypassCurrentMembershipCheck,
+    );
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
     let inventory = await connectionInventory(loaded.issue.companyId);
     let connection = inventory.connections.find((candidate) => candidate.id === connectionId);
@@ -370,9 +406,19 @@ export function connectionIntentService(db: Db) {
     );
   }
 
-  async function decline(interactionId: string, userId: string, reason?: string) {
+  async function decline(
+    interactionId: string,
+    userId: string,
+    reason?: string,
+    options: { bypassCurrentMembershipCheck?: boolean } = {},
+  ) {
     const loaded = await loadIntent(interactionId);
     if (loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can decline this request");
+    await assertCurrentUserWriteAccess(
+      loaded.issue.companyId,
+      userId,
+      options.bypassCurrentMembershipCheck,
+    );
     return interactions.resolveConnectionIntent(
       loaded.issue,
       interactionId,
@@ -389,9 +435,19 @@ export function connectionIntentService(db: Db) {
     setupOptions,
     complete,
     decline,
-    updatePhase: async (interactionId: string, phase: "requested" | "authorizing" | "needs_retry", userId: string) => {
+    updatePhase: async (
+      interactionId: string,
+      phase: "requested" | "authorizing" | "needs_retry",
+      userId: string,
+      options: { bypassCurrentMembershipCheck?: boolean } = {},
+    ) => {
       const loaded = await loadIntent(interactionId);
       if (loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can update this request");
+      await assertCurrentUserWriteAccess(
+        loaded.issue.companyId,
+        userId,
+        options.bypassCurrentMembershipCheck,
+      );
       return interactions.updateConnectionIntentPhase(loaded.issue, interactionId, phase, { userId });
     },
   };

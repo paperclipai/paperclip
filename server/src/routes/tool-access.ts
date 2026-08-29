@@ -183,12 +183,17 @@ export function toolAccessRoutes(
     return row?.kind === "connection_intent";
   }
 
+  function bypassCurrentMembershipCheck(req: Request) {
+    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+  }
+
   async function finishConnectionIntentOAuth(input: {
     interactionId: string;
     connectionId?: string;
     userId: string;
     outcome: "connected" | "declined" | "failed";
     canManageOrganizationGrant: boolean;
+    bypassCurrentMembershipCheck: boolean;
   }) {
     const loaded = await connectionIntents.loadIntent(input.interactionId);
     if (loaded.interaction.addresseeUserId !== input.userId) {
@@ -198,10 +203,18 @@ export function toolAccessRoutes(
     const interaction = input.outcome === "connected" && input.connectionId
       ? await connectionIntents.complete(input.interactionId, input.connectionId, input.userId, {
           canManageOrganizationGrant: input.canManageOrganizationGrant,
+          bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
         })
       : input.outcome === "declined"
-        ? await connectionIntents.decline(input.interactionId, input.userId, "Authorization was declined in the provider window")
-        : await connectionIntents.updatePhase(input.interactionId, "needs_retry", input.userId);
+        ? await connectionIntents.decline(
+            input.interactionId,
+            input.userId,
+            "Authorization was declined in the provider window",
+            { bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck },
+          )
+        : await connectionIntents.updatePhase(input.interactionId, "needs_retry", input.userId, {
+            bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
+          });
     if (input.outcome !== "failed" && options.connectionIntentHeartbeat) {
       await wakeConnectionIntentAfterResolution(options.connectionIntentHeartbeat, {
         loaded,
@@ -312,9 +325,9 @@ export function toolAccessRoutes(
   }
 
   async function isToolConnectionManager(req: Request, companyId: string) {
-    const membership = activeToolMembership(req, companyId);
-    if (!membership) return true;
-    if (membership.membershipRole === "owner" || membership.membershipRole === "admin") return true;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
     return Boolean(req.actor.userId && await access.hasPermission(
       companyId,
       "user",
@@ -767,6 +780,7 @@ export function toolAccessRoutes(
           userId: req.actor.userId,
           outcome: "connected",
           canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+          bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
         });
         sendConnectionIntentOAuthOutcome(res, {
           interactionId: pendingState.interactionId,
@@ -793,6 +807,7 @@ export function toolAccessRoutes(
           userId: req.actor.userId,
           outcome,
           canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+          bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
         });
         sendConnectionIntentOAuthOutcome(res, {
           interactionId: pendingState.interactionId,
@@ -878,6 +893,7 @@ export function toolAccessRoutes(
           userId: req.actor.userId,
           outcome,
           canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+          bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
         });
         sendConnectionIntentOAuthOutcome(res, {
           interactionId: pendingState.interactionId,
@@ -913,6 +929,7 @@ export function toolAccessRoutes(
         userId: req.actor.userId,
         outcome: "connected",
         canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+        bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
       });
       sendConnectionIntentOAuthOutcome(res, {
         interactionId: pendingState.interactionId,
