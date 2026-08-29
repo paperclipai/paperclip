@@ -4309,22 +4309,39 @@ export function issueRoutes(
       }
       throw err;
     }
-    // Restore-on-4xx: if the route handler returns a 4xx status (rejected before
-    // or during pre-mutation validation), undo the claim so the agent can retry
-    // with the same approval. Only 4xx responses are eligible — a 5xx response
-    // may mean the protected mutation already committed, so restoring the grant
-    // would allow the agent to re-run the same committed mutation. The undo is
-    // asynchronous: a concurrent retry arriving in the brief window between the
-    // 4xx response and the DELETE completion may still see the claimed row and
-    // receive 403; in that case the retry should pause briefly before re-attempting,
-    // or the human re-creates the card (the in-comment fallback applies either way).
-    res.on("finish", () => {
-      if (res.statusCode >= 400 && res.statusCode < 500) {
+    // Restore-on-4xx-pre-mutation: if the route handler returns a 4xx status
+    // (rejected before or during pre-mutation validation), undo the claim so the
+    // agent can retry with the same approval. Only 4xx responses are eligible —
+    // a 5xx response may mean the protected mutation already committed.
+    //
+    // The restore runs inside a res.end override so it completes before the
+    // response bytes reach the client. This closes the TOCTOU race where an
+    // immediate agent retry would see the claim as still consumed while the
+    // async cleanup was still pending.
+    //
+    // Route handlers MUST set res.locals.humanGateMutationCommitted = true
+    // immediately after any DB write that should be treated as committed. The
+    // override skips the restore in that case to prevent making the approval
+    // reusable after a mutation that has already run.
+    const origEnd = res.end.bind(res);
+    let restorePending = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (res as any).end = (...args: any[]) => {
+      if (
+        !restorePending &&
+        res.statusCode >= 400 &&
+        res.statusCode < 500 &&
+        !res.locals.humanGateMutationCommitted
+      ) {
+        restorePending = true;
         db.delete(activityLog)
           .where(eq(activityLog.id, claimedActivityId))
-          .catch(() => { /* undo is best-effort; a missed undo means the human re-creates the card */ });
+          .then(() => origEnd(...args))
+          .catch(() => origEnd(...args));
+        return res;
       }
-    });
+      return origEnd(...args);
+    };
     return true;
   }
 
