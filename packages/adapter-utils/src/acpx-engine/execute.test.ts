@@ -217,17 +217,47 @@ async function runExecutor(
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
 }
 
+// The ceiling on microtask turns spent waiting for the startup path to arm the
+// handshake guard. It exists only so a regression that stops the guard being
+// armed fails as an assertion instead of spinning; it is not a tuning knob, and
+// the wait below almost always ends after a few dozen turns.
+const MAX_SETUP_FLUSH_TURNS = 10_000;
+
 // Under `vi.useFakeTimers()`, the setup work before a run reaches its
 // `ensureSession` call (staging, warm-handle lookups, real `fs` calls) still
-// runs through ordinary promise chains, not timers. `advanceTimersByTimeAsync`
-// only drains microtasks in the windows between the timer ticks it processes;
-// with no timer due yet, a single call can return before that setup chain
-// finishes unwinding. Flushing a few zero-length advances first lets it fully
-// unwind before the real, deadline-length advance below.
+// runs through ordinary promise chains, not timers, and its completion is
+// driven by libuv rather than by the fake clock. `advanceTimersByTimeAsync`
+// only drains microtasks in the windows between the timer ticks it processes,
+// so with no timer due yet a single call can return before that setup chain has
+// finished unwinding.
+//
+// So the clock must not be advanced until the run has actually armed the
+// handshake guard's timers (its deadline `setTimeout` and its transport-loss
+// poll `setInterval`, both armed together). A fixed number of flush turns only
+// guesses at that: the turn count the startup path needs varies with how
+// quickly the real filesystem work completes, so under load the guess elapses
+// first, the clock jumps past a deadline that does not exist yet, and the timer
+// is then armed against a clock that never moves again. The awaited result
+// promise never settles and the test dies at the vitest timeout instead.
+//
+// Wait on the observable condition — a pending fake timer — and then advance.
 async function flushSetupThenAdvanceTimersByTimeAsync(ms: number): Promise<void> {
-  for (let i = 0; i < 50; i++) {
+  let turns = 0;
+  while (vi.getTimerCount() === 0 && turns < MAX_SETUP_FLUSH_TURNS) {
     await vi.advanceTimersByTimeAsync(0);
+    turns++;
   }
+
+  // Every caller drives a run that is expected to trip the handshake guard, so
+  // a run that armed no timer can never reach its deadline no matter how far
+  // the clock advances. Fail here, on the real cause, rather than leaving the
+  // caller to await a promise that will not settle.
+  expect(
+    vi.getTimerCount(),
+    `the run armed no timer within ${MAX_SETUP_FLUSH_TURNS} microtask turns, so advancing ` +
+      `the clock by ${ms}ms cannot trip the handshake guard`,
+  ).toBeGreaterThan(0);
+
   await vi.advanceTimersByTimeAsync(ms);
 }
 
