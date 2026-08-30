@@ -139,28 +139,16 @@ export async function materializeNativeRuntimeSkills(
   context: NativeRuntimeContextSnapshot | null,
   skillsHome: string,
   dependencies: {
-    /** Internal test seam for post-swap cleanup failure coverage. */
+    /** Internal test seam for failed staging cleanup coverage. */
     removeTree?: (path: string) => Promise<void>;
-    /** Internal test seam for swap and rollback failure coverage. */
+    /** Internal test seam for publication failure coverage. */
     renameTree?: (source: string, destination: string) => Promise<void>;
-    /** Internal test seam for partial recovery-copy failure coverage. */
-    copyTree?: (source: string, destination: string) => Promise<void>;
   } = {},
 ): Promise<void> {
   const removeTree =
     dependencies.removeTree ??
     ((path: string) => rm(path, { recursive: true, force: true }));
   const renameTree = dependencies.renameTree ?? rename;
-  const copyTree =
-    dependencies.copyTree ??
-    ((source: string, destination: string) =>
-      cp(source, destination, {
-        recursive: true,
-        force: false,
-        errorOnExist: true,
-        dereference: false,
-        verbatimSymlinks: true,
-      }));
   if (context) {
     const runtimeNames = new Set<string>();
     for (const skill of context.skills) {
@@ -184,12 +172,24 @@ export async function materializeNativeRuntimeSkills(
     }
   }
 
+  const skillsHomeExists = await lstat(skillsHome).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+  if (skillsHomeExists) {
+    throw new Error(
+      "runtime context skills home must be a fresh destination",
+    );
+  }
+
   const parent = dirname(skillsHome);
   const nonce = randomUUID();
   const stagingHome = join(parent, `.paperclip-skills-staging-${nonce}`);
-  const previousHome = join(parent, `.paperclip-skills-previous-${nonce}`);
-  const recoveryHome = join(parent, `.paperclip-skills-recovery-${nonce}`);
   await mkdir(parent, { recursive: true, mode: 0o700 });
+  await chmod(parent, 0o700);
   await mkdir(stagingHome, { mode: 0o700 });
   try {
     for (const skill of context?.skills ?? []) {
@@ -205,65 +205,13 @@ export async function materializeNativeRuntimeSkills(
       await protectStagedTree(target);
     }
 
-    let movedPrevious = false;
-    try {
-      await renameTree(skillsHome, previousHome);
-      movedPrevious = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    try {
-      await renameTree(stagingHome, skillsHome);
-    } catch (error) {
-      if (movedPrevious) {
-        try {
-          await renameTree(previousHome, skillsHome);
-        } catch (rollbackError) {
-          try {
-            // Never copy directly into the live path. Stage and revalidate a
-            // private recovery tree, then publish it with one atomic rename so
-            // readers see either the complete previous assignment or no tree.
-            await copyTree(previousHome, recoveryHome);
-            await assertSafeTree(recoveryHome);
-            await protectStagedTree(recoveryHome);
-            await renameTree(recoveryHome, skillsHome);
-            await removeTree(previousHome).catch(() => undefined);
-          } catch (copyError) {
-            await removeTree(recoveryHome).catch(() => undefined);
-            try {
-              // A failed recovery copy can be caused by a separate resource
-              // constraint (for example, insufficient space) while the
-              // metadata-only rename is transiently unavailable. Retry the
-              // atomic rename once after removing the private partial copy so
-              // the complete previous assignment remains at its canonical
-              // path without introducing symlink/junction semantics.
-              await renameTree(previousHome, skillsHome);
-            } catch (finalRollbackError) {
-              // No portable finite fallback can publish a complete directory
-              // after every atomic rename and recovery copy has failed. Reject
-              // so the failure propagates before normal provider startup and
-              // leave previousHome intact; an empty canonical directory or an
-              // in-place/link-based fallback would expose partial state or
-              // unsafe link semantics.
-              throw new AggregateError(
-                [error, rollbackError, copyError, finalRollbackError],
-                "runtime context skill replacement and rollback failed",
-              );
-            }
-          }
-        }
-      }
-      throw error;
-    }
-    if (movedPrevious) {
-      // The replacement is committed once stagingHome becomes skillsHome.
-      // Cleanup is best-effort from that point forward: reporting a failed
-      // replacement would expose new live state behind a rejected operation.
-      await removeTree(previousHome).catch(() => undefined);
-    }
+    // The caller supplies a new isolated home for each provider launch. Never
+    // move an existing assignment out of its canonical path: a failed bounded
+    // rollback cannot portably guarantee that name is restored on every
+    // filesystem. Publication therefore targets only a fresh destination.
+    await renameTree(stagingHome, skillsHome);
   } catch (error) {
     await removeTree(stagingHome).catch(() => undefined);
-    await removeTree(recoveryHome).catch(() => undefined);
     throw error;
   }
 }
@@ -296,8 +244,6 @@ export async function prepareIsolatedCodexHome(input: {
   nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
 }): Promise<void> {
-  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
-  await chmod(input.codexHome, 0o700);
   await materializeNativeRuntimeSkills(
     input.context,
     join(input.codexHome, "skills"),

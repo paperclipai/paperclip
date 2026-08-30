@@ -5,7 +5,6 @@ import {
   mkdir,
   readFile,
   readdir,
-  rename,
   rm,
   stat,
   symlink,
@@ -154,7 +153,7 @@ describe("runtime context materialization", () => {
     expect(config).not.toContain("unassigned");
   });
 
-  it("reconciles repeated, changed, and empty assignments", async () => {
+  it("rejects repeated assignments without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-repeat-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
@@ -170,19 +169,21 @@ describe("runtime context materialization", () => {
       context: context(assigned, instructions),
       codexHome,
     });
-    await prepareIsolatedCodexHome({
+    await expect(prepareIsolatedCodexHome({
       context: context(replacement, instructions, "replacement"),
       codexHome,
-    });
+    })).rejects.toThrow("skills home must be a fresh destination");
+    await expect(prepareIsolatedCodexHome({
+      context: null,
+      codexHome,
+    })).rejects.toThrow("skills home must be a fresh destination");
 
-    await expect(stat(join(codexHome, "skills", "assigned"))).rejects.toThrow();
-    expect(
-      (await stat(join(codexHome, "skills", "replacement", "SKILL.md"))).mode
-      & 0o222,
-    ).toBe(0);
-
-    await prepareIsolatedCodexHome({ context: null, codexHome });
-    await expect(readdir(join(codexHome, "skills"))).resolves.toEqual([]);
+    await expect(readFile(
+      join(codexHome, "skills", "assigned", "SKILL.md"),
+      "utf8",
+    )).resolves.toBe("# Assigned\n");
+    await expect(stat(join(codexHome, "skills", "replacement"))).rejects
+      .toThrow();
   });
 
   it("rejects source symlinks without changing the current assignment", async () => {
@@ -213,7 +214,7 @@ describe("runtime context materialization", () => {
     )).resolves.toBe("# Assigned\n");
   });
 
-  it("keeps the complete previous assignment when replacement staging fails", async () => {
+  it("rejects overlapping portable names without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-atomic-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
@@ -276,8 +277,8 @@ describe("runtime context materialization", () => {
     })).rejects.toThrow("skill names must not overlap");
   });
 
-  it("does not report replacement failure after the live-tree swap commits", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-cleanup-"));
+  it("rejects an existing destination before filesystem mutation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-existing-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
     const replacement = join(root, "replacement-source");
@@ -296,230 +297,64 @@ describe("runtime context materialization", () => {
       context(assigned, instructions),
       skillsHome,
     );
-    await expect(
-      materializeNativeRuntimeSkills(
-        context(replacement, instructions, "replacement"),
-        skillsHome,
-        {
-          removeTree: async (path) => {
-            if (path.includes(".paperclip-skills-previous-")) {
-              throw new Error("simulated post-swap cleanup failure");
-            }
-            await rm(path, { recursive: true, force: true });
-          },
-        },
-      ),
-    ).resolves.toBeUndefined();
-
-    await expect(
-      readFile(join(skillsHome, "replacement", "SKILL.md"), "utf8"),
-    ).resolves.toBe("# Replacement\n");
-    await expect(stat(join(skillsHome, "assigned"))).rejects.toThrow();
-    expect(
-      (await readdir(dirname(skillsHome))).some((entry) =>
-        entry.startsWith(".paperclip-skills-previous-"),
-      ),
-    ).toBe(true);
-  });
-
-  it("restores the previous assignment when the rollback rename fails", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-rollback-"));
-    roots.push(root);
-    const assigned = join(root, "assigned-source");
-    const replacement = join(root, "replacement-source");
-    const instructions = join(root, "instructions-source");
-    const skillsHome = join(root, "codex-home", "skills");
-    await Promise.all([
-      mkdir(assigned),
-      mkdir(replacement),
-      mkdir(instructions),
-    ]);
-    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
-    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
-    await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
-
-    await materializeNativeRuntimeSkills(
-      context(assigned, instructions),
-      skillsHome,
+    const originalBytes = await readFile(
+      join(skillsHome, "assigned", "SKILL.md"),
     );
-    let rejectedStagedSwap = false;
-    let rejectedRollback = false;
+    let dependencyCalls = 0;
     await expect(
       materializeNativeRuntimeSkills(
         context(replacement, instructions, "replacement"),
         skillsHome,
         {
-          renameTree: async (source, destination) => {
-            if (source.includes(".paperclip-skills-staging-")) {
-              rejectedStagedSwap = true;
-              throw new Error("simulated staged-tree rename failure");
-            }
-            if (source.includes(".paperclip-skills-previous-")) {
-              rejectedRollback = true;
-              throw new Error("simulated rollback rename failure");
-            }
-            await rename(source, destination);
+          renameTree: async () => {
+            dependencyCalls += 1;
+          },
+          removeTree: async () => {
+            dependencyCalls += 1;
           },
         },
       ),
-    ).rejects.toThrow("simulated staged-tree rename failure");
+    ).rejects.toThrow("skills home must be a fresh destination");
 
-    expect(rejectedStagedSwap).toBe(true);
-    expect(rejectedRollback).toBe(true);
-    await expect(
-      readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"),
-    ).resolves.toBe("# Assigned\n");
+    expect(dependencyCalls).toBe(0);
+    expect(await readFile(join(skillsHome, "assigned", "SKILL.md"))).toEqual(
+      originalBytes,
+    );
     await expect(stat(join(skillsHome, "replacement"))).rejects.toThrow();
     expect(
-      (await readdir(dirname(skillsHome))).some((entry) =>
+      (await readdir(dirname(skillsHome))).filter((entry) =>
         entry.startsWith(".paperclip-skills-"),
       ),
-    ).toBe(false);
+    ).toEqual([]);
   });
 
-  it("restores the previous assignment when recovery copying fails", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-recovery-"));
+  it("cleans private staging when fresh publication fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-publish-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
-    const replacement = join(root, "replacement-source");
     const instructions = join(root, "instructions-source");
     const skillsHome = join(root, "codex-home", "skills");
-    await Promise.all([
-      mkdir(assigned),
-      mkdir(replacement),
-      mkdir(instructions),
-    ]);
+    await Promise.all([mkdir(assigned), mkdir(instructions)]);
     await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
-    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
     await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
 
-    await materializeNativeRuntimeSkills(
+    await expect(materializeNativeRuntimeSkills(
       context(assigned, instructions),
       skillsHome,
-    );
-    let rollbackAttempts = 0;
-    await expect(
-      materializeNativeRuntimeSkills(
-        context(replacement, instructions, "replacement"),
-        skillsHome,
-        {
-          renameTree: async (source, destination) => {
-            if (source.includes(".paperclip-skills-staging-")) {
-              throw new Error("simulated staged-tree rename failure");
-            }
-            if (
-              source.includes(".paperclip-skills-previous-") &&
-              rollbackAttempts++ === 0
-            ) {
-              throw new Error("simulated rollback rename failure");
-            }
-            await rename(source, destination);
-          },
-          copyTree: async (_source, destination) => {
-            await mkdir(join(destination, "assigned"), { recursive: true });
-            await writeFile(
-              join(destination, "assigned", "SKILL.md"),
-              "# Partial\n",
-            );
-            throw new Error("simulated mid-copy failure");
-          },
+      {
+        renameTree: async (source) => {
+          await expect(
+            readFile(join(source, "assigned", "SKILL.md"), "utf8"),
+          ).resolves.toBe("# Assigned\n");
+          throw new Error("simulated publication failure");
         },
-      ),
-    ).rejects.toThrow("simulated staged-tree rename failure");
+      },
+    )).rejects.toThrow("simulated publication failure");
 
-    await expect(
-      readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"),
-    ).resolves.toBe("# Assigned\n");
-    await expect(stat(join(skillsHome, "replacement"))).rejects.toThrow();
-    const parentEntries = await readdir(dirname(skillsHome));
-    expect(
-      parentEntries.some((entry) =>
-        entry.startsWith(".paperclip-skills-"),
-      ),
-    ).toBe(false);
-  });
-
-  it("fails closed and preserves the previous assignment when no atomic publication can succeed", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-terminal-"));
-    roots.push(root);
-    const assigned = join(root, "assigned-source");
-    const replacement = join(root, "replacement-source");
-    const instructions = join(root, "instructions-source");
-    const skillsHome = join(root, "codex-home", "skills");
-    await Promise.all([
-      mkdir(assigned),
-      mkdir(replacement),
-      mkdir(instructions),
-    ]);
-    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
-    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
-    await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
-
-    await materializeNativeRuntimeSkills(
-      context(assigned, instructions),
-      skillsHome,
-    );
-    const stagedSwapError = new Error("simulated permanent staged swap failure");
-    const rollbackError = new Error("simulated permanent rollback failure");
-    const recoveryError = new Error("simulated permanent copy failure");
-    const finalRollbackError = new Error(
-      "simulated permanent final rollback failure",
-    );
-    let rollbackAttempts = 0;
-    let terminalError: unknown;
-    try {
-      await materializeNativeRuntimeSkills(
-        context(replacement, instructions, "replacement"),
-        skillsHome,
-        {
-          renameTree: async (source, destination) => {
-            if (source.includes(".paperclip-skills-staging-")) {
-              throw stagedSwapError;
-            }
-            if (source.includes(".paperclip-skills-previous-")) {
-              rollbackAttempts += 1;
-              throw rollbackAttempts === 1
-                ? rollbackError
-                : finalRollbackError;
-            }
-            await rename(source, destination);
-          },
-          copyTree: async (_source, destination) => {
-            await mkdir(join(destination, "assigned"), { recursive: true });
-            await writeFile(
-              join(destination, "assigned", "SKILL.md"),
-              "# Partial\n",
-            );
-            throw recoveryError;
-          },
-        },
-      );
-    } catch (error) {
-      terminalError = error;
-    }
-
-    expect(terminalError).toBeInstanceOf(AggregateError);
-    expect((terminalError as AggregateError).errors).toEqual([
-      stagedSwapError,
-      rollbackError,
-      recoveryError,
-      finalRollbackError,
-    ]);
     await expect(stat(skillsHome)).rejects.toThrow();
-    const parentEntries = await readdir(dirname(skillsHome));
-    const previousEntries = parentEntries.filter((entry) =>
-      entry.startsWith(".paperclip-skills-previous-"),
-    );
-    expect(previousEntries).toHaveLength(1);
-    const preservedHome = join(dirname(skillsHome), previousEntries[0]!);
-    await expect(
-      readFile(join(preservedHome, "assigned", "SKILL.md"), "utf8"),
-    ).resolves.toBe("# Assigned\n");
-    await expect(stat(join(preservedHome, "replacement"))).rejects.toThrow();
     expect(
-      parentEntries.filter((entry) =>
-        entry.startsWith(".paperclip-skills-staging-")
-        || entry.startsWith(".paperclip-skills-recovery-"),
+      (await readdir(dirname(skillsHome))).filter((entry) =>
+        entry.startsWith(".paperclip-skills-staging-"),
       ),
     ).toEqual([]);
   });
@@ -571,8 +406,15 @@ describe("runtime context materialization", () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-auth-"));
     roots.push(root);
     const codexHome = join(root, "codex-home");
-    await mkdir(codexHome, { recursive: true });
-    await writeFile(join(codexHome, "auth.json"), "stale", { mode: 0o600 });
+    const emptyCodexHome = join(root, "empty-codex-home");
+    await Promise.all([
+      mkdir(codexHome, { recursive: true }),
+      mkdir(emptyCodexHome, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(codexHome, "auth.json"), "stale", { mode: 0o600 }),
+      writeFile(join(emptyCodexHome, "auth.json"), "stale", { mode: 0o600 }),
+    ]);
 
     await prepareIsolatedCodexHome({
       context: null,
@@ -585,14 +427,15 @@ describe("runtime context materialization", () => {
     );
     expect((await stat(join(codexHome, "auth.json"))).mode & 0o777).toBe(0o600);
 
-    await prepareIsolatedCodexHome({ context: null, codexHome });
-    await expect(stat(join(codexHome, "auth.json"))).rejects.toThrow();
+    await prepareIsolatedCodexHome({ context: null, codexHome: emptyCodexHome });
+    await expect(stat(join(emptyCodexHome, "auth.json"))).rejects.toThrow();
   });
 
   it("copies regular host auth but refuses symlinked auth", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-host-auth-"));
     roots.push(root);
     const codexHome = join(root, "codex-home");
+    const symlinkCodexHome = join(root, "symlink-codex-home");
     const sourceHome = join(root, "source-home");
     const secret = join(root, "secret.json");
     await mkdir(sourceHome);
@@ -612,9 +455,9 @@ describe("runtime context materialization", () => {
     await symlink(secret, join(sourceHome, "auth.json"));
     await prepareIsolatedCodexHome({
       context: null,
-      codexHome,
+      codexHome: symlinkCodexHome,
       sourceCodexHome: sourceHome,
     });
-    await expect(stat(join(codexHome, "auth.json"))).rejects.toThrow();
+    await expect(stat(join(symlinkCodexHome, "auth.json"))).rejects.toThrow();
   });
 });
