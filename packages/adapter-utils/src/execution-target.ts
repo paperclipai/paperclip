@@ -71,7 +71,11 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
-import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  sanitizeRemoteExecutionEnv,
+  sanitizeVerifiedRemoteExecutionEnv,
+  sanitizeVerifiedRemoteTransportEnv,
+} from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -319,7 +323,11 @@ export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   stop(): Promise<void>;
 }
 
-export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+export {
+  sanitizeRemoteExecutionEnv,
+  sanitizeVerifiedRemoteExecutionEnv,
+  sanitizeVerifiedRemoteTransportEnv,
+} from "./remote-execution-env.js";
 
 // 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
 // last-resort kill switch, not the primary hang detector: genuinely hung runs
@@ -817,7 +825,7 @@ export function buildVerifiedRemoteExecutableScript(input: {
     'if [ ! -f "$paperclip_runner_binary" ] || [ ! -x "$paperclip_runner_binary" ] || [ -L "$paperclip_runner_binary" ]; then echo "paperclip_runner_remote_binary_unavailable" >&2; exit 71; fi',
     'exec 9<"$paperclip_runner_binary"',
     'if [ ! -e /proc/self/fd/9 ]; then echo "paperclip_runner_remote_digest_unsupported" >&2; exit 72; fi',
-    'if [ -x /usr/bin/sha256sum ] && [ ! -L /usr/bin/sha256sum ]; then paperclip_runner_actual_line=$(/usr/bin/sha256sum <&9); elif [ -x /bin/sha256sum ] && [ ! -L /bin/sha256sum ]; then paperclip_runner_actual_line=$(/bin/sha256sum <&9); elif [ -x /usr/bin/shasum ] && [ ! -L /usr/bin/shasum ]; then paperclip_runner_actual_line=$(/usr/bin/shasum -a 256 <&9); else echo "paperclip_runner_remote_digest_unsupported" >&2; exit 72; fi',
+    'if [ -x /usr/bin/sha256sum ] && [ ! -L /usr/bin/sha256sum ]; then paperclip_runner_actual_line=$(/usr/bin/sha256sum <&9); elif [ -x /bin/sha256sum ] && [ ! -L /bin/sha256sum ]; then paperclip_runner_actual_line=$(/bin/sha256sum <&9); else echo "paperclip_runner_remote_digest_unsupported" >&2; exit 72; fi',
     'paperclip_runner_actual_sha=${paperclip_runner_actual_line%% *}',
     'if [ "$paperclip_runner_actual_sha" != "$paperclip_runner_expected_sha" ]; then echo "paperclip_runner_remote_digest_mismatch" >&2; exit 73; fi',
   ];
@@ -838,7 +846,9 @@ export async function runAdapterExecutionTargetProcess(
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
-    const env = sanitizeRemoteExecutionEnv(options.env);
+    const env = options.expectedExecutableSha256
+      ? sanitizeVerifiedRemoteExecutionEnv(options.env)
+      : sanitizeRemoteExecutionEnv(options.env);
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
       message: "Starting adapter in environment",
@@ -896,7 +906,9 @@ export async function runAdapterExecutionTargetProcess(
 
   const env =
     target?.kind === "remote" && target.transport === "ssh"
-      ? sanitizeRemoteExecutionEnv(options.env)
+      ? options.expectedExecutableSha256
+        ? sanitizeVerifiedRemoteExecutionEnv(options.env)
+        : sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
   const verifiedRemoteScript = target?.kind === "remote" && options.expectedExecutableSha256
@@ -923,6 +935,7 @@ export async function runAdapterExecutionTargetProcess(
       localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
       remoteExecution: adapterExecutionTargetToRemoteSpec(target),
       remoteTrustedSystemShell: verifiedRemoteScript !== null,
+      remoteIntegrityBoundExecution: verifiedRemoteScript !== null,
     },
   );
 }

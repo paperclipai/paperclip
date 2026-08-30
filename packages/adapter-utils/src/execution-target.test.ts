@@ -8,6 +8,7 @@ import {
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  sanitizeVerifiedRemoteTransportEnv,
 } from "./execution-target.js";
 
 describe("buildVerifiedRemoteExecutableScript", () => {
@@ -19,7 +20,7 @@ describe("buildVerifiedRemoteExecutableScript", () => {
     });
 
     expect(script).toContain("sha256sum");
-    expect(script).toContain("shasum -a 256");
+    expect(script).not.toContain("shasum");
     expect(script).toContain("/usr/bin/sha256sum");
     expect(script).not.toContain("command -v sha256sum");
     expect(script).toContain("paperclip_runner_remote_digest_mismatch");
@@ -362,9 +363,197 @@ describe("runAdapterExecutionTargetProcess", () => {
       expect.objectContaining({
         env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
         onSpawn,
+        remoteIntegrityBoundExecution: true,
         remoteTrustedSystemShell: true,
       }),
     );
+  });
+
+  it("rejects loader injection before an integrity-bound SSH launch starts", async () => {
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(runAdapterExecutionTargetProcess(
+      "run-verified-ssh-rejected",
+      {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      "/opt/paperclip/bin/paperclip-runnerd",
+      ["--run-id", "run-verified-ssh-rejected"],
+      {
+        cwd: "/tmp/local",
+        env: {
+          LD_AUDIT: "/srv/paperclip/attacker-controlled.so",
+          PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        expectedExecutableSha256: `sha256:${"e".repeat(64)}`,
+      },
+    )).rejects.toThrow("paperclip_verified_remote_env_unsafe:LD_AUDIT");
+    expect(runChildProcessSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(["LD_PRELOAD", "BASH_ENV"])(
+    "rejects %s before an integrity-bound sandbox launch receives credentials",
+    async (unsafeKey) => {
+      const runner = {
+        execute: vi.fn(async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        })),
+      };
+
+      await expect(runAdapterExecutionTargetProcess(
+        "run-verified-sandbox-rejected",
+        {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: "/srv/paperclip/workspace",
+          runner,
+        },
+        "/opt/paperclip/bin/paperclip-runnerd",
+        ["--run-id", "run-verified-sandbox-rejected"],
+        {
+          cwd: "/tmp/local",
+          env: {
+            [unsafeKey]: "/srv/paperclip/attacker-controlled",
+            PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          expectedExecutableSha256: `sha256:${"c".repeat(64)}`,
+        },
+      )).rejects.toThrow(`paperclip_verified_remote_env_unsafe:${unsafeKey}`);
+      expect(runner.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves ordinary credentials for an integrity-bound sandbox launch", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const env = {
+      CODEX_HOME: "/srv/paperclip/codex-home",
+      GH_TOKEN: "provider-token",
+      PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use",
+      env: "production",
+      ld_token: "ordinary-lowercase-value",
+    };
+
+    await runAdapterExecutionTargetProcess(
+      "run-verified-sandbox",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test",
+        remoteCwd: "/srv/paperclip/workspace",
+        runner,
+      },
+      "/opt/paperclip/bin/paperclip-runnerd",
+      ["--run-id", "run-verified-sandbox"],
+      {
+        cwd: "/tmp/local",
+        env,
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        expectedExecutableSha256: `sha256:${"d".repeat(64)}`,
+      },
+    );
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "/bin/sh",
+      env,
+    }));
+  });
+
+  it("removes local startup hooks while preserving SSH transport identity", () => {
+    expect(sanitizeVerifiedRemoteTransportEnv({
+      BASH_ENV: "/tmp/host-startup",
+      HOME: "/home/paperclip",
+      LD_PRELOAD: "/tmp/host-loader.so",
+      PATH: "/usr/bin:/bin",
+      SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+    })).toEqual({
+      HOME: "/home/paperclip",
+      PATH: "/usr/bin:/bin",
+      SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+    });
+  });
+
+  it("keeps loader variables available to ordinary non-integrity-bound sandbox launches", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    await runAdapterExecutionTargetProcess(
+      "run-ordinary-sandbox",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test",
+        remoteCwd: "/srv/paperclip/workspace",
+        runner,
+      },
+      "agent-cli",
+      ["--json"],
+      {
+        cwd: "/tmp/local",
+        env: { LD_LIBRARY_PATH: "/opt/agent/lib" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "agent-cli",
+      env: { LD_LIBRARY_PATH: "/opt/agent/lib" },
+    }));
   });
 
   it("keeps credential stdin on the trusted SSH shell path", async () => {

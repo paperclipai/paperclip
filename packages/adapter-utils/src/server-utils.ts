@@ -4,7 +4,10 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  sanitizeRemoteExecutionEnv,
+  sanitizeVerifiedRemoteTransportEnv,
+} from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
@@ -3362,15 +3365,16 @@ export async function runChildProcess(
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     remoteTrustedSystemShell?: boolean;
+    remoteIntegrityBoundExecution?: boolean;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
-    };
+    const inheritedEnv = sanitizeInheritedPaperclipEnv(process.env);
+    const rawMerged: NodeJS.ProcessEnv = opts.remoteExecution && opts.remoteIntegrityBoundExecution
+      ? sanitizeVerifiedRemoteTransportEnv(inheritedEnv)
+      : { ...inheritedEnv, ...opts.env };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
