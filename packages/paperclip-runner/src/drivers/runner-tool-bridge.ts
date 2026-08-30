@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -49,7 +49,16 @@ export interface RunnerToolBridge {
 
 interface AdmittedCall {
   fingerprint: string;
-  promise: Promise<unknown>;
+  promise: Promise<RunnerToolCallResult>;
+}
+
+interface RunnerToolTextContent {
+  type: "text";
+  text: string;
+}
+
+interface RunnerToolCallResult {
+  content: RunnerToolTextContent[];
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -57,7 +66,7 @@ const DEFAULT_PRIVATE_TOOL_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const MAX_CALLS = 2_048;
-const MAX_RESULT_TEXT_BYTES = 64 * 1024;
+const MAX_RESULT_CHUNK_BYTES = 64 * 1024;
 const RESERVED_TOOLS: readonly RunnerToolDefinition[] = [
   {
     name: PRP_COMPLETION_TOOL_NAME,
@@ -87,13 +96,16 @@ export async function startRunnerToolBridge(
   options: RunnerToolBridgeOptions,
 ): Promise<RunnerToolBridge> {
   const secret = options.secret ?? randomBytes(32).toString("base64url");
-  if (secret.length === 0) throw new Error("Runner tool bridge secret is empty");
+  if (secret.length === 0)
+    throw new Error("Runner tool bridge secret is empty");
   const tools = normalizeTools(options.tools ?? [], "public");
   const privateTools = normalizeTools(options.privateTools ?? [], "private");
   const publicNames = new Set(tools.map((tool) => tool.name));
   for (const tool of privateTools) {
     if (publicNames.has(tool.name)) {
-      throw new Error(`Runner tool ${tool.name} cannot be both public and private`);
+      throw new Error(
+        `Runner tool ${tool.name} cannot be both public and private`,
+      );
     }
   }
   const visibleTools = [...tools, ...structuredClone(RESERVED_TOOLS)];
@@ -204,11 +216,13 @@ async function handleRequest(
   }
   let message: Record<string, unknown>;
   try {
-    message = parseMessage(await readBody(
-      request,
-      context.maxBodyBytes,
-      context.requestBodyTimeoutMs,
-    ));
+    message = parseMessage(
+      await readBody(
+        request,
+        context.maxBodyBytes,
+        context.requestBodyTimeoutMs,
+      ),
+    );
   } catch (error) {
     writeRpc(response, null, undefined, rpcError(-32700, safeError(error)));
     return;
@@ -260,7 +274,12 @@ async function handleRequest(
     return;
   }
   if (typeof id !== "string" && typeof id !== "number") {
-    writeRpc(response, null, undefined, rpcError(-32600, "Tool calls require a request id"));
+    writeRpc(
+      response,
+      null,
+      undefined,
+      rpcError(-32600, "Tool calls require a request id"),
+    );
     return;
   }
   const callId = String(id);
@@ -300,17 +319,19 @@ async function handleRequest(
     }
   }
   const controller = existing === undefined ? new AbortController() : undefined;
-  const execution =
+  const execution: Promise<RunnerToolCallResult> =
     existing?.promise ??
     withCancellationAndTimeout(
-      Promise.resolve().then(() =>
-        context.handler({
-          tool,
-          callId,
-          arguments: structuredClone(args),
-          signal: controller!.signal,
-        }),
-      ),
+      Promise.resolve()
+        .then(() =>
+          context.handler({
+            tool,
+            callId,
+            arguments: structuredClone(args),
+            signal: controller!.signal,
+          }),
+        )
+        .then((result) => successfulToolResult(tool, callId, result)),
       controller!,
       context.privateToolNames.has(tool)
         ? context.privateToolTimeoutMs
@@ -325,9 +346,7 @@ async function handleRequest(
   }
   try {
     const result = await execution;
-    writeRpc(response, id, {
-      content: [{ type: "text", text: safeJson(result) }],
-    });
+    writeRpc(response, id, result);
   } catch (error) {
     writeToolError(response, id, safeError(error));
   }
@@ -371,14 +390,18 @@ function compileValidators(
   tools: readonly RunnerToolDefinition[],
 ): Map<string, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
-  return new Map(tools.map((tool) => [tool.name, ajv.compile(tool.inputSchema)]));
+  return new Map(
+    tools.map((tool) => [tool.name, ajv.compile(tool.inputSchema)]),
+  );
 }
 
 function authorized(value: string | undefined, secret: string): boolean {
   if (!value?.startsWith("Bearer ")) return false;
   const supplied = Buffer.from(value.slice(7));
   const expected = Buffer.from(secret);
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  return (
+    supplied.length === expected.length && timingSafeEqual(supplied, expected)
+  );
 }
 
 function readBody(
@@ -476,7 +499,10 @@ function writeRpc(
   );
 }
 
-function rpcError(code: number, message: string): { code: number; message: string } {
+function rpcError(
+  code: number,
+  message: string,
+): { code: number; message: string } {
   return { code, message };
 }
 
@@ -538,19 +564,247 @@ function withCancellationAndTimeout<T>(
 }
 
 function safeError(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+  return (error instanceof Error ? error.message : String(error)).slice(
+    0,
+    2_000,
+  );
 }
 
-function safeJson(value: unknown): string {
+function successfulToolResult(
+  tool: string,
+  callId: string,
+  value: unknown,
+): RunnerToolCallResult {
+  const json = strictJson(value);
+  if (json !== null) return chunkedToolResult(tool, callId, "json", json);
+  const representation = JSON.stringify({
+    schema: "paperclip.semantic_tool_result.v1",
+    status: "completed",
+    tool,
+    callIdentitySha256: createHash("sha256").update(callId).digest("hex"),
+    encoding: "paperclip.tagged_graph.v1",
+    result: taggedGraph(value),
+  });
+  return chunkedToolResult(
+    tool,
+    callId,
+    "paperclip.tagged_graph.v1",
+    representation,
+  );
+}
+
+function strictJson(value: unknown): string | null {
   try {
-    const serialized = JSON.stringify(value) ?? "null";
-    if (Buffer.byteLength(serialized) > MAX_RESULT_TEXT_BYTES) {
-      return '{"omitted":true,"reason":"payload_limit"}';
-    }
-    return serialized;
+    const serialized = JSON.stringify(
+      value,
+      function strictJsonValue(key, candidate) {
+        const source = this[key];
+        if (
+          typeof candidate === "undefined" ||
+          typeof candidate === "bigint" ||
+          typeof candidate === "function" ||
+          typeof candidate === "symbol" ||
+          (typeof candidate === "number" && !Number.isFinite(candidate)) ||
+          (source !== null &&
+            typeof source === "object" &&
+            Reflect.ownKeys(source).some(
+              (property) => typeof property === "symbol",
+            )) ||
+          (candidate !== null &&
+            typeof candidate === "object" &&
+            !Array.isArray(candidate) &&
+            Object.getPrototypeOf(candidate) !== Object.prototype &&
+            Object.getPrototypeOf(candidate) !== null)
+        ) {
+          throw new Error("Result requires tagged graph encoding");
+        }
+        return candidate;
+      },
+    );
+    return serialized ?? null;
   } catch {
-    return '{"omitted":true,"reason":"serialization_failed"}';
+    return null;
   }
+}
+
+function chunkedToolResult(
+  tool: string,
+  callId: string,
+  encoding: "json" | "paperclip.tagged_graph.v1",
+  serialized: string,
+): RunnerToolCallResult {
+  if (Buffer.byteLength(serialized) <= MAX_RESULT_CHUNK_BYTES) {
+    return { content: [{ type: "text", text: serialized }] };
+  }
+  const chunks = utf8Chunks(serialized, MAX_RESULT_CHUNK_BYTES);
+  const manifest = JSON.stringify({
+    schema: "paperclip.semantic_tool_result_chunks.v1",
+    status: "completed",
+    tool,
+    callIdentitySha256: createHash("sha256").update(callId).digest("hex"),
+    encoding,
+    contentOffset: 1,
+    chunkCount: chunks.length,
+    byteLength: Buffer.byteLength(serialized),
+    sha256: createHash("sha256").update(serialized).digest("hex"),
+  });
+  return {
+    content: [
+      { type: "text", text: manifest },
+      ...chunks.map((text) => ({ type: "text" as const, text })),
+    ],
+  };
+}
+
+function utf8Chunks(value: string, maxBytes: number): string[] {
+  const bytes = Buffer.from(value);
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < bytes.length) {
+    let end = Math.min(start + maxBytes, bytes.length);
+    while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+    if (end === start) {
+      throw new Error("Runner tool result chunk boundary is invalid");
+    }
+    chunks.push(bytes.subarray(start, end).toString("utf8"));
+    start = end;
+  }
+  return chunks;
+}
+
+interface TaggedGraphState {
+  nodes: Array<Record<string, unknown>>;
+  objects: Map<object, number>;
+  symbols: Map<symbol, number>;
+}
+
+function taggedGraph(value: unknown): Record<string, unknown> {
+  const state: TaggedGraphState = {
+    nodes: [],
+    objects: new Map(),
+    symbols: new Map(),
+  };
+  return {
+    root: taggedValue(value, state),
+    nodes: state.nodes,
+  };
+}
+
+function taggedValue(value: unknown, state: TaggedGraphState): unknown {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return value;
+    return {
+      $type: "number",
+      value: Number.isNaN(value)
+        ? "NaN"
+        : value === Number.POSITIVE_INFINITY
+          ? "Infinity"
+          : "-Infinity",
+    };
+  }
+  if (typeof value === "undefined") return { $type: "undefined" };
+  if (typeof value === "bigint") {
+    return { $type: "bigint", value: value.toString() };
+  }
+  if (typeof value === "symbol") return taggedSymbol(value, state);
+
+  const object = value as object;
+  const existing = state.objects.get(object);
+  if (existing !== undefined) return { $ref: existing };
+  const id = state.nodes.length + 1;
+  state.objects.set(object, id);
+  const node: Record<string, unknown> = {
+    id,
+    type: taggedObjectType(value),
+  };
+  state.nodes.push(node);
+  if (typeof value === "function") {
+    node.source = Function.prototype.toString.call(value);
+  } else if (value instanceof Date) {
+    node.value = Number.isNaN(value.getTime())
+      ? "Invalid Date"
+      : value.toISOString();
+  } else if (value instanceof RegExp) {
+    node.source = value.source;
+    node.flags = value.flags;
+    node.lastIndex = value.lastIndex;
+  } else if (value instanceof Map) {
+    node.entries = [...value.entries()].map(([key, entry]) => [
+      taggedValue(key, state),
+      taggedValue(entry, state),
+    ]);
+  } else if (value instanceof Set) {
+    node.entries = [...value.values()].map((entry) =>
+      taggedValue(entry, state),
+    );
+  } else if (value instanceof ArrayBuffer) {
+    node.base64 = Buffer.from(value).toString("base64");
+  } else if (ArrayBuffer.isView(value)) {
+    node.base64 = Buffer.from(
+      value.buffer,
+      value.byteOffset,
+      value.byteLength,
+    ).toString("base64");
+  }
+  node.properties = Reflect.ownKeys(value).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    return {
+      key: typeof key === "string" ? key : taggedSymbol(key, state),
+      enumerable: descriptor.enumerable,
+      configurable: descriptor.configurable,
+      ...(Object.hasOwn(descriptor, "value")
+        ? {
+            writable: descriptor.writable,
+            value: taggedValue(descriptor.value, state),
+          }
+        : {
+            get:
+              descriptor.get === undefined
+                ? null
+                : Function.prototype.toString.call(descriptor.get),
+            set:
+              descriptor.set === undefined
+                ? null
+                : Function.prototype.toString.call(descriptor.set),
+          }),
+    };
+  });
+  return { $ref: id };
+}
+
+function taggedSymbol(
+  value: symbol,
+  state: TaggedGraphState,
+): Record<string, unknown> {
+  const existing = state.symbols.get(value);
+  if (existing !== undefined) return { $symbolRef: existing };
+  const id = state.symbols.size + 1;
+  state.symbols.set(value, id);
+  return {
+    $type: "symbol",
+    id,
+    key: Symbol.keyFor(value) ?? null,
+    description: value.description ?? null,
+  };
+}
+
+function taggedObjectType(value: object): string {
+  if (Array.isArray(value)) return "Array";
+  if (typeof value === "function") return "Function";
+  if (ArrayBuffer.isView(value)) return value.constructor.name;
+  const prototype = Object.getPrototypeOf(value) as {
+    constructor?: { name?: unknown };
+  } | null;
+  return typeof prototype?.constructor?.name === "string"
+    ? prototype.constructor.name
+    : "Object";
 }
 
 function canonicalJson(value: unknown): string {
@@ -580,8 +834,14 @@ function positiveBoundedInteger(
   label: string,
 ): number {
   const resolved = value ?? fallback;
-  if (!Number.isSafeInteger(resolved) || resolved < minimum || resolved > maximum) {
-    throw new Error(`Runner tool bridge ${label} is outside its supported bound`);
+  if (
+    !Number.isSafeInteger(resolved) ||
+    resolved < minimum ||
+    resolved > maximum
+  ) {
+    throw new Error(
+      `Runner tool bridge ${label} is outside its supported bound`,
+    );
   }
   return resolved;
 }

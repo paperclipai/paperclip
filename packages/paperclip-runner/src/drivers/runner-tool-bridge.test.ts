@@ -39,8 +39,12 @@ describe("runner semantic MCP bridge", () => {
     bridges.push(bridge);
 
     expect(new URL(bridge.url).hostname).toBe("127.0.0.1");
-    expect((await rpc(bridge, { id: 1, method: "tools/list" }, "wrong")).status).toBe(401);
-    expect(await (await rpc(bridge, { id: 2, method: "tools/list" })).json()).toMatchObject({
+    expect(
+      (await rpc(bridge, { id: 1, method: "tools/list" }, "wrong")).status,
+    ).toBe(401);
+    expect(
+      await (await rpc(bridge, { id: 2, method: "tools/list" })).json(),
+    ).toMatchObject({
       result: {
         tools: [
           { name: "documents.read" },
@@ -73,7 +77,11 @@ describe("runner semantic MCP bridge", () => {
           params: { name: "__paperclip_permission", arguments: {} },
         })
       ).json(),
-    ).toMatchObject({ result: { content: [{ text: expect.stringContaining("__paperclip_permission") }] } });
+    ).toMatchObject({
+      result: {
+        content: [{ text: expect.stringContaining("__paperclip_permission") }],
+      },
+    });
   });
 
   it("normalizes names and executes identical duplicate calls once", async () => {
@@ -93,10 +101,10 @@ describe("runner semantic MCP bridge", () => {
     };
 
     expect(await (await rpc(bridge, request)).json()).toMatchObject({
-      result: { content: [{ text: "{\"value\":7}" }] },
+      result: { content: [{ text: '{"value":7}' }] },
     });
     expect(await (await rpc(bridge, request)).json()).toMatchObject({
-      result: { content: [{ text: "{\"value\":7}" }] },
+      result: { content: [{ text: '{"value":7}' }] },
     });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler).toHaveBeenCalledWith(
@@ -235,7 +243,8 @@ describe("runner semantic MCP bridge", () => {
   });
 
   it("preserves successful mutation identity when the result is oversized", async () => {
-    const handler = vi.fn(async () => ({ text: "x".repeat(65 * 1024) }));
+    const result = { text: `snowman-${"☃".repeat(65 * 1024)}` };
+    const handler = vi.fn(async () => result);
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
       handler,
@@ -247,42 +256,90 @@ describe("runner semantic MCP bridge", () => {
       params: { name: "documents.read", arguments: {} },
     };
 
-    for (const response of [await rpc(bridge, request), await rpc(bridge, request)]) {
+    const bodies = [];
+    for (const response of [
+      await rpc(bridge, request),
+      await rpc(bridge, request),
+    ]) {
       const body = (await response.json()) as {
         result: { content: Array<{ text: string }>; isError?: boolean };
       };
       expect(body.result).not.toHaveProperty("isError");
-      expect(JSON.parse(body.result.content[0]!.text)).toEqual({
-        omitted: true,
-        reason: "payload_limit",
+      const manifest = JSON.parse(body.result.content[0]!.text) as {
+        schema: string;
+        encoding: string;
+        chunkCount: number;
+        byteLength: number;
+        sha256: string;
+      };
+      const serialized = body.result.content
+        .slice(1)
+        .map(({ text }) => text)
+        .join("");
+      expect(manifest).toMatchObject({
+        schema: "paperclip.semantic_tool_result_chunks.v1",
+        encoding: "json",
+        chunkCount: body.result.content.length - 1,
+        byteLength: Buffer.byteLength(serialized),
       });
+      expect(
+        body.result.content
+          .slice(1)
+          .every(({ text }) => Buffer.byteLength(text) <= 64 * 1024),
+      ).toBe(true);
+      expect(JSON.parse(serialized)).toEqual(result);
+      bodies.push(body);
     }
+    expect(bodies[1]).toEqual(bodies[0]);
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves success when a result cannot be serialized", async () => {
+  it("returns a complete tagged receipt for cyclic results without re-executing", async () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
+    cyclic.revision = 9_007_199_254_740_993n;
+    const handler = vi.fn(async () => cyclic);
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
-      handler: async () => cyclic,
+      handler,
     });
     bridges.push(bridge);
 
-    const body = (await (
-      await rpc(bridge, {
-        id: "cyclic-result",
-        method: "tools/call",
-        params: { name: "documents.read", arguments: {} },
-      })
-    ).json()) as {
+    const request = {
+      id: "cyclic-result",
+      method: "tools/call",
+      params: { name: "documents.read", arguments: {} },
+    };
+    const first = (await (await rpc(bridge, request)).json()) as {
       result: { content: Array<{ text: string }>; isError?: boolean };
     };
-    expect(body.result).not.toHaveProperty("isError");
-    expect(JSON.parse(body.result.content[0]!.text)).toEqual({
-      omitted: true,
-      reason: "serialization_failed",
+    const second = (await (await rpc(bridge, request)).json()) as typeof first;
+    expect(first.result).not.toHaveProperty("isError");
+    expect(JSON.parse(first.result.content[0]!.text)).toMatchObject({
+      schema: "paperclip.semantic_tool_result.v1",
+      status: "completed",
+      tool: "documents.read",
+      callIdentitySha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      encoding: "paperclip.tagged_graph.v1",
+      result: {
+        root: { $ref: 1 },
+        nodes: [
+          {
+            id: 1,
+            type: "Object",
+            properties: [
+              { key: "self", value: { $ref: 1 } },
+              {
+                key: "revision",
+                value: { $type: "bigint", value: "9007199254740993" },
+              },
+            ],
+          },
+        ],
+      },
     });
+    expect(second).toEqual(first);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("destroys oversized and stalled request bodies before dispatch", async () => {
@@ -295,31 +352,37 @@ describe("runner semantic MCP bridge", () => {
     });
     bridges.push(bridge);
 
-    await expect(rpc(bridge, {
-      id: "oversized",
-      method: "tools/call",
-      params: {
-        name: "documents.read",
-        arguments: { value: "x".repeat(128) },
-      },
-    })).rejects.toThrow();
+    await expect(
+      rpc(bridge, {
+        id: "oversized",
+        method: "tools/call",
+        params: {
+          name: "documents.read",
+          arguments: { value: "x".repeat(128) },
+        },
+      }),
+    ).rejects.toThrow();
 
     const endpoint = new URL(bridge.url);
     const socket = connect({
       host: endpoint.hostname,
       port: Number(endpoint.port),
     });
-    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
-    socket.write([
-      "POST /mcp HTTP/1.1",
-      `Host: ${endpoint.host}`,
-      `Authorization: Bearer ${bridge.secret}`,
-      "Content-Type: application/json",
-      "Transfer-Encoding: chunked",
-      "",
-      "5",
-      "{",
-    ].join("\r\n"));
+    const closed = new Promise<void>((resolve) =>
+      socket.once("close", () => resolve()),
+    );
+    socket.write(
+      [
+        "POST /mcp HTTP/1.1",
+        `Host: ${endpoint.host}`,
+        `Authorization: Bearer ${bridge.secret}`,
+        "Content-Type: application/json",
+        "Transfer-Encoding: chunked",
+        "",
+        "5",
+        "{",
+      ].join("\r\n"),
+    );
     await expect(closed).resolves.toBeUndefined();
     expect(handler).not.toHaveBeenCalled();
   });
