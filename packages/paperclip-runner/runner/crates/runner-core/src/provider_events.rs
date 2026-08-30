@@ -4,7 +4,6 @@ use sha2::{Digest, Sha256};
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
 use crate::acpx_provider_state::AcpxProviderStateEvent;
 use crate::durable::{redact_text, sanitize_value, EventPriority};
-use crate::generated_acpx_sidecar_contract::classify_generated_acpx_tool_operation;
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::semantic_value_digest;
 
