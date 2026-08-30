@@ -368,6 +368,10 @@ describe("plugin worker manager duplex channel route", () => {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
+          // Delay the scripted frames until after the host binds the route, so
+          // this test exercises the route's buffered queue byte bound rather
+          // than the separate pre-open hold case covered below.
+          dataDelayMs: 10,
           data: [
             { chunk: "aaaaa" }, // total 5 → buffered
             { chunk: "bbbbb" }, // total 10 → buffered
