@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import {
   SUPPORTED_FIXTURE_VERSION,
   SUPPORTED_PROTOCOL_VERSION,
+  assertAcpxQuestionFixture,
   assertCodexQuestionFixture,
   assertConformanceFixturePair,
+  assertQuestionAdapterFixture,
   assertReplayFixtureCompatibility,
   assertSchemaInstance,
   compileProtocolValidators,
@@ -64,14 +66,19 @@ export async function buildProtocolManifest() {
           compatibilityCase = "additive-optional-fields";
         }
       }
-    } else if (relativePath === "fixtures/questions/codex.json") {
-      assertCodexQuestionFixture(value);
+    } else if (relativePath.startsWith("fixtures/questions/")) {
       assertSchemaInstance(
         validators.questionAdapterFixture,
         value,
         relativePath,
       );
-      compatibilityCase = "codex-structured-input";
+      assertQuestionAdapterFixture(value);
+      if (relativePath === "fixtures/questions/codex.json") {
+        assertCodexQuestionFixture(value);
+      } else if (relativePath === "fixtures/questions/acpx.json") {
+        assertAcpxQuestionFixture(value);
+      }
+      compatibilityCase = `${value.adapter}-structured-input`;
     } else if (relativePath === "fixtures/conformance-minimal-run.json") {
       assertSchemaInstance(validators.conformanceFixture, value, relativePath);
       compatibilityCase = "cross-language-input";

@@ -176,8 +176,14 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/questions/acpx.json",
+      "sha256": "6f1b65d5168b39f4bc821e778901bf077b1df10495f4bc1217b515eca4a339e4",
+      "expectation": "accept",
+      "compatibilityCase": "acpx-structured-input"
+    },
+    {
       "path": "fixtures/questions/codex.json",
-      "sha256": "ad673b6f9d70b74b53656e622d15fad1a66430f39d62b9ef71479d194a198bd6",
+      "sha256": "a02a862b008d8327b4665bbde8ae3b73ad1f8dca7891072b0839b0e84b5920fa",
       "expectation": "accept",
       "compatibilityCase": "codex-structured-input"
     },
