@@ -50,28 +50,26 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         optional_u64(args, name).map(|value| Duration::from_millis(value.unwrap_or(default)))
     };
     let state_dir = PathBuf::from(value(args, "--state-dir")?);
-    run_durable_runner(
-        DurableRunnerConfig {
-            connect_url: value(args, "--connect-url")?,
-            state_dir: state_dir.clone(),
-            runner_instance_id: value(args, "--runner-id")?,
-            environment_lease_id: value(args, "--environment-lease-id")?,
-            run_id: value(args, "--run-id")?,
-            normalized_session_id: value(args, "--session-id")?,
-            turn_id: value(args, "--turn-id")?,
-            item_id: value(args, "--item-id")?,
-            runner_version: value(args, "--runner-version")?,
-            runner_digest: value(args, "--runner-digest")?,
-            max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
-            p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
-            max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
-            reconnect_delay: duration("--reconnect-delay-ms", 250)?,
-            max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
-        },
-        ticket,
-        CodexCommandExecutor::new(state_dir),
-    )
-    .map_err(|error| LocalRunnerError::invalid(error.to_string()))
+    let config = DurableRunnerConfig {
+        connect_url: value(args, "--connect-url")?,
+        state_dir: state_dir.clone(),
+        runner_instance_id: value(args, "--runner-id")?,
+        environment_lease_id: value(args, "--environment-lease-id")?,
+        run_id: value(args, "--run-id")?,
+        normalized_session_id: value(args, "--session-id")?,
+        turn_id: value(args, "--turn-id")?,
+        item_id: value(args, "--item-id")?,
+        runner_version: value(args, "--runner-version")?,
+        runner_digest: value(args, "--runner-digest")?,
+        max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
+        p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
+        max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
+        reconnect_delay: duration("--reconnect-delay-ms", 250)?,
+        max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
+    };
+    let executor = CodexCommandExecutor::with_runner_config(state_dir, &config);
+    run_durable_runner(config, ticket, executor)
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
 fn run() -> Result<(), LocalRunnerError> {
