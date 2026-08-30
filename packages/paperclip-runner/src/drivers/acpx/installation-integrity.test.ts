@@ -24,6 +24,7 @@ import {
   guardSnapshotModuleResolution,
   sanitizedNodeEnvironment,
   snapshotDescriptorAncestorIndex,
+  snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
 } from "./installation-integrity.js";
@@ -83,6 +84,15 @@ describe("ACPX installation integrity", () => {
     expect(() =>
       guardSnapshotModuleResolution(false, hostShadowUrl, hostShadowIndex >= 0),
     ).toThrow("escaped descriptor-pinned ancestry");
+    expect(
+      snapshotDescriptorResolution(
+        hostShadowUrl,
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        "file:///snapshot/package/bin/",
+        ["file:///snapshot/package/", "file:///"],
+      ),
+    ).toBeNull();
 
     const verifiedUrl = "file:///proc/self/fd/5/node_modules/verified/index.js";
     const verifiedIndex = snapshotDescriptorAncestorIndex(
@@ -97,6 +107,57 @@ describe("ACPX installation integrity", () => {
     expect(() =>
       guardSnapshotModuleResolution(false, "data:text/javascript,0", false),
     ).not.toThrow();
+
+    const canonicalCommandDirectoryUrl = "file:///snapshot/package/bin/";
+    const canonicalDependencyDirectoryUrls = [
+      "file:///snapshot/package/",
+      "file:///snapshot/",
+    ];
+    expect(
+      snapshotDescriptorResolution(
+        "file:///snapshot/package/bin/value.js",
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        canonicalCommandDirectoryUrl,
+        canonicalDependencyDirectoryUrls,
+      ),
+    ).toEqual({ url: "file:///proc/self/fd/4/value.js", ancestorIndex: 0 });
+    expect(
+      snapshotDescriptorResolution(
+        "file:///snapshot/package/node_modules/near/index.js",
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        canonicalCommandDirectoryUrl,
+        canonicalDependencyDirectoryUrls,
+      ),
+    ).toEqual({
+      url: "file:///proc/self/fd/5/node_modules/near/index.js",
+      ancestorIndex: 0,
+    });
+    expect(
+      snapshotDescriptorResolution(
+        "file:///snapshot/node_modules/higher/index.js",
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        canonicalCommandDirectoryUrl,
+        canonicalDependencyDirectoryUrls,
+      ),
+    ).toEqual({
+      url: "file:///proc/self/fd/6/node_modules/higher/index.js",
+      ancestorIndex: 1,
+    });
+    expect(
+      snapshotDescriptorResolution(
+        "file:///proc/self/fd/6/node_modules/higher/index.js",
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        canonicalCommandDirectoryUrl,
+        canonicalDependencyDirectoryUrls,
+      ),
+    ).toEqual({
+      url: "file:///proc/self/fd/6/node_modules/higher/index.js",
+      ancestorIndex: 1,
+    });
   });
 
   it("removes every case variant of Node module-loader overrides", () => {

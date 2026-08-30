@@ -593,12 +593,16 @@ function snapshotBootstrap(format: AcpxCommandFormat): string {
     "const directoryUrl = pathToFileURL(`${directory}/`).href;",
     "const pinnedTarget = new URL(commandName, directoryUrl).href;",
     `const dependencyDirectoryUrls = Array.from({ length: dependencyAncestorCount }, (_, index) => pathToFileURL("/proc/self/fd/" + (${DEPENDENCY_ANCESTOR_FD_START} + index) + "/").href);`,
+    'const canonicalRootUrl = (url) => pathToFileURL(fs.realpathSync(fileURLToPath(url))).href.replace(/\\/?$/, "/");',
+    'const canonicalDirectoryUrl = process.platform === "linux" ? canonicalRootUrl(directoryUrl) : directoryUrl;',
+    'const canonicalDependencyDirectoryUrls = process.platform === "linux" ? dependencyDirectoryUrls.map(canonicalRootUrl) : dependencyDirectoryUrls;',
     "const target = pathToFileURL(commandPath).href;",
     "const dependencyAncestorByUrl = new Map([[target, 0]]);",
     `const snapshotDescriptorAncestorIndex = ${snapshotDescriptorAncestorIndex.toString()};`,
+    `const snapshotDescriptorResolution = ${snapshotDescriptorResolution.toString()};`,
     "const dependencyAncestorIndex = (url) => { const recorded = dependencyAncestorByUrl.get(url); return recorded === undefined ? snapshotDescriptorAncestorIndex(url, directoryUrl, dependencyDirectoryUrls) : recorded; };",
     `const guardSnapshotModuleResolution = ${guardSnapshotModuleResolution.toString()};`,
-    'const rememberDependencyAncestor = (specifier, resolution) => { const resolvedIndex = dependencyAncestorIndex(resolution?.url); guardSnapshotModuleResolution(isBuiltin(specifier), resolution?.url, resolvedIndex >= 0); if (resolvedIndex >= 0 && typeof resolution?.url === "string") dependencyAncestorByUrl.set(resolution.url, resolvedIndex); return resolution; };',
+    'const rememberDependencyAncestor = (specifier, resolution) => { const pinned = snapshotDescriptorResolution(resolution?.url, directoryUrl, dependencyDirectoryUrls, canonicalDirectoryUrl, canonicalDependencyDirectoryUrls); guardSnapshotModuleResolution(isBuiltin(specifier), resolution?.url, pinned !== null); if (pinned !== null && typeof resolution?.url === "string") { dependencyAncestorByUrl.set(resolution.url, pinned.ancestorIndex); dependencyAncestorByUrl.set(pinned.url, pinned.ancestorIndex); } return pinned === null || pinned.url === resolution?.url ? resolution : { ...resolution, url: pinned.url }; };',
     `const source = fs.readFileSync(${COMMAND_SOURCE_FD});`,
     "registerHooks({ resolve(specifier, context, nextResolve) {",
     "if (specifier === target) return { url: target, shortCircuit: true };",
@@ -607,7 +611,7 @@ function snapshotBootstrap(format: AcpxCommandFormat): string {
     'const entryRelative = entryImport && (specifier.startsWith("./") || specifier.startsWith("../"));',
     "const pinnedSpecifier = entryRelative ? new URL(specifier, pinnedTarget) : null;",
     'const lookupSpecifier = pinnedSpecifier === null ? specifier : context.conditions?.includes("require") ? fileURLToPath(pinnedSpecifier) : pinnedSpecifier.href;',
-    "const snapshotImport = entryImport || context.parentURL?.startsWith(directoryUrl) === true || dependencyDirectoryUrls.some((dependencyDirectoryUrl) => context.parentURL?.startsWith(dependencyDirectoryUrl) === true);",
+    "const snapshotImport = entryImport || parentDependencyAncestorIndex >= 0;",
     'const bareImport = snapshotImport && !isBuiltin(specifier) && !specifier.startsWith("./") && !specifier.startsWith("../") && !specifier.startsWith("/") && !specifier.includes(":");',
     "const filesystemLookup = snapshotImport && !isBuiltin(specifier);",
     "const lookupContext = entryImport && pinnedSpecifier === null && !isBuiltin(specifier) ? { ...context, parentURL: pinnedTarget } : context;",
@@ -679,6 +683,55 @@ export function snapshotDescriptorAncestorIndex(
   return dependencyDirectoryUrls.findIndex((dependencyDirectoryUrl) =>
     resolvedUrl.startsWith(dependencyDirectoryUrl),
   );
+}
+
+/** Classify a canonical resolution and repin it to its retained descriptor. */
+export function snapshotDescriptorResolution(
+  resolvedUrl: unknown,
+  commandDirectoryUrl: string,
+  dependencyDirectoryUrls: readonly string[],
+  canonicalCommandDirectoryUrl: string,
+  canonicalDependencyDirectoryUrls: readonly string[],
+): { url: string; ancestorIndex: number } | null {
+  if (typeof resolvedUrl !== "string") return null;
+  const descriptorIndex = snapshotDescriptorAncestorIndex(
+    resolvedUrl,
+    commandDirectoryUrl,
+    dependencyDirectoryUrls,
+  );
+  if (descriptorIndex >= 0) {
+    return { url: resolvedUrl, ancestorIndex: descriptorIndex };
+  }
+  if (
+    canonicalDependencyDirectoryUrls.length !==
+      dependencyDirectoryUrls.length ||
+    !canonicalCommandDirectoryUrl.startsWith("file:") ||
+    canonicalDependencyDirectoryUrls.some(
+      (canonicalUrl) =>
+        typeof canonicalUrl !== "string" || !canonicalUrl.startsWith("file:"),
+    ) ||
+    resolvedUrl.startsWith(new URL("../", commandDirectoryUrl).href)
+  ) {
+    return null;
+  }
+  if (resolvedUrl.startsWith(canonicalCommandDirectoryUrl)) {
+    return {
+      url:
+        commandDirectoryUrl +
+        resolvedUrl.slice(canonicalCommandDirectoryUrl.length),
+      ancestorIndex: 0,
+    };
+  }
+  const ancestorIndex = canonicalDependencyDirectoryUrls.findIndex(
+    (canonicalUrl) => resolvedUrl.startsWith(canonicalUrl),
+  );
+  if (ancestorIndex < 0) return null;
+  return {
+    url:
+      dependencyDirectoryUrls[ancestorIndex]! +
+      resolvedUrl.slice(canonicalDependencyDirectoryUrls[ancestorIndex]!.length),
+    ancestorIndex,
+  };
 }
 
 function executableFormat(
