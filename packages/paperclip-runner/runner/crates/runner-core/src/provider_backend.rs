@@ -884,6 +884,7 @@ impl CodexCommandExecutor {
         .map_err(|error| {
             DurableRunnerError::invalid(format!("failed to resume Codex provider: {error}"))
         })?;
+        provider.enable_durable_tool_call_replays();
         provider
             .restore_settled_turn_identities(
                 settled_provider_turn_ids.iter().cloned(),
@@ -1080,8 +1081,8 @@ impl CodexCommandExecutor {
                 payload: json!({
                     "provider": "codex",
                     "providerSessionId": thread_id,
-                    "previousProviderTurnId": previous_active_turn_id,
-                    "activeProviderTurnId": recovered_active_turn_id,
+                    "previousProviderTurnId": previous_active_turn_id.clone(),
+                    "activeProviderTurnId": recovered_active_turn_id.clone(),
                 }),
             };
             if recovered_turn_ended {
@@ -1090,6 +1091,16 @@ impl CodexCommandExecutor {
                 // trustworthy success notification to replay. Terminate it
                 // conservatively so the controller cannot wait forever or
                 // mistake an unknown outcome for success.
+                state.push_terminal_event(NormalizedProviderEvent {
+                    event_type: "turn.failed".to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({
+                        "provider": "codex",
+                        "providerTurnId": previous_active_turn_id,
+                        "status": "failed",
+                        "providerTerminalObserved": false,
+                    }),
+                })?;
                 state.extend_terminal_events(terminal_events(state, "turn.failed"))?;
             } else {
                 state.push_event(reconciled)?;
@@ -1245,6 +1256,7 @@ impl CodexCommandExecutor {
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
             })?;
+            provider.enable_durable_tool_call_replays();
             provider
                 .restore_settled_turn_identities(
                     settled_provider_turn_ids.iter().cloned(),
@@ -1406,6 +1418,15 @@ impl CodexCommandExecutor {
 
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         self.restore_provider_if_needed()?;
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.lifecycle == "closed")
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex provider session is closed",
+            ));
+        }
         if self
             .state
             .as_ref()

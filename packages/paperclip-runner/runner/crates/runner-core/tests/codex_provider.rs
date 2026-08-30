@@ -150,6 +150,36 @@ fn wait_for_notification(provider: &mut CodexProvider, expected_method: &str) ->
     panic!("did not observe Codex {expected_method} notification before the deadline");
 }
 
+fn wait_for_provider_error(provider: &mut CodexProvider) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match provider.poll() {
+            Err(error) => return error.to_string(),
+            Ok(Some(_)) => {}
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+    panic!("did not observe the expected Codex provider error before the deadline");
+}
+
+fn wait_for_executor_event(
+    executor: &mut CodexCommandExecutor,
+    expected_event_type: &str,
+) -> PolledEvent {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(executor).expect("poll Codex executor event");
+        if let Some(event) = events
+            .into_iter()
+            .find(|event| event.event_type == expected_event_type)
+        {
+            return event;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("did not observe Codex {expected_event_type} event before the deadline");
+}
+
 fn wait_for_provider_exit(provider: &mut CodexProvider) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
@@ -1228,7 +1258,7 @@ fn ambiguous_replacement_turn_rejects_conflicting_later_identity() {
     let config = provider_config(
         &directory,
         &[
-            "--missing-id-second-turn-start",
+            "--malformed-error-second-turn-start",
             "--conflicting-ambiguous-second-turn",
         ],
     );
@@ -1236,41 +1266,23 @@ fn ambiguous_replacement_turn_rejects_conflicting_later_identity() {
     provider
         .start_turn("Complete the first turn.", &config.cwd)
         .expect("start first provider turn");
-    let first_completed = (0..32).any(|_| {
-        matches!(
-            provider.poll().expect("poll first turn"),
-            Some(CodexProviderEvent::Notification { method, .. })
-                if method == "turn/completed"
-        )
-    });
-    assert!(
-        first_completed,
-        "observe the authoritative first completion"
-    );
+    wait_for_notification(&mut provider, "turn/completed");
 
     provider
         .start_turn("Accept replacement work ambiguously.", &config.cwd)
-        .expect_err("the replacement response omits its turn identity");
-    let replacement_started = provider
-        .poll()
-        .expect("poll replacement start")
-        .expect("replacement start is available");
-    assert!(matches!(
-        replacement_started,
-        CodexProviderEvent::Notification { method, params }
-            if method == "turn/started"
-                && params.pointer("/turn/id").and_then(Value::as_str)
-                    == Some("provider-turn-2")
-    ));
+        .expect_err("the replacement response is transport-ambiguous");
+    let replacement_started = wait_for_notification(&mut provider, "turn/started");
+    assert_eq!(
+        replacement_started
+            .pointer("/turn/id")
+            .and_then(Value::as_str),
+        Some("provider-turn-2")
+    );
     assert_eq!(provider.active_provider_turn_id(), Some("provider-turn-2"));
 
-    let conflicting_completion = provider
-        .poll()
-        .expect_err("a second replacement identity must fail closed");
+    let conflicting_completion = wait_for_provider_error(&mut provider);
     assert!(
-        conflicting_completion
-            .to_string()
-            .contains("another active turn"),
+        conflicting_completion.contains("another active turn"),
         "unexpected conflicting-identity error: {conflicting_completion}"
     );
     assert_eq!(provider.active_provider_turn_id(), Some("provider-turn-2"));
@@ -1449,7 +1461,7 @@ fn replacement_item_is_not_persisted_before_ambiguous_turn_identity() {
     let config = provider_config(
         &directory,
         &[
-            "--missing-id-second-turn-start",
+            "--malformed-error-second-turn-start",
             "--hold-ambiguous-second-turn-after-item",
         ],
     );
@@ -1473,15 +1485,7 @@ fn replacement_item_is_not_persisted_before_ambiguous_turn_identity() {
             json!({"text": "Complete the first turn."}),
         ))
         .expect("start first provider turn");
-    for _ in 0..32 {
-        if poll_and_ack(&mut executor)
-            .expect("poll first turn")
-            .iter()
-            .any(|event| event.event_type == "turn.completed")
-        {
-            break;
-        }
-    }
+    wait_for_executor_event(&mut executor, "turn.completed");
 
     executor
         .execute(&command(
@@ -1490,7 +1494,7 @@ fn replacement_item_is_not_persisted_before_ambiguous_turn_identity() {
             "turn.start",
             json!({"text": "Emit replacement output before terminal authority."}),
         ))
-        .expect_err("replacement response omits its identity");
+        .expect_err("replacement response is transport-ambiguous");
     assert!(
         poll_and_ack(&mut executor)
             .expect("defer identity-less replacement output")
@@ -1540,7 +1544,7 @@ fn completed_ambiguous_replacement_fails_closed_after_process_loss() {
     let config = provider_config(
         &directory,
         &[
-            "--missing-id-second-turn-start",
+            "--malformed-error-second-turn-start",
             "--complete-ambiguous-second-turn-before-response",
             "--omit-ambiguous-turn-started",
         ],
@@ -1565,15 +1569,7 @@ fn completed_ambiguous_replacement_fails_closed_after_process_loss() {
             json!({"text": "Complete the first turn."}),
         ))
         .expect("start first provider turn");
-    for _ in 0..32 {
-        if poll_and_ack(&mut executor)
-            .expect("poll first turn")
-            .iter()
-            .any(|event| event.event_type == "turn.completed")
-        {
-            break;
-        }
-    }
+    wait_for_executor_event(&mut executor, "turn.completed");
 
     executor
         .execute(&command(
@@ -1582,7 +1578,7 @@ fn completed_ambiguous_replacement_fails_closed_after_process_loss() {
             "turn.start",
             json!({"text": "Complete replacement work before returning an invalid response."}),
         ))
-        .expect_err("replacement response omits its identity");
+        .expect_err("replacement response is transport-ambiguous");
     executor.shutdown().expect("stop first provider process");
     drop(executor);
 
@@ -1623,7 +1619,7 @@ fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
     let config = provider_config(
         &directory,
         &[
-            "--missing-id-second-turn-start",
+            "--malformed-error-second-turn-start",
             "--complete-ambiguous-second-turn",
         ],
     );
@@ -1648,19 +1644,7 @@ fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
         ))
         .expect("start first provider turn");
 
-    let mut first_events = Vec::new();
-    for _ in 0..32 {
-        first_events.extend(
-            poll_and_ack(&mut executor)
-                .expect("poll first turn")
-                .into_iter()
-                .map(|event| event.event_type),
-        );
-        if first_events.iter().any(|event| event == "turn.completed") {
-            break;
-        }
-    }
-    assert!(first_events.iter().any(|event| event == "turn.completed"));
+    wait_for_executor_event(&mut executor, "turn.completed");
 
     executor
         .execute(&command(
@@ -1669,10 +1653,11 @@ fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
             "turn.start",
             json!({"text": "Complete replacement work after the malformed response."}),
         ))
-        .expect_err("accepted replacement response omits its turn identity");
+        .expect_err("accepted replacement response is transport-ambiguous");
 
     let mut replacement_events = Vec::new();
-    for _ in 0..64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         replacement_events.extend(
             poll_and_ack(&mut executor)
                 .expect("poll accepted replacement evidence")
@@ -1685,6 +1670,7 @@ fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
         {
             break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert!(replacement_events
         .iter()

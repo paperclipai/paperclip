@@ -120,6 +120,18 @@ fn emit_ambiguous_turn_evidence(
     }
 }
 
+fn emit_ambiguous_turn_item() -> io::Result<()> {
+    send(json!({
+        "method": "item/completed",
+        "params": {"item": {
+            "id": "replacement-message-before-terminal",
+            "type": "agentMessage",
+            "status": "completed",
+            "text": "Replacement output before terminal authority."
+        }}
+    }))
+}
+
 fn send_question(state: &FakeState) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
     send(json!({
@@ -508,6 +520,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(());
                 }
                 if malformed_error_second_turn_start && turn_start_count == 2 {
+                    if hold_ambiguous_second_turn_after_item {
+                        emit_ambiguous_turn_item()?;
+                    }
                     send(json!({"id": id, "error": {}}))?;
                     if emits_ambiguous_turn_evidence
                         && !complete_ambiguous_second_turn_before_response
@@ -527,15 +542,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "result": {"turn": {"status": "inProgress"}}
                     }))?;
                     if hold_ambiguous_second_turn_after_item {
-                        send(json!({
-                            "method": "item/completed",
-                            "params": {"item": {
-                                "id": "replacement-message-before-terminal",
-                                "type": "agentMessage",
-                                "status": "completed",
-                                "text": "Replacement output before terminal authority."
-                            }}
-                        }))?;
+                        emit_ambiguous_turn_item()?;
                         continue;
                     }
                     if emits_ambiguous_turn_evidence

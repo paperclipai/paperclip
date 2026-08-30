@@ -258,6 +258,7 @@ pub struct CodexProvider {
     authorized_tool_ids: BTreeSet<String>,
     pending_tool_requests: BTreeMap<String, PendingToolRequest>,
     completed_tool_call_ids: BTreeSet<String>,
+    durable_tool_call_replays: bool,
     pending_tool_request_bytes: usize,
     pending_runtime_requests: BTreeMap<String, PendingRuntimeRequest>,
     pending_runtime_request_bytes: usize,
@@ -323,6 +324,7 @@ impl CodexProvider {
             authorized_tool_ids,
             pending_tool_requests: BTreeMap::new(),
             completed_tool_call_ids: BTreeSet::new(),
+            durable_tool_call_replays: false,
             pending_tool_request_bytes: 0,
             pending_runtime_requests: BTreeMap::new(),
             pending_runtime_request_bytes: 0,
@@ -421,6 +423,13 @@ impl CodexProvider {
         self.ambiguous_turn_start_pending
     }
 
+    pub(crate) fn enable_durable_tool_call_replays(&mut self) {
+        // The durable backend validates the call id, operation, and input
+        // against its persisted receipt before returning a stored result.
+        // Direct provider consumers retain the stricter one-shot behavior.
+        self.durable_tool_call_replays = true;
+    }
+
     pub(crate) fn restore_completed_turn_authority(
         &mut self,
         authoritative: bool,
@@ -491,6 +500,7 @@ impl CodexProvider {
         let thread_id = self.thread_id.clone();
         let completed_turn_authority = self.completed_turn_authority.clone();
         let completion_reconciliation_pending = self.completion_reconciliation_pending;
+        let durable_tool_call_replays = self.durable_tool_call_replays;
 
         // Exact turn identities may be forgotten only after the provider
         // process that could emit them is gone. Resume the same thread in a
@@ -503,6 +513,7 @@ impl CodexProvider {
             Some(&thread_id),
             next_generation,
         )?;
+        replacement.durable_tool_call_replays = durable_tool_call_replays;
         if replacement.active_provider_turn_id.is_some() {
             // A terminal can race the provider's own durable idle-state write.
             // This process has work Paperclip never dispatched in the new
@@ -1015,7 +1026,8 @@ impl CodexProvider {
                     input: input.clone(),
                     retained_bytes,
                 };
-                if self.completed_tool_call_ids.contains(&call_id) {
+                let completed_replay = self.completed_tool_call_ids.contains(&call_id);
+                if completed_replay && !self.durable_tool_call_replays {
                     return Err(LocalRunnerError::invalid(
                         "Codex reused a completed tool call id",
                     ));
@@ -1042,7 +1054,9 @@ impl CodexProvider {
                         "Codex emitted too many pending tool calls",
                     ));
                 }
-                if self.completed_tool_call_ids.len() >= MAX_COMPLETED_TOOL_CALL_IDS {
+                if !completed_replay
+                    && self.completed_tool_call_ids.len() >= MAX_COMPLETED_TOOL_CALL_IDS
+                {
                     return Err(LocalRunnerError::invalid(
                         "Codex emitted too many completed tool calls in one turn",
                     ));
@@ -1178,6 +1192,8 @@ impl CodexProvider {
             if terminal_event_type.is_some()
                 && notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
+                && notification_turn_id
+                    .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
             {
                 return Ok(Some(CodexProviderEvent::Notification {
                     method: "warning".to_owned(),
