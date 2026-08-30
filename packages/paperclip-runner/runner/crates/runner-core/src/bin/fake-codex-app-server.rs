@@ -257,6 +257,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let conflicting_ambiguous_second_turn = args
         .iter()
         .any(|value| value == "--conflicting-ambiguous-second-turn");
+    let ambiguous_older_reused_turn = args
+        .iter()
+        .any(|value| value == "--ambiguous-older-reused-turn");
     let omit_ambiguous_turn_started = args
         .iter()
         .any(|value| value == "--omit-ambiguous-turn-started");
@@ -480,7 +483,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && (complete_ambiguous_second_turn
                         || complete_ambiguous_second_turn_before_response
                         || conflicting_ambiguous_second_turn);
-                let provider_turn_id = if emits_ambiguous_turn_evidence
+                let provider_turn_id = if turn_start_count == 3 && ambiguous_older_reused_turn {
+                    "provider-turn-1".to_owned()
+                } else if emits_ambiguous_turn_evidence
                     || (turn_start_count == 2
                         && (retain_ambiguous_second_turn_active
                             || hold_ambiguous_second_turn_after_item))
@@ -495,6 +500,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 state.active_turn_id = Some(provider_turn_id.clone());
                 save_state(&state_path, &state)?;
+                if ambiguous_older_reused_turn && turn_start_count == 3 {
+                    send(json!({
+                        "method": "turn/started",
+                        "params": {"turn": {"id": provider_turn_id}}
+                    }))?;
+                    send(json!({"id": id, "error": {}}))?;
+                    continue;
+                }
                 if complete_ambiguous_second_turn_before_response && turn_start_count == 2 {
                     emit_ambiguous_turn_evidence(
                         &state_path,

@@ -625,21 +625,7 @@ impl CodexProvider {
             }
         };
         if self.settled_provider_turn_ids.contains(&provider_turn_id) {
-            // The provider accepted work before returning its identity. A
-            // duplicate identity therefore cannot be handled as an ordinary
-            // rejected request: terminate the process so the untracked turn
-            // cannot continue mutating the workspace, and let the durable
-            // backend close this run before reporting the error.
-            self.rejected_accepted_turn = Some(RejectedAcceptedTurn::ReusedIdentity(
-                provider_turn_id.clone(),
-            ));
-            self.expected_shutdown = true;
-            self.completed_turn_authority = None;
-            let _ = self.cancel_pending_requests();
-            let _ = self.process.terminate_group();
-            return Err(LocalRunnerError::invalid(
-                "Codex reused a settled provider turn identity after accepting work; the provider was terminated",
-            ));
+            return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
         }
         // Only a validated provider turn identity proves that replacement
         // work exists and supersedes the prior completed result.
@@ -672,14 +658,8 @@ impl CodexProvider {
                 ))
             })?;
 
-        if self
-            .completed_turn_authority
-            .as_ref()
-            .is_some_and(|authority| authority.provider_turn_id == provider_turn_id)
-        {
-            return Err(LocalRunnerError::invalid(format!(
-                "Codex {method} notification reused the previously completed turn id while resolving an ambiguous turn start"
-            )));
+        if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+            return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
         }
 
         let runtime_request_scope = new_runtime_request_scope()?;
@@ -706,6 +686,24 @@ impl CodexProvider {
         // provider ambiguously reuses the same turn id for fresh work.
         self.active_provider_turn_id = Some(provider_turn_id);
         self.runtime_request_scope = runtime_request_scope;
+    }
+
+    fn reject_accepted_reused_turn_identity(
+        &mut self,
+        provider_turn_id: String,
+    ) -> LocalRunnerError {
+        // Both a successful response and identity-bearing evidence after an
+        // ambiguous response prove the provider accepted work. A settled
+        // identity cannot durably own that work, so terminate its process
+        // before returning instead of leaving an untracked turn alive.
+        self.rejected_accepted_turn = Some(RejectedAcceptedTurn::ReusedIdentity(provider_turn_id));
+        self.expected_shutdown = true;
+        self.completed_turn_authority = None;
+        let _ = self.cancel_pending_requests();
+        let _ = self.process.terminate_group();
+        LocalRunnerError::invalid(
+            "Codex reused a settled provider turn identity after accepting work; the provider was terminated",
+        )
     }
 
     pub fn steer_turn(&mut self, message: &str) -> Result<Value, LocalRunnerError> {

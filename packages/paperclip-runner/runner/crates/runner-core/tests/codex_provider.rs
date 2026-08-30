@@ -194,6 +194,31 @@ fn wait_for_provider_exit(provider: &mut CodexProvider) {
     panic!("the provider accepted a reused turn identity but remained live");
 }
 
+fn wait_for_reused_identity_reap(provider: &mut CodexProvider) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match provider.poll() {
+            Err(error) => assert!(
+                error.to_string().contains("reused a settled"),
+                "unexpected error while reaping reused provider identity: {error}"
+            ),
+            Ok(Some(CodexProviderEvent::Exited {
+                completed_turn_authoritative,
+                ..
+            })) => {
+                assert!(
+                    !completed_turn_authoritative,
+                    "accepted identity reuse must revoke prior completion authority"
+                );
+                return;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+    panic!("the provider accepted a reused turn identity but was not reaped");
+}
+
 fn wait_for_fake_provider_idle(directory: &Path) {
     let state_path = directory.join("fake-state.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1317,6 +1342,53 @@ fn ambiguous_replacement_turn_rejects_conflicting_later_identity() {
 }
 
 #[test]
+fn ambiguous_replacement_turn_rejects_an_older_settled_identity() {
+    let directory = temporary_directory("ambiguous-older-settled-turn-identity");
+    let config = provider_config(&directory, &["--ambiguous-older-reused-turn"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start Codex provider");
+    for message in ["Complete turn one.", "Complete turn two."] {
+        provider
+            .start_turn(message, &config.cwd)
+            .expect("start completed provider turn");
+        wait_for_notification(&mut provider, "turn/completed");
+    }
+    provider
+        .start_turn("Ambiguously reuse the first turn identity.", &config.cwd)
+        .expect_err("the replacement response is transport-ambiguous");
+    let error = wait_for_provider_error(&mut provider);
+    assert!(
+        error.contains("reused a settled provider turn identity"),
+        "unexpected older-identity error: {error}"
+    );
+    assert_eq!(provider.active_provider_turn_id(), None);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let completed_turn_authoritative = (0..)
+        .take_while(|_| std::time::Instant::now() < deadline)
+        .find_map(|_| {
+            match provider
+                .poll()
+                .expect("poll provider after rejected identity")
+            {
+                Some(CodexProviderEvent::Exited {
+                    completed_turn_authoritative,
+                    ..
+                }) => Some(completed_turn_authoritative),
+                Some(_) => None,
+                None => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    None
+                }
+            }
+        });
+    assert!(
+        completed_turn_authoritative == Some(false),
+        "accepted work with an older settled identity must terminate the provider and revoke completion authority"
+    );
+
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn clean_exit_after_ambiguous_replacement_start_fails_the_durable_session() {
     let directory = temporary_directory("durable-clean-exit-after-ambiguous-turn-start");
     let config = provider_config(
@@ -1866,7 +1938,7 @@ fn codex_fails_closed_when_a_provider_reuses_a_settled_turn_id() {
         .expect_err("reject a provider turn with a reused identity");
     assert!(error.to_string().contains("reused a settled"));
     assert_eq!(provider.active_provider_turn_id(), None);
-    wait_for_provider_exit(&mut provider);
+    wait_for_reused_identity_reap(&mut provider);
 
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
@@ -1889,7 +1961,7 @@ fn codex_fails_closed_when_a_provider_reuses_an_older_settled_turn_id() {
         .expect_err("reject a provider turn with an older reused identity");
     assert!(error.to_string().contains("reused a settled"));
     assert_eq!(provider.active_provider_turn_id(), None);
-    wait_for_provider_exit(&mut provider);
+    wait_for_reused_identity_reap(&mut provider);
 
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
