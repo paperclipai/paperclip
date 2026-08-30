@@ -395,19 +395,10 @@ export class CodexAppServerDriver implements HarnessDriver {
         && (snapshot.terminalTurns?.length ?? 0) > 0
       ) {
         const providerHistory = existingThread.turns;
-        const turns = Array.isArray(providerHistory)
+        const providerHistoryIsArray = Array.isArray(providerHistory);
+        const turns = providerHistoryIsArray
           ? providerHistory.map(record)
           : [];
-        // Only an actual history array can prove that the provider did not
-        // accept the checkpointed disposition turn. Missing or malformed
-        // history is unknown and must retain the one-shot ownership marker.
-        if (Array.isArray(providerHistory)) {
-          providerTurnIds = new Set(
-            turns
-              .map((turn) => text(turn.id))
-              .filter((turnId) => turnId.length > 0),
-          );
-        }
         const terminalIds = new Set(
           (snapshot.terminalTurns ?? []).map((turn) => turn.turnId),
         );
@@ -415,6 +406,17 @@ export class CodexAppServerDriver implements HarnessDriver {
         turns.forEach((turn, index) => {
           if (terminalIds.has(text(turn.id))) lastKnownTerminalIndex = index;
         });
+        // Releasing a consumed marker requires both an actual history array
+        // and a checkpointed terminal that anchors its ordering. An array that
+        // omits every durable terminal may be truncated or inconsistent, so
+        // absence from it is not proof that the provider rejected the turn.
+        if (providerHistoryIsArray && lastKnownTerminalIndex >= 0) {
+          providerTurnIds = new Set(
+            turns
+              .map((turn) => text(turn.id))
+              .filter((turnId) => turnId.length > 0),
+          );
+        }
         const laterTurns = lastKnownTerminalIndex < 0
           ? []
           : turns.slice(lastKnownTerminalIndex + 1);

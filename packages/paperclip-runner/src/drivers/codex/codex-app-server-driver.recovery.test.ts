@@ -634,6 +634,57 @@ describe("Codex app-server Codex driver", () => {
     );
   }
 
+  it("preserves disposition recovery ownership when provider history omits the checkpoint terminal", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: WORKSPACE,
+        turns: [{ id: "turn-2", status: "inProgress", items: [] }],
+      },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-unanchored-history",
+      normalizedSessionId: "normalized-unanchored-history",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Complete." },
+    });
+    first.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    await collectUntilTerminal(original.events());
+    const checkpoint = await original.snapshot();
+    await original.close({ reason: "simulate truncated provider history" });
+
+    const recovery = await driver.recoverSession?.({
+      ...checkpoint,
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: null,
+    });
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery!.session!.snapshot()).resolves.toMatchObject({
+      activeTurnId: null,
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: null,
+    });
+    await expect(recovery!.session!.startTurn({
+      message: {
+        role: "user",
+        text: "Do not duplicate the accepted disposition turn.",
+      },
+    })).rejects.toThrow("session cannot start another turn");
+    expect(
+      second.calls.filter((call) => call.method === "turn/start"),
+    ).toHaveLength(0);
+    await recovery!.session!.close({ reason: "test complete" });
+  });
+
   it("releases a legacy disposition marker when provider history has no accepted turn", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
