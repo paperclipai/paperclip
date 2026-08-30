@@ -1246,8 +1246,93 @@ describe("CapabilityMockControlPlaneAdapter", () => {
       result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
     })).resolves.toBeUndefined();
-    expect(completedBlockerAdapter.snapshot().tasks.find((task) => task.id === "task-2"))
+    const terminalSnapshot = completedBlockerAdapter.snapshot();
+    expect(terminalSnapshot.tasks.find((task) => task.id === "task-2"))
       .toMatchObject({ status: "done", checkoutRunId: null, executionRunId: null });
+    expect(terminalSnapshot.blockers).toEqual([]);
+  });
+
+  it("does not traverse resolved blocker rows during cycle detection", async () => {
+    const adapter = seeded({
+      tasks: [
+        {
+          id: "task-1",
+          companyId: "company-1",
+          identifier: "MCK-1",
+          title: "Active task",
+          description: null,
+          status: "todo",
+          priority: "high",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          id: "task-2",
+          companyId: "company-1",
+          identifier: "MCK-2",
+          title: "Candidate dependency",
+          description: null,
+          status: "todo",
+          priority: "medium",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          id: "task-3",
+          companyId: "company-1",
+          identifier: "MCK-3",
+          title: "Completed dependency",
+          description: null,
+          status: "done",
+          priority: "medium",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: "2026-08-09T00:00:00.000Z",
+          completedAt: "2026-08-09T00:01:00.000Z",
+        },
+      ],
+      blockers: [
+        {
+          id: "resolved-blocker",
+          taskId: "task-2",
+          blockedByTaskId: "task-3",
+          createdAt: "2026-08-09T00:00:00.000Z",
+        },
+        {
+          id: "historical-return-edge",
+          taskId: "task-3",
+          blockedByTaskId: "task-1",
+          createdAt: "2026-08-09T00:00:00.000Z",
+        },
+      ],
+    });
+    await adapter.start();
+    await adapter.openFixtureRun({
+      ...OPEN,
+      capabilities: ["task:write"],
+    });
+
+    await expect(adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "resolved-blocker-cycle-check",
+      command: { kind: "set_dependencies", blockedByTaskIds: ["task-2"] },
+    })).resolves.toMatchObject({ disposition: "applied" });
+    expect(adapter.snapshot().blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: "task-1", blockedByTaskId: "task-2" }),
+    ]));
   });
 
   it("does not schedule approval recovery for an inactive requester", async () => {

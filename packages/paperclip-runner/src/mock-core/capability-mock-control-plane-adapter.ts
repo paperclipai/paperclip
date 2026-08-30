@@ -1050,6 +1050,9 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
       case "done":
         task.status = "done";
         task.completedAt ??= this.#now();
+        this.#state.blockers = this.#state.blockers.filter(
+          (blocker) => blocker.taskId !== task.id,
+        );
         break;
       case "blocked":
         task.status = "blocked";
@@ -1190,7 +1193,11 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
     if (visited.has(taskId)) return false;
     visited.add(taskId);
     return this.#state.blockers
-      .filter((blocker) => blocker.taskId === taskId)
+      .filter(
+        (blocker) =>
+          blocker.taskId === taskId &&
+          this.#task(blocker.blockedByTaskId).status !== "done",
+      )
       .some((blocker) => this.#dependsOn(blocker.blockedByTaskId, candidateAncestorId, visited));
   }
 
