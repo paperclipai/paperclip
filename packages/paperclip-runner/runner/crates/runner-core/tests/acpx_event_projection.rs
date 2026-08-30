@@ -215,7 +215,15 @@ fn rejects_invalid_durable_projection_identity() {
         assert!(error.contains(&format!("{field} identity")), "{error}");
     }
 
-    for request_id in [String::new(), "x".repeat(161), "request\n1".to_owned()] {
+    for request_id in [
+        String::new(),
+        "x".repeat(161),
+        "request\n1".to_owned(),
+        "request 1".to_owned(),
+        "réquest-1".to_owned(),
+        "request/1".to_owned(),
+        "_request-1".to_owned(),
+    ] {
         let request = AcpxProviderStateEvent::InputRequest {
             request_id,
             question_set: json!({
@@ -228,6 +236,21 @@ fn rejects_invalid_durable_projection_identity() {
             .unwrap_err()
             .to_string();
         assert!(error.contains("request identity"), "{error}");
+    }
+
+    for field in ["run", "normalized session", "turn", "item"] {
+        let mut invalid = context();
+        match field {
+            "run" => invalid.run_id = "run 1".to_owned(),
+            "normalized session" => invalid.normalized_session_id = "session/1".to_owned(),
+            "turn" => invalid.turn_id = "turn 1".to_owned(),
+            "item" => invalid.item_id = "item/1".to_owned(),
+            _ => unreachable!(),
+        }
+        let error = project_acpx_state_event(&invalid, &event)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("{field} identity")), "{error}");
     }
 }
 
@@ -267,6 +290,15 @@ fn runtime_request_projection_preserves_durable_identity_boundaries() {
         durable_context.item_id
     );
     assert!(request_validator.is_valid(&durable_request[0].payload["request"]));
+
+    for request_id in ["request 1", "réquest-1", "request/1", "_request-1"] {
+        let mut invalid_request = valid[0].payload["request"].clone();
+        invalid_request["requestId"] = Value::String(request_id.to_owned());
+        assert!(
+            !request_validator.is_valid(&invalid_request),
+            "{request_id}"
+        );
+    }
 
     for field in ["turnId", "itemId"] {
         let mut invalid_request = valid[0].payload["request"].clone();

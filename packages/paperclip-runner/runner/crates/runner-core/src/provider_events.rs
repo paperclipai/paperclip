@@ -6,6 +6,7 @@ use crate::acpx_provider_state::AcpxProviderStateEvent;
 use crate::durable::{redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::semantic_value_digest;
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 const MAX_TEXT_CHARS: usize = 4_000;
 
@@ -50,13 +51,17 @@ pub struct AcpxEventProjectionContext {
 impl AcpxEventProjectionContext {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         for (value, label, max_chars) in [
-            (&self.run_id, "run", 160),
-            (&self.normalized_session_id, "normalized session", 160),
+            (&self.run_id, "run", SHORT_STABLE_ID_CHARS),
+            (
+                &self.normalized_session_id,
+                "normalized session",
+                SHORT_STABLE_ID_CHARS,
+            ),
             // Turn and item correlation use the durable 240-character
             // identity contract shared by PRP events, runtime requests, and
             // semantic-tool receipts.
-            (&self.turn_id, "turn", 240),
-            (&self.item_id, "item", 240),
+            (&self.turn_id, "turn", DURABLE_STABLE_ID_CHARS),
+            (&self.item_id, "item", DURABLE_STABLE_ID_CHARS),
         ] {
             validate_projection_identity(value, label, max_chars)?;
         }
@@ -151,7 +156,7 @@ pub fn project_acpx_state_event(
             question_set,
             origin,
         } => {
-            validate_projection_identity(request_id, "request", 160)?;
+            validate_projection_identity(request_id, "request", SHORT_STABLE_ID_CHARS)?;
             let prompt = question_set
                 .get("title")
                 .or_else(|| question_set.pointer("/questions/0/prompt"))
@@ -246,10 +251,7 @@ fn validate_projection_identity(
     label: &str,
     max_chars: usize,
 ) -> Result<(), LocalRunnerError> {
-    if value.trim().is_empty()
-        || value.chars().count() > max_chars
-        || value.chars().any(char::is_control)
-    {
+    if !is_stable_id(value, max_chars) {
         return Err(LocalRunnerError::invalid(format!(
             "ACPX event projection {label} identity is invalid"
         )));

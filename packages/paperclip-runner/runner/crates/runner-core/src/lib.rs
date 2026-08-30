@@ -16,6 +16,7 @@ pub mod provider_bridge;
 pub mod provider_events;
 pub mod question_response;
 pub mod replay;
+mod stable_identity;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

@@ -15,6 +15,7 @@ use crate::provider_bridge::{
     ToolResult, TOOL_SET_SCHEMA,
 };
 use crate::question_response::validate_question_response;
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
@@ -73,10 +74,10 @@ impl AcpxProviderSessionConfig {
             ));
         }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
-        validate_text(&self.run_id, 160, "ACPX run id")?;
-        validate_text(
+        validate_stable_id(&self.run_id, SHORT_STABLE_ID_CHARS, "ACPX run id")?;
+        validate_stable_id(
             &self.normalized_session_id,
-            160,
+            SHORT_STABLE_ID_CHARS,
             "ACPX normalized session id",
         )?;
         if self.catalog_revision == 0 || self.catalog_revision > MAX_JSON_SAFE_INTEGER {
@@ -247,7 +248,7 @@ impl AcpxProviderSession {
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         validate_turn_message(message)?;
         if working_directory != self.working_directory {
             return Err(LocalRunnerError::invalid(
@@ -342,7 +343,7 @@ impl AcpxProviderSession {
         reason: &str,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         if self.state.active_turn_id() != Some(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX interruption named a stale or inactive turn",
@@ -727,7 +728,7 @@ impl AcpxProviderSession {
     }
 
     fn ensure_bound_turn(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         if self.ensure_active_turn()? != turn_id {
             return Err(LocalRunnerError::invalid(
                 "ACPX resolution named a stale or inactive turn",
@@ -1014,6 +1015,13 @@ fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), Local
         || value.chars().count() > max_chars
         || value.chars().any(char::is_control)
     {
+        return Err(LocalRunnerError::invalid(format!("{label} is invalid")));
+    }
+    Ok(())
+}
+
+fn validate_stable_id(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
+    if !is_stable_id(value, max_chars) {
         return Err(LocalRunnerError::invalid(format!("{label} is invalid")));
     }
     Ok(())
