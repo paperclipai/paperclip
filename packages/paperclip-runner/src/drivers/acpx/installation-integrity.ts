@@ -43,6 +43,11 @@ export interface VerifiedAcpxInstallation {
 }
 
 export interface VerifiedAcpxCommandLease {
+  /**
+   * Launch with a Linux descriptor-backed entry identity. Callers must not
+   * admit a provider that requires its mutable installation pathname; that
+   * compatibility belongs to the later provider-specific adapter gate.
+   */
   spawn(
     args?: readonly string[],
     options?: SpawnOptionsWithoutStdio,
@@ -96,6 +101,7 @@ export async function verifyQualifiedAcpxInstallation(
     serverPackage.type,
     profile.agent,
   );
+  const serverPackageFormat = packageModuleFormat(serverPackage.type);
   const packageDirectory = dirname(serverPackageJsonPath);
   const unresolvedCommandPath = resolve(packageDirectory, relativeCommand);
   if (!isInside(packageDirectory, unresolvedCommandPath)) {
@@ -115,10 +121,6 @@ export async function verifyQualifiedAcpxInstallation(
   );
   const commandDirectoryIdentity = verifiedDirectory.identity;
   await verifiedDirectory.handle.close();
-  const dependencyAncestors = await inspectDependencyAncestors(
-    commandDirectory,
-    profile.agent,
-  );
   const command = await inspectCommand(
     commandPath,
     profile.commandDigest,
@@ -126,6 +128,7 @@ export async function verifyQualifiedAcpxInstallation(
   );
 
   let runtimePackageJsonPath: string | null = null;
+  let runtimePackageFormat: AcpxCommandFormat | null = null;
   if (profile.agentRuntimePackage !== null) {
     if (profile.agentRuntimeVersion === null) {
       throw new Error("Qualified ACPX runtime package omitted its version");
@@ -142,9 +145,45 @@ export async function verifyQualifiedAcpxInstallation(
         `ACPX ${profile.agent} runtime version mismatch: expected ${profile.agentRuntimeVersion}, received ${runtimePackage.version ?? "unknown"}`,
       );
     }
+    runtimePackageFormat = packageModuleFormat(runtimePackage.type);
   } else if (profile.agentRuntimeVersion !== null) {
     throw new Error("Qualified ACPX runtime version omitted its package");
   }
+
+  const serverDependencyAncestors = await inspectDependencyAncestors(
+    commandDirectory,
+    packageDirectory,
+    profile.agent,
+  );
+  const dependencyAncestors = [...serverDependencyAncestors];
+  const dependencyAncestorFormats = serverDependencyAncestors.map(
+    () => serverPackageFormat,
+  );
+  if (runtimePackageJsonPath !== null) {
+    const runtimeDirectory = dirname(runtimePackageJsonPath);
+    // A separately qualified runtime is an explicit trust root. We do not
+    // retain arbitrary package-manager ancestors: hoisted dependencies must
+    // be qualified by a provider-specific layer instead of becoming ambient
+    // executable authority here.
+    if (
+      runtimeDirectory !== commandDirectory &&
+      !dependencyAncestors.some(
+        (ancestor) => ancestor.path === runtimeDirectory,
+      )
+    ) {
+      dependencyAncestors.push(
+        await inspectExplicitDependencyRoot(
+          runtimeDirectory,
+          `${profile.agent} runtime`,
+        ),
+      );
+      dependencyAncestorFormats.push(runtimePackageFormat ?? "commonjs");
+    }
+  }
+  if (dependencyAncestors.length > MAX_DEPENDENCY_ANCESTORS) {
+    throw new Error("ACPX provider dependency ancestry exceeds its bound");
+  }
+  const serverDependencyAncestorCount = serverDependencyAncestors.length;
 
   const commandDigest = command.digest;
   const commandIdentity = command.identity;
@@ -190,6 +229,9 @@ export async function verifyQualifiedAcpxInstallation(
           current.bytes,
           currentDirectory.handle,
           currentDependencyAncestors,
+          serverDependencyAncestorCount,
+          serverPackageFormat,
+          dependencyAncestorFormats,
         );
       } catch (error) {
         await Promise.all([
@@ -395,16 +437,22 @@ async function openVerifiedCommandDirectory(
 
 async function inspectDependencyAncestors(
   commandDirectory: string,
+  packageDirectory: string,
   agent: string,
 ): Promise<VerifiedAcpxDependencyAncestor[]> {
   const ancestors: VerifiedAcpxDependencyAncestor[] = [];
+  if (commandDirectory === packageDirectory) return ancestors;
   let ancestor = dirname(commandDirectory);
   for (let count = 0; count < MAX_DEPENDENCY_ANCESTORS; count += 1) {
+    if (!isInsideOrEqual(packageDirectory, ancestor)) {
+      throw new Error("ACPX provider dependency ancestry escaped its package");
+    }
     const verified = await openVerifiedCommandDirectory(ancestor, agent);
     ancestors.push({ path: ancestor, identity: verified.identity });
     await verified.handle.close();
+    if (ancestor === packageDirectory) return ancestors;
     const parent = dirname(ancestor);
-    if (parent === ancestor) return ancestors;
+    if (parent === ancestor) break;
     ancestor = parent;
   }
   throw new Error("ACPX provider dependency ancestry exceeds its bound");
@@ -433,6 +481,16 @@ async function openDependencyAncestors(
     await Promise.all(handles.map((handle) => handle.close()));
     throw error;
   }
+}
+
+async function inspectExplicitDependencyRoot(
+  path: string,
+  label: string,
+): Promise<VerifiedAcpxDependencyAncestor> {
+  const verified = await openVerifiedCommandDirectory(path, label);
+  const ancestor = { path, identity: verified.identity };
+  await verified.handle.close();
+  return ancestor;
 }
 
 /** Fail closed where Node cannot atomically pin a real directory inode. */
@@ -479,6 +537,9 @@ function commandLease(
   verifiedBytes: Buffer,
   commandDirectory: FileHandle,
   dependencyAncestors: readonly FileHandle[],
+  serverDependencyAncestorCount: number,
+  serverPackageFormat: AcpxCommandFormat,
+  dependencyAncestorFormats: readonly AcpxCommandFormat[],
 ): VerifiedAcpxCommandLease {
   let consumed = false;
   let directoriesReleased = false;
@@ -521,6 +582,9 @@ function commandLease(
             commandDirectoryPath,
             commandName,
             String(dependencyAncestors.length),
+            String(serverDependencyAncestorCount),
+            serverPackageFormat,
+            JSON.stringify(dependencyAncestorFormats),
             ...args,
           ],
           {
@@ -569,7 +633,17 @@ export function sanitizedNodeEnvironment(
     // variant also keeps a context portable instead of admitting a preload or
     // an unverified package-search root on one runner host but not another.
     const normalizedKey = key.toUpperCase();
-    if (normalizedKey === "NODE_OPTIONS" || normalizedKey === "NODE_PATH") {
+    if (
+      normalizedKey === "NODE_OPTIONS" ||
+      normalizedKey === "NODE_PATH" ||
+      normalizedKey === "GCONV_PATH" ||
+      normalizedKey === "GLIBC_TUNABLES" ||
+      normalizedKey === "OPENSSL_CONF" ||
+      normalizedKey === "OPENSSL_ENGINES" ||
+      normalizedKey === "OPENSSL_MODULES" ||
+      normalizedKey.startsWith("LD_") ||
+      normalizedKey.startsWith("DYLD_")
+    ) {
       delete sanitized[key];
     }
   }
@@ -580,49 +654,76 @@ function snapshotBootstrap(format: AcpxCommandFormat): string {
   return [
     'const fs = require("node:fs");',
     'const { isBuiltin, registerHooks } = require("node:module");',
-    'const { resolve } = require("node:path");',
+    'const { dirname, extname, join, normalize, relative, resolve } = require("node:path");',
     'const { fileURLToPath, pathToFileURL } = require("node:url");',
     "const commandDirectory = process.argv[1];",
     "const commandName = process.argv[2];",
     "const dependencyAncestorCount = Number.parseInt(process.argv[3], 10);",
-    `if (!Number.isSafeInteger(dependencyAncestorCount) || dependencyAncestorCount < 1 || dependencyAncestorCount > ${MAX_DEPENDENCY_ANCESTORS}) throw new Error("ACPX provider dependency ancestry is invalid");`,
+    "const serverDependencyAncestorCount = Number.parseInt(process.argv[4], 10);",
+    "const serverPackageFormat = process.argv[5];",
+    "const dependencyAncestorFormats = JSON.parse(process.argv[6]);",
+    'if (process.platform !== "linux") throw new Error("ACPX provider relative module loading requires Linux descriptor-pinned paths");',
+    `if (!Number.isSafeInteger(dependencyAncestorCount) || dependencyAncestorCount < 0 || dependencyAncestorCount > ${MAX_DEPENDENCY_ANCESTORS}) throw new Error("ACPX provider dependency ancestry is invalid");`,
+    'if (!Number.isSafeInteger(serverDependencyAncestorCount) || serverDependencyAncestorCount < 0 || serverDependencyAncestorCount > dependencyAncestorCount) throw new Error("ACPX provider package ancestry is invalid");',
+    'if ((serverPackageFormat !== "module" && serverPackageFormat !== "commonjs") || !Array.isArray(dependencyAncestorFormats) || dependencyAncestorFormats.length !== dependencyAncestorCount || dependencyAncestorFormats.some((value) => value !== "module" && value !== "commonjs")) throw new Error("ACPX provider package formats are invalid");',
     "const commandPath = resolve(commandDirectory, commandName);",
-    "process.argv.splice(1, 3, commandPath);",
     `const guardSnapshotModuleLookup = ${guardSnapshotModuleLookup.toString()};`,
     `const directory = process.platform === "linux" ? "/proc/self/fd/${COMMAND_DIRECTORY_FD}" : commandDirectory;`,
     "const directoryUrl = pathToFileURL(`${directory}/`).href;",
     "const pinnedTarget = new URL(commandName, directoryUrl).href;",
+    'const target = process.platform === "linux" ? pinnedTarget : pathToFileURL(commandPath).href;',
+    "process.argv.splice(1, 6, fileURLToPath(target));",
     `const dependencyDirectoryUrls = Array.from({ length: dependencyAncestorCount }, (_, index) => pathToFileURL("/proc/self/fd/" + (${DEPENDENCY_ANCESTOR_FD_START} + index) + "/").href);`,
     'const canonicalRootUrl = (url) => pathToFileURL(fs.realpathSync(fileURLToPath(url))).href.replace(/\\/?$/, "/");',
     'const canonicalDirectoryUrl = process.platform === "linux" ? canonicalRootUrl(directoryUrl) : directoryUrl;',
     'const canonicalDependencyDirectoryUrls = process.platform === "linux" ? dependencyDirectoryUrls.map(canonicalRootUrl) : dependencyDirectoryUrls;',
-    "const target = pathToFileURL(commandPath).href;",
     "const dependencyAncestorByUrl = new Map([[target, 0]]);",
+    `const descriptorFormatByUrl = new Map([[target, ${JSON.stringify(format)}]]);`,
     `const snapshotDescriptorAncestorIndex = ${snapshotDescriptorAncestorIndex.toString()};`,
     `const snapshotDescriptorResolution = ${snapshotDescriptorResolution.toString()};`,
     "const dependencyAncestorIndex = (url) => { const recorded = dependencyAncestorByUrl.get(url); return recorded === undefined ? snapshotDescriptorAncestorIndex(url, directoryUrl, dependencyDirectoryUrls) : recorded; };",
     `const guardSnapshotModuleResolution = ${guardSnapshotModuleResolution.toString()};`,
-    'const rememberDependencyAncestor = (specifier, resolution) => { const pinned = snapshotDescriptorResolution(resolution?.url, directoryUrl, dependencyDirectoryUrls, canonicalDirectoryUrl, canonicalDependencyDirectoryUrls); guardSnapshotModuleResolution(isBuiltin(specifier), resolution?.url, pinned !== null); if (pinned !== null && typeof resolution?.url === "string") { dependencyAncestorByUrl.set(resolution.url, pinned.ancestorIndex); dependencyAncestorByUrl.set(pinned.url, pinned.ancestorIndex); } return pinned === null || pinned.url === resolution?.url ? resolution : { ...resolution, url: pinned.url }; };',
+    'const canonicalizeDescriptorResolution = (url) => { if (typeof url !== "string" || !url.startsWith("file:") || snapshotDescriptorAncestorIndex(url, directoryUrl, dependencyDirectoryUrls) < 0) return url; try { return pathToFileURL(fs.realpathSync(fileURLToPath(url))).href; } catch { const error = new Error("ACPX provider module could not be canonicalized through its retained descriptor"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; } };',
+    'const rememberDependencyAncestor = (specifier, resolution) => { const canonicalUrl = canonicalizeDescriptorResolution(resolution?.url); const pinned = snapshotDescriptorResolution(canonicalUrl, directoryUrl, dependencyDirectoryUrls, canonicalDirectoryUrl, canonicalDependencyDirectoryUrls); guardSnapshotModuleResolution(isBuiltin(specifier), resolution?.url, pinned !== null); if (pinned !== null && typeof resolution?.url === "string") { for (const rememberedUrl of [resolution.url, canonicalUrl, pinned.url]) { if (typeof rememberedUrl !== "string") continue; dependencyAncestorByUrl.set(rememberedUrl, pinned.ancestorIndex); if (typeof resolution.format === "string") descriptorFormatByUrl.set(rememberedUrl, resolution.format); } } return pinned === null || pinned.url === resolution?.url ? resolution : { ...resolution, url: pinned.url }; };',
     `const source = fs.readFileSync(${COMMAND_SOURCE_FD});`,
+    "let resolvingDescriptorBare = false;",
+    "const resolveBareFromDescriptor = (specifier, dependencyDirectoryUrl) => { resolvingDescriptorBare = true; try { return require.resolve(specifier, { paths: [fileURLToPath(dependencyDirectoryUrl)] }); } finally { resolvingDescriptorBare = false; } };",
     "registerHooks({ resolve(specifier, context, nextResolve) {",
+    "if (resolvingDescriptorBare) return nextResolve(specifier, context);",
     "if (specifier === target) return { url: target, shortCircuit: true };",
     "const entryImport = context.parentURL === target;",
     "const parentDependencyAncestorIndex = entryImport ? 0 : dependencyAncestorIndex(context.parentURL);",
-    'const entryRelative = entryImport && (specifier.startsWith("./") || specifier.startsWith("../"));',
-    "const pinnedSpecifier = entryRelative ? new URL(specifier, pinnedTarget) : null;",
+    'const relativeImport = (entryImport || parentDependencyAncestorIndex >= 0) && (specifier.startsWith("./") || specifier.startsWith("../"));',
+    "const pinRelativeSpecifier = () => {",
+    "const parentDescriptorIndex = context.parentURL.startsWith(directoryUrl) ? -1 : dependencyDirectoryUrls.findIndex((dependencyDirectoryUrl) => context.parentURL.startsWith(dependencyDirectoryUrl));",
+    "if (parentDescriptorIndex < -1) return null;",
+    "const parentRootUrl = parentDescriptorIndex === -1 ? directoryUrl : dependencyDirectoryUrls[parentDescriptorIndex];",
+    "const parentDirectoryWithinRoot = relative(fileURLToPath(parentRootUrl), dirname(fileURLToPath(context.parentURL)));",
+    "const relativePath = normalize(join(parentDirectoryWithinRoot, specifier));",
+    'if (relativePath === "" || (!relativePath.startsWith("../") && relativePath !== "..")) return new URL(relativePath || ".", parentRootUrl);',
+    "if (parentDescriptorIndex >= serverDependencyAncestorCount) return null;",
+    'const segments = relativePath.split("/");',
+    'let ancestorLevels = 0; while (segments[ancestorLevels] === "..") ancestorLevels += 1;',
+    "const targetAncestorIndex = parentDescriptorIndex + ancestorLevels;",
+    "if (ancestorLevels < 1 || targetAncestorIndex < 0 || targetAncestorIndex >= serverDependencyAncestorCount) return null;",
+    'return new URL(segments.slice(ancestorLevels).join("/") || ".", dependencyDirectoryUrls[targetAncestorIndex]);',
+    "};",
+    "const pinnedSpecifier = relativeImport ? pinRelativeSpecifier() : null;",
+    'if (relativeImport && pinnedSpecifier === null) { const error = new Error("ACPX provider relative module escaped its verified package"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }',
     'const lookupSpecifier = pinnedSpecifier === null ? specifier : context.conditions?.includes("require") ? fileURLToPath(pinnedSpecifier) : pinnedSpecifier.href;',
     "const snapshotImport = entryImport || parentDependencyAncestorIndex >= 0;",
     'const bareImport = snapshotImport && !isBuiltin(specifier) && !specifier.startsWith("./") && !specifier.startsWith("../") && !specifier.startsWith("/") && !specifier.includes(":");',
     "const filesystemLookup = snapshotImport && !isBuiltin(specifier);",
     "const lookupContext = entryImport && pinnedSpecifier === null && !isBuiltin(specifier) ? { ...context, parentURL: pinnedTarget } : context;",
+    'const isMissingModuleError = (error) => error?.code === "MODULE_NOT_FOUND" || error?.code === "ERR_MODULE_NOT_FOUND";',
     "return guardSnapshotModuleLookup(process.platform, filesystemLookup, () => {",
     "try { return rememberDependencyAncestor(specifier, nextResolve(lookupSpecifier, lookupContext)); } catch (error) {",
-    'if (!bareImport || (error?.code !== "ERR_MODULE_NOT_FOUND" && error?.code !== "ERR_ACPX_UNVERIFIED_MODULE")) throw error;',
+    "if (!bareImport || !isMissingModuleError(error)) throw error;",
     "let dependencyError = error;",
     "for (let dependencyIndex = Math.max(0, parentDependencyAncestorIndex); dependencyIndex < dependencyDirectoryUrls.length; dependencyIndex += 1) {",
     "const dependencyDirectoryUrl = dependencyDirectoryUrls[dependencyIndex];",
-    'try { return rememberDependencyAncestor(specifier, nextResolve(specifier, { ...context, parentURL: new URL("package.json", dependencyDirectoryUrl).href })); } catch (candidateError) {',
-    'if (candidateError?.code !== "ERR_MODULE_NOT_FOUND" && candidateError?.code !== "ERR_ACPX_UNVERIFIED_MODULE") throw candidateError;',
+    'try { const candidateResolution = context.conditions?.includes("require") ? nextResolve(resolveBareFromDescriptor(specifier, dependencyDirectoryUrl), context) : nextResolve(specifier, { ...context, parentURL: new URL("package.json", dependencyDirectoryUrl).href }); return rememberDependencyAncestor(specifier, candidateResolution); } catch (candidateError) {',
+    "if (!isMissingModuleError(candidateError)) throw candidateError;",
     "dependencyError = candidateError;",
     "}",
     "}",
@@ -631,9 +732,34 @@ function snapshotBootstrap(format: AcpxCommandFormat): string {
     "});",
     "}, load(url, context, nextLoad) {",
     `if (url === target) return { format: ${JSON.stringify(format)}, source, shortCircuit: true };`,
-    "const descriptorLookup = url.startsWith(directoryUrl) || dependencyDirectoryUrls.some((dependencyDirectoryUrl) => url.startsWith(dependencyDirectoryUrl));",
+    "const dependencyDescriptorIndex = dependencyDirectoryUrls.findIndex((dependencyDirectoryUrl) => url.startsWith(dependencyDirectoryUrl));",
+    "const descriptorLookup = url.startsWith(directoryUrl) || dependencyDescriptorIndex >= 0;",
     "guardSnapshotModuleResolution(false, url, descriptorLookup);",
-    "return guardSnapshotModuleLookup(process.platform, descriptorLookup, () => nextLoad(url, context));",
+    "return guardSnapshotModuleLookup(process.platform, descriptorLookup, () => {",
+    "if (!descriptorLookup) return nextLoad(url, context);",
+    "const canonicalRootUrl = url.startsWith(directoryUrl) ? canonicalDirectoryUrl : canonicalDependencyDirectoryUrls[dependencyDescriptorIndex];",
+    "let moduleFd;",
+    'try { moduleFd = fs.openSync(fileURLToPath(url), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch { const error = new Error("ACPX provider module could not be opened without following its final component"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }',
+    "try {",
+    "const metadataBefore = fs.fstatSync(moduleFd, { bigint: true });",
+    `if (!metadataBefore.isFile() || metadataBefore.size > BigInt(${MAX_AGENT_COMMAND_BYTES})) { const error = new Error("ACPX provider module is not a bounded regular file"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }`,
+    'const openedUrl = pathToFileURL(fs.realpathSync("/proc/self/fd/" + moduleFd)).href;',
+    'if (typeof canonicalRootUrl !== "string" || !openedUrl.startsWith(canonicalRootUrl)) { const error = new Error("ACPX provider module escaped descriptor-pinned ancestry"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }',
+    "const packageFormat = url.startsWith(directoryUrl) ? serverPackageFormat : dependencyAncestorFormats[dependencyDescriptorIndex];",
+    "const hintedFormat = descriptorFormatByUrl.get(url) || context.format;",
+    "const extension = extname(fileURLToPath(url));",
+    'const moduleFormat = extension === ".mjs" ? "module" : extension === ".cjs" ? "commonjs" : extension === ".json" ? "json" : extension === ".node" ? "addon" : extension === ".js" ? (hintedFormat === "module" || hintedFormat === "commonjs" ? hintedFormat : packageFormat) : hintedFormat;',
+    'if (moduleFormat !== "module" && moduleFormat !== "commonjs" && moduleFormat !== "json") { const error = new Error("ACPX provider module format is not supported by descriptor-pinned loading"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }',
+    "const admittedModuleBytes = Number(metadataBefore.size);",
+    "const moduleBuffer = Buffer.alloc(admittedModuleBytes + 1);",
+    "let moduleBytesRead = 0;",
+    "while (moduleBytesRead < moduleBuffer.length) { const bytesRead = fs.readSync(moduleFd, moduleBuffer, moduleBytesRead, moduleBuffer.length - moduleBytesRead, moduleBytesRead); if (bytesRead === 0) break; moduleBytesRead += bytesRead; }",
+    "const moduleSource = moduleBuffer.subarray(0, moduleBytesRead);",
+    "const metadataAfter = fs.fstatSync(moduleFd, { bigint: true });",
+    `if (moduleSource.length > ${MAX_AGENT_COMMAND_BYTES} || moduleSource.length !== admittedModuleBytes || BigInt(moduleSource.length) !== metadataAfter.size || metadataBefore.dev !== metadataAfter.dev || metadataBefore.ino !== metadataAfter.ino || metadataBefore.size !== metadataAfter.size || metadataBefore.mtimeNs !== metadataAfter.mtimeNs || metadataBefore.ctimeNs !== metadataAfter.ctimeNs) { const error = new Error("ACPX provider module changed while it was read"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }`,
+    "return { format: moduleFormat, source: moduleSource, shortCircuit: true };",
+    "} finally { fs.closeSync(moduleFd); }",
+    "});",
     "} });",
     "import(target).catch((error) => { console.error(error); process.exitCode = 1; });",
   ].join("");
@@ -729,7 +855,9 @@ export function snapshotDescriptorResolution(
   return {
     url:
       dependencyDirectoryUrls[ancestorIndex]! +
-      resolvedUrl.slice(canonicalDependencyDirectoryUrls[ancestorIndex]!.length),
+      resolvedUrl.slice(
+        canonicalDependencyDirectoryUrls[ancestorIndex]!.length,
+      ),
     ancestorIndex,
   };
 }
@@ -749,6 +877,10 @@ function executableFormat(
     if (packageType === "module") return "module";
   }
   throw new Error(`ACPX ${agent} package exposes an unsupported executable`);
+}
+
+function packageModuleFormat(packageType: unknown): AcpxCommandFormat {
+  return packageType === "module" ? "module" : "commonjs";
 }
 
 function fileIdentity(metadata: {

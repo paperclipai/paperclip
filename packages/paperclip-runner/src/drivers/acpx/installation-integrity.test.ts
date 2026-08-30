@@ -30,6 +30,7 @@ import {
 } from "./installation-integrity.js";
 
 const temporaryDirectories: string[] = [];
+const descriptorCommandPath = "/proc/self/fd/4/server.js";
 
 afterEach(async () => {
   await Promise.all(
@@ -158,6 +159,15 @@ describe("ACPX installation integrity", () => {
       url: "file:///proc/self/fd/6/node_modules/higher/index.js",
       ancestorIndex: 1,
     });
+    expect(
+      snapshotDescriptorResolution(
+        "file:///unrelated/node_modules/host/index.js",
+        commandDirectoryUrl,
+        dependencyDirectoryUrls,
+        canonicalCommandDirectoryUrl,
+        canonicalDependencyDirectoryUrls,
+      ),
+    ).toBeNull();
   });
 
   it("removes every case variant of Node module-loader overrides", () => {
@@ -167,6 +177,15 @@ describe("ACPX installation integrity", () => {
         NODE_PATH: "/unverified/one",
         node_path: "/unverified/two",
         NoDe_OpTiOnS: "--require=/unverified/preload.cjs",
+        LD_PRELOAD: "/unverified/preload.so",
+        ld_library_path: "/unverified/lib",
+        LD_AUDIT: "/unverified/audit.so",
+        DyLd_InSeRt_LiBrArIeS: "/unverified/inject.dylib",
+        GCONV_PATH: "/unverified/gconv",
+        glibc_tunables: "glibc.malloc.check=3",
+        OPENSSL_CONF: "/unverified/openssl.cnf",
+        OPENSSL_ENGINES: "/unverified/engines",
+        openssl_modules: "/unverified/providers",
       }),
     ).toEqual({ PATH: "/verified/bin" });
   });
@@ -310,7 +329,7 @@ describe("ACPX installation integrity", () => {
     await chmod(replacement, 0o755);
     await rename(replacement, fixture.commandPath);
 
-    await expectOutput(lease.spawn(), "verified");
+    await expectPinnedOutput(lease.spawn(), "verified");
   });
 
   it("launches the lexical verified snapshot after symlink replacement", async () => {
@@ -328,7 +347,7 @@ describe("ACPX installation integrity", () => {
     await rm(fixture.commandPath);
     await symlink(outside, fixture.commandPath);
 
-    await expectOutput(lease.spawn(), "verified");
+    await expectPinnedOutput(lease.spawn(), "verified");
   });
 
   it("launches the verified bytes after the open inode is modified", async () => {
@@ -346,7 +365,7 @@ describe("ACPX installation integrity", () => {
     const after = await stat(fixture.commandPath, { bigint: true });
     expect(after.ino).toBe(before.ino);
 
-    await expectOutput(lease.spawn(), "verified");
+    await expectPinnedOutput(lease.spawn(), "verified");
   });
 
   it("drops inherited and caller-supplied Node preload options", async () => {
@@ -366,13 +385,46 @@ describe("ACPX installation integrity", () => {
       if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = previousNodeOptions;
     }
-    await expectOutput(inheritedChild, "verified");
+    await expectPinnedOutput(inheritedChild, "verified");
 
-    await expectOutput(
+    await expectPinnedOutput(
       (await installation.openCommand()).spawn([], {
         env: { ...process.env, node_options: `--require=${preload}` },
       }),
       "verified",
+    );
+  });
+
+  it("drops native loader injection variables before spawning", async () => {
+    const fixture = await installationFixture();
+    const variables = [
+      "LD_PRELOAD",
+      "ld_library_path",
+      "DyLd_InSeRt_LiBrArIeS",
+      "GCONV_PATH",
+      "OPENSSL_CONF",
+      "OPENSSL_ENGINES",
+      "openssl_modules",
+    ];
+    const command = `process.stdout.write(JSON.stringify(${JSON.stringify(
+      variables,
+    )}.filter((key) => Object.hasOwn(process.env, key))));`;
+    await writeFile(fixture.commandPath, command);
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    await expectPinnedOutput(
+      (await installation.openCommand()).spawn([], {
+        env: Object.fromEntries(
+          variables.map((variable) => [variable, "/unverified/injection"]),
+        ),
+      }),
+      "[]",
     );
   });
 
@@ -474,8 +526,8 @@ describe("ACPX installation integrity", () => {
         JSON.stringify({
           value: "relative",
           argument: "argument",
-          argv: fixture.commandPath,
-          filename: fixture.commandPath,
+          argv: descriptorCommandPath,
+          filename: descriptorCommandPath,
         }),
       );
     } else {
@@ -535,8 +587,8 @@ describe("ACPX installation integrity", () => {
         lease.spawn(),
         JSON.stringify({
           value: "verified-relative",
-          argv: fixture.commandPath,
-          filename: fixture.commandPath,
+          argv: descriptorCommandPath,
+          filename: descriptorCommandPath,
         }),
       );
     } else {
@@ -547,7 +599,7 @@ describe("ACPX installation integrity", () => {
     }
   });
 
-  it("keeps canonical CommonJS identity while pinning relative requires", async () => {
+  it("keeps descriptor-pinned CommonJS identity across replacement", async () => {
     const fixture = await installationFixture();
     const command = [
       'const value = require("./value");',
@@ -588,11 +640,51 @@ describe("ACPX installation integrity", () => {
         JSON.stringify({
           value: "verified-relative",
           argument: "argument",
-          argv: fixture.commandPath,
-          filename: fixture.commandPath,
-          directory: dirname(fixture.commandPath),
+          argv: descriptorCommandPath,
+          filename: descriptorCommandPath,
+          directory: dirname(descriptorCommandPath),
         }),
       );
+    } else {
+      await expectFailure(child, "requires Linux descriptor-pinned paths");
+    }
+  });
+
+  it("pins direct sibling resource reads across directory replacement", async () => {
+    const fixture = await installationFixture();
+    const command = [
+      'const { readFileSync } = require("node:fs");',
+      'const { join } = require("node:path");',
+      'process.stdout.write(readFileSync(join(__dirname, "resource.txt"), "utf8"));',
+    ].join("\n");
+    const attackerDirectory = join(fixture.root, "attacker-bin");
+    await mkdir(attackerDirectory);
+    await Promise.all([
+      writeFile(fixture.commandPath, command),
+      writeFile(
+        join(fixture.commandDirectory, "resource.txt"),
+        "verified-resource",
+      ),
+      writeFile(join(attackerDirectory, "resource.txt"), "attacker-resource"),
+    ]);
+    await link(fixture.commandPath, join(attackerDirectory, "server.js"));
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+    const lease = await installation.openCommand();
+    await rename(
+      fixture.commandDirectory,
+      `${fixture.commandDirectory}.verified`,
+    );
+    await symlink(attackerDirectory, fixture.commandDirectory);
+
+    const child = lease.spawn();
+    if (process.platform === "linux") {
+      await expectOutput(child, "verified-resource");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
     }
@@ -661,7 +753,78 @@ describe("ACPX installation integrity", () => {
     }
   });
 
-  it("resolves bare entry dependencies from the package ancestry", async () => {
+  it("rejects dependencies that escape through a descendant symlink", async () => {
+    const fixture = await installationFixture();
+    const command = [
+      'const value = require("linked-dependency");',
+      "process.stdout.write(value);",
+    ].join("\n");
+    const packageNodeModules = join(fixture.serverDirectory, "node_modules");
+    const outsideDependency = join(fixture.root, "outside-dependency");
+    await Promise.all([
+      mkdir(packageNodeModules, { recursive: true }),
+      mkdir(outsideDependency, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(fixture.commandPath, command),
+      writeFile(
+        join(outsideDependency, "package.json"),
+        JSON.stringify({ name: "linked-dependency", main: "index.js" }),
+      ),
+      writeFile(
+        join(outsideDependency, "index.js"),
+        'module.exports = "attacker-symlink";',
+      ),
+    ]);
+    await symlink(
+      outsideDependency,
+      join(packageNodeModules, "linked-dependency"),
+    );
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    const child = (await installation.openCommand()).spawn();
+    if (process.platform === "linux") {
+      await expectFailure(child, "escaped descriptor-pinned ancestry");
+    } else {
+      await expectFailure(child, "requires Linux descriptor-pinned paths");
+    }
+  });
+
+  it("rejects a final-component module symlink", async () => {
+    const fixture = await installationFixture();
+    const command = [
+      'const value = require("./linked.js");',
+      "process.stdout.write(value);",
+    ].join("\n");
+    const outsideModule = join(fixture.root, "outside-module.js");
+    await Promise.all([
+      writeFile(fixture.commandPath, command),
+      writeFile(outsideModule, 'module.exports = "attacker-symlink";'),
+    ]);
+    await symlink(outsideModule, join(fixture.commandDirectory, "linked.js"));
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    const child = (await installation.openCommand()).spawn();
+    if (process.platform === "linux") {
+      await expectFailure(child, "descriptor-pinned ancestry");
+    } else {
+      await expectFailure(child, "requires Linux descriptor-pinned paths");
+    }
+  });
+
+  it("rejects bare entry dependencies outside the verified package", async () => {
     const fixture = await installationFixture();
     const command = [
       'const value = require("ancestor-dependency");',
@@ -694,10 +857,149 @@ describe("ACPX installation integrity", () => {
 
     const child = (await installation.openCommand()).spawn();
     if (process.platform === "linux") {
-      await expectOutput(child, "verified-ancestor");
+      await expectFailure(child, "ancestor-dependency");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
     }
+  });
+
+  it("loads a separately qualified runtime through a package symlink", async () => {
+    const fixture = await installationFixture();
+    const packageName = "@earendil-works/pi-coding-agent";
+    const command = [
+      `const value = require(${JSON.stringify(packageName)});`,
+      "process.stdout.write(value);",
+    ].join("\n");
+    const packageScope = join(
+      fixture.serverDirectory,
+      "node_modules",
+      "@earendil-works",
+    );
+    await mkdir(packageScope, { recursive: true });
+    await Promise.all([
+      writeFile(fixture.commandPath, command),
+      writeFile(
+        fixture.runtimePackageJsonPath,
+        JSON.stringify({
+          name: packageName,
+          version: "0.84.2",
+          main: "index.js",
+        }),
+      ),
+      writeFile(
+        join(fixture.runtimeDirectory, "index.js"),
+        'const { readFileSync } = require("node:fs"); const { join } = require("node:path"); module.exports = readFileSync(join(__dirname, "resource.txt"), "utf8");',
+      ),
+      writeFile(
+        join(fixture.runtimeDirectory, "resource.txt"),
+        "verified-runtime",
+      ),
+    ]);
+    const runtimeLink = join(packageScope, "pi-coding-agent");
+    await symlink(fixture.runtimeDirectory, runtimeLink);
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    await expectPinnedOutput(
+      (await installation.openCommand()).spawn(),
+      "verified-runtime",
+    );
+
+    const replacementLease = await installation.openCommand();
+    const attackerRuntime = join(fixture.root, "attacker-runtime");
+    await mkdir(attackerRuntime);
+    await Promise.all([
+      writeFile(
+        join(attackerRuntime, "package.json"),
+        JSON.stringify({ name: packageName, main: "index.js" }),
+      ),
+      writeFile(
+        join(attackerRuntime, "index.js"),
+        'module.exports = "attacker-runtime";',
+      ),
+    ]);
+    await rm(runtimeLink);
+    await symlink(attackerRuntime, runtimeLink);
+    if (process.platform === "linux") {
+      await expectFailure(replacementLease.spawn(), "descriptor-pinned");
+    } else {
+      await expectFailure(
+        replacementLease.spawn(),
+        "requires Linux descriptor-pinned paths",
+      );
+    }
+  });
+
+  it("loads parent-relative modules inside the verified package", async () => {
+    const fixture = await installationFixture();
+    const nestedDirectory = join(fixture.commandDirectory, "nested");
+    const nestedCommandPath = join(nestedDirectory, "server.js");
+    const packageLibrary = join(fixture.commandDirectory, "lib");
+    const command = [
+      'const value = require("./child.js");',
+      "process.stdout.write(value);",
+    ].join("\n");
+    await Promise.all([
+      mkdir(nestedDirectory, { recursive: true }),
+      mkdir(packageLibrary, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        fixture.serverPackageJsonPath,
+        JSON.stringify({ version: "0.0.33", bin: "bin/nested/server.js" }),
+      ),
+      writeFile(nestedCommandPath, command),
+      writeFile(
+        join(nestedDirectory, "child.js"),
+        'module.exports = require("../lib/value.js");',
+      ),
+      writeFile(
+        join(packageLibrary, "value.js"),
+        'module.exports = "verified-parent-relative";',
+      ),
+    ]);
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    await expectPinnedOutput(
+      (await installation.openCommand()).spawn(),
+      "verified-parent-relative",
+    );
+  });
+
+  it("supports an executable at the verified package root", async () => {
+    const fixture = await installationFixture();
+    const rootCommandPath = join(fixture.serverDirectory, "server.js");
+    const command = 'process.stdout.write("verified-package-root");';
+    await Promise.all([
+      writeFile(
+        fixture.serverPackageJsonPath,
+        JSON.stringify({ version: "0.0.33", bin: "server.js" }),
+      ),
+      writeFile(rootCommandPath, command),
+    ]);
+    const installation = await verifyQualifiedAcpxInstallation(
+      {
+        ...fixture.profile,
+        commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+      },
+      fixture.resolve,
+    );
+
+    await expectPinnedOutput(
+      (await installation.openCommand()).spawn(),
+      "verified-package-root",
+    );
   });
 
   it("pins package-ancestor dependencies across directory replacement", async () => {
@@ -762,7 +1064,7 @@ describe("ACPX installation integrity", () => {
     }
   });
 
-  it("does not search below a transitive dependency's ancestor", async () => {
+  it("does not admit a transitive package from host ancestry", async () => {
     const fixture = await installationFixture();
     const command = 'require("higher-ancestor-package");';
     const higherPackage = join(
@@ -808,7 +1110,7 @@ describe("ACPX installation integrity", () => {
 
     const child = (await installation.openCommand()).spawn();
     if (process.platform === "linux") {
-      await expectFailure(child, "lower-only-dependency");
+      await expectFailure(child, "higher-ancestor-package");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
     }
@@ -832,6 +1134,17 @@ async function expectOutput(
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
   expect(stdout).toBe(expected);
+}
+
+async function expectPinnedOutput(
+  child: ChildProcess,
+  expected: string,
+): Promise<void> {
+  if (process.platform === "linux") {
+    await expectOutput(child, expected);
+  } else {
+    await expectFailure(child, "requires Linux descriptor-pinned paths");
+  }
 }
 
 async function expectFailure(
@@ -890,6 +1203,7 @@ async function installationFixture() {
     profile,
     commandPath,
     commandDirectory,
+    runtimeDirectory,
     serverPackageJsonPath,
     runtimePackageJsonPath,
     resolve(packageName: string): string {
