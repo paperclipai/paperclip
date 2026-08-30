@@ -166,6 +166,7 @@ pub struct AcpxProviderSession {
     identity: AcpxProviderSessionIdentity,
     catalog_revision: u64,
     closed: bool,
+    transport_terminated: bool,
 }
 
 impl AcpxProviderSession {
@@ -186,6 +187,7 @@ impl AcpxProviderSession {
             identity,
             catalog_revision: config.catalog_revision,
             closed: false,
+            transport_terminated: false,
         })
     }
 
@@ -207,7 +209,7 @@ impl AcpxProviderSession {
 
     pub fn shutdown(&mut self, reason: &str) -> Result<(), LocalRunnerError> {
         if self.closed {
-            return Ok(());
+            return self.terminate_transport();
         }
         self.closed = true;
         let close = self.transport.request(
@@ -217,20 +219,29 @@ impl AcpxProviderSession {
                 "discardPersistentState": false,
             }),
         );
-        let terminate = self.transport.shutdown();
+        let terminate = self.terminate_transport();
         match (close, terminate) {
             (Ok(_), Ok(())) => Ok(()),
             (Err(error), cleanup) => Err(with_cleanup_error(error, cleanup)),
             (Ok(_), Err(error)) => Err(error),
         }
     }
+
+    fn terminate_transport(&mut self) -> Result<(), LocalRunnerError> {
+        if self.transport_terminated {
+            return Ok(());
+        }
+        self.transport.shutdown()?;
+        self.transport_terminated = true;
+        Ok(())
+    }
 }
 
 impl Drop for AcpxProviderSession {
     fn drop(&mut self) {
-        if !self.closed {
+        if !self.transport_terminated {
             self.closed = true;
-            let _ = self.transport.shutdown();
+            let _ = self.terminate_transport();
         }
     }
 }
