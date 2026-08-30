@@ -102,18 +102,73 @@ describe("ACPX permission policy", () => {
     ).toBe(false);
   });
 
-  it("does not widen deny-all beyond an already authorized semantic call", () => {
-    expect(
-      decideAcpxPermission("claude", "deny-all", {
-        inferredKind: "execute",
-        raw: { toolCall: { name: "mcp__paperclip__paperclip_finish" } },
-      }),
-    ).toBe("allow_once");
-    expect(
-      decideAcpxPermission("claude", "deny-all", {
-        inferredKind: "execute",
-        raw: { toolCall: { title: "paperclip_finish" } },
-      }),
-    ).toBe("reject_once");
+  it("keeps deny-all closed against provider-supplied semantic metadata", () => {
+    for (const [agent, raw] of [
+      ["claude", { toolCall: { name: "mcp__paperclip__paperclip_finish" } }],
+      ["claude", { toolCall: { rawInput: { serverName: "paperclip" } } }],
+      [
+        "codex",
+        {
+          _meta: { is_mcp_tool_approval: true },
+          toolCall: { title: "MCP approval" },
+        },
+      ],
+    ] as const) {
+      expect(
+        decideAcpxPermission(
+          agent,
+          "deny-all",
+          { inferredKind: "execute", raw },
+          { allConfiguredMcpServersAreRunnerOwned: true },
+        ),
+      ).toBe("reject_once");
+    }
+  });
+
+  it("does not let provider metadata widen approve-reads", () => {
+    for (const [agent, inferredKind, raw, options] of [
+      [
+        "codex",
+        "execute",
+        {
+          _meta: { is_mcp_tool_approval: true },
+          toolCall: { title: "MCP approval" },
+        },
+        { allConfiguredMcpServersAreRunnerOwned: true },
+      ],
+      [
+        "claude",
+        "write",
+        { toolCall: { rawInput: { serverName: "paperclip" } } },
+        {},
+      ],
+      [
+        "claude",
+        "execute",
+        { toolCall: { name: "mcp__paperclip__paperclip_finish" } },
+        {},
+      ],
+      [
+        "claude",
+        "write",
+        {
+          toolCall: {
+            _meta: {
+              claudeCode: { toolName: "mcp.paperclip.get_task_context" },
+            },
+          },
+        },
+        {},
+      ],
+    ] as const) {
+      expect(
+        decideAcpxPermission(
+          agent,
+          "approve-reads",
+          { inferredKind, raw },
+          options,
+        ),
+      ).toBe("delegate");
+    }
   });
 });

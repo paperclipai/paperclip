@@ -44,15 +44,16 @@ export function acpxRuntimePermissionPolicy(
  * caller must ask the coordinator and fail closed when no delegate exists.
  */
 export function decideAcpxPermission(
-  agent: QualifiedAcpxAgent,
+  _agent: QualifiedAcpxAgent,
   mode: NativeAcpxPermissionMode,
   request: AcpxPermissionRequestLike,
-  options: AcpxPermissionPolicyOptions = {},
+  _options: AcpxPermissionPolicyOptions = {},
 ): AcpxPermissionDisposition {
-  if (shouldAutoApproveRunnerOwnedSemanticPermission(agent, request, options))
-    return "allow_once";
-  if (mode === "approve-all") return "allow_once";
   if (mode === "deny-all") return "reject_once";
+  if (mode === "approve-all") return "allow_once";
+  // Provider-supplied metadata can describe a semantic operation, but cannot
+  // prove that the run-scoped catalog authorized it. Only the classified
+  // read-only kind may be approved locally in this mode.
   const kind = text(request.inferredKind).toLowerCase();
   return READ_ONLY_PERMISSION_KINDS.has(kind) ? "allow_once" : "delegate";
 }
