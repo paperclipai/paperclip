@@ -2,6 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readAcpxSidecarProtocolVersion } from "./acpx-sidecar-contract.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const schema = JSON.parse(
   await readFile(
@@ -11,27 +13,7 @@ const schema = JSON.parse(
 );
 const commands = schema.$defs.command.enum;
 const events = schema.$defs.eventType.enum;
-const protocolVersions = ["request", "response", "event"].map(
-  (family) => schema.$defs[family]?.properties?.protocolVersion?.const,
-);
-if (
-  protocolVersions.some(
-    (version) => !Number.isSafeInteger(version) || version < 1,
-  ) ||
-  new Set(protocolVersions).size !== 1
-) {
-  throw new Error(
-    "ACPX request, response, and event schemas must use one positive integer protocol version",
-  );
-}
-const [protocolVersion] = protocolVersions;
-const expectedSchemaId =
-  `https://paperclip.dev/schemas/acpx-sidecar/v${protocolVersion}/message.schema.json`;
-if (schema.$id !== expectedSchemaId) {
-  throw new Error(
-    "ACPX sidecar schema $id must match its declared protocol version",
-  );
-}
+const protocolVersion = readAcpxSidecarProtocolVersion(schema);
 const quote = (value) => JSON.stringify(value);
 const rustVariant = (value) =>
   value

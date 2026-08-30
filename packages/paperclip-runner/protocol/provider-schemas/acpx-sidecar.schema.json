@@ -8,6 +8,7 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "protocolVersion": { "const": 2 },
     "command": {
       "enum": [
         "initialize",
@@ -39,7 +40,7 @@
       "type": "object",
       "required": ["protocolVersion", "id", "command", "params"],
       "properties": {
-        "protocolVersion": { "const": 2 },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
         "id": { "type": "integer", "minimum": 1 },
         "command": { "$ref": "#/$defs/command" },
         "params": { "type": "object" }
@@ -68,7 +69,7 @@
         }
       ],
       "properties": {
-        "protocolVersion": { "const": 2 },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
         "id": { "type": "integer", "minimum": 1 },
         "ok": { "type": "boolean" },
         "result": { "type": "object" },
@@ -96,7 +97,7 @@
         "payload"
       ],
       "properties": {
-        "protocolVersion": { "const": 2 },
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
         "sequence": { "type": "integer", "minimum": 1 },
         "eventType": { "$ref": "#/$defs/eventType" },
         "runId": { "type": ["string", "null"], "maxLength": 160 },

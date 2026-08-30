@@ -4,6 +4,8 @@ import test from "node:test";
 
 import Ajv2020 from "ajv/dist/2020.js";
 
+import { readAcpxSidecarProtocolVersion } from "../scripts/acpx-sidecar-contract.mjs";
+
 const schema = JSON.parse(
   await readFile(
     new URL(
@@ -14,7 +16,7 @@ const schema = JSON.parse(
   ),
 );
 const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
-const protocolVersion = schema.$defs.request.properties.protocolVersion.const;
+const protocolVersion = readAcpxSidecarProtocolVersion(schema);
 
 const messages = [
   {
@@ -59,18 +61,28 @@ test("the ACPX sidecar schema fails closed on drift", () => {
   }
 });
 
-test("every ACPX sidecar message family declares the same version", () => {
-  const versions = ["request", "response", "event"].map(
-    (family) => schema.$defs[family].properties.protocolVersion.const,
-  );
-  assert.equal(new Set(versions).size, 1);
-  assert.equal(Number.isInteger(versions[0]) && versions[0] > 0, true);
+test("every ACPX sidecar message family uses the shared version", () => {
+  for (const family of ["request", "response", "event"]) {
+    assert.deepEqual(schema.$defs[family].properties.protocolVersion, {
+      $ref: "#/$defs/protocolVersion",
+    });
+  }
 });
 
 test("the ACPX sidecar schema id carries the declared protocol version", () => {
   assert.equal(
     schema.$id,
     `https://paperclip.dev/schemas/acpx-sidecar/v${protocolVersion}/message.schema.json`,
+  );
+});
+
+test("a coordinated family-version upgrade cannot outpace the schema id", () => {
+  const driftedSchema = structuredClone(schema);
+  driftedSchema.$defs.protocolVersion.const = protocolVersion + 1;
+
+  assert.throws(
+    () => readAcpxSidecarProtocolVersion(driftedSchema),
+    /must match its authoritative schema \$id/,
   );
 });
 
