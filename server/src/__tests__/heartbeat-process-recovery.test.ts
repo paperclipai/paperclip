@@ -113,6 +113,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { REDACTED_EVENT_VALUE } from "../redaction.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -3585,12 +3586,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             consumerId: agentId,
             configPath: "env.UNBOUND_API_KEY",
             envKey: "UNBOUND_API_KEY",
-            secretId: secret.id,
-            secretName,
+            secretId: REDACTED_EVENT_VALUE,
+            secretName: REDACTED_EVENT_VALUE,
           },
         ],
       },
     });
+    const serializedResultJson = JSON.stringify(failedRun?.resultJson ?? null);
+    expect(serializedResultJson).not.toContain(secret.id);
+    expect(serializedResultJson).not.toContain(secretName);
     // Value-free gate: no secret access events were recorded.
     expect(await svc.listAccessEvents(companyId, secret.id)).toHaveLength(0);
 
