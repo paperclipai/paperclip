@@ -431,38 +431,48 @@ async function bindHeartbeatRunToCheckedOutIssue(
   input: { companyId: string; runId: string | null; agentId: string; issueId: string },
 ) {
   if (!input.runId) return;
-  const run = await db
-    .select({
-      id: heartbeatRuns.id,
-      contextSnapshot: heartbeatRuns.contextSnapshot,
-    })
-    .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.companyId),
-      eq(heartbeatRuns.agentId, input.agentId),
-    ))
-    .then((rows) => rows[0] ?? null);
-  if (!run) return;
-  const context = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
-    ? { ...(run.contextSnapshot as Record<string, unknown>) }
-    : {};
-  const currentIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
-  const currentTaskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
-  if (currentIssueId && currentIssueId !== input.issueId) return;
-  if (currentTaskId && currentTaskId !== input.issueId) return;
-  if (currentIssueId === input.issueId && currentTaskId === input.issueId) return;
-  await db
-    .update(heartbeatRuns)
-    .set({
-      contextSnapshot: {
-        ...context,
-        issueId: input.issueId,
-        taskId: input.issueId,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(heartbeatRuns.id, run.id));
+  const runId = input.runId;
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+    );
+    const run = await tx
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run) return;
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+      ? { ...(run.contextSnapshot as Record<string, unknown>) }
+      : {};
+    const currentIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+    const currentTaskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
+    if (currentIssueId && currentIssueId !== input.issueId) return;
+    if (currentTaskId && currentTaskId !== input.issueId) return;
+    if (currentIssueId === input.issueId && currentTaskId === input.issueId) return;
+    await tx
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          ...context,
+          issueId: input.issueId,
+          taskId: input.issueId,
+        },
+        updatedAt: new Date(),
+      })
+      .where(sql`
+        ${heartbeatRuns.id} = ${run.id}
+        and coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', '') in ('', ${input.issueId})
+        and coalesce(${heartbeatRuns.contextSnapshot}->>'taskId', '') in ('', ${input.issueId})
+      `);
+  });
 }
 
 async function resolveCommentCreatedByRunId(
