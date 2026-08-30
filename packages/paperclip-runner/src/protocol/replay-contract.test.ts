@@ -184,11 +184,42 @@ describe("PRP v1 JSON Schema contract", () => {
       ok: false,
       issues: [
         expect.objectContaining({
-          path: "/events/1/payload/semantic_tool/correlation",
+          path: "/events/1/payload/semantic_tool/correlation/turnId",
         }),
       ],
     });
   });
+
+  it(
+    "allows reconciliation to omit optional correlation metadata",
+    async () => {
+      const fixture = await readFixture(
+        "semantic-tool-artifact-happy-path.json",
+      );
+      const events = fixture.events as Array<Record<string, unknown>>;
+      const input = (events[0]!.payload as Record<string, unknown>)
+        .semantic_tool as Record<string, unknown>;
+      const inputCorrelation = input.correlation as Record<string, unknown>;
+      inputCorrelation.requestId = "request_semantic_happy";
+      inputCorrelation.futureTraceId = "trace_semantic_happy";
+
+      const reconciled = reconciledEvent(events);
+      const reconciledEnvelope = (
+        reconciled.payload as Record<string, unknown>
+      ).semantic_tool as Record<string, unknown>;
+      const reconciledCorrelation = reconciledEnvelope.correlation as Record<
+        string,
+        unknown
+      >;
+      delete reconciledCorrelation.requestId;
+      delete reconciledCorrelation.futureTraceId;
+      events[1] = reconciled;
+
+      expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
+        ok: true,
+      });
+    },
+  );
 
   it(
     "preserves replacement-runner provenance during reconciliation",

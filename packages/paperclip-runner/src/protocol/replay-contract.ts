@@ -332,11 +332,7 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       // A replacement runner may reconcile a call after recovering the run.
       // The authenticated ingestion boundary owns runner authorization, while
       // replay keeps each event's sourceInstanceId as immutable provenance.
-      for (const field of [
-        "operationId",
-        "idempotencyKey",
-        "correlation",
-      ] as const) {
+      for (const field of ["operationId", "idempotencyKey"] as const) {
         if (
           canonicalJson(call.input.envelope[field]) !==
           canonicalJson(call.reconciled.envelope[field])
@@ -345,6 +341,23 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
             code: "binding_mismatch",
             path: `/events/${call.reconciled.index}/payload/semantic_tool/${field}`,
             message: `semantic_tool reconciled ${field} must match its input envelope`,
+          });
+        }
+      }
+      for (const field of [
+        "runId",
+        "normalizedSessionId",
+        "turnId",
+        "itemId",
+      ] as const) {
+        if (
+          call.input.envelope.correlation[field] !==
+          call.reconciled.envelope.correlation[field]
+        ) {
+          issues.push({
+            code: "binding_mismatch",
+            path: `/events/${call.reconciled.index}/payload/semantic_tool/correlation/${field}`,
+            message: `semantic_tool reconciled correlation ${field} must match its input envelope`,
           });
         }
       }
