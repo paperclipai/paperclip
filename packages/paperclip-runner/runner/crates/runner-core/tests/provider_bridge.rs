@@ -742,18 +742,20 @@ fn exact_identity_overflow_saturates_the_durable_run() {
         .begin_call("last-call".into(), "get_task_context".into(), json!({}))
         .unwrap();
 
-    bridge
+    let overflow = bridge
         .begin_call("overflow".into(), "get_task_context".into(), json!({}))
-        .expect("a full recent ledger rolls old identities into its replay filter");
+        .expect_err("the pending call reserves the final exact identity slot");
+    assert!(overflow.is_active_turn_receipt_limit());
 
     let encoded = serde_json::to_string(&bridge).unwrap();
     let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
     recovered.attach_existing_run().unwrap();
+    assert!(recovered.durable_run_receipt_limit_reached());
     recovered
         .settle_turn("provider_turn_terminated")
         .expect("the controlled turn stop retains replay protection");
-    assert!(!recovered.durable_run_receipt_limit_reached());
-    assert!(!recovered.has_completed_call("settled-0"));
+    assert!(recovered.durable_run_receipt_limit_reached());
+    assert!(recovered.has_completed_call("settled-0"));
     assert!(recovered.has_completed_call("last-call"));
     let stopped_turn_receipt = recovered
         .replay_result("last-call", "get_task_context", &json!({}))
@@ -771,10 +773,24 @@ fn exact_identity_overflow_saturates_the_durable_run() {
         .begin_call("overflow".into(), "get_task_context".into(), json!({}))
         .is_err());
     recovered.prepare_turn().unwrap();
+    assert!(recovered
+        .replay_result("last-call", "get_task_context", &json!({}))
+        .unwrap()
+        .is_none());
+    assert!(recovered.has_completed_call("last-call"));
+    assert!(recovered.has_completed_call("settled-0"));
+    assert!(recovered.durable_run_receipt_limit_reached());
     let saturation = recovered
         .begin_call("next-call".into(), "get_task_context".into(), json!({}))
-        .expect_err("probabilistic history must stop fresh work explicitly");
+        .expect_err("a turn boundary must not reopen the saturated durable run");
     assert!(saturation.is_active_turn_receipt_limit());
+
+    let encoded = serde_json::to_string(&recovered).unwrap();
+    let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
+    recovered.attach_existing_run().unwrap();
+    assert!(recovered.has_completed_call("settled-0"));
+    assert!(recovered.has_completed_call("last-call"));
+    assert!(recovered.durable_run_receipt_limit_reached());
 
     recovered.attach_run(tools("computed")).unwrap();
     assert!(!recovered.durable_run_receipt_limit_reached());
@@ -784,7 +800,7 @@ fn exact_identity_overflow_saturates_the_durable_run() {
 }
 
 #[test]
-fn settled_result_byte_exhaustion_requires_a_new_run() {
+fn settled_result_byte_exhaustion_recovers_after_turn_cleanup() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();
     let large_result = json!({"value": "x".repeat(750 * 1024)});
@@ -833,6 +849,23 @@ fn settled_result_byte_exhaustion_requires_a_new_run() {
             json!({})
         )
         .is_err());
+    recovered.prepare_turn().unwrap();
+    assert!(recovered
+        .replay_result("large-settled-0", "get_task_context", &json!({}))
+        .unwrap()
+        .is_none());
+    assert!(recovered.has_completed_call("large-settled-0"));
+    assert!(!recovered.durable_run_receipt_limit_reached());
+    recovered
+        .begin_call(
+            "after-turn-boundary".into(),
+            "get_task_context".into(),
+            json!({}),
+        )
+        .expect("releasing bulky results clears transient byte pressure");
+    recovered
+        .settle_turn("provider_turn_terminated")
+        .expect("the admitted next-turn call remains settleable");
 
     recovered.attach_run(tools("computed")).unwrap();
     recovered
@@ -982,7 +1015,7 @@ fn settles_pending_receipts_with_explicit_terminal_results() {
 }
 
 #[test]
-fn full_identity_ledger_fails_closed_after_exact_history_spills() {
+fn full_identity_ledger_fails_closed_across_turn_and_recovery() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();
     let mut encoded = serde_json::to_value(&bridge).unwrap();
@@ -993,25 +1026,21 @@ fn full_identity_ledger_fails_closed_after_exact_history_spills() {
     );
     let mut recovered: ProviderToolBridge = serde_json::from_value(encoded).unwrap();
     recovered.validate_recovered().unwrap();
-    recovered
+    let saturation = recovered
         .begin_call("current-call".into(), "get_task_context".into(), json!({}))
-        .expect("the full exact ledger must admit work without forgetting replay history");
-
-    let settled = recovered
-        .settle_turn("provider_turn_terminated")
-        .expect("settling rolls the oldest exact identity into the replay filter");
-
-    assert_eq!(settled.len(), 1);
-    assert_eq!(recovered.pending_calls().count(), 0);
+        .expect_err("a full exact ledger must stop fresh work");
+    assert!(saturation.is_active_turn_receipt_limit());
+    assert!(recovered.durable_run_receipt_limit_reached());
     assert!(recovered.has_completed_call("settled-65535"));
-    assert!(!recovered.has_completed_call("settled-00000"));
-    assert!(recovered.has_completed_call("current-call"));
+    assert!(recovered.has_completed_call("settled-00000"));
+    assert!(!recovered.has_completed_call("current-call"));
     assert!(recovered
         .begin_call("settled-00000".into(), "get_task_context".into(), json!({}))
         .is_err());
+    recovered.prepare_turn().unwrap();
     let fresh = recovered
         .begin_call("fresh-call".into(), "get_task_context".into(), json!({}))
-        .expect_err("a saturated ledger must not classify fresh work as replay");
+        .expect_err("a turn boundary must preserve durable-run saturation");
     assert!(fresh.is_active_turn_receipt_limit());
 
     let round_trip = serde_json::to_value(&recovered).unwrap();
@@ -1019,6 +1048,14 @@ fn full_identity_ledger_fails_closed_after_exact_history_spills() {
         round_trip["settledCallIds"].as_array().unwrap().len(),
         65_536
     );
-    let recovered_again: ProviderToolBridge = serde_json::from_value(round_trip).unwrap();
-    recovered_again.validate_recovered().unwrap();
+    let mut recovered_again: ProviderToolBridge = serde_json::from_value(round_trip).unwrap();
+    recovered_again.attach_existing_run().unwrap();
+    assert!(recovered_again.durable_run_receipt_limit_reached());
+    assert!(recovered_again.has_completed_call("settled-00000"));
+
+    recovered_again.attach_run(tools("computed")).unwrap();
+    assert!(!recovered_again.durable_run_receipt_limit_reached());
+    recovered_again
+        .begin_call("current-call".into(), "get_task_context".into(), json!({}))
+        .expect("only a new durable run resets replay authority");
 }

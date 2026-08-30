@@ -867,8 +867,8 @@ impl CodexCommandExecutor {
         let completed_turn_process_generation = state.completed_turn_process_generation;
         let completed_provider_turn_id = state.completed_provider_turn_id.clone();
         let ambiguous_turn_start_pending = state.ambiguous_turn_start_pending;
-        let tool_receipt_epoch_requires_rollover =
-            state.tool_bridge.receipt_epoch_requires_rollover();
+        let tool_replay_history_blocks_admission =
+            state.tool_bridge.replay_history_blocks_admission();
         let tool_receipt_epoch_has_active_receipts = state.tool_bridge.has_active_receipts();
         let (settled_provider_turn_ids, settled_provider_turn_filter) =
             state.recovered_settled_provider_turn_ids()?;
@@ -898,7 +898,7 @@ impl CodexCommandExecutor {
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
         let legacy_epoch_is_ambiguous = (provider_epoch_requires_rollover
             && (ambiguous_turn_start_pending || recovered_active_turn_id.is_some()))
-            || (tool_receipt_epoch_requires_rollover
+            || (tool_replay_history_blocks_admission
                 && (ambiguous_turn_start_pending
                     || recovered_active_turn_id.is_some()
                     || (previous_active_turn_id.is_some()
@@ -1456,12 +1456,12 @@ impl CodexCommandExecutor {
         }
         self.state
             .as_mut()
-            .expect("Codex state remains available before turn receipt rotation")
+            .expect("Codex state remains available before turn receipt preparation")
             .tool_bridge
             .prepare_turn()
             .map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "Codex semantic tool receipts could not rotate: {error}"
+                    "Codex semantic tool receipts could not prepare the next turn: {error}"
                 ))
             })?;
         self.rollover_provider_turn_epoch_if_needed()?;
@@ -3043,7 +3043,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_tool_receipts_rotate_before_a_later_turn() {
+    fn transient_receipt_limit_clears_before_a_later_turn() {
         let operation = crate::provider_bridge::AuthorizedTool {
             operation_id: "get_task_context".to_owned(),
             version: 1,

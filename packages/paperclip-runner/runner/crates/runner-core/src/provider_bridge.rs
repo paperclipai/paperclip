@@ -26,13 +26,15 @@ const MAX_RETAINED_TOOL_VALUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SETTLED_RESULT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_PENDING_CALLS: usize = 4_096;
 // Active-turn inputs and results are separately bounded. Settled identities
-// remain exact for the entire active turn and rotate only when prepare_turn
-// establishes the next turn epoch.
+// remain exact for the entire durable run so a provider cannot replay an old
+// call ID after crossing a turn boundary. Only attach_run starts a fresh
+// identity ledger.
 const MAX_DURABLE_CALL_RECEIPTS: usize = 4_096;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
 // Retain the legacy serialized filter shape for recovery compatibility. New
-// state never inserts probabilistic identities; turn-bound exact receipts are
-// cleared only at the verified prepare_turn boundary.
+// state never inserts probabilistic identities. A recovered non-empty filter
+// makes the durable run fail closed until attach_run because its identities
+// cannot safely be distinguished from fresh calls.
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
@@ -189,6 +191,8 @@ pub struct ProviderToolBridge {
     pending: BTreeMap<String, PendingToolCall>,
     #[serde(deserialize_with = "deserialize_retained_results")]
     completed: BTreeMap<String, CompletedToolCall>,
+    // Keep authoritative result bodies through the provider's replay window;
+    // prepare_turn releases them after settlement.
     #[serde(default, deserialize_with = "deserialize_retained_results")]
     settled_results: BTreeMap<String, CompletedToolCall>,
     // Derived from completed + settled results. It is intentionally omitted
@@ -196,12 +200,15 @@ pub struct ProviderToolBridge {
     // tampered counters cannot bypass the byte envelope.
     #[serde(skip)]
     retained_result_bytes: usize,
+    // Exact replay tombstones span every provider turn in the durable run.
     #[serde(default)]
     settled_call_ids: SettledCallIds,
     #[serde(default)]
     settled_call_filter: DurableReplayFilter,
-    // Resource exhaustion stops only the active turn. prepare_turn clears the
-    // marker after proving there are no calls whose outcome is still pending.
+    // Resource exhaustion stops the active turn. prepare_turn releases bulky
+    // result payloads and recomputes this marker, but permanent replay
+    // ambiguity remains fail-closed until attach_run establishes fresh replay
+    // authority.
     #[serde(
         default,
         alias = "settledHistoryResetPending",
@@ -453,7 +460,7 @@ impl ProviderToolBridge {
         self.settled_call_ids.contains(call_id)
     }
 
-    pub(crate) fn receipt_epoch_requires_rollover(&self) -> bool {
+    pub(crate) fn replay_history_blocks_admission(&self) -> bool {
         self.settled_call_ids.len() >= MAX_SETTLED_CALL_IDS || !self.settled_call_filter.is_empty()
     }
 
@@ -472,14 +479,16 @@ impl ProviderToolBridge {
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
         if !self.pending.is_empty() || !self.completed.is_empty() {
             return Err(ProviderBridgeError::invalid(
-                "cannot rotate provider tool receipts while calls are active",
+                "cannot prepare the next provider turn while tool calls are active",
             ));
         }
+        // The authoritative result bodies are needed only while the provider
+        // can replay the just-settled turn. Release that bulky data at the
+        // verified turn boundary, but retain every call-ID tombstone and any
+        // recovered legacy filter for the lifetime of this durable run.
         self.settled_results.clear();
         self.retained_result_bytes = 0;
-        self.settled_call_ids.clear();
-        self.settled_call_filter = DurableReplayFilter::default();
-        self.durable_run_receipt_limit_reached = false;
+        self.durable_run_receipt_limit_reached = self.replay_history_blocks_admission();
         Ok(())
     }
 
@@ -560,11 +569,11 @@ impl ProviderToolBridge {
                 "provider reused a completed tool call id",
             ));
         }
-        // A legacy global receipt epoch may be exactly full or may contain
-        // only a probabilistic summary of evicted identities. Neither state
-        // can admit more work safely, so quarantine the recovered turn. The
-        // verified next-turn boundary starts a new exact receipt epoch.
-        if self.receipt_epoch_requires_rollover() {
+        // A durable receipt ledger may be exactly full or legacy state may
+        // contain only a probabilistic summary of evicted identities. Neither
+        // state can admit more work safely, so quarantine the durable run.
+        // Only attach_run establishes a new exact receipt ledger.
+        if self.replay_history_blocks_admission() {
             self.durable_run_receipt_limit_reached = true;
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
@@ -761,7 +770,8 @@ impl ProviderToolBridge {
         ensure_settled_result_capacity(next_retained_bytes, std::iter::empty())?;
 
         // Byte capacity was reserved at admission. Keep every identity exact
-        // until prepare_turn establishes the next provider-turn epoch.
+        // for the lifetime of the durable run; prepare_turn releases only the
+        // bulky result bodies.
         let new_identity_count = settled_entries
             .keys()
             .filter(|call_id| !self.settled_call_ids.contains(call_id))
@@ -1421,7 +1431,7 @@ mod tests {
                 schema_version: 1,
                 catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
                     .unwrap(),
-                operations: vec![operation],
+                operations: vec![operation.clone()],
             })
             .unwrap();
         bridge
@@ -1514,13 +1524,29 @@ mod tests {
             )
             .is_err());
         bridge.prepare_turn().unwrap();
-        bridge
+        assert!(bridge
+            .replay_result("call-0", "get_task_context", &json!({}))
+            .unwrap()
+            .is_none());
+        assert!(bridge
             .begin_call(
                 "call-0".to_owned(),
                 "get_task_context".to_owned(),
                 json!({}),
             )
-            .expect("a verified new turn rotates the exact receipt scope");
+            .is_err());
+        bridge
+            .begin_call(
+                "next-turn-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a new identity remains admissible after bulky results are released");
+
+        let recovered: ProviderToolBridge =
+            serde_json::from_str(&serde_json::to_string(&bridge).unwrap()).unwrap();
+        recovered.validate_recovered().unwrap();
+        assert!(recovered.has_completed_call("call-0"));
     }
 
     #[test]
@@ -1539,7 +1565,7 @@ mod tests {
                 schema_version: 1,
                 catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
                     .unwrap(),
-                operations: vec![operation],
+                operations: vec![operation.clone()],
             })
             .unwrap();
         for index in 0..MAX_SETTLED_CALL_IDS - 1 {
@@ -1637,13 +1663,54 @@ mod tests {
         assert!(bridge.settled_results.contains_key("final-call"));
 
         bridge.prepare_turn().unwrap();
-        assert!(bridge.settled_call_ids.is_empty());
+        assert_eq!(bridge.settled_call_ids.len(), MAX_SETTLED_CALL_IDS);
         assert!(bridge.settled_results.is_empty());
-        assert!(!bridge.durable_run_receipt_limit_reached);
+        assert!(bridge.durable_run_receipt_limit_reached);
+        let error = bridge
+            .begin_call(
+                "next-turn-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("a turn boundary must not reopen a saturated durable run");
+        assert!(error.is_active_turn_receipt_limit());
+
+        let encoded = serde_json::to_string(&bridge).unwrap();
+        let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
+        recovered.attach_existing_run().unwrap();
+        assert_eq!(recovered.settled_call_ids.len(), MAX_SETTLED_CALL_IDS);
+        assert!(recovered.durable_run_receipt_limit_reached);
+        let error = recovered
+            .begin_call(
+                "recovered-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("recovery must preserve saturated replay authority");
+        assert!(error.is_active_turn_receipt_limit());
+
+        recovered
+            .attach_run(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation.clone()],
+            })
+            .unwrap();
+        assert!(recovered.settled_call_ids.is_empty());
+        assert!(!recovered.durable_run_receipt_limit_reached);
+        recovered
+            .begin_call(
+                "settled-call-0".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a new durable run receives fresh replay authority");
     }
 
     #[test]
-    fn legacy_replay_filter_quarantines_only_the_recovered_turn() {
+    fn legacy_replay_filter_quarantines_the_durable_run() {
         let operation = AuthorizedTool {
             operation_id: "get_task_context".to_owned(),
             version: 1,
@@ -1658,7 +1725,7 @@ mod tests {
                 schema_version: 1,
                 catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
                     .unwrap(),
-                operations: vec![operation],
+                operations: vec![operation.clone()],
             })
             .unwrap();
         bridge.settled_call_filter.words = vec![0; REPLAY_FILTER_WORDS];
@@ -1676,15 +1743,41 @@ mod tests {
         assert!(bridge.durable_run_receipt_limit_reached);
 
         bridge.prepare_turn().unwrap();
-        assert!(bridge.settled_call_filter.is_empty());
-        assert!(!bridge.durable_run_receipt_limit_reached);
-        bridge
+        assert!(!bridge.settled_call_filter.is_empty());
+        assert!(bridge.durable_run_receipt_limit_reached);
+        let error = bridge
             .begin_call(
                 "legacy-evicted-or-fresh".to_owned(),
                 "get_task_context".to_owned(),
                 json!({}),
             )
-            .expect("a verified new turn starts a fresh exact receipt epoch");
+            .expect_err("a turn boundary cannot make legacy ambiguity safe");
+        assert!(error.is_active_turn_receipt_limit());
+
+        let encoded = serde_json::to_string(&bridge).unwrap();
+        let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
+        recovered.attach_existing_run().unwrap();
+        assert!(!recovered.settled_call_filter.is_empty());
+        assert!(recovered.durable_run_receipt_limit_reached);
+
+        recovered
+            .attach_run(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        assert!(recovered.settled_call_filter.is_empty());
+        assert!(!recovered.durable_run_receipt_limit_reached);
+        recovered
+            .begin_call(
+                "legacy-evicted-or-fresh".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a new durable run starts a fresh exact receipt ledger");
     }
 
     #[test]
@@ -1703,7 +1796,7 @@ mod tests {
                 schema_version: 1,
                 catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
                     .unwrap(),
-                operations: vec![operation],
+                operations: vec![operation.clone()],
             })
             .unwrap();
         for index in 0..MAX_SETTLED_CALL_IDS {
@@ -1723,12 +1816,30 @@ mod tests {
         assert!(bridge.pending.is_empty());
 
         bridge.prepare_turn().unwrap();
+        let error = bridge
+            .begin_call(
+                "fresh-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("a turn boundary must preserve the full durable ledger");
+        assert!(error.is_active_turn_receipt_limit());
+
+        bridge
+            .attach_run(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
         bridge
             .begin_call(
                 "fresh-call".to_owned(),
                 "get_task_context".to_owned(),
                 json!({}),
             )
-            .expect("a verified new turn rotates the full legacy epoch");
+            .expect("a new durable run resets the full legacy ledger");
     }
 }
