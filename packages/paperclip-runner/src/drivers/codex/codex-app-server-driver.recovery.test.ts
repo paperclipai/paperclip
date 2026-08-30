@@ -563,6 +563,71 @@ describe("Codex app-server Codex driver", () => {
     await recovery!.session!.close({ reason: "test complete" });
   });
 
+  for (const testCase of [
+    {
+      history: "omitted",
+      turns: undefined,
+      dispositionOnlyRecoveryTurnId: null,
+    },
+    {
+      history: "not an array",
+      turns: { unavailable: true },
+      dispositionOnlyRecoveryTurnId: "turn-2",
+    },
+  ]) {
+    it(
+      `preserves disposition recovery ownership when provider history is ${testCase.history}`,
+      async () => {
+        const first = new FakeCodexTransport();
+        const second = new FakeCodexTransport();
+        const thread: Record<string, unknown> = {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+        };
+        if (testCase.turns !== undefined) thread.turns = testCase.turns;
+        second.readResponse = { thread };
+        const driver = makeDriver([first, second]);
+        const original = await driver.openSession({
+          runId: `run-unknown-history-${testCase.history.replaceAll(" ", "-")}`,
+          normalizedSessionId:
+            `normalized-unknown-history-${testCase.history.replaceAll(" ", "-")}`,
+          workingDirectory: WORKSPACE,
+        });
+        await original.startTurn({
+          message: { role: "user", text: "Complete." },
+        });
+        first.push("turn/completed", {
+          threadId: "thread-1",
+          turn: { id: "turn-1", status: "completed", items: [] },
+        });
+        await collectUntilTerminal(original.events());
+        const checkpoint = await original.snapshot();
+        await original.close({
+          reason: "simulate unavailable provider history",
+        });
+
+        const recovery = await driver.recoverSession?.({
+          ...checkpoint,
+          dispositionOnlyRecoveryConsumed: true,
+          dispositionOnlyRecoveryTurnId:
+            testCase.dispositionOnlyRecoveryTurnId,
+        });
+        expect(recovery).toMatchObject({ recovered: true });
+        await expect(recovery!.session!.snapshot()).resolves.toMatchObject({
+          activeTurnId: null,
+          dispositionOnlyRecoveryConsumed: true,
+          dispositionOnlyRecoveryTurnId:
+            testCase.dispositionOnlyRecoveryTurnId,
+        });
+        expect(
+          second.calls.filter((call) => call.method === "turn/start"),
+        ).toHaveLength(0);
+        await recovery!.session!.close({ reason: "test complete" });
+      },
+    );
+  }
+
   it("releases a legacy disposition marker when provider history has no accepted turn", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();

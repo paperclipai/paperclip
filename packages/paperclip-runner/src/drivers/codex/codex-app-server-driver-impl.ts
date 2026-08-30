@@ -394,12 +394,20 @@ export class CodexAppServerDriver implements HarnessDriver {
         && recoveredActiveTurnId === null
         && (snapshot.terminalTurns?.length ?? 0) > 0
       ) {
-        const turns = Array.isArray(existingThread.turns)
-          ? existingThread.turns.map(record)
+        const providerHistory = existingThread.turns;
+        const turns = Array.isArray(providerHistory)
+          ? providerHistory.map(record)
           : [];
-        providerTurnIds = new Set(
-          turns.map((turn) => text(turn.id)).filter((turnId) => turnId.length > 0),
-        );
+        // Only an actual history array can prove that the provider did not
+        // accept the checkpointed disposition turn. Missing or malformed
+        // history is unknown and must retain the one-shot ownership marker.
+        if (Array.isArray(providerHistory)) {
+          providerTurnIds = new Set(
+            turns
+              .map((turn) => text(turn.id))
+              .filter((turnId) => turnId.length > 0),
+          );
+        }
         const terminalIds = new Set(
           (snapshot.terminalTurns ?? []).map((turn) => turn.turnId),
         );
@@ -451,11 +459,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed
         && recoveredActiveTurnId === null
         && !reconcileUncheckpointedDispositionTurn
+        && providerTurnIds !== null
         && (
           dispositionOnlyRecoveryTurnId === null
           || (
-            providerTurnIds !== null
-            && !providerTurnIds.has(dispositionOnlyRecoveryTurnId)
+            !providerTurnIds.has(dispositionOnlyRecoveryTurnId)
             && !(snapshot.terminalTurns ?? []).some(
               (terminal) => terminal.turnId === dispositionOnlyRecoveryTurnId,
             )
