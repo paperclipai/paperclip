@@ -21,7 +21,25 @@ import type {
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
+const MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS = 3;
+const MAX_ADMISSION_CLEANUP_ATTEMPTS = 1 + MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS;
+const RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS = 10;
+const RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS = 100;
 const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
+
+class AcpxRuntimeCloseTimeoutError extends Error {
+  constructor() {
+    super("ACPX runtime close timed out");
+    this.name = "AcpxRuntimeCloseTimeoutError";
+  }
+}
+
+class AcpxRuntimeCloseFinalTimeoutError extends Error {
+  constructor() {
+    super("ACPX runtime close remained pending after its final cleanup watch");
+    this.name = "AcpxRuntimeCloseFinalTimeoutError";
+  }
+}
 
 export interface CodexAcpxRuntimeDependencies {
   createRuntime?: (options: AcpRuntimeOptions) => AcpRuntime;
@@ -30,6 +48,8 @@ export interface CodexAcpxRuntimeDependencies {
   }) => AcpAgentRegistry;
   createStore?: (input: { stateDir: string }) => AcpSessionStore;
   runtimeCloseTimeoutMs?: number;
+  /** Internal test seam for autonomous failed-admission cleanup ownership. */
+  retainCleanup?: (cleanup: Promise<void>) => void;
 }
 
 /**
@@ -57,6 +77,15 @@ export async function openCodexAcpxRuntime(
   const baseStore = createStore({ stateDir: options.stateDirectory });
   let failedHandshakeHandle: AcpRuntimeHandle | null = null;
   let admissionCleanup: RuntimeAdmissionCleanup | null = null;
+  const retainedCleanupOwners = new WeakSet<Promise<void>>();
+  const retainCleanup = (cleanup: Promise<void>): void => {
+    if (retainedCleanupOwners.has(cleanup)) {
+      return;
+    }
+    retainedCleanupOwners.add(cleanup);
+    dependencies.retainCleanup?.(cleanup);
+    retainCodexRuntimeCleanup(cleanup);
+  };
   const rememberHandshakeHandle = (record: AcpSessionRecord): void => {
     const runtimeSessionName = record.name?.trim();
     if (
@@ -88,8 +117,8 @@ export async function openCodexAcpxRuntime(
     };
     failedHandshakeHandle = rememberedHandle;
     if (options.signal?.aborted && admissionCleanup !== null) {
-      retainCodexRuntimeCleanup(
-        admissionCleanup.run(
+      retainCleanup(
+        admissionCleanup.runRetained(
           rememberedHandle,
           "ACPX runtime admission aborted",
         ),
@@ -168,9 +197,9 @@ export async function openCodexAcpxRuntime(
         handle = await raceRuntimeHandshakeWithAbort(handshake, options.signal);
       } catch (error) {
         if (options.signal.aborted) {
-          retainCodexRuntimeCleanup(
+          retainCleanup(
             handshake.then((lateHandle) =>
-              admissionCleanup!.run(
+              admissionCleanup!.runRetained(
                 lateHandle,
                 "ACPX runtime admission aborted",
               ),
@@ -260,8 +289,24 @@ function retainCodexRuntimeCleanup(cleanup: Promise<unknown>): void {
     .catch(() => undefined);
 }
 
+type RuntimeAdmissionCleanupTarget = {
+  handle: AcpRuntimeHandle;
+  reason: string;
+  cleanup: Promise<void> | null;
+};
+
 class RuntimeAdmissionCleanup {
   readonly #closedHandles = new Set<string>();
+  readonly #activeHandleAttempts = new Map<
+    string,
+    Promise<unknown | undefined>
+  >();
+  readonly #handleAttemptCounts = new Map<string, number>();
+  readonly #registeredTargets = new Map<
+    string,
+    RuntimeAdmissionCleanupTarget
+  >();
+  readonly #targetAliases = new Map<string, string>();
   #tail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -271,30 +316,177 @@ class RuntimeAdmissionCleanup {
   ) {}
 
   run(handle: AcpRuntimeHandle | null, reason: string): Promise<unknown[]> {
-    const cleanup = this.#tail.then(async () => {
-      const errors: unknown[] = [];
-      if (handle !== null) {
-        const key = runtimeHandleCleanupKey(handle);
-        if (!this.#closedHandles.has(key)) {
-          const runtimeError = await closeRuntimeWithin(this.runtime, {
-            input: {
-              handle,
-              reason,
-              discardPersistentState: false,
-            },
-            timeoutMs: this.runtimeCloseTimeoutMs,
-          });
-          // A rejection or timeout does not prove the runtime released this
-          // identity. Leave it eligible for the next serialized cleanup pass.
-          if (runtimeError === undefined) {
-            this.#closedHandles.add(key);
-          } else {
-            errors.push(runtimeError);
-          }
+    const targetKey = this.#resolveTargetKey(
+      runtimeAdmissionCleanupTargetKey(handle),
+      handle,
+    );
+    return this.#runAttempt(targetKey, handle, reason).then(
+      ({ errors }) => errors,
+    );
+  }
+
+  runRetained(handle: AcpRuntimeHandle, reason: string): Promise<void> {
+    const rawTargetKey = runtimeAdmissionCleanupTargetKey(handle);
+    const targetKey = this.#resolveTargetKey(rawTargetKey, handle);
+    const existing = this.#registeredTargets.get(targetKey);
+    if (existing !== undefined) {
+      existing.handle = preferRuntimeAdmissionCleanupHandle(
+        existing.handle,
+        handle,
+      );
+      this.#targetAliases.set(rawTargetKey, targetKey);
+      return existing.cleanup!;
+    }
+    const target: RuntimeAdmissionCleanupTarget = {
+      handle,
+      reason,
+      cleanup: null,
+    };
+    this.#registeredTargets.set(targetKey, target);
+    this.#targetAliases.set(rawTargetKey, targetKey);
+    const cleanup = this.#retryRetained(targetKey, target);
+    target.cleanup = cleanup;
+    return cleanup;
+  }
+
+  #resolveTargetKey(
+    rawTargetKey: string,
+    handle: AcpRuntimeHandle | null,
+  ): string {
+    const aliasedTargetKey = this.#targetAliases.get(rawTargetKey);
+    if (aliasedTargetKey !== undefined) return aliasedTargetKey;
+    if (handle === null) return rawTargetKey;
+    const recordId = nonEmptyRuntimeIdentity(handle.acpxRecordId);
+    const sessionTargetKey = runtimeAdmissionCleanupSessionTargetKey(handle);
+    if (recordId !== undefined) {
+      const fallbackTargetKey =
+        this.#targetAliases.get(sessionTargetKey) ?? sessionTargetKey;
+      const fallbackHandle =
+        this.#registeredTargets.get(fallbackTargetKey)?.handle;
+      if (
+        fallbackHandle !== undefined &&
+        nonEmptyRuntimeIdentity(fallbackHandle.acpxRecordId) === undefined &&
+        sameRuntimeAdmissionCleanupOwner(fallbackHandle, handle)
+      ) {
+        this.#targetAliases.set(rawTargetKey, fallbackTargetKey);
+        return fallbackTargetKey;
+      }
+      return rawTargetKey;
+    }
+    const compatibleRecordTargets = [
+      ...this.#registeredTargets.entries(),
+    ].filter(
+      ([, target]) =>
+        nonEmptyRuntimeIdentity(target.handle.acpxRecordId) !== undefined &&
+        sameRuntimeAdmissionCleanupOwner(target.handle, handle),
+    );
+    return compatibleRecordTargets.length === 1
+      ? compatibleRecordTargets[0]![0]
+      : rawTargetKey;
+  }
+
+  async #retryRetained(
+    targetKey: string,
+    target: RuntimeAdmissionCleanupTarget,
+  ): Promise<void> {
+    let runtimeTerminalError: unknown | null = null;
+    let processErrors: unknown[] = [];
+    let processAttemptNumber = 0;
+    let retryDelayMs = RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS;
+    while (processAttemptNumber < MAX_ADMISSION_CLEANUP_ATTEMPTS) {
+      processAttemptNumber += 1;
+      const attempt = await this.#runAttempt(
+        targetKey,
+        runtimeTerminalError === null ? target.handle : null,
+        target.reason,
+      );
+      let runtimeError = attempt.runtimeError;
+      processErrors = attempt.processErrors;
+      if (attempt.pendingRuntimeClose !== undefined) {
+        // The configured timeout bounds the caller-facing pass, not the exact
+        // close promise. Give that exact promise one final bounded watch. A
+        // late rejection can then admit the next actual close attempt, while
+        // a second timeout terminalizes protocol cleanup without overlap.
+        const lateOutcome = await closeOutcomeWithin(
+          attempt.pendingRuntimeClose,
+          this.runtimeCloseTimeoutMs,
+        );
+        if (lateOutcome instanceof AcpxRuntimeCloseTimeoutError) {
+          runtimeTerminalError = new AcpxRuntimeCloseFinalTimeoutError();
+          runtimeError = runtimeTerminalError;
+        } else {
+          runtimeError = lateOutcome;
         }
       }
-      errors.push(...(await this.children.terminate()));
-      return errors;
+      if (
+        runtimeTerminalError === null &&
+        runtimeError !== undefined &&
+        (this.#handleAttemptCounts.get(targetKey) ?? 0) >=
+          MAX_ADMISSION_CLEANUP_ATTEMPTS
+      ) {
+        runtimeTerminalError = new AggregateError(
+          [runtimeError],
+          `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
+        );
+      }
+      const runtimeNeedsRetry =
+        runtimeTerminalError === null &&
+        runtimeError !== undefined &&
+        !this.#closedHandles.has(targetKey);
+      const processNeedsRetry = processErrors.length > 0;
+      if (!runtimeNeedsRetry && !processNeedsRetry) {
+        if (runtimeTerminalError === null) return;
+        throw runtimeTerminalError;
+      }
+      if (processAttemptNumber >= MAX_ADMISSION_CLEANUP_ATTEMPTS) break;
+      await delay(retryDelayMs);
+      retryDelayMs = Math.min(
+        retryDelayMs * 2,
+        RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS,
+      );
+    }
+    const errors = [
+      ...(runtimeTerminalError === null ? [] : [runtimeTerminalError]),
+      ...processErrors,
+    ];
+    throw new AggregateError(
+      errors,
+      `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
+    );
+  }
+
+  #runAttempt(
+    targetKey: string,
+    handle: AcpRuntimeHandle | null,
+    reason: string,
+  ): Promise<{
+    errors: unknown[];
+    runtimeError: unknown | undefined;
+    processErrors: unknown[];
+    pendingRuntimeClose?: Promise<unknown | undefined>;
+  }> {
+    const cleanup = this.#tail.then(async () => {
+      const errors: unknown[] = [];
+      let runtimeError: unknown | undefined;
+      let pendingRuntimeClose: Promise<unknown | undefined> | undefined;
+      if (handle !== null && !this.#closedHandles.has(targetKey)) {
+        const runtimeOutcome = await this.#closeHandleWithin(
+          targetKey,
+          handle,
+          reason,
+        );
+        runtimeError = runtimeOutcome.error;
+        if (runtimeError !== undefined) errors.push(runtimeError);
+        pendingRuntimeClose = runtimeOutcome.pendingAttempt;
+      }
+      const processErrors = await this.children.terminate();
+      errors.push(...processErrors);
+      return {
+        errors,
+        runtimeError,
+        processErrors,
+        ...(pendingRuntimeClose === undefined ? {} : { pendingRuntimeClose }),
+      };
     });
     this.#tail = cleanup.then(
       () => undefined,
@@ -302,16 +494,115 @@ class RuntimeAdmissionCleanup {
     );
     return cleanup;
   }
+
+  async #closeHandleWithin(
+    targetKey: string,
+    handle: AcpRuntimeHandle,
+    reason: string,
+  ): Promise<{
+    error: unknown | undefined;
+    pendingAttempt?: Promise<unknown | undefined>;
+  }> {
+    let attempt = this.#activeHandleAttempts.get(targetKey);
+    if (attempt === undefined) {
+      const attemptCount = this.#handleAttemptCounts.get(targetKey) ?? 0;
+      if (attemptCount >= MAX_ADMISSION_CLEANUP_ATTEMPTS) {
+        return {
+          error: new Error(
+            `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
+          ),
+        };
+      }
+      this.#handleAttemptCounts.set(targetKey, attemptCount + 1);
+      attempt = runtimeCloseOutcome(this.runtime, {
+        handle,
+        reason,
+        discardPersistentState: false,
+      });
+      this.#activeHandleAttempts.set(targetKey, attempt);
+      void attempt.then((error) => {
+        if (this.#activeHandleAttempts.get(targetKey) === attempt) {
+          this.#activeHandleAttempts.delete(targetKey);
+        }
+        if (error === undefined) this.#closedHandles.add(targetKey);
+      });
+    }
+    const error = await closeOutcomeWithin(attempt, this.runtimeCloseTimeoutMs);
+    return error instanceof AcpxRuntimeCloseTimeoutError
+      ? { error, pendingAttempt: attempt }
+      : { error };
+  }
 }
 
-function runtimeHandleCleanupKey(handle: AcpRuntimeHandle): string {
-  return JSON.stringify([
-    handle.sessionKey,
-    handle.runtimeSessionName,
-    handle.acpxRecordId,
-    handle.backendSessionId,
-    handle.agentSessionId,
-  ]);
+function runtimeAdmissionCleanupTargetKey(
+  handle: AcpRuntimeHandle | null,
+): string {
+  if (handle === null) return JSON.stringify(["children"]);
+  const recordId = nonEmptyRuntimeIdentity(handle.acpxRecordId);
+  return recordId === undefined
+    ? runtimeAdmissionCleanupSessionTargetKey(handle)
+    : JSON.stringify(["record", recordId]);
+}
+
+function runtimeAdmissionCleanupSessionTargetKey(
+  handle: AcpRuntimeHandle,
+): string {
+  return JSON.stringify(["session", handle.sessionKey]);
+}
+
+function preferRuntimeAdmissionCleanupHandle(
+  current: AcpRuntimeHandle,
+  incoming: AcpRuntimeHandle,
+): AcpRuntimeHandle {
+  const currentRecordId = nonEmptyRuntimeIdentity(current.acpxRecordId);
+  const incomingRecordId = nonEmptyRuntimeIdentity(incoming.acpxRecordId);
+  if (
+    !sameRuntimeAdmissionCleanupOwner(current, incoming) ||
+    (currentRecordId !== undefined && incomingRecordId !== currentRecordId)
+  ) {
+    return current;
+  }
+  const currentAgentSessionId = nonEmptyRuntimeIdentity(current.agentSessionId);
+  const incomingAgentSessionId = nonEmptyRuntimeIdentity(
+    incoming.agentSessionId,
+  );
+  if (
+    currentAgentSessionId !== undefined &&
+    incomingAgentSessionId !== undefined &&
+    incomingAgentSessionId !== currentAgentSessionId
+  ) {
+    return current;
+  }
+  const backendSessionId =
+    nonEmptyRuntimeIdentity(incoming.backendSessionId) ??
+    nonEmptyRuntimeIdentity(current.backendSessionId);
+  const agentSessionId = incomingAgentSessionId ?? currentAgentSessionId;
+  return {
+    ...current,
+    ...incoming,
+    ...((incomingRecordId ?? currentRecordId) === undefined
+      ? {}
+      : { acpxRecordId: incomingRecordId ?? currentRecordId }),
+    ...(backendSessionId === undefined ? {} : { backendSessionId }),
+    ...(agentSessionId === undefined ? {} : { agentSessionId }),
+  };
+}
+
+function sameRuntimeAdmissionCleanupOwner(
+  current: AcpRuntimeHandle,
+  incoming: AcpRuntimeHandle,
+): boolean {
+  return (
+    current.sessionKey === incoming.sessionKey &&
+    current.backend === incoming.backend &&
+    current.cwd === incoming.cwd
+  );
+}
+
+function nonEmptyRuntimeIdentity(
+  value: string | undefined,
+): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function runtimePort(
@@ -371,23 +662,43 @@ async function closeRuntimeWithin(
     timeoutMs: number;
   },
 ): Promise<unknown | undefined> {
-  const timeoutMs = Math.max(1, options.timeoutMs);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const closeOutcome = Promise.resolve()
-    .then(() => runtime.close(options.input))
+  return await closeOutcomeWithin(
+    runtimeCloseOutcome(runtime, options.input),
+    options.timeoutMs,
+  );
+}
+
+function runtimeCloseOutcome(
+  runtime: AcpRuntime,
+  input: Parameters<AcpRuntime["close"]>[0],
+): Promise<unknown | undefined> {
+  return Promise.resolve()
+    .then(() => runtime.close(input))
     .then(
       () => undefined,
       (error: unknown) => error,
     );
+}
+
+async function closeOutcomeWithin(
+  closeOutcome: Promise<unknown | undefined>,
+  timeoutMs: number,
+): Promise<unknown | undefined> {
+  const boundedTimeoutMs = Math.max(1, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutOutcome = new Promise<Error>((resolve) => {
     timer = setTimeout(
-      () => resolve(new Error("ACPX runtime close timed out")),
-      timeoutMs,
+      () => resolve(new AcpxRuntimeCloseTimeoutError()),
+      boundedTimeoutMs,
     );
   });
   const outcome = await Promise.race([closeOutcome, timeoutOutcome]);
   if (timer !== undefined) clearTimeout(timer);
   return outcome;
+}
+
+function delay(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
 class SpawnedChildSet {
