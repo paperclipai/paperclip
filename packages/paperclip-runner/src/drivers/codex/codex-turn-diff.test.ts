@@ -93,6 +93,42 @@ describe("Codex turn diff parser", () => {
     ]);
   });
 
+  it("does not split file records for diff headers embedded in hunk lines", () => {
+    const firstPatch = [
+      "diff --git a/src/first.ts b/src/first.ts",
+      "--- a/src/first.ts",
+      "+++ b/src/first.ts",
+      "@@ -1,2 +1,2 @@",
+      "diff --git a/decoded-context.ts b/decoded-context.ts",
+      " diff --git a/context.ts b/context.ts",
+      "-diff --git a/deleted.ts b/deleted.ts",
+      "+diff --git a/added.ts b/added.ts",
+    ];
+    const secondPatch = [
+      "diff --git a/src/second.ts b/src/second.ts",
+      "--- a/src/second.ts",
+      "+++ b/src/second.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ];
+
+    expect(parseCodexTurnDiff([...firstPatch, ...secondPatch].join("\n"))).toEqual([
+      expect.objectContaining({
+        path: "src/first.ts",
+        additions: 1,
+        deletions: 1,
+        diff: `${firstPatch.join("\n")}\n`,
+      }),
+      expect.objectContaining({
+        path: "src/second.ts",
+        additions: 1,
+        deletions: 1,
+        diff: `${secondPatch.join("\n")}\n`,
+      }),
+    ]);
+  });
+
   it("does not interpret rename or mode metadata after a hunk begins", () => {
     expect(parseCodexTurnDiff([
       "diff --git a/src/markers.ts b/src/markers.ts",

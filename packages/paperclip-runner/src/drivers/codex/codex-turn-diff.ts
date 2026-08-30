@@ -11,6 +11,15 @@ export interface ParsedCodexTurnDiffFile {
 const MAX_TURN_DIFF_FILES = 2_000;
 const MAX_TURN_DIFF_CHARS_PER_FILE = 256 * 1024;
 
+function gitDiffHunkCounts(line: string): { old: number; new: number } | null {
+  const match = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?$/);
+  if (!match) return null;
+  const oldCount = match[1] === undefined ? 1 : Number(match[1]);
+  const newCount = match[2] === undefined ? 1 : Number(match[2]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(newCount)) return null;
+  return { old: oldCount, new: newCount };
+}
+
 function gitDiffPath(value: string): string | null {
   let candidate = value.trim();
   if (candidate === "/dev/null") return null;
@@ -54,6 +63,8 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
     binary: boolean;
     modeChange: boolean;
     inHunk: boolean;
+    oldHunkLinesRemaining: number | null;
+    newHunkLinesRemaining: number | null;
   } | null = null;
 
   const finish = () => {
@@ -83,13 +94,15 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
   };
 
   for (const line of patch.split("\n")) {
-    if (line.startsWith("diff --git ")) {
+    const header = line.startsWith("diff --git ")
+      ? line.match(/^diff --git ("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/)
+      : null;
+    if ((!current || !current.inHunk) && header) {
       finish();
-      const header = line.match(/^diff --git ("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/);
       current = {
         lines: [line],
-        oldPath: header ? gitDiffPath(header[1] ?? "") : null,
-        newPath: header ? gitDiffPath(header[2] ?? "") : null,
+        oldPath: gitDiffPath(header[1] ?? ""),
+        newPath: gitDiffPath(header[2] ?? ""),
         renameFrom: null,
         renameTo: null,
         additions: 0,
@@ -97,6 +110,8 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
         binary: false,
         modeChange: false,
         inHunk: false,
+        oldHunkLinesRemaining: null,
+        newHunkLinesRemaining: null,
       };
       continue;
     }
@@ -108,9 +123,37 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
     else if (!current.inHunk && line.startsWith("rename to ")) current.renameTo = gitDiffPath(line.slice(10));
     else if (!current.inHunk && (line.startsWith("old mode ") || line.startsWith("new mode "))) current.modeChange = true;
     else if (!current.inHunk && (line.startsWith("Binary files ") || line === "GIT binary patch")) current.binary = true;
-    else if (line.startsWith("@@")) current.inHunk = true;
-    else if (current.inHunk && line.startsWith("+")) current.additions += 1;
-    else if (current.inHunk && line.startsWith("-")) current.deletions += 1;
+    else if (!current.inHunk && line.startsWith("@@")) {
+      const counts = gitDiffHunkCounts(line);
+      current.inHunk = true;
+      current.oldHunkLinesRemaining = counts?.old ?? null;
+      current.newHunkLinesRemaining = counts?.new ?? null;
+      if (current.oldHunkLinesRemaining === 0 && current.newHunkLinesRemaining === 0) {
+        current.inHunk = false;
+      }
+    } else if (current.inHunk) {
+      if (line.startsWith("+")) {
+        current.additions += 1;
+        if (current.newHunkLinesRemaining !== null && current.newHunkLinesRemaining > 0) {
+          current.newHunkLinesRemaining -= 1;
+        }
+      } else if (line.startsWith("-")) {
+        current.deletions += 1;
+        if (current.oldHunkLinesRemaining !== null && current.oldHunkLinesRemaining > 0) {
+          current.oldHunkLinesRemaining -= 1;
+        }
+      } else if (line.startsWith(" ")) {
+        if (current.oldHunkLinesRemaining !== null && current.oldHunkLinesRemaining > 0) {
+          current.oldHunkLinesRemaining -= 1;
+        }
+        if (current.newHunkLinesRemaining !== null && current.newHunkLinesRemaining > 0) {
+          current.newHunkLinesRemaining -= 1;
+        }
+      }
+      if (current.oldHunkLinesRemaining === 0 && current.newHunkLinesRemaining === 0) {
+        current.inHunk = false;
+      }
+    }
   }
   finish();
   return files;
