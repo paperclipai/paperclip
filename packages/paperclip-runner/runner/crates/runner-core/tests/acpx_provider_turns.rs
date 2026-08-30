@@ -204,6 +204,70 @@ fn returns_pending_tool_cancellations_before_the_terminal_event() {
 }
 
 #[test]
+fn rotates_settled_tool_receipts_between_reusable_turns() {
+    let mut session = AcpxProviderSession::start(&config("turns-reused-tool-id-terminal")).unwrap();
+
+    for turn_id in ["turn-1", "turn-2"] {
+        session
+            .start_turn(turn_id, "Please continue", &std::env::temp_dir())
+            .unwrap();
+        let tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(matches!(
+            &tool[0],
+            AcpxProviderStateEvent::ToolCall { call_id, operation_id, .. }
+                if call_id == "call-reused" && operation_id == "issues.read"
+        ));
+        let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(matches!(
+            &terminal[0],
+            AcpxProviderStateEvent::ToolResult(result)
+                if result.call_id == "call-reused"
+                    && result.result["error"]["code"] == "acpx_turn_settled"
+        ));
+        assert!(matches!(
+            terminal.last().unwrap(),
+            AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. }
+                if settled == turn_id
+        ));
+    }
+
+    session.shutdown("test complete").unwrap();
+
+    let mut reserved_session =
+        AcpxProviderSession::start(&config("turns-reserved-result-terminal")).unwrap();
+    for turn_id in ["turn-1", "turn-2"] {
+        reserved_session
+            .start_turn(turn_id, "Please continue", &std::env::temp_dir())
+            .unwrap();
+        assert!(reserved_session
+            .poll_event(Duration::from_secs(1))
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        let result = reserved_session
+            .poll_event(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &result[0],
+            AcpxProviderStateEvent::SemanticResult(result)
+                if result.call_id == "call-finish"
+                    && result.operation_id == "paperclip_finish"
+        ));
+        let terminal = reserved_session
+            .poll_event(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            terminal.last().unwrap(),
+            AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. }
+                if settled == turn_id
+        ));
+    }
+    reserved_session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn completed_tool_results_are_not_cancelled_when_the_turn_terminates() {
     let mut session = AcpxProviderSession::start(&config("turns-tool-result-terminal")).unwrap();
     session

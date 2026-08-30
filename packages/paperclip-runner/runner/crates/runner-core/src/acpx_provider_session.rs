@@ -256,6 +256,22 @@ impl AcpxProviderSession {
                 "ACPX provider session already has an active turn",
             ));
         }
+        // A provider session may be reused across turns, but tool-call replay
+        // protection is scoped to one accepted turn. Prepare cloned receipt
+        // epochs before asking the sidecar to start work, then publish them
+        // only after both the provider and reducer accept the new turn.
+        let mut next_tool_bridge = self.tool_bridge.clone();
+        if let Err(error) = next_tool_bridge.prepare_turn() {
+            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                "ACPX dynamic tool receipt rotation failed: {error}"
+            ))));
+        }
+        let mut next_reserved_tool_bridge = self.reserved_tool_bridge.clone();
+        if let Err(error) = next_reserved_tool_bridge.prepare_turn() {
+            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                "ACPX reserved tool receipt rotation failed: {error}"
+            ))));
+        }
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::TurnStart,
             json!({"turnId":turn_id,"message":message}),
@@ -271,6 +287,8 @@ impl AcpxProviderSession {
         if let Err(error) = self.state.begin_turn(turn_id) {
             return Err(self.fail_closed(error));
         }
+        self.tool_bridge = next_tool_bridge;
+        self.reserved_tool_bridge = next_reserved_tool_bridge;
         Ok(response)
     }
 

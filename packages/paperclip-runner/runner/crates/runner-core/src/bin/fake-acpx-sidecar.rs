@@ -88,6 +88,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-scope"
             | "turns-tool"
             | "turns-tool-terminal"
+            | "turns-reused-tool-id-terminal"
             | "turns-tool-result-terminal"
             | "turns-tool-error-result-terminal"
             | "turns-multiple-tool-results-terminal"
@@ -104,10 +105,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .get("turnId")
                     .and_then(Value::as_str)
                     .unwrap_or("missing");
-                let tool_call_id = turn_id
-                    .strip_prefix("turn-")
-                    .map(|suffix| format!("call-{suffix}"))
-                    .unwrap_or_else(|| "call-1".to_owned());
+                let tool_call_id = if mode == "turns-reused-tool-id-terminal" {
+                    "call-reused".to_owned()
+                } else {
+                    turn_id
+                        .strip_prefix("turn-")
+                        .map(|suffix| format!("call-{suffix}"))
+                        .unwrap_or_else(|| "call-1".to_owned())
+                };
                 if command == "turn.start" && matches!(mode, "turns" | "turns-wrong-scope") {
                     write_turn_event(
                         &mut stdout,
@@ -128,6 +133,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         mode,
                         "turns-tool"
                             | "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
                             | "turns-tool-result-terminal"
                             | "turns-tool-error-result-terminal"
                             | "turns-unauthorized-tool"
@@ -141,7 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;
@@ -178,7 +184,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start" && mode == "turns-tool-terminal" {
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-terminal" | "turns-reused-tool-id-terminal"
+                    )
+                {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
