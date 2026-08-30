@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACPX_SIDECAR_MAX_FRAME_BYTES,
+  boundedSidecarText,
   boundedSidecarValue,
   parseAcpxSidecarRequest,
   sanitizeAcpxPlanEntries,
@@ -76,6 +77,18 @@ describe("ACPX sidecar request parsing", () => {
       omitted: true,
       reason: "object_required",
     });
+  });
+
+  it("bounds tool text on Unicode scalar boundaries", () => {
+    const prefix = "x".repeat(3_999);
+    const title = boundedSidecarText(`${prefix}🚀write`, 4_000);
+
+    expect([...title]).toHaveLength(4_000);
+    expect(title).toBe(`${prefix}🚀`);
+    expect(
+      boundedSidecarValue({ type: "tool_call", title }, 128 * 1024),
+    ).toEqual({ type: "tool_call", title });
+    expect(boundedSidecarText(`safe\ud83d`, 10)).toBe("safe\uFFFD");
   });
 });
 

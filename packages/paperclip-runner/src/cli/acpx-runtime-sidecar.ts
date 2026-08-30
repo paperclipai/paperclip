@@ -31,6 +31,7 @@ import {
 import {
   ACPX_SIDECAR_MAX_FRAME_BYTES,
   ACPX_SIDECAR_PROTOCOL_VERSION,
+  boundedSidecarText,
   boundedSidecarValue,
   parseAcpxSidecarRequest,
   record,
@@ -665,7 +666,8 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     // Classification and the consumer must see the same title bytes. In
     // particular, a mutation token beyond the transport bound must not grant a
     // create-target attestation that runner-core cannot independently verify.
-    const toolTitle = event.title?.slice(0, 4_000) ?? null;
+    const toolTitle =
+      event.title === undefined ? null : boundedSidecarText(event.title, 4_000);
     return boundedSidecarValue(
       {
         type: "tool_call",

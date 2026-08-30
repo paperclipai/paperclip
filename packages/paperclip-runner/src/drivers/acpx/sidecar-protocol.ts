@@ -134,6 +134,32 @@ export function boundedSidecarValue(
   }
 }
 
+/**
+ * Bounds provider text by Unicode scalar count so the emitted UTF-8 frame and
+ * runner-core's `str::chars` admission check observe the same value. Provider
+ * strings may also contain an isolated UTF-16 surrogate; replace it rather
+ * than emitting a JSON escape that Rust cannot decode as a string.
+ */
+export function boundedSidecarText(
+  value: string,
+  maxCodePoints: number,
+): string {
+  if (!Number.isSafeInteger(maxCodePoints) || maxCodePoints < 0) {
+    throw new Error("ACPX sidecar text limit must be a non-negative integer");
+  }
+  const bounded: string[] = [];
+  for (const codePoint of value) {
+    if (bounded.length >= maxCodePoints) break;
+    const codeUnit = codePoint.charCodeAt(0);
+    bounded.push(
+      codePoint.length === 1 && codeUnit >= 0xd800 && codeUnit <= 0xdfff
+        ? "\uFFFD"
+        : codePoint,
+    );
+  }
+  return bounded.join("");
+}
+
 export function sanitizeAcpxPlanEntries(value: unknown): Array<{
   content: string;
   status: "pending" | "in_progress" | "completed";
