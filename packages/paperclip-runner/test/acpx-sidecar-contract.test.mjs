@@ -67,6 +67,13 @@ test("every ACPX sidecar message family declares the same version", () => {
   assert.equal(Number.isInteger(versions[0]) && versions[0] > 0, true);
 });
 
+test("the ACPX sidecar schema id carries the declared protocol version", () => {
+  assert.equal(
+    schema.$id,
+    `https://paperclip.dev/schemas/acpx-sidecar/v${protocolVersion}/message.schema.json`,
+  );
+});
+
 function error() {
   return {
     code: "runtime_failed",

@@ -25,6 +25,13 @@ if (
   );
 }
 const [protocolVersion] = protocolVersions;
+const expectedSchemaId =
+  `https://paperclip.dev/schemas/acpx-sidecar/v${protocolVersion}/message.schema.json`;
+if (schema.$id !== expectedSchemaId) {
+  throw new Error(
+    "ACPX sidecar schema $id must match its declared protocol version",
+  );
+}
 const quote = (value) => JSON.stringify(value);
 const rustVariant = (value) =>
   value
