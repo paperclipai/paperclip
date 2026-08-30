@@ -398,16 +398,16 @@ impl AcpxProviderSession {
                         // dynamic tools, but the server dispatcher must never
                         // execute them as ordinary semantic operations.
                         expose_event = false;
-                        if next_bridge.has_completed_call(call_id) {
+                        if next_bridge.has_call_receipt(call_id) {
                             return Err(self.fail_closed(LocalRunnerError::invalid(
-                                "ACPX reused a completed dynamic call id for a reserved terminal invocation",
+                                "ACPX reused a dynamic call id for a reserved terminal invocation",
                             )));
                         }
                         &mut next_reserved_bridge
                     } else {
-                        if next_reserved_bridge.has_completed_call(call_id) {
+                        if next_reserved_bridge.has_call_receipt(call_id) {
                             return Err(self.fail_closed(LocalRunnerError::invalid(
-                                "ACPX reused a completed reserved call id for a dynamic tool invocation",
+                                "ACPX reused a reserved call id for a dynamic tool invocation",
                             )));
                         }
                         &mut next_bridge
