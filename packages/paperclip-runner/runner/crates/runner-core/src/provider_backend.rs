@@ -881,6 +881,50 @@ impl CodexCommandExecutor {
                 ))
             })?;
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
+        let legacy_epoch_is_ambiguous = !settled_provider_turn_filter.is_empty()
+            && (ambiguous_turn_start_pending || recovered_active_turn_id.is_some());
+        if legacy_epoch_is_ambiguous {
+            // A legacy probabilistic summary cannot prove whether the
+            // recovered identity already settled. Reap the resumed process
+            // generation and close the run instead of risking duplicate work.
+            let provider_reported_active = recovered_active_turn_id.is_some();
+            let provider_shutdown_failed = provider.shutdown().is_err();
+            drop(provider);
+            let state = self
+                .state
+                .as_mut()
+                .expect("Codex state remains available during legacy recovery");
+            state.provider_process_generation = process_generation;
+            state.settled_provider_turn_ids = settled_provider_turn_ids;
+            state.settled_provider_turn_filter = settled_provider_turn_filter;
+            state.active_provider_turn_id = None;
+            state.ambiguous_turn_start_pending = false;
+            state.completed_turn_authoritative = false;
+            state.completed_turn_process_generation = None;
+            state.completed_provider_turn_id = None;
+            state.receipt_limit_diagnostic_emitted = false;
+            state.receipt_limit_interrupt_pending = false;
+            state.receipt_limit_interrupt_accepted = false;
+            state.receipt_limit_interrupt_attempts = 0;
+            state.receipt_limit_interrupt_deadline_unix_ms = None;
+            state.last_agent_message = None;
+            state.lifecycle = "closed".to_owned();
+            let _ = state.push_terminal_event(NormalizedProviderEvent {
+                event_type: "harness.diagnostic".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({
+                    "provider": "codex",
+                    "code": "legacy_provider_turn_epoch_ambiguous",
+                    "message": "Codex recovery could not distinguish an active provider turn from a legacy probabilistic replay summary; Paperclip terminated the provider and closed the durable run",
+                    "paperclipAccepted": false,
+                    "providerReportedActive": provider_reported_active,
+                    "ambiguousStartPending": ambiguous_turn_start_pending,
+                    "providerShutdownFailed": provider_shutdown_failed,
+                }),
+            });
+            self.save_state()?;
+            return Ok(());
+        }
         if let Some(reused_provider_turn_id) = recovered_active_turn_id
             .as_ref()
             .filter(|provider_turn_id| {
@@ -948,13 +992,19 @@ impl CodexCommandExecutor {
                 ));
             }
         }
-        provider.restore_completed_turn_authority(
-            completed_turn_authoritative
-                && recovered_active_turn_id.is_none()
-                && !ambiguous_turn_start_pending,
-            completed_turn_process_generation,
-            completed_provider_turn_id.as_deref(),
-        );
+        provider
+            .restore_completed_turn_authority(
+                completed_turn_authoritative
+                    && recovered_active_turn_id.is_none()
+                    && !ambiguous_turn_start_pending,
+                completed_turn_process_generation,
+                completed_provider_turn_id.as_deref(),
+            )
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to restore Codex completion authority: {error}"
+                ))
+            })?;
         self.provider = Some(provider);
         {
             let state = self
@@ -977,7 +1027,9 @@ impl CodexCommandExecutor {
                 .as_mut()
                 .expect("Codex state remains available during recovery");
             if recovered_turn_ended {
-                state.settle_active_provider_turn_identity()?;
+                if state.settled_provider_turn_filter.is_empty() {
+                    state.settle_active_provider_turn_identity()?;
+                }
                 let settled = state
                     .tool_bridge
                     .settle_turn("provider_turn_terminated")
@@ -1184,11 +1236,18 @@ impl CodexCommandExecutor {
                         "failed to restore Codex provider turn identities: {error}"
                     ))
                 })?;
-            provider.restore_completed_turn_authority(
-                state.completed_turn_authoritative && provider.active_provider_turn_id().is_none(),
-                state.completed_turn_process_generation,
-                state.completed_provider_turn_id.as_deref(),
-            );
+            provider
+                .restore_completed_turn_authority(
+                    state.completed_turn_authoritative
+                        && provider.active_provider_turn_id().is_none(),
+                    state.completed_turn_process_generation,
+                    state.completed_provider_turn_id.as_deref(),
+                )
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to restore Codex completion authority: {error}"
+                    ))
+                })?;
             self.provider = Some(provider);
             {
                 let state = self

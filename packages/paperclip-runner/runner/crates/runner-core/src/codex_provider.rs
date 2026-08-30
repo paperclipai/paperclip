@@ -166,12 +166,13 @@ impl SettledProviderTurnIds {
         self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS || !self.filter.is_empty()
     }
 
-    fn restore(&mut self, provider_turn_id: String) {
-        let restored = self.insert(provider_turn_id);
-        debug_assert!(
-            restored,
-            "restored provider turn identity exceeded its epoch"
-        );
+    fn restore(&mut self, provider_turn_id: String) -> Result<(), LocalRunnerError> {
+        if !self.insert(provider_turn_id) {
+            return Err(LocalRunnerError::invalid(
+                "Codex restored provider turn identity epoch exceeded its exact capacity",
+            ));
+        }
+        Ok(())
     }
 
     fn restore_all(
@@ -417,7 +418,7 @@ impl CodexProvider {
         authoritative: bool,
         process_generation: Option<u64>,
         provider_turn_id: Option<&str>,
-    ) {
+    ) -> Result<(), LocalRunnerError> {
         self.completed_turn_authority = authoritative.then(|| CompletedTurnAuthority {
             // Legacy state did not record the generation. Generation zero is
             // deliberately older than every supervised process generation.
@@ -428,7 +429,7 @@ impl CodexProvider {
         });
         if let Some(authority) = self.completed_turn_authority.as_ref() {
             self.settled_provider_turn_ids
-                .restore(authority.provider_turn_id.clone());
+                .restore(authority.provider_turn_id.clone())?;
         }
         // Resuming a completed durable thread and reading its provider state
         // is recovery, not new turn work. Keep the prior terminal authoritative
@@ -439,6 +440,7 @@ impl CodexProvider {
         // of them supersedes a completed result. Only accepting a replacement
         // turn identity revokes this authority.
         self.completion_reconciliation_pending = false;
+        Ok(())
     }
 
     pub(crate) fn restore_settled_turn_identities(
@@ -1115,11 +1117,18 @@ impl CodexProvider {
                 } else {
                     None
                 };
+                if !self
+                    .settled_provider_turn_ids
+                    .insert(provider_turn_id.clone())
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex provider turn identity epoch reached its exact capacity",
+                    ));
+                }
                 self.active_provider_turn_id = None;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
                 self.completion_reconciliation_pending = terminal_event_type == "turn.completed";
-                self.settled_provider_turn_ids.insert(provider_turn_id);
                 // The provider terminal is authoritative once received. Clear
                 // local request ownership and attempt courtesy responses, but
                 // a provider that already closed stdin must not turn the
@@ -1976,7 +1985,7 @@ mod tests {
     fn restored_provider_turn_identity_is_retained_in_release_builds() {
         let mut settled = SettledProviderTurnIds::default();
 
-        settled.restore("turn-restored".to_owned());
+        settled.restore("turn-restored".to_owned()).unwrap();
 
         assert!(settled.contains("turn-restored"));
     }

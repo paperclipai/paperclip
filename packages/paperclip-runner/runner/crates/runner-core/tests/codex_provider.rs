@@ -633,6 +633,9 @@ fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
             .map(|index| Value::String(format!("provider-turn-{index}")))
             .collect(),
     );
+    persisted["completedTurnAuthoritative"] = Value::Bool(true);
+    persisted["completedTurnProcessGeneration"] = json!(prior_generation);
+    persisted["completedProviderTurnId"] = json!("provider-turn-4095");
     fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
         .expect("write full provider identity epoch");
 
@@ -651,7 +654,10 @@ fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
     )
     .expect("parse provider state after epoch rollover");
     assert!(rolled["providerProcessGeneration"].as_u64().unwrap() > prior_generation);
-    assert_eq!(rolled["settledProviderTurnIds"], json!([]));
+    assert_eq!(
+        rolled["settledProviderTurnIds"],
+        json!(["provider-turn-4095"])
+    );
     assert_eq!(rolled["settledProviderTurnFilter"], json!({"words": []}));
 
     recovered.shutdown().expect("stop rolled provider process");
@@ -2738,6 +2744,82 @@ fn durable_backend_resumes_the_active_thread_without_restarting_the_turn() {
     recovered
         .shutdown()
         .expect("stop recovered provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn legacy_filtered_active_epoch_is_closed_on_recovery() {
+    let directory = temporary_directory("legacy-filtered-active-recovery");
+    let config = provider_config(&directory, &["--hold-turn"]);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Hold the legacy-filtered turn."}),
+        ))
+        .expect("start held provider turn");
+    first.shutdown().expect("stop first provider process");
+    drop(first);
+
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read active provider state"))
+            .expect("parse active provider state");
+    let prior_generation = persisted["providerProcessGeneration"]
+        .as_u64()
+        .expect("provider generation is persisted");
+    let mut legacy_words = vec![0_u64; 32_768];
+    legacy_words[0] = 1;
+    persisted["settledProviderTurnFilter"] = json!({"words": legacy_words});
+    fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
+        .expect("write legacy-filtered active state");
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let events = recovered
+        .poll_events()
+        .expect("legacy-filtered recovery remains observable");
+    assert!(events.iter().any(|event| {
+        event.event_type == "harness.diagnostic"
+            && event.payload["code"] == "legacy_provider_turn_epoch_ambiguous"
+    }));
+    let closed: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read closed legacy-filtered state"))
+            .expect("parse closed legacy-filtered state");
+    assert_eq!(closed["lifecycle"], "closed");
+    assert!(closed["activeProviderTurnId"].is_null());
+    assert_eq!(closed["ambiguousTurnStartPending"], false);
+    assert_eq!(closed["completedTurnAuthoritative"], false);
+    assert!(!closed["settledProviderTurnFilter"]["words"]
+        .as_array()
+        .expect("legacy filter remains durable evidence")
+        .is_empty());
+    assert!(closed["providerProcessGeneration"].as_u64().unwrap() > prior_generation);
+    assert!(recovered
+        .execute(&command(
+            "replacement-turn",
+            4,
+            "turn.start",
+            json!({"text": "Do not reopen closed legacy work."}),
+        ))
+        .expect_err("closed legacy-filtered state rejects replacement work")
+        .to_string()
+        .contains("closed"));
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+
+    recovered.shutdown().expect("close recovered executor");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

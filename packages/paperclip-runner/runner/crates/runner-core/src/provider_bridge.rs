@@ -539,6 +539,15 @@ impl ProviderToolBridge {
                 "provider reused a completed tool call id",
             ));
         }
+        // Legacy durable state may contain only a probabilistic summary of
+        // evicted identities. It cannot authorize an identity-specific replay
+        // decision, so quarantine the remainder of that recovered turn. The
+        // verified next-turn boundary clears this marker and starts a new
+        // exact receipt epoch.
+        if !self.settled_call_filter.is_empty() {
+            self.durable_run_receipt_limit_reached = true;
+            return Err(ProviderBridgeError::active_turn_receipt_limit());
+        }
         if self.durable_run_receipt_limit_reached {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
@@ -1485,5 +1494,50 @@ mod tests {
                 json!({}),
             )
             .expect("a verified new turn rotates the exact receipt scope");
+    }
+
+    #[test]
+    fn legacy_replay_filter_quarantines_only_the_recovered_turn() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the active task context.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge.settled_call_filter.words = vec![0; REPLAY_FILTER_WORDS];
+        bridge.settled_call_filter.words[0] = 1;
+
+        let error = bridge
+            .begin_call(
+                "legacy-evicted-or-fresh".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("a legacy probabilistic epoch cannot dispatch more work");
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(bridge.pending.is_empty());
+        assert!(bridge.durable_run_receipt_limit_reached);
+
+        bridge.prepare_turn().unwrap();
+        assert!(bridge.settled_call_filter.is_empty());
+        assert!(!bridge.durable_run_receipt_limit_reached);
+        bridge
+            .begin_call(
+                "legacy-evicted-or-fresh".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a verified new turn starts a fresh exact receipt epoch");
     }
 }
