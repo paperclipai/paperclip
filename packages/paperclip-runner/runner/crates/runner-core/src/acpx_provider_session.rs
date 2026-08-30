@@ -534,19 +534,28 @@ impl AcpxProviderSession {
         next_bridge.apply_result(result.clone()).map_err(|error| {
             LocalRunnerError::invalid(format!("ACPX tool result is invalid: {error}"))
         })?;
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::ToolResolve,
+        let resolution = if result.is_error {
+            // The durable result remains authoritative for correlation and
+            // retry bookkeeping, but provider-facing failures expose only a
+            // fixed diagnostic. Internal dispatcher payloads must not cross
+            // the sidecar boundary on the separate success-result channel.
+            json!({
+                "callId":result.call_id,
+                "turnId":turn_id,
+                "error":{"message":"Paperclip semantic operation failed"},
+            })
+        } else {
             json!({
                 "callId":result.call_id,
                 "turnId":turn_id,
                 "result":result.result,
-                "error":if result.is_error {
-                    json!({"message":"Paperclip semantic operation failed"})
-                } else {
-                    Value::Null
-                },
-            }),
-        ) {
+                "error":Value::Null,
+            })
+        };
+        let response = match self
+            .transport
+            .request(GeneratedAcpxSidecarCommand::ToolResolve, resolution)
+        {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),
         };

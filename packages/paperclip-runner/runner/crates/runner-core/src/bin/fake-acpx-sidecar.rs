@@ -109,6 +109,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-unauthorized-tool"
             | "turns-permission"
             | "resolutions"
+            | "resolutions-error-redaction"
             | "resolutions-wrong-ack" => {
                 write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
                 let params = request.get("params").unwrap_or(&Value::Null);
@@ -447,7 +448,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     next_sequence += 1;
                 }
                 if command == "turn.start"
-                    && matches!(mode, "resolutions" | "resolutions-wrong-ack")
+                    && matches!(
+                        mode,
+                        "resolutions" | "resolutions-error-redaction" | "resolutions-wrong-ack"
+                    )
                 {
                     for (event_type, payload) in [
                         (
@@ -581,7 +585,18 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                 "permissionMode": "approve-reads",
             },
         }),
-        "tool.resolve" => json!({"resolved":mode != "resolutions-wrong-ack"}),
+        "tool.resolve" => json!({
+            "resolved":if mode == "resolutions-error-redaction" {
+                params.get("callId").and_then(Value::as_str) == Some("call-1")
+                    && params.get("turnId").and_then(Value::as_str) == Some("turn-1")
+                    && params.get("result").is_none()
+                    && params.pointer("/error/message").and_then(Value::as_str)
+                        == Some("Paperclip semantic operation failed")
+                    && !params.to_string().contains("violet-internal-diagnostic-4821")
+            } else {
+                mode != "resolutions-wrong-ack"
+            }
+        }),
         "input.resolve" => json!({"resolved":true}),
         "session.close" => json!({"closed":true}),
         _ => json!({"command":command,"params":params}),

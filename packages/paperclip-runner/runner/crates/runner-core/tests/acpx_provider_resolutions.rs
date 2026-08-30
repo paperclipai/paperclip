@@ -133,6 +133,29 @@ fn local_validation_preserves_pending_requests_for_a_correct_retry() {
 }
 
 #[test]
+fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
+    let mut session = started("resolutions-error-redaction");
+    let mut failed = ToolResult {
+        call_id: "call-1".to_owned(),
+        operation_id: "issues.write".to_owned(),
+        result: json!({
+            "diagnostic":"violet-internal-diagnostic-4821",
+            "request":{"private":"value"},
+        }),
+        is_error: true,
+    };
+
+    assert!(session.deliver_tool_result(&failed).is_err());
+    assert!(session.state().pending_tool("call-1").is_some());
+
+    failed.operation_id = "issues.read".to_owned();
+    session.deliver_tool_result(&failed).unwrap();
+    assert!(session.state().pending_tool("call-1").is_none());
+    assert!(session.deliver_tool_result(&failed).is_err());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn rejects_permission_requests_that_bypass_the_pinned_codex_policy() {
     let mut session = AcpxProviderSession::start(&config("turns-permission")).unwrap();
     session
