@@ -604,7 +604,7 @@ fn recovery_rejects_tampered_retained_result_contracts() {
     let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_output).unwrap();
     assert!(recovered.attach_existing_run().is_err());
 
-    bridge.settle_turn().unwrap();
+    bridge.settle_turn("provider_turn_terminated").unwrap();
     let mut invalid_settled_output = serde_json::to_value(&bridge).unwrap();
     invalid_settled_output["settledResults"]["call-1"]["result"] = json!("invalid");
     let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_settled_output).unwrap();
