@@ -603,6 +603,62 @@ fn clean_provider_exit_does_not_refail_a_completed_turn() {
 }
 
 #[test]
+fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
+    let directory = temporary_directory("turn-identity-epoch-rollover");
+    let config = provider_config(&directory, &[]);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    drop(first);
+
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value = serde_json::from_slice(
+        &fs::read(&state_path).expect("read provider state before epoch rollover"),
+    )
+    .expect("parse provider state before epoch rollover");
+    let prior_generation = persisted["providerProcessGeneration"]
+        .as_u64()
+        .expect("provider generation is persisted");
+    persisted["settledProviderTurnIds"] = Value::Array(
+        (0..4_096)
+            .map(|index| Value::String(format!("provider-turn-{index}")))
+            .collect(),
+    );
+    fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
+        .expect("write full provider identity epoch");
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    recovered
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Start after a verified provider epoch rollover."}),
+        ))
+        .expect("roll over the idle provider generation and start fresh work");
+
+    let rolled: Value = serde_json::from_slice(
+        &fs::read(&state_path).expect("read provider state after epoch rollover"),
+    )
+    .expect("parse provider state after epoch rollover");
+    assert!(rolled["providerProcessGeneration"].as_u64().unwrap() > prior_generation);
+    assert_eq!(rolled["settledProviderTurnIds"], json!([]));
+    assert_eq!(rolled["settledProviderTurnFilter"], json!({"words": []}));
+
+    recovered.shutdown().expect("stop rolled provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     let directory = temporary_directory("completion-then-nonzero-exit");
     let config = provider_config(

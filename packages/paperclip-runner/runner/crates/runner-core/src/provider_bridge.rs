@@ -26,13 +26,13 @@ const MAX_RETAINED_TOOL_VALUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SETTLED_RESULT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_PENDING_CALLS: usize = 4_096;
 // Active-turn inputs and results are separately bounded. Settled identities
-// and their authoritative results remain durable so a delayed provider replay
-// cannot dispatch the same semantic action again.
+// remain exact for the entire active turn and rotate only when prepare_turn
+// establishes the next turn epoch.
 const MAX_DURABLE_CALL_RECEIPTS: usize = 4_096;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
-// Older exact identities roll into this fixed-size saturation marker. Its
-// probabilistic membership is never used as identity authority: once set, the
-// durable run fails closed with an explicit capacity error.
+// Retain the legacy serialized filter shape for recovery compatibility. New
+// state never inserts probabilistic identities; turn-bound exact receipts are
+// cleared only at the verified prepare_turn boundary.
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
@@ -164,15 +164,6 @@ pub(crate) struct DurableReplayFilter {
 }
 
 impl DurableReplayFilter {
-    pub(crate) fn insert(&mut self, identity: &str) {
-        if self.words.is_empty() {
-            self.words.resize(REPLAY_FILTER_WORDS, 0);
-        }
-        for bit in replay_filter_bits(identity) {
-            self.words[bit / u64::BITS as usize] |= 1_u64 << (bit % u64::BITS as usize);
-        }
-    }
-
     pub(crate) fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
@@ -186,17 +177,6 @@ impl DurableReplayFilter {
             ))
         }
     }
-}
-
-fn replay_filter_bits(identity: &str) -> impl Iterator<Item = usize> {
-    let digest = Sha256::digest(identity.as_bytes());
-    let bit_count = REPLAY_FILTER_WORDS * u64::BITS as usize;
-    (0..4).map(move |index| {
-        let offset = index * 8;
-        let mut bytes = [0_u8; 8];
-        bytes.copy_from_slice(&digest[offset..offset + 8]);
-        (u64::from_be_bytes(bytes) as usize) % bit_count
-    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -220,9 +200,8 @@ pub struct ProviderToolBridge {
     settled_call_ids: SettledCallIds,
     #[serde(default)]
     settled_call_filter: DurableReplayFilter,
-    // Resource exhaustion stops the active turn. Once exact identities spill
-    // into the saturation marker, later work fails with an explicit capacity
-    // error rather than treating a probabilistic collision as an exact replay.
+    // Resource exhaustion stops only the active turn. prepare_turn clears the
+    // marker after proving there are no calls whose outcome is still pending.
     #[serde(
         default,
         alias = "settledHistoryResetPending",
@@ -477,6 +456,8 @@ impl ProviderToolBridge {
         }
         self.settled_results.clear();
         self.retained_result_bytes = 0;
+        self.settled_call_ids.clear();
+        self.settled_call_filter = DurableReplayFilter::default();
         self.durable_run_receipt_limit_reached = false;
         Ok(())
     }
@@ -557,13 +538,6 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::invalid(
                 "provider reused a completed tool call id",
             ));
-        }
-        // The fixed-size replay filter is only a durable saturation marker.
-        // Its probabilistic matches cannot make identity-specific replay
-        // decisions without rejecting unrelated fresh calls on collisions.
-        if !self.settled_call_filter.is_empty() {
-            self.durable_run_receipt_limit_reached = true;
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.durable_run_receipt_limit_reached {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
@@ -750,15 +724,24 @@ impl ProviderToolBridge {
             retained_result_bytes(self.settled_results.iter().chain(settled_entries.iter()))?;
         ensure_settled_result_capacity(next_retained_bytes, std::iter::empty())?;
 
-        // Byte capacity was reserved at admission. Keep recent identities
-        // exact and fold evictions into the durable replay filter before the
-        // active-turn receipts are cleared.
+        // Byte capacity was reserved at admission. Keep every identity exact
+        // until prepare_turn establishes the next provider-turn epoch.
+        let new_identity_count = settled_entries
+            .keys()
+            .filter(|call_id| !self.settled_call_ids.contains(call_id))
+            .count();
+        if self
+            .settled_call_ids
+            .len()
+            .checked_add(new_identity_count)
+            .is_none_or(|total| total > MAX_SETTLED_CALL_IDS)
+        {
+            return Err(ProviderBridgeError::active_turn_receipt_limit());
+        }
         let evicted = self
             .settled_call_ids
             .extend_recent(settled_entries.keys().cloned(), MAX_SETTLED_CALL_IDS);
-        for call_id in evicted {
-            self.settled_call_filter.insert(&call_id);
-        }
+        debug_assert!(evicted.is_empty());
         self.pending.clear();
         self.completed.clear();
         self.settled_results.append(&mut settled_entries);
@@ -870,9 +853,7 @@ fn validate_pending_tool_call(
     authorized: &BTreeMap<String, AuthorizedTool>,
     call: &PendingToolCall,
 ) -> Result<(), ProviderBridgeError> {
-    if !is_stable_call_id(&call.call_id) {
-        return Err(ProviderBridgeError::invalid("tool call id is invalid"));
-    }
+    validate_stable_id(&call.call_id, "tool call id")?;
     validate_operation_id(&call.operation_id)?;
     let tool = authorized.get(&call.operation_id).ok_or_else(|| {
         ProviderBridgeError::invalid(format!(
@@ -1489,12 +1470,20 @@ mod tests {
         );
 
         bridge.settle_turn("provider_turn_terminated").unwrap();
-        bridge
+        assert!(bridge
             .begin_call(
-                "call-after-settlement".to_owned(),
+                "call-0".to_owned(),
                 "get_task_context".to_owned(),
                 json!({}),
             )
-            .expect("turn settlement releases the active-turn receipt budget");
+            .is_err());
+        bridge.prepare_turn().unwrap();
+        bridge
+            .begin_call(
+                "call-0".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a verified new turn rotates the exact receipt scope");
     }
 }

@@ -328,9 +328,8 @@ struct CodexProviderState {
     #[serde(default)]
     completed_provider_turn_id: Option<String>,
     // Unlike the live provider process, the durable run survives restarts.
-    // Recent terminal identities stay exact; spilling an older identity into
-    // the filter saturates the run instead of using a probabilistic match as
-    // identity authority.
+    // Terminal identities stay exact for one process-generation epoch. At the
+    // bound, an idle process is reaped before this epoch is rotated.
     #[serde(default)]
     settled_provider_turn_ids: std::collections::BTreeSet<String>,
     #[serde(default)]
@@ -371,18 +370,19 @@ fn settled_provider_turn_contains(
 
 fn remember_settled_provider_turn(
     identities: &mut std::collections::BTreeSet<String>,
-    filter: &mut DurableReplayFilter,
+    _filter: &mut DurableReplayFilter,
     provider_turn_id: String,
-) {
-    if settled_provider_turn_contains(identities, filter, &provider_turn_id) {
-        return;
+) -> Result<(), DurableRunnerError> {
+    if identities.contains(&provider_turn_id) {
+        return Ok(());
     }
     if identities.len() >= MAX_SETTLED_PROVIDER_TURN_IDS {
-        if let Some(evicted) = identities.pop_first() {
-            filter.insert(&evicted);
-        }
+        return Err(DurableRunnerError::invalid(
+            "Codex provider turn identity epoch reached its exact capacity",
+        ));
     }
     identities.insert(provider_turn_id);
+    Ok(())
 }
 
 impl CodexProviderState {
@@ -732,7 +732,7 @@ impl CodexProviderState {
             &mut self.settled_provider_turn_ids,
             &mut self.settled_provider_turn_filter,
             provider_turn_id,
-        );
+        )?;
         Ok(())
     }
 
@@ -749,7 +749,7 @@ impl CodexProviderState {
                 &mut settled_provider_turn_ids,
                 &mut settled_provider_turn_filter,
                 provider_turn_id,
-            );
+            )?;
         }
         Ok((settled_provider_turn_ids, settled_provider_turn_filter))
     }
@@ -1289,17 +1289,45 @@ impl CodexCommandExecutor {
         })
     }
 
-    fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
-        self.restore_provider_if_needed()?;
-        if self
-            .state
-            .as_ref()
-            .is_some_and(|state| !state.settled_provider_turn_filter.is_empty())
-        {
+    fn rollover_provider_turn_epoch_if_needed(&mut self) -> Result<(), DurableRunnerError> {
+        let rollover_required = self.state.as_ref().is_some_and(|state| {
+            state.settled_provider_turn_ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS
+                || !state.settled_provider_turn_filter.is_empty()
+        });
+        if !rollover_required {
+            return Ok(());
+        }
+        let rollover_is_safe = self.state.as_ref().is_some_and(|state| {
+            state.active_provider_turn_id.is_none()
+                && !state.ambiguous_turn_start_pending
+                && state.lifecycle == "session_open"
+        });
+        if !rollover_is_safe {
             return Err(DurableRunnerError::invalid(
-                "Codex durable provider turn identity limit reached",
+                "Codex provider turn identity epoch cannot rotate while work is active",
             ));
         }
+
+        if let Some(mut provider) = self.provider.take() {
+            provider.shutdown().map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to reap the completed Codex identity epoch: {error}"
+                ))
+            })?;
+        }
+        let state = self
+            .state
+            .as_mut()
+            .expect("Codex state remains available during identity epoch rollover");
+        state.settled_provider_turn_ids.clear();
+        state.settled_provider_turn_filter = DurableReplayFilter::default();
+        self.save_state()?;
+        self.ensure_provider()?;
+        Ok(())
+    }
+
+    fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        self.restore_provider_if_needed()?;
         if self
             .state
             .as_ref()
@@ -1307,6 +1335,15 @@ impl CodexCommandExecutor {
         {
             return Err(DurableRunnerError::invalid(
                 "Codex already has an active provider turn",
+            ));
+        }
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.ambiguous_turn_start_pending)
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex has an unresolved ambiguous provider turn start",
             ));
         }
         if self
@@ -1328,6 +1365,7 @@ impl CodexCommandExecutor {
                     "Codex semantic tool receipts could not rotate: {error}"
                 ))
             })?;
+        self.rollover_provider_turn_epoch_if_needed()?;
         let text = payload
             .get("text")
             .and_then(Value::as_str)
@@ -3002,7 +3040,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_provider_turn_ledger_rolls_old_identities_into_the_filter() {
+    fn durable_provider_turn_ledger_never_evicts_within_an_epoch() {
         let mut state = CodexProviderState::new(
             CodexProviderConfig {
                 provider: "codex".to_owned(),
@@ -3024,7 +3062,7 @@ mod tests {
         );
         state.thread_id = Some("thread-1".to_owned());
         state.lifecycle = "turn_active".to_owned();
-        for index in 0..MAX_SETTLED_PROVIDER_TURN_IDS {
+        for index in 0..MAX_SETTLED_PROVIDER_TURN_IDS - 1 {
             state
                 .settled_provider_turn_ids
                 .insert(format!("provider-turn-{index:04}"));
@@ -3039,10 +3077,22 @@ mod tests {
             state.settled_provider_turn_ids.len(),
             MAX_SETTLED_PROVIDER_TURN_IDS
         );
-        assert!(!state.settled_provider_turn_filter.is_empty());
+        assert!(state.settled_provider_turn_filter.is_empty());
         assert!(state
             .settled_provider_turn_ids
             .contains("provider-turn-final"));
+        assert!(state
+            .settled_provider_turn_ids
+            .contains("provider-turn-0000"));
+
+        state.lifecycle = "turn_active".to_owned();
+        state.active_provider_turn_id = Some("provider-turn-overflow".to_owned());
+        assert!(state.settle_active_provider_turn_identity().is_err());
+        assert!(!state
+            .settled_provider_turn_ids
+            .contains("provider-turn-overflow"));
+        state.active_provider_turn_id = None;
+        state.lifecycle = "session_open".to_owned();
         state.validate().unwrap();
         let recovered: CodexProviderState =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();

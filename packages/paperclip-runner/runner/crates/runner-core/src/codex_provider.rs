@@ -153,9 +153,7 @@ impl SettledProviderTurnIds {
             return true;
         }
         if self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS {
-            if let Some(evicted) = self.ids.pop_first() {
-                self.filter.insert(&evicted);
-            }
+            return false;
         }
         self.ids.insert(provider_turn_id)
     }
@@ -164,12 +162,16 @@ impl SettledProviderTurnIds {
         self.ids.contains(provider_turn_id)
     }
 
-    fn is_saturated(&self) -> bool {
-        !self.filter.is_empty()
+    fn at_capacity(&self) -> bool {
+        self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS || !self.filter.is_empty()
     }
 
     fn restore(&mut self, provider_turn_id: String) {
-        self.insert(provider_turn_id);
+        let restored = self.insert(provider_turn_id);
+        debug_assert!(
+            restored,
+            "restored provider turn identity exceeded its epoch"
+        );
     }
 
     fn restore_all(
@@ -182,7 +184,11 @@ impl SettledProviderTurnIds {
             .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
         self.filter = replay_filter;
         for provider_turn_id in provider_turn_ids {
-            self.insert(provider_turn_id);
+            if !self.insert(provider_turn_id) {
+                return Err(LocalRunnerError::invalid(
+                    "Codex restored provider turn identity epoch exceeded its exact capacity",
+                ));
+            }
         }
         Ok(())
     }
@@ -468,7 +474,7 @@ impl CodexProvider {
                 "Codex has an unresolved ambiguous provider turn start",
             ));
         }
-        if self.settled_provider_turn_ids.is_saturated() {
+        if self.settled_provider_turn_ids.at_capacity() {
             return Err(LocalRunnerError::invalid(
                 "Codex durable provider turn identity limit reached",
             ));
@@ -1949,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_provider_turn_history_marks_exact_ledger_saturation() {
+    fn settled_provider_turn_history_never_evicts_exact_identities() {
         let mut settled = SettledProviderTurnIds::default();
         for index in 0..MAX_SETTLED_PROVIDER_TURN_IDS {
             assert!(settled.insert(format!("turn-{index}")));
@@ -1958,16 +1964,12 @@ mod tests {
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
         assert!(settled.contains("turn-0"));
         assert!(settled.contains("turn-1"));
-        assert!(!settled.is_saturated());
-        assert!(settled.insert(format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
-        assert!(settled.contains(&format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
+        assert!(settled.at_capacity());
+        assert!(!settled.insert(format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
+        assert!(!settled.contains(&format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
-        assert!(!settled.contains("turn-0"));
-        assert!(settled.is_saturated());
-
-        assert!(settled.insert("turn-0".to_owned()));
         assert!(settled.contains("turn-0"));
-        assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
+        assert!(settled.filter.is_empty());
     }
 
     #[test]
