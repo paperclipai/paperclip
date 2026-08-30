@@ -99,7 +99,12 @@ export function selectBundledDependencyPatches(
 
     const installedSpecifier = `${packageName}@${installedManifest.version}`;
     const patchPath = packagePatches.get(installedSpecifier);
-    if (patchPath === undefined) continue;
+    if (patchPath === undefined) {
+      const configuredSpecifiers = [...packagePatches.keys()].sort().join(", ");
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: installed ${installedSpecifier}, but configured patches are ${configuredSpecifiers}`,
+      );
+    }
     if (typeof patchPath !== "string" || patchPath.length === 0) {
       throw new Error(`Patch path for ${installedSpecifier} must be a non-empty string`);
     }

@@ -161,6 +161,26 @@ test("bundled package patch selection reports missing installed metadata", (t) =
   );
 });
 
+test("bundled package patch selection rejects an unpatched installed version", (t) => {
+  const destinationDir = mkdtempSync(join(tmpdir(), "paperclip-unmatched-patch-version-"));
+  const installedPackageDir = join(destinationDir, "node_modules", "acpx");
+  mkdirSync(installedPackageDir, { recursive: true });
+  writeFileSync(
+    join(installedPackageDir, "package.json"),
+    JSON.stringify({ name: "acpx", version: "0.14.0" }),
+  );
+  t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
+
+  assert.throws(
+    () =>
+      selectBundledDependencyPatches(destinationDir, ["acpx"], {
+        "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+        "acpx@0.13.1": "patches/acpx@0.13.1.patch",
+      }),
+    /installed acpx@0\.14\.0, but configured patches are acpx@0\.12\.0, acpx@0\.13\.1/,
+  );
+});
+
 test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-stage-"));
   const sourceDir = join(fixtureDir, "source");
