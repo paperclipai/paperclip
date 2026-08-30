@@ -323,6 +323,65 @@ describe("Codex app-server Codex driver", () => {
     ).toBe(false);
   });
 
+  it("clears a checkpointed active turn that already has a durable terminal", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "completed", items: [] }],
+      },
+    };
+    second.turnStartResponse = Promise.resolve({
+      turn: { id: "turn-2", status: "inProgress", items: [] },
+    });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-terminal-checkpoint-race",
+      normalizedSessionId: "normalized-terminal-checkpoint-race",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Complete without a result." },
+    });
+    first.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    expect(snapshot).toMatchObject({
+      activeTurnId: null,
+      semanticResult: null,
+      terminalTurns: [{ turnId: "turn-1" }],
+    });
+    // Model the crash window after the terminal fingerprint was checkpointed
+    // but before the subsequent active-turn clear was durable.
+    snapshot.activeTurnId = "turn-1";
+    await original.close({ reason: "transport lost during terminal checkpoint" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    expect(recovered).toBeDefined();
+    await expect(recovered!.snapshot()).resolves.toMatchObject({
+      activeTurnId: null,
+      semanticResult: null,
+      terminalTurns: [{ turnId: "turn-1" }],
+    });
+    await expect(recovered!.startTurn({
+      message: {
+        role: "user",
+        text: "Recover only the missing disposition.",
+      },
+    })).resolves.toMatchObject({ turnId: "turn-2" });
+    expect(
+      second.calls.filter((call) => call.method === "turn/start"),
+    ).toHaveLength(1);
+    await recovered!.close({ reason: "test complete" });
+  });
+
   it("permits one recovery turn for a result-less terminal task", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();

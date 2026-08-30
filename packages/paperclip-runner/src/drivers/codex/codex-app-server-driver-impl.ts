@@ -370,7 +370,18 @@ export class CodexAppServerDriver implements HarnessDriver {
           reason: "provider resumed a different provider session",
         };
       }
-      let recoveredActiveTurnId = snapshot.activeTurnId ?? null;
+      const checkpointedActiveTurnId = snapshot.activeTurnId ?? null;
+      // A terminal fingerprint is the durable provider fact. A crash can
+      // persist it before the following active-turn clear reaches the same
+      // checkpoint, so never resurrect that already-terminal turn as active.
+      const checkpointedActiveTurnIsTerminal =
+        checkpointedActiveTurnId !== null &&
+        (snapshot.terminalTurns ?? []).some(
+          (terminal) => terminal.turnId === checkpointedActiveTurnId,
+        );
+      let recoveredActiveTurnId = checkpointedActiveTurnIsTerminal
+        ? null
+        : checkpointedActiveTurnId;
       let dispositionOnlyRecoveryConsumed =
         snapshot.dispositionOnlyRecoveryConsumed ?? false;
       let dispositionOnlyRecoveryTurnId =
