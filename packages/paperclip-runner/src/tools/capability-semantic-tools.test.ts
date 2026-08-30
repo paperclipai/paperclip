@@ -902,6 +902,105 @@ describe("Capability exposure and authorization", () => {
     });
   });
 
+  it("does not revive a serialized pending extension when the durable store is empty", async () => {
+    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    const durableStore: CapabilitySemanticToolRuntimeStore = {
+      load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
+      save: (_runId, snapshot) => {
+        durableSnapshot = structuredClone(snapshot);
+      },
+      compareAndSwap: (_runId, expected, snapshot) => {
+        if (JSON.stringify(durableSnapshot) !== JSON.stringify(expected)) return false;
+        durableSnapshot = structuredClone(snapshot);
+        return true;
+      },
+    };
+    const first = await runtimeFor({
+      scenarioGrants: ["cases:write"],
+      semanticToolRuntimeStore: durableStore,
+    });
+    const invocation = {
+      operationId: "upsert_case",
+      input: { key: "case-empty-store-pending", body: "Case body" },
+      idempotencyKey: "empty-store-pending",
+    } as const;
+
+    const inFlight = first.runtime.invoke(invocation);
+    const serializedWhilePending = first.adapter.serialize();
+    await expect(inFlight).resolves.toMatchObject({ ok: true });
+    durableSnapshot = null;
+
+    const restoredAdapter = CapabilityMockControlPlaneAdapter.restore(
+      serializedWhilePending,
+      { semanticToolRuntimeStore: durableStore },
+    );
+    const restored = new CapabilitySemanticToolRuntime({
+      adapter: restoredAdapter,
+      runId: OPEN.identity.runId,
+      scenarioGrants: ["cases:write"],
+    });
+    await expect(restored.invoke(invocation)).resolves.toMatchObject({
+      ok: true,
+      value: { key: "case-empty-store-pending", upserted: true },
+    });
+    expect(durableSnapshot?.extensions).toEqual([
+      expect.objectContaining({
+        key: "run-tools:upsert_case:empty-store-pending",
+        status: "completed",
+      }),
+    ]);
+  });
+
+  it("does not revive serialized completed extensions when the durable store is empty", async () => {
+    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    const durableStore: CapabilitySemanticToolRuntimeStore = {
+      load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
+      save: (_runId, snapshot) => {
+        durableSnapshot = structuredClone(snapshot);
+      },
+      compareAndSwap: (_runId, expected, snapshot) => {
+        if (JSON.stringify(durableSnapshot) !== JSON.stringify(expected)) return false;
+        durableSnapshot = structuredClone(snapshot);
+        return true;
+      },
+    };
+    const first = await runtimeFor({
+      scenarioGrants: ["cases:write"],
+      semanticToolRuntimeStore: durableStore,
+    });
+    await expect(first.runtime.invoke({
+      operationId: "upsert_case",
+      input: { key: "case-stale-completed", body: "Stale body" },
+      idempotencyKey: "stale-completed",
+    })).resolves.toMatchObject({ ok: true });
+    const serializedWithCompleted = first.adapter.serialize();
+    durableSnapshot = null;
+
+    const restoredAdapter = CapabilityMockControlPlaneAdapter.restore(
+      serializedWithCompleted,
+      { semanticToolRuntimeStore: durableStore },
+    );
+    const restored = new CapabilitySemanticToolRuntime({
+      adapter: restoredAdapter,
+      runId: OPEN.identity.runId,
+      scenarioGrants: ["cases:write"],
+    });
+    await expect(restored.invoke({
+      operationId: "upsert_case",
+      input: { key: "case-after-empty-store", body: "Fresh body" },
+      idempotencyKey: "fresh-after-empty-store",
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { key: "case-after-empty-store", upserted: true },
+    });
+    expect(durableSnapshot?.extensions).toEqual([
+      expect.objectContaining({
+        key: "run-tools:upsert_case:fresh-after-empty-store",
+        status: "completed",
+      }),
+    ]);
+  });
+
   it("renews a live extension lease before another runtime can reclaim it", async () => {
     vi.useFakeTimers({ now: 0 });
     try {

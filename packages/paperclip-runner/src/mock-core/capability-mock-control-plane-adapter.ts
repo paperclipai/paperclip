@@ -625,8 +625,9 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
     runId: string,
   ): CapabilitySemanticToolRuntimeSnapshot | null {
     this.#run(runId);
-    const durable = this.#semanticToolRuntimeStore?.load(runId) ?? null;
-    if (durable !== null) {
+    if (this.#semanticToolRuntimeStore !== undefined) {
+      const durable = this.#semanticToolRuntimeStore.load(runId);
+      if (durable === null) return null;
       if (!isSemanticToolRuntimeSnapshot(durable)) {
         throw new CapabilityMockControlPlaneError(
           "fixture_state_invalid",
