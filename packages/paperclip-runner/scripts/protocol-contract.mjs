@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
@@ -308,7 +309,7 @@ export function assertQuestionAdapterFixture(fixture) {
         } catch {
           throw contractError("invalid_question_adapter_fixture", `text validation pattern for ${question.id} is invalid`);
         }
-        if (!pattern.test(boundedText)) {
+        if (!testFixturePatternWithDeadline(pattern.source, boundedText, question.id)) {
           throw contractError("invalid_question_adapter_fixture", `answer for ${question.id} does not match the required format`);
         }
       }
@@ -480,12 +481,7 @@ function projectAcpxProperty(name, property, index, required) {
   if (property.type === "string") {
     const options = acpxNativeOptions(property, "oneOf");
     if (options.length > 0) return projectedAcpxOptions(name, property.type, base, options, "single_select");
-    if (optionalFixtureText(property.pattern) !== undefined) {
-      throw contractError(
-        "invalid_acpx_question_fixture",
-        `native string property ${name} uses an unsupported pattern`,
-      );
-    }
+    const pattern = optionalFixtureText(property.pattern);
     return {
       name,
       type: property.type,
@@ -501,6 +497,7 @@ function projectAcpxProperty(name, property, index, required) {
           ...(finiteNonNegativeFixtureInteger(property.maxLength) !== undefined
             ? { maxLength: property.maxLength }
             : {}),
+          ...(pattern !== undefined ? { pattern } : {}),
         },
       },
     };
@@ -534,6 +531,31 @@ function projectAcpxProperty(name, property, index, required) {
     acpxNativeOptions(property.items, "anyOf"),
     "multi_select",
   );
+}
+
+function testFixturePatternWithDeadline(pattern, value, questionId) {
+  const outcome = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      "const chunks=[];for await(const chunk of process.stdin)chunks.push(chunk);const {pattern,value}=JSON.parse(Buffer.concat(chunks).toString());process.stdout.write(new RegExp(pattern).test(value)?'1':'0');",
+    ],
+    {
+      input: JSON.stringify({ pattern, value }),
+      encoding: "utf8",
+      timeout: 1_000,
+      maxBuffer: 1_024,
+      windowsHide: true,
+    },
+  );
+  if (outcome.error || outcome.signal || outcome.status !== 0) {
+    throw contractError(
+      "invalid_question_adapter_fixture",
+      `text validation pattern for ${questionId} could not be evaluated safely`,
+    );
+  }
+  return outcome.stdout === "1";
 }
 
 function projectedAcpxOptions(name, type, base, nativeOptions, answerMode) {

@@ -146,10 +146,18 @@ test("the ACPX question fixture enforces its provider-native contract", async ()
     .requestedSchema.properties.environment;
   delete patternBearingProperty.oneOf;
   patternBearingProperty.pattern = "^staging$";
-  assert.throws(
-    () => assertAcpxQuestionFixture(patternBearingQuestion),
-    /native string property environment uses an unsupported pattern/,
-  );
+  patternBearingQuestion.canonicalQuestionSet.questions[0] = {
+    id: "field-1-environment-ba5285161ba6",
+    header: "Environment",
+    prompt: "Where should we deploy?",
+    required: true,
+    answerMode: "text",
+    textValidation: { inputType: "text", pattern: "^staging$" },
+  };
+  patternBearingQuestion.canonicalResponse.answers = {
+    "field-1-environment-ba5285161ba6": { text: "staging" },
+  };
+  assert.doesNotThrow(() => assertAcpxQuestionFixture(patternBearingQuestion));
 
   const emptyOption = structuredClone(canonical);
   emptyOption.nativeRequest.params.requestedSchema.properties.environment
@@ -562,6 +570,21 @@ test("every question adapter fixture satisfies its declared schema", async () =>
       invalid.label,
     );
   }
+
+  const pathologicalPattern = structuredClone(canonical);
+  pathologicalPattern.canonicalQuestionSet.questions[0] = {
+    ...requiredQuestion,
+    answerMode: "text",
+    options: [],
+    textValidation: { pattern: "(a+)+$" },
+  };
+  pathologicalPattern.canonicalResponse.answers[requiredQuestionId] = {
+    text: `${"a".repeat(100_000)}!`,
+  };
+  assert.throws(
+    () => assertQuestionAdapterFixture(pathologicalPattern),
+    /could not be evaluated safely/,
+  );
 });
 
 test("the cross-language conformance input and output have one stable identity", async () => {
