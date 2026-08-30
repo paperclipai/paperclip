@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -119,35 +120,70 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
       permissions: {},
     });
 
-    const queued = await heartbeat.invoke(agentId, "on_demand", { taskKey }, "manual");
-    expect(queued).not.toBeNull();
-    const finished = await waitForRunToFinish(heartbeat, queued!.id);
-    expect(finished?.status).toBe("failed");
-    // A terminal run status is written before all dependent agent/session writes.
-    // Await the service's durable execution barrier rather than an arbitrary delay.
-    await heartbeat.drainActiveRunExecutions();
+    const liveLogEvents: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      if (event.type === "heartbeat.run.log") liveLogEvents.push(event);
+    });
 
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
-    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    const [taskSession] = await db
-      .select()
-      .from(agentTaskSessions)
-      .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, taskKey)));
-    const [runtimeState] = await db
-      .select()
-      .from(agentRuntimeState)
-      .where(eq(agentRuntimeState.agentId, agentId));
+    try {
+      const queued = await heartbeat.invoke(agentId, "on_demand", { taskKey }, "manual");
+      expect(queued).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, queued!.id);
+      expect(finished?.status).toBe("failed");
+      // A terminal run status is written before all dependent agent/session writes.
+      // Await the service's durable execution barrier rather than an arbitrary delay.
+      await heartbeat.drainActiveRunExecutions();
 
-    expect(run?.error).toContain(DIAGNOSTIC);
-    expect(run?.stdoutExcerpt).toContain("adapter stdout");
-    expect(run?.stderrExcerpt).toContain("adapter stderr");
-    expect(agent).toMatchObject({ status: "error" });
-    expect(agent?.errorReason).toContain(DIAGNOSTIC);
-    expect(taskSession?.lastError).toContain(DIAGNOSTIC);
-    expect(runtimeState?.lastError).toContain(DIAGNOSTIC);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const [taskSession] = await db
+        .select()
+        .from(agentTaskSessions)
+        .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, taskKey)));
+      const [runtimeState] = await db
+        .select()
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, agentId));
+      const storedLog = await heartbeat.readLog(queued!.id);
 
-    for (const durableValue of [run, agent, taskSession, runtimeState]) {
-      expect(JSON.stringify(durableValue)).not.toContain(CREDENTIAL_VALUE);
+      expect(run?.error).toContain(DIAGNOSTIC);
+      expect(run?.stdoutExcerpt).toContain("adapter stdout");
+      expect(run?.stderrExcerpt).toContain("adapter stderr");
+      expect(agent).toMatchObject({ status: "error" });
+      expect(agent?.errorReason).toContain(DIAGNOSTIC);
+      expect(taskSession?.lastError).toContain(DIAGNOSTIC);
+      expect(runtimeState?.lastError).toContain(DIAGNOSTIC);
+      expect(storedLog.content).toContain("adapter stdout");
+      expect(storedLog.content).toContain("adapter stderr");
+      expect(liveLogEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            companyId,
+            type: "heartbeat.run.log",
+            payload: expect.objectContaining({
+              runId: queued!.id,
+              stream: "stdout",
+              chunk: expect.stringContaining("adapter stdout"),
+            }),
+          }),
+          expect.objectContaining({
+            companyId,
+            type: "heartbeat.run.log",
+            payload: expect.objectContaining({
+              runId: queued!.id,
+              stream: "stderr",
+              chunk: expect.stringContaining("adapter stderr"),
+            }),
+          }),
+        ]),
+      );
+
+      for (const durableValue of [run, agent, taskSession, runtimeState, storedLog]) {
+        expect(JSON.stringify(durableValue)).not.toContain(CREDENTIAL_VALUE);
+      }
+      expect(JSON.stringify(liveLogEvents)).not.toContain(CREDENTIAL_VALUE);
+    } finally {
+      unsubscribe();
     }
   });
 });
