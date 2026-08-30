@@ -43,7 +43,7 @@ export const inspectOperationResultAction = {
       "result": {
         "schema": "paperclip.capability.tool-result.v1",
         "ok": true,
-        "operationId": "example",
+        "operationId": "inspect_operation_result",
         "operationResultId": "example",
         "value": "example",
         "commandResult": "example",
@@ -57,7 +57,7 @@ export const inspectOperationResultAction = {
     "successExample": {
       "schema": "paperclip.capability.tool-result.v1",
       "ok": true,
-      "operationId": "example",
+      "operationId": "inspect_operation_result",
       "operationResultId": "example",
       "value": "example",
       "commandResult": "example",

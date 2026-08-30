@@ -30,6 +30,7 @@ describe("core Paperclip protocol action contracts", () => {
       }
 
       if (action.scenario !== null) {
+        expect(action.scenario.successExample.operationId).toBe(operationId);
         const scenarioProperties = action.scenario.descriptor.inputSchema.properties ?? {};
         const callEntries = Object.entries(action.examples.call.input);
         const outOfBandKeys = callEntries
