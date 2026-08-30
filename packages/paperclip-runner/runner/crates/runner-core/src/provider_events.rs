@@ -1,7 +1,9 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::acpx_event_payload::AcpxRuntimeEventKind;
 use crate::durable::{redact_text, EventPriority};
+use crate::generated_acpx_sidecar_contract::classify_generated_acpx_tool_operation;
 
 const MAX_TEXT_CHARS: usize = 4_000;
 
@@ -344,9 +346,436 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
     events
 }
 
+/// Converts an already scope-checked and payload-validated ACPX runtime event
+/// into provider-neutral PRP activity. Operational events such as semantic
+/// results and turn completion remain owned by the stateful provider adapter.
+/// That adapter also suppresses repeated reasoning-start boundaries in a turn.
+pub fn normalize_acpx_runtime_event(
+    kind: AcpxRuntimeEventKind,
+    payload: &Value,
+    fallback_item_id: &str,
+    turn_id: &str,
+    provider_requests: u64,
+) -> Vec<NormalizedProviderEvent> {
+    let item_id = stable_id(
+        match kind {
+            AcpxRuntimeEventKind::ToolCall => string(payload.get("toolCallId")),
+            AcpxRuntimeEventKind::Plan => turn_id,
+            _ => string(payload.get("messageId")),
+        },
+        fallback_item_id,
+    );
+    match kind {
+        AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
+            event_type: "item.delta".to_owned(),
+            priority: EventPriority::P2,
+            payload: json!({
+                "provider": "acpx",
+                "itemId": item_id,
+                "kind": "agentMessage",
+                "channel": "progress",
+                "providerMethod": "runtime.event",
+                "text": bounded_text(string(payload.get("text")), MAX_TEXT_CHARS),
+            }),
+        }],
+        AcpxRuntimeEventKind::Thinking => vec![NormalizedProviderEvent {
+            event_type: "item.started".to_owned(),
+            priority: EventPriority::P2,
+            payload: json!({
+                "provider": "acpx",
+                "itemId": item_id,
+                "kind": "reasoning",
+                "status": "running",
+                "channel": "detail",
+                "text": Value::Null,
+            }),
+        }],
+        AcpxRuntimeEventKind::Plan => normalize_acpx_plan(payload, &item_id),
+        AcpxRuntimeEventKind::Status => {
+            normalize_acpx_status(payload, &item_id, turn_id, provider_requests)
+        }
+        AcpxRuntimeEventKind::ToolCall => normalize_acpx_tool_call(payload, &item_id),
+        AcpxRuntimeEventKind::ProviderNotice => vec![acpx_notice(
+            &item_id,
+            string(payload.get("severity")),
+            string(payload.get("category")),
+            string(payload.get("summary")),
+            false,
+        )],
+        AcpxRuntimeEventKind::Error => vec![acpx_notice(
+            &item_id,
+            "error",
+            string(payload.get("code")),
+            string(payload.get("message")),
+            true,
+        )],
+        AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    }
+}
+
+fn normalize_acpx_plan(payload: &Value, plan_id: &str) -> Vec<NormalizedProviderEvent> {
+    let steps = payload
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(256)
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let body = bounded_text(string(entry.get("content")), MAX_TEXT_CHARS);
+            if body.trim().is_empty() {
+                return None;
+            }
+            Some(json!({
+                "stepId": format!("step-{}", index + 1),
+                "body": body,
+                "status": match string(entry.get("status")) {
+                    "inProgress" | "in_progress" => "in_progress",
+                    "completed" => "completed",
+                    "blocked" | "failed" | "error" => "blocked",
+                    _ => "pending",
+                },
+            }))
+        })
+        .collect::<Vec<_>>();
+    let complete = !steps.is_empty()
+        && steps
+            .iter()
+            .all(|step| step.get("status").and_then(Value::as_str) == Some("completed"));
+    vec![NormalizedProviderEvent {
+        event_type: "plan.updated".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.plan.updated.v1",
+            "planId": plan_id,
+            "revision": 1,
+            "explanation": Value::Null,
+            "steps": steps,
+            "complete": complete,
+            "syncStatus": "not_applicable",
+            "documentRevision": Value::Null,
+        }),
+    }]
+}
+
+fn normalize_acpx_status(
+    payload: &Value,
+    item_id: &str,
+    turn_id: &str,
+    provider_requests: u64,
+) -> Vec<NormalizedProviderEvent> {
+    let tag = string(payload.get("tag"));
+    if tag == "usage_update" {
+        let breakdown = payload.get("breakdown").unwrap_or(&Value::Null);
+        let usage = json!({
+            "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
+            "outputTokens": nonnegative_u64(breakdown.get("outputTokens")),
+            "cacheReadTokens": nonnegative_u64(
+                breakdown
+                    .get("cachedReadTokens")
+                    .or_else(|| breakdown.get("cacheReadTokens")),
+            ),
+            "cacheWriteTokens": nonnegative_u64(
+                breakdown
+                    .get("cachedWriteTokens")
+                    .or_else(|| breakdown.get("cacheWriteTokens")),
+            ),
+            "activeSeconds": 0.0,
+            "requests": provider_requests,
+            "providerCostUsd": payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0),
+        });
+        return vec![NormalizedProviderEvent {
+            event_type: "usage.reported".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({
+                "provider": "acpx",
+                "model": payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(|value| bounded_text(value, 240)),
+                "providerSessionId": Value::Null,
+                "providerRequestId": Value::Null,
+                "cumulative": usage,
+                "runDelta": usage,
+            }),
+        }];
+    }
+    if tag == "current_mode_update" {
+        let status = string(payload.get("text"));
+        return vec![NormalizedProviderEvent {
+            event_type: "review.mode.changed".to_owned(),
+            priority: EventPriority::P1,
+            payload: json!({
+                "schema": "paperclip.review.mode_changed.v1",
+                "reviewId": stable_id(turn_id, item_id),
+                "state": if status.to_ascii_lowercase().contains("review")
+                    || status.to_ascii_lowercase().contains("plan")
+                {
+                    "entered"
+                } else {
+                    "exited"
+                },
+                "scope": if status.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(bounded_text(status, MAX_TEXT_CHARS))
+                },
+            }),
+        }];
+    }
+    if matches!(
+        tag,
+        "available_commands_update" | "config_option_update" | "session_info_update"
+    ) {
+        return Vec::new();
+    }
+    vec![acpx_notice(
+        item_id,
+        "info",
+        tag,
+        string(payload.get("text")),
+        false,
+    )]
+}
+
+fn normalize_acpx_tool_call(payload: &Value, item_id: &str) -> Vec<NormalizedProviderEvent> {
+    let native_status = string(payload.get("status"));
+    let status = provider_status(native_status, native_status == "completed");
+    let terminal = status != "running";
+    let raw_title = string(payload.get("title"));
+    let title = bounded_text(raw_title, 240);
+    let output = match payload.get("rawOutput").or_else(|| payload.get("output")) {
+        Some(Value::String(value)) => value.clone(),
+        Some(value) => serde_json::to_string(value).unwrap_or_default(),
+        None => String::new(),
+    };
+    let operation = acpx_tool_operation(string(payload.get("kind")), raw_title);
+    let mut normalized = json!({
+        "schema": "paperclip.tool.execution.v1",
+        "executionId": item_id,
+        "transport": "builtin",
+        "operation": operation,
+        "name": if title.is_empty() { Value::Null } else { Value::String(title) },
+        "target": safe_acpx_location(payload.pointer("/locations/0"), operation == "edit"),
+        "namespace": Value::Null,
+        "readOnly": matches!(operation, "read" | "search" | "list"),
+        "status": status,
+        "durationMs": Value::Null,
+        "exitCode": Value::Null,
+        "progress": if terminal {
+            Value::Null
+        } else {
+            payload
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(bounded_text(value, MAX_TEXT_CHARS)))
+                .unwrap_or(Value::Null)
+        },
+    });
+    if let (Some(object), Value::Object(output)) =
+        (normalized.as_object_mut(), bounded_output(&output))
+    {
+        object.extend(output);
+    }
+    vec![NormalizedProviderEvent {
+        event_type: if terminal {
+            "tool.execution.completed"
+        } else if string(payload.get("tag")) == "tool_call" {
+            "tool.execution.started"
+        } else {
+            "tool.execution.progressed"
+        }
+        .to_owned(),
+        priority: if terminal {
+            EventPriority::P1
+        } else {
+            EventPriority::P2
+        },
+        payload: normalized,
+    }]
+}
+
+fn acpx_notice(
+    item_id: &str,
+    severity: &str,
+    category: &str,
+    summary: &str,
+    user_actionable: bool,
+) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "provider.notice.recorded".to_owned(),
+        priority: if severity == "error" {
+            EventPriority::P0
+        } else {
+            EventPriority::P1
+        },
+        payload: json!({
+            "schema": "paperclip.provider.notice.v1",
+            "noticeId": item_id,
+            "severity": match severity {
+                "error" => "error",
+                "warning" => "warning",
+                _ => "info",
+            },
+            "category": stable_id(category, "acpx_provider_update"),
+            "scope": "turn",
+            "recoverable": severity != "error",
+            "userActionable": user_actionable,
+            "summary": if summary.trim().is_empty() {
+                "The qualified ACP agent emitted a provider update.".to_owned()
+            } else {
+                bounded_text(summary, MAX_TEXT_CHARS)
+            },
+        }),
+    }
+}
+
+fn nonnegative_u64(value: Option<&Value>) -> u64 {
+    value.and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn acpx_tool_operation(kind: &str, title: &str) -> &'static str {
+    classify_generated_acpx_tool_operation(kind, title)
+}
+
+fn safe_acpx_location(value: Option<&Value>, allow_create_target: bool) -> Value {
+    let Some(value) = value else {
+        return Value::Null;
+    };
+    // Only the pinned sidecar may attest that it resolved this value within
+    // the workspace under the provider host's path semantics. Ambiguous URI
+    // scheme, Windows drive, and leading-backslash shapes additionally require
+    // proof that the sidecar resolved an existing workspace entry as POSIX filename data,
+    // or that an edit's not-yet-created target has an in-workspace parent.
+    if value.get("pathBoundary").and_then(Value::as_str)
+        != Some("paperclip.workspace_relative_display.v2")
+    {
+        return Value::Null;
+    }
+    let raw_path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if raw_path.is_empty()
+        || raw_path.starts_with('/')
+        || raw_path.contains('\0')
+        || raw_path.split('/').any(|segment| segment == "..")
+    {
+        return Value::Null;
+    }
+    let requires_entry_attestation = raw_path.starts_with('\\')
+        || has_windows_drive_prefix(raw_path)
+        || has_rfc_uri_scheme_prefix(raw_path);
+    if requires_entry_attestation {
+        let attestation = value.get("pathAttestation").and_then(Value::as_str);
+        if attestation != Some("paperclip.workspace_entry.v1")
+            && !(allow_create_target && attestation == Some("paperclip.workspace_create_target.v1"))
+        {
+            return Value::Null;
+        }
+    }
+    Value::String(raw_path.chars().take(4_000).collect())
+}
+
+fn has_windows_drive_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
+    let Some((scheme, _rest)) = value.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enforces_the_declared_safe_path_contract() {
+        for location in [
+            "/absolute/path",
+            r"\server\share",
+            r"C:\secret",
+            "../secret",
+            "src/../../secret",
+            r"foo\..\bar",
+            r"https:\host\secret",
+            "https://example.test/private",
+            "https:example.test/private",
+            "file:secret.txt",
+            "bad\0name",
+        ] {
+            assert_eq!(
+                safe_acpx_location(Some(&json!({"path": location})), false),
+                Value::Null
+            );
+        }
+        assert_eq!(
+            safe_acpx_location(Some(&json!({"uri": "https://example.test/private"})), false,),
+            Value::Null,
+        );
+        for location in [
+            "/absolute/path",
+            "../secret",
+            "src/../../secret",
+            "custom:payload",
+            "urn:isbn:9780131103627",
+            r"C:Users\alice\secret.txt",
+            "D:relative.txt",
+            "bad\0name",
+        ] {
+            assert_eq!(
+                safe_acpx_location(
+                    Some(&json!({
+                        "path": location,
+                        "pathBoundary": "paperclip.workspace_relative_display.v2"
+                    })),
+                    false,
+                ),
+                Value::Null,
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_valid_posix_display_characters() {
+        for location in [
+            "src:main.rs",
+            "foo:bar/baz",
+            "src:/main.rs",
+            "a:/foo",
+            "A:b/file.txt",
+            r"folder\literal",
+            r"foo\..\bar",
+            "reports/100%/summary.txt",
+        ] {
+            assert_eq!(
+                safe_acpx_location(
+                    Some(&json!({
+                        "path": location,
+                        "pathBoundary": "paperclip.workspace_relative_display.v2",
+                        "pathAttestation": "paperclip.workspace_entry.v1"
+                    })),
+                    false,
+                ),
+                Value::String(location.to_owned()),
+            );
+        }
+    }
 
     #[test]
     fn maps_codex_plan_without_retaining_native_envelope() {

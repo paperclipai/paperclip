@@ -662,16 +662,22 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     });
   }
   if (event.type === "tool_call") {
+    // Classification and the consumer must see the same title bytes. In
+    // particular, a mutation token beyond the transport bound must not grant a
+    // create-target attestation that runner-core cannot independently verify.
+    const toolTitle = event.title?.slice(0, 4_000) ?? null;
     return boundedSidecarValue(
       {
         type: "tool_call",
         toolCallId: event.toolCallId?.slice(0, 240) ?? null,
         status: event.status?.slice(0, 100) ?? null,
-        title: event.title?.slice(0, 4_000) ?? null,
+        title: toolTitle,
         kind: event.kind ?? null,
         locations: safeAcpxLocations(
           event.locations,
           openParams?.workingDirectory,
+          event.kind,
+          toolTitle,
         ),
         ...safeOutput(event.rawOutput),
       },

@@ -70,6 +70,19 @@ validates control identities, terminal status, question sets, and the admitted
 runtime event types and bounded fields. It redacts diagnostic and retained
 event values again before they can enter provider state.
 
+Validated ACPX runtime events normalize into the same provider-neutral activity
+families as the direct Codex transport. Reasoning contents stay private. Tool
+targets are resolved within the workspace under the provider host's path
+semantics and receive a versioned sidecar boundary marker before becoming
+bounded, display-only PRP safe paths. Raw or unmarked provider locations fail
+closed. URI-scheme and Windows drive-shaped values require a separate sidecar
+attestation backed by an existing in-workspace entry or, for a not-yet-created
+edit target, an existing in-workspace parent. This preserves real POSIX colon
+filenames without treating arbitrary URI text as a path. Windows separators
+are canonicalized, and consumers must not reinterpret the display value as
+file-access authority. Operational semantic-result and terminal events remain
+reserved for the stateful adapter rather than being duplicated.
+
 Run the complete contract gate with:
 
 ```sh

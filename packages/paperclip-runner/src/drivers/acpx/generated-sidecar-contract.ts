@@ -29,3 +29,41 @@ export const GENERATED_ACPX_SIDECAR_EVENT_TYPES = [
 ] as const;
 export type GeneratedAcpxSidecarEventType =
   (typeof GENERATED_ACPX_SIDECAR_EVENT_TYPES)[number];
+
+export type GeneratedAcpxToolOperation =
+  | "read"
+  | "search"
+  | "list"
+  | "edit"
+  | "execute"
+  | "unknown";
+
+export const GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE = [
+  { operation: "edit", tokens: ["edit", "write", "patch"] },
+  { operation: "read", tokens: ["read"] },
+  { operation: "search", tokens: ["search", "grep", "find"] },
+  { operation: "list", tokens: ["list", "glob"] },
+] as const;
+
+function lowercaseGeneratedAcpxAscii(value: string): string {
+  return value.replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32),
+  );
+}
+
+export function classifyGeneratedAcpxToolOperation(
+  toolKind: unknown,
+  toolTitle: unknown,
+): GeneratedAcpxToolOperation {
+  const candidate =
+    typeof toolKind === "string" && toolKind
+      ? toolKind
+      : typeof toolTitle === "string"
+        ? toolTitle
+        : "";
+  const normalized = lowercaseGeneratedAcpxAscii(candidate);
+  for (const { operation, tokens } of GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE) {
+    if (tokens.some((token) => normalized.includes(token))) return operation;
+  }
+  return normalized ? "execute" : "unknown";
+}

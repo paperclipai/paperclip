@@ -2,6 +2,29 @@
 
 pub const GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION: u64 = 2;
 
+pub const GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE: &[(&str, &[&str])] = &[
+    ("edit", &["edit", "write", "patch"]),
+    ("read", &["read"]),
+    ("search", &["search", "grep", "find"]),
+    ("list", &["list", "glob"]),
+];
+
+pub fn classify_generated_acpx_tool_operation(kind: &str, title: &str) -> &'static str {
+    let kind = kind.to_ascii_lowercase();
+    let title = title.to_ascii_lowercase();
+    let candidate = if kind.is_empty() { &title } else { &kind };
+    for (operation, tokens) in GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE {
+        if tokens.iter().any(|token| candidate.contains(token)) {
+            return operation;
+        }
+    }
+    if candidate.is_empty() {
+        "unknown"
+    } else {
+        "execute"
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeneratedAcpxSidecarCommand {
     Initialize,
