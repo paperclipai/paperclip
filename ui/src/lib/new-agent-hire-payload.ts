@@ -30,6 +30,9 @@ export function buildNewAgentHirePayload(input: {
     ...(reportsTo ? { reportsTo } : {}),
     ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
     adapterType: configValues.adapterType,
+    ...(configValues.credentialIds && configValues.credentialIds.length > 0
+      ? { credentialIds: configValues.credentialIds }
+      : {}),
     defaultEnvironmentId: configValues.defaultEnvironmentId ?? null,
     adapterConfig,
     runtimeConfig: buildNewAgentRuntimeConfig({

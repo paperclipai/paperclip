@@ -1152,6 +1152,42 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(resolved.credentialIds).toEqual([cred.id]);
   });
 
+  it("uses the company default when the agent has no explicit credential assignment", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const defaultCredential = await svc.create(company.id, {
+      name: "company-codex-default",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-company-default" },
+      isDefault: true,
+    });
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+
+    expect(resolved.env.OPENAI_API_KEY).toBe("sk-company-default");
+    expect(resolved.credentialIds).toEqual([defaultCredential.id]);
+  });
+
+  it("does not revive a legacy credential after an explicit empty assignment", async () => {
+    const { company, agent } = await setupCompanyAndAgent();
+    const svc = credentialService(db);
+    const legacy = await svc.create(company.id, {
+      name: "legacy-cleared",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-legacy-cleared" },
+    });
+    await db.update(agents).set({ credentialId: legacy.id }).where(eq(agents.id, agent.id));
+
+    const setResult = await svc.setForAgent(agent.id, []);
+    expect(setResult.ok).toBe(true);
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    const [storedAgent] = await db.select({ credentialId: agents.credentialId }).from(agents).where(eq(agents.id, agent.id));
+
+    expect(storedAgent?.credentialId).toBeNull();
+    expect(resolved.env).toEqual({});
+    expect(resolved.credentialIds).toEqual([]);
+  });
+
   it("does not let a route allow-list fall through to the legacy credential", async () => {
     const { company, agent } = await setupCompanyAndAgent();
     const svc = credentialService(db);

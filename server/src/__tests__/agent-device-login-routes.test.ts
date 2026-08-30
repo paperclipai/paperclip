@@ -116,6 +116,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => ({}),
   issueRecoveryActionService: () => ({}),
   issueService: () => ({}),
+  credentialService: () => ({ listForAgent: vi.fn(async () => []) }),
   logActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => ({}),

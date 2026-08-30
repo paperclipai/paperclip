@@ -52,6 +52,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueService,
+  credentialService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -131,6 +132,11 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
+  fingerprintAgentHireRequest,
+  runIdempotentAgentHire,
+  withAgentHireIdempotencyMetadata,
+} from "../services/agent-hire-idempotency.js";
+import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
@@ -180,6 +186,36 @@ function mergeDesiredSkillEntries(
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+function sendCredentialAssignmentError(
+  res: Response,
+  result: { error: string; credentialId?: string; type?: string; message?: string },
+) {
+  if (result.error === "duplicate_type") {
+    res.status(422).json({
+      error: "duplicate_credential_type",
+      message: `An agent can hold at most one credential per provider type (got multiple ${result.type}).`,
+    });
+    return;
+  }
+  if (result.error === "mixed_codex_auth_modes") {
+    res.status(422).json({
+      error: "mixed_codex_auth_modes",
+      message:
+        result.message ??
+        "Codex agents must use either Codex OAuth credentials or OpenAI API-key credentials, not both.",
+    });
+    return;
+  }
+  if (result.error === "credential_not_found") {
+    res.status(404).json({
+      error: "credential_not_found",
+      credentialId: result.credentialId,
+    });
+    return;
+  }
+  res.status(422).json({ error: result.error, message: result.message });
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -386,6 +422,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const credentialsSvc = credentialService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -926,15 +963,17 @@ export function agentRoutes(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
   ) {
-    const [chainOfCommand, accessState] = await Promise.all([
+    const [chainOfCommand, accessState, credentials] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
+      credentialsSvc.listForAgent(agent.id),
     ]);
 
     return {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
+      credentials,
     };
   }
 
@@ -1005,9 +1044,10 @@ export function agentRoutes(
     companyId: string,
     agentId: string,
     grantedByUserId: string | null,
+    accessControl: typeof access = access,
   ) {
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
-    await access.setPrincipalPermission(
+    await accessControl.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await accessControl.setPrincipalPermission(
       companyId,
       "agent",
       agentId,
@@ -1744,6 +1784,7 @@ export function agentRoutes(
   }>(
     agent: T,
     input?: { files: Record<string, string>; entryFile?: string },
+    agentsService: typeof svc = svc,
   ): Promise<T> {
     if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
       return agent;
@@ -1765,7 +1806,7 @@ export function agentRoutes(
       delete nextAdapterConfig.bootstrapPromptTemplate;
       if (!hadLegacyPrompt) return agent;
 
-      const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+      const updated = await agentsService.update(agent.id, { adapterConfig: nextAdapterConfig }, {
         allowPendingApprovalConfigUpdate: true,
       });
       return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
@@ -1782,7 +1823,7 @@ export function agentRoutes(
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
 
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+    const updated = await agentsService.update(agent.id, { adapterConfig: nextAdapterConfig }, {
       allowPendingApprovalConfigUpdate: true,
     });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
@@ -2996,10 +3037,16 @@ export function agentRoutes(
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
+      credentialIds: requestedCredentialIds,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
+      idempotencyKey,
       ...hireInput
     } = req.body;
+    const hasCredentialIdsForHire = hasOwn(req.body as object, "credentialIds");
+    const requestedCredentialIdsForHire = Array.isArray(requestedCredentialIds)
+      ? requestedCredentialIds as string[]
+      : [];
     hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
@@ -3042,6 +3089,30 @@ export function agentRoutes(
       runtimeConfig: normalizedRuntimeConfig,
     };
 
+    const fingerprintAdapterConfig = { ...normalizedAdapterConfig };
+    if (
+      hireInput.adapterType === "openclaw_gateway"
+      && !asNonEmptyString(rawHireAdapterConfig.devicePrivateKeyPem)
+    ) {
+      delete fingerprintAdapterConfig.devicePrivateKeyPem;
+    }
+    const requestFingerprint = idempotencyKey
+      ? fingerprintAgentHireRequest(companyId, {
+          hireInput: {
+            ...normalizedHireInput,
+            adapterConfig: fingerprintAdapterConfig,
+          },
+          credentialIds: hasCredentialIdsForHire
+            ? [...requestedCredentialIdsForHire].sort()
+            : null,
+          desiredSkills: desiredSkillAssignment.desiredSkills
+            ? [...desiredSkillAssignment.desiredSkills].sort()
+            : null,
+          instructionsBundle: instructionsBundle ?? null,
+          sourceIssueIds: [...sourceIssueIds].sort(),
+        })
+      : null;
+
     const company = await db
       .select()
       .from(companies)
@@ -3052,124 +3123,203 @@ export function agentRoutes(
       return;
     }
 
-    const requiresApproval = company.requireBoardApprovalForNewAgents;
-    const status = requiresApproval ? "pending_approval" : "idle";
-    const createdAgent = await svc.create(companyId, {
-      id: hiredAgentId,
-      ...normalizedHireInput,
-      status,
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
-    });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-
-    let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
-
-    if (requiresApproval) {
-      const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
-      const requestedAdapterConfig =
-        redactEventPayload(
-          (agent.adapterConfig ?? normalizedHireInput.adapterConfig) as Record<string, unknown>,
-        ) ?? {};
-      const requestedRuntimeConfig =
-        redactEventPayload(
-          (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig) as Record<string, unknown>,
-        ) ?? {};
-      const requestedMetadata =
-        redactEventPayload(
-          ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
-        ) ?? {};
-      approval = await approvalsSvc.create(companyId, {
-        type: "hire_agent",
-        requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-        status: "pending",
-        payload: {
-          name: normalizedHireInput.name,
-          role: normalizedHireInput.role,
-          title: normalizedHireInput.title ?? null,
-          icon: normalizedHireInput.icon ?? null,
-          reportsTo: normalizedHireInput.reportsTo ?? null,
-          capabilities: normalizedHireInput.capabilities ?? null,
-          adapterType: requestedAdapterType,
-          adapterConfig: requestedAdapterConfig,
-          runtimeConfig: requestedRuntimeConfig,
-          budgetMonthlyCents:
-            typeof normalizedHireInput.budgetMonthlyCents === "number"
-              ? normalizedHireInput.budgetMonthlyCents
-              : agent.budgetMonthlyCents,
-          desiredSkills: desiredSkillAssignment.desiredSkills,
-          metadata: requestedMetadata,
-          agentId: agent.id,
-          requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-          requestedConfigurationSnapshot: {
-            adapterType: requestedAdapterType,
-            adapterConfig: requestedAdapterConfig,
-            runtimeConfig: requestedRuntimeConfig,
-            desiredSkills: desiredSkillAssignment.desiredSkills,
-          },
-        },
-        decisionNote: null,
-        decidedByUserId: null,
-        decidedAt: null,
-        updatedAt: new Date(),
+    if (requestedCredentialIdsForHire.length > 0) {
+      const credentialValidation = await credentialsSvc.validateForAdapterAssignment({
+        companyId,
+        adapterType: hireInput.adapterType,
+        adapterConfig: normalizedAdapterConfig,
+        credentialIds: requestedCredentialIdsForHire,
       });
-
-      if (sourceIssueIds.length > 0) {
-        await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
-          agentId: actor.actorType === "agent" ? actor.actorId : null,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        });
+      if (!credentialValidation.ok) {
+        sendCredentialAssignmentError(res, credentialValidation);
+        return;
       }
     }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "agent.hire_created",
-      entityType: "agent",
-      entityId: agent.id,
-      details: {
-        name: agent.name,
-        role: agent.role,
-        requiresApproval,
-        approvalId: approval?.id ?? null,
-        issueIds: sourceIssueIds,
-        desiredSkills: desiredSkillAssignment.desiredSkills,
-      },
-    });
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
-    }
+    const actor = getActorInfo(req);
+    const requiresApproval = company.requireBoardApprovalForNewAgents;
 
-    await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
-      actor.actorType === "user" ? actor.actorId : null,
-    );
+    const createHire = async (hireDb: Db = db) => {
+      const hireAgentsSvc = hireDb === db ? svc : agentService(hireDb);
+      const hireApprovalsSvc = hireDb === db ? approvalsSvc : approvalService(hireDb);
+      const hireIssueApprovalsSvc = hireDb === db ? issueApprovalsSvc : issueApprovalService(hireDb);
+      const hireCredentialsSvc = hireDb === db ? credentialsSvc : credentialService(hireDb);
+      const hireAccess = hireDb === db ? access : accessService(hireDb);
+      const status = requiresApproval ? "pending_approval" : "idle";
+      const agentCreateInput = {
+        id: hiredAgentId,
+        ...normalizedHireInput,
+        metadata: idempotencyKey && requestFingerprint
+          ? withAgentHireIdempotencyMetadata(normalizedHireInput.metadata, {
+              idempotencyKey,
+              requestFingerprint,
+            })
+          : normalizedHireInput.metadata,
+        status,
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      };
+      const createdAgent = idempotencyKey && requestFingerprint
+        ? await hireAgentsSvc.create(companyId, agentCreateInput, {
+            allowServerManagedHireMetadata: true,
+          })
+        : await hireAgentsSvc.create(companyId, agentCreateInput);
+      const agent = await materializeDefaultInstructionsBundleForNewAgent(
+        createdAgent,
+        instructionsBundle,
+        hireAgentsSvc,
+      );
 
-    if (approval) {
-      await logActivity(db, {
+      if (hasCredentialIdsForHire) {
+        const setResult = await hireCredentialsSvc.setForAgent(agent.id, requestedCredentialIdsForHire, {
+          adapterType: hireInput.adapterType,
+          adapterConfig: normalizedAdapterConfig,
+        });
+        if (!setResult.ok) {
+          throw unprocessable(
+            setResult.error === "mixed_codex_auth_modes"
+              ? setResult.message
+              : setResult.error,
+          );
+        }
+      }
+      const credentials = await hireCredentialsSvc.listForAgent(agent.id);
+
+      let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
+      if (requiresApproval) {
+        const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
+        const requestedAdapterConfig =
+          redactEventPayload(
+            (agent.adapterConfig ?? normalizedHireInput.adapterConfig) as Record<string, unknown>,
+          ) ?? {};
+        const requestedRuntimeConfig =
+          redactEventPayload(
+            (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig) as Record<string, unknown>,
+          ) ?? {};
+        const requestedMetadata =
+          redactEventPayload(
+            ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
+          ) ?? {};
+        approval = await hireApprovalsSvc.create(companyId, {
+          type: "hire_agent",
+          requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          status: "pending",
+          payload: {
+            name: normalizedHireInput.name,
+            role: normalizedHireInput.role,
+            title: normalizedHireInput.title ?? null,
+            icon: normalizedHireInput.icon ?? null,
+            reportsTo: normalizedHireInput.reportsTo ?? null,
+            capabilities: normalizedHireInput.capabilities ?? null,
+            adapterType: requestedAdapterType,
+            adapterConfig: requestedAdapterConfig,
+            runtimeConfig: requestedRuntimeConfig,
+            credentialIds: requestedCredentialIdsForHire,
+            budgetMonthlyCents:
+              typeof normalizedHireInput.budgetMonthlyCents === "number"
+                ? normalizedHireInput.budgetMonthlyCents
+                : agent.budgetMonthlyCents,
+            desiredSkills: desiredSkillAssignment.desiredSkills,
+            metadata: requestedMetadata,
+            agentId: agent.id,
+            requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+            idempotencyKey: idempotencyKey ?? null,
+            requestFingerprint,
+            requestedConfigurationSnapshot: {
+              adapterType: requestedAdapterType,
+              adapterConfig: requestedAdapterConfig,
+              runtimeConfig: requestedRuntimeConfig,
+              credentialIds: requestedCredentialIdsForHire,
+              desiredSkills: desiredSkillAssignment.desiredSkills,
+            },
+          },
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: null,
+          updatedAt: new Date(),
+        });
+
+        if (sourceIssueIds.length > 0) {
+          await hireIssueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
+            agentId: actor.actorType === "agent" ? actor.actorId : null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+        }
+      }
+
+      await logActivity(hireDb, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
-        action: "approval.created",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type, linkedAgentId: agent.id },
+        action: "agent.hire_created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          name: agent.name,
+          role: agent.role,
+          requiresApproval,
+          approvalId: approval?.id ?? null,
+          issueIds: sourceIssueIds,
+          desiredSkills: desiredSkillAssignment.desiredSkills,
+          credentialCount: credentials.length,
+        },
       });
+      await applyDefaultAgentTaskAssignGrant(
+        companyId,
+        agent.id,
+        actor.actorType === "user" ? actor.actorId : null,
+        hireAccess,
+      );
+
+      if (approval) {
+        await logActivity(hireDb, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "approval.created",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type, linkedAgentId: agent.id },
+        });
+      }
+
+      return { agent, approval };
+    };
+
+    const result = idempotencyKey && requestFingerprint
+      ? await runIdempotentAgentHire(db, {
+          companyId,
+          idempotencyKey,
+          requestFingerprint,
+        }, createHire)
+      : { value: await createHire(), replayed: false };
+    const credentials = await credentialsSvc.listForAgent(result.value.agent.id);
+
+    if (!result.replayed) {
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        trackAgentCreated(telemetryClient, {
+          agentRole: result.value.agent.role,
+          agentId: result.value.agent.id,
+        });
+      }
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(result.replayed ? 200 : 201).json({
+      agent: {
+        ...result.value.agent,
+        ...(hasCredentialIdsForHire ? { credentialId: null } : {}),
+        credentials,
+      },
+      approval: result.value.approval,
+    });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -3194,8 +3344,13 @@ export function agentRoutes(
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
+      credentialIds: requestedCredentialIds,
       ...createInput
     } = req.body;
+    const hasCredentialIdsForCreate = hasOwn(req.body as object, "credentialIds");
+    const requestedCredentialIdsForCreate = Array.isArray(requestedCredentialIds)
+      ? requestedCredentialIds as string[]
+      : [];
     createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
@@ -3232,6 +3387,18 @@ export function agentRoutes(
       await normalizeNewAgentRuntimeConfig(createInput.adapterType, createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
+    if (requestedCredentialIdsForCreate.length > 0) {
+      const credentialValidation = await credentialsSvc.validateForAdapterAssignment({
+        companyId,
+        adapterType: createInput.adapterType,
+        adapterConfig: normalizedAdapterConfig,
+        credentialIds: requestedCredentialIdsForCreate,
+      });
+      if (!credentialValidation.ok) {
+        sendCredentialAssignmentError(res, credentialValidation);
+        return;
+      }
+    }
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -3248,7 +3415,6 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
@@ -3264,6 +3430,7 @@ export function agentRoutes(
         name: agent.name,
         role: agent.role,
         desiredSkills: desiredSkillAssignment.desiredSkills,
+        credentialCount: requestedCredentialIdsForCreate.length,
       },
     });
     const telemetryClient = getTelemetryClient();
@@ -3291,7 +3458,22 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    if (hasCredentialIdsForCreate) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIdsForCreate, {
+        adapterType: createInput.adapterType,
+        adapterConfig: normalizedAdapterConfig,
+      });
+      if (!setResult.ok) {
+        sendCredentialAssignmentError(res, setResult);
+        return;
+      }
+    }
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+    res.status(201).json({
+      ...agent,
+      ...(hasCredentialIdsForCreate ? { credentialId: null } : {}),
+      credentials,
+    });
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -3594,6 +3776,13 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // credentialIds is a virtual field owned by the agent_credentials join,
+    // not a column on agents. Extract it before passing patchData to svc.update.
+    const hasCredentialIdsPatch = hasOwn(patchData, "credentialIds");
+    const requestedCredentialIds = hasCredentialIdsPatch
+      ? (Array.isArray(patchData.credentialIds) ? patchData.credentialIds as string[] : [])
+      : null;
+    if (hasCredentialIdsPatch) delete patchData.credentialIds;
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -3703,6 +3892,29 @@ export function agentRoutes(
         },
       );
     }
+
+    if (hasCredentialIdsPatch || touchesAdapterConfiguration) {
+      const existingCredentialIds = (await credentialsSvc.listForAgent(existing.id)).map((credential) => credential.id);
+      const finalCredentialIds = hasCredentialIdsPatch
+        ? requestedCredentialIds ?? []
+        : existingCredentialIds.length > 0
+          ? existingCredentialIds
+          : existing.credentialId
+            ? [existing.credentialId]
+            : [];
+      if (finalCredentialIds.length > 0) {
+        const credentialValidation = await credentialsSvc.validateForAdapterAssignment({
+          companyId: existing.companyId,
+          adapterType: requestedAdapterType,
+          adapterConfig: asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {},
+          credentialIds: finalCredentialIds,
+        });
+        if (!credentialValidation.ok) {
+          sendCredentialAssignmentError(res, credentialValidation);
+          return;
+        }
+      }
+    }
     const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
     const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
       (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
@@ -3726,6 +3938,17 @@ export function agentRoutes(
       return;
     }
 
+    if (requestedCredentialIds !== null) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds, {
+        adapterType: requestedAdapterType,
+        adapterConfig: asRecord(agent.adapterConfig) ?? {},
+      });
+      if (!setResult.ok) {
+        sendCredentialAssignmentError(res, setResult);
+        return;
+      }
+    }
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,
@@ -3736,10 +3959,20 @@ export function agentRoutes(
       action: "agent.updated",
       entityType: "agent",
       entityId: agent.id,
-      details: summarizeAgentUpdateDetails(patchData),
+      details: {
+        ...summarizeAgentUpdateDetails(patchData),
+        ...(requestedCredentialIds !== null
+          ? { credentialIdsChanged: true, credentialCount: requestedCredentialIds.length }
+          : {}),
+      },
     });
 
-    res.json(agent);
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+    res.json({
+      ...agent,
+      ...(requestedCredentialIds !== null ? { credentialId: null } : {}),
+      credentials,
+    });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

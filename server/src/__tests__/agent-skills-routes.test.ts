@@ -282,6 +282,7 @@ describe.sequential("agent skill routes", () => {
     for (const mock of Object.values(mockCompanySkillService)) mock.mockReset();
     for (const mock of Object.values(mockInstanceSettingsService)) mock.mockReset();
     for (const mock of Object.values(mockSecretService)) mock.mockReset();
+    for (const mock of Object.values(mockCredentialService)) mock.mockReset();
     mockLogActivity.mockReset();
     mockTrackAgentCreated.mockReset();
     mockGetTelemetryClient.mockReset();
@@ -299,6 +300,9 @@ describe.sequential("agent skill routes", () => {
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: false });
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockCredentialService.listForAgent.mockResolvedValue([]);
+    mockCredentialService.setForAgent.mockResolvedValue({ ok: true, credentials: [] });
+    mockCredentialService.validateForAdapterAssignment.mockResolvedValue({ ok: true, credentials: [] });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "paperclipai/paperclip/paperclip",
@@ -982,6 +986,104 @@ describe.sequential("agent skill routes", () => {
       }),
     );
   });
+
+  it("validates and persists an explicit credential assignment when creating an agent", async () => {
+    const credentialIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ];
+    const credentials = credentialIds.map((id, index) => ({
+      id,
+      name: `Claude ${index + 1}`,
+      type: "claude_api_key",
+    }));
+    mockCredentialService.validateForAdapterAssignment.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.setForAgent.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.listForAgent.mockResolvedValue(credentials);
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Credential Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        credentialIds,
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCredentialService.validateForAdapterAssignment).toHaveBeenCalledWith({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      adapterConfig: expect.any(Object),
+      credentialIds,
+    });
+    expect(mockCredentialService.setForAgent).toHaveBeenCalledWith(
+      expect.any(String),
+      credentialIds,
+      expect.objectContaining({ adapterType: "claude_local" }),
+    );
+    expect(res.body.credentials).toEqual(credentials);
+  }, 30_000);
+
+  it("replaces an agent's credential assignment through PATCH", async () => {
+    const agent = makeAgent("claude_local");
+    const credentialIds = ["33333333-3333-4333-8333-333333333333"];
+    const credentials = [{ id: credentialIds[0], name: "Claude staging", type: "claude_api_key" }];
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockCredentialService.validateForAdapterAssignment.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.setForAgent.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.listForAgent.mockResolvedValue(credentials);
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agent.id}`)
+      .send({ credentialIds }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agent.id,
+      {},
+      expect.any(Object),
+    );
+    expect(mockCredentialService.setForAgent).toHaveBeenCalledWith(
+      agent.id,
+      credentialIds,
+      expect.objectContaining({ adapterType: "claude_local" }),
+    );
+    expect(res.body.credentials).toEqual(credentials);
+  }, 30_000);
+
+  it("persists credential assignment when hiring an agent", async () => {
+    const credentialIds = ["44444444-4444-4444-8444-444444444444"];
+    const credentials = [{ id: credentialIds[0], name: "Claude hire", type: "claude_api_key" }];
+    mockCredentialService.validateForAdapterAssignment.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.setForAgent.mockResolvedValue({ ok: true, credentials });
+    mockCredentialService.listForAgent.mockResolvedValue(credentials);
+
+    const res = await requestApp(await createApp(createDb(true)), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Credential Hire",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        credentialIds,
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCredentialService.validateForAdapterAssignment).toHaveBeenCalledWith({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      adapterConfig: expect.any(Object),
+      credentialIds,
+    });
+    expect(mockCredentialService.setForAgent).toHaveBeenCalledWith(
+      expect.any(String),
+      credentialIds,
+      expect.objectContaining({ adapterType: "claude_local" }),
+    );
+    expect(res.body.agent.credentials).toEqual(credentials);
+  }, 30_000);
 
   it("rejects version pins when creating an agent while beta skills are disabled", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)

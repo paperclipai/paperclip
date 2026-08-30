@@ -109,6 +109,19 @@ describe("buildAgentUpdatePatch", () => {
     expect(patch.adapterConfig).toBeUndefined();
   });
 
+  it("writes the explicit credential assignment separately from adapter config", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        credentialIds: ["credential-1", "credential-2"],
+      }),
+    );
+
+    expect(patch).toEqual({
+      credentialIds: ["credential-1", "credential-2"],
+    });
+  });
+
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

@@ -446,6 +446,10 @@ export function credentialService(db: Db) {
 
       if (uniqueIds.length === 0) {
         await db.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
+        await db
+          .update(agents)
+          .set({ credentialId: null, updatedAt: new Date() })
+          .where(eq(agents.id, agentId));
         return { ok: true, credentials: [] };
       }
 
@@ -489,6 +493,14 @@ export function credentialService(db: Db) {
       await db.transaction(async (tx) => {
         await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
         await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
+        // Once an explicit plural assignment is managed, the legacy singular
+        // column must stop participating in resolution. This also makes an
+        // explicit empty selection mean "use no managed credentials" instead
+        // of silently falling back to a stale credentialId.
+        await tx
+          .update(agents)
+          .set({ credentialId: null, updatedAt: new Date() })
+          .where(eq(agents.id, agentId));
       });
 
       return { ok: true, credentials: creds.map(stripCredential) };
@@ -2065,7 +2077,12 @@ export async function resolveAllCredentialEnv(
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
   const [agentRow] = await db
-    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType, companyId: agents.companyId })
+    .select({
+      credentialId: agents.credentialId,
+      adapterType: agents.adapterType,
+      adapterConfig: agents.adapterConfig,
+      companyId: agents.companyId,
+    })
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
@@ -2136,11 +2153,44 @@ export async function resolveAllCredentialEnv(
           ))
           .for("update")
       : [];
+    const defaultCredentialTypes = credentialTypesForAdapterRuntime(
+      adapterType ?? "",
+      asRecord(agentRow?.adapterConfig),
+    );
+    const defaultRows =
+      !allowedCredentialIds
+      && !assignedBinding
+      && !agentRow?.credentialId
+      && agentRow?.companyId
+      && defaultCredentialTypes.length > 0
+      ? await tx
+          .select({
+            credentialId: providerCredentials.id,
+            type: providerCredentials.type,
+            cooldownUntil: providerCredentials.cooldownUntil,
+            cooldownReason: providerCredentials.cooldownReason,
+            quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+            quotaSampledAt: providerCredentials.quotaSampledAt,
+            quotaReason: providerCredentials.quotaReason,
+            lastUsedAt: providerCredentials.lastUsedAt,
+            updatedAt: providerCredentials.updatedAt,
+          })
+          .from(providerCredentials)
+          .where(and(
+            eq(providerCredentials.companyId, agentRow.companyId),
+            eq(providerCredentials.isDefault, true),
+            isNull(providerCredentials.disabledAt),
+            ...(defaultCredentialTypes.length > 0
+              ? [inArray(providerCredentials.type, [...defaultCredentialTypes])]
+              : []),
+          ))
+          .for("update")
+      : [];
 
     const nowMs = Date.now();
     const byType = new Map<string, RotationCandidate[]>();
     const seenCredentialIds = new Set<string>();
-    for (const row of [...joinRows, ...routeRows]) {
+    for (const row of [...joinRows, ...routeRows, ...defaultRows]) {
       if (allowedCredentialIds && !allowedCredentialIds.has(row.credentialId)) continue;
       if (seenCredentialIds.has(row.credentialId)) continue;
       seenCredentialIds.add(row.credentialId);

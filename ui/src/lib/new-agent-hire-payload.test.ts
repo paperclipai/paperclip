@@ -42,6 +42,29 @@ describe("buildNewAgentHirePayload", () => {
     });
   });
 
+  it("includes the selected provider credential pool", () => {
+    expect(
+      buildNewAgentHirePayload({
+        name: "Rotating Claude",
+        effectiveRole: "engineer",
+        configValues: {
+          ...defaultCreateValues,
+          adapterType: "claude_local",
+          credentialIds: [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+          ],
+        },
+        adapterConfig: {},
+      }),
+    ).toMatchObject({
+      credentialIds: [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ],
+    });
+  });
+
   it("includes core trust preset permissions when provided", () => {
     expect(
       buildNewAgentHirePayload({

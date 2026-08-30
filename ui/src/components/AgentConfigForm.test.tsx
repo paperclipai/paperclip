@@ -228,4 +228,50 @@ describe("AgentConfigForm", () => {
       root.unmount();
     });
   });
+
+  it("renders the assigned credential pool for the selected adapter", async () => {
+    mockCredentialsApi.list.mockResolvedValue([
+      {
+        id: "credential-1",
+        name: "Claude production",
+        type: "claude_api_key",
+        isDefault: true,
+      },
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const values: CreateConfigValues = {
+      ...defaultCreateValues,
+      adapterType: "claude_local",
+      credentialIds: ["credential-1"],
+    };
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="create"
+              values={values}
+              onChange={vi.fn()}
+              hidePromptTemplate
+              showAdapterTestEnvironmentButton={false}
+              showCreateRunPolicySection={false}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockCredentialsApi.list).toHaveBeenCalledWith("company-1");
+    expect(container.textContent).toContain("Claude production");
+    expect(container.textContent).toContain("Credentials");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

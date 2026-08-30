@@ -6,6 +6,7 @@ import type {
   AdapterAuthSessionStatus,
   AdapterEnvironmentTestResult,
   CompanySecret,
+  CredentialType,
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
@@ -16,6 +17,7 @@ import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
+import { credentialsApi, type ProviderCredential } from "../api/credentials";
 import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -28,7 +30,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, KeyRound, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
@@ -67,6 +69,10 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import {
+  hasMixedCodexAuthModes,
+  toggleCredentialSelectionForAuthMode,
+} from "../lib/credential-selection";
 
 /* ---- Create mode values ---- */
 
@@ -141,6 +147,8 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
+    o.credentialId !== undefined ||
+    o.credentialIds !== undefined ||
     o.modelProfiles?.cheap !== undefined
   );
 }
@@ -565,6 +573,85 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: Boolean(!isCreate && selectedCompanyId),
   });
+
+  const acpxAgent = adapterType === "acpx_local"
+    ? isCreate
+      ? String(val!.adapterSchemaValues?.agent ?? "claude")
+      : String(config.agent ?? "claude")
+    : "";
+  const { data: credentials = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.credentials.list(selectedCompanyId)
+      : ["credentials", "none"],
+    queryFn: () => credentialsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const credentialTypesForAdapter = useMemo(
+    () => credentialTypesForAdapterType(adapterType, acpxAgent),
+    [adapterType, acpxAgent],
+  );
+  const availableCredentials = useMemo(
+    () => credentials.filter((credential) => credentialTypesForAdapter.has(credential.type)),
+    [credentials, credentialTypesForAdapter],
+  );
+  const selectedCredentialIds = useMemo<string[]>(() => {
+    if (isCreate) {
+      if ((props.values.credentialIds ?? []).length > 0) return props.values.credentialIds ?? [];
+      return props.values.credentialId ? [props.values.credentialId] : [];
+    }
+    if (overlay.credentialIds !== undefined) return overlay.credentialIds;
+    const assigned = (props.agent.credentials ?? []).map((credential) => credential.id);
+    return assigned.length > 0 ? assigned : props.agent.credentialId ? [props.agent.credentialId] : [];
+  }, [
+    isCreate,
+    isCreate ? props.values.credentialIds : null,
+    isCreate ? props.values.credentialId : null,
+    isCreate ? null : overlay.credentialIds,
+    isCreate ? null : props.agent.credentials,
+    isCreate ? null : props.agent.credentialId,
+  ]);
+  const enforceCodexAuthMode =
+    adapterType === "codex_local" || (adapterType === "acpx_local" && acpxAgent === "codex");
+  const toggleCredential = useCallback(
+    (credentialId: string) => {
+      const next = toggleCredentialSelectionForAuthMode(
+        availableCredentials,
+        selectedCredentialIds,
+        credentialId,
+        { enforceCodexAuthMode },
+      );
+      if (isCreate) {
+        props.onChange({ credentialIds: next });
+      } else {
+        setOverlay((previous) => ({ ...previous, credentialIds: next }));
+      }
+    },
+    [availableCredentials, enforceCodexAuthMode, isCreate, props, selectedCredentialIds],
+  );
+  const [credentialOpen, setCredentialOpen] = useState(false);
+
+  const autoSelectedCredentialRef = useRef(false);
+  useEffect(() => {
+    if (!isCreate || autoSelectedCredentialRef.current || availableCredentials.length === 0) return;
+    if ((props.values.credentialIds ?? []).length > 0 || props.values.credentialId) return;
+    const defaultCredential = availableCredentials.find((credential) => credential.isDefault);
+    if (!defaultCredential) return;
+    autoSelectedCredentialRef.current = true;
+    props.onChange({ credentialIds: [defaultCredential.id] });
+  }, [availableCredentials, isCreate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep an existing assignment valid when the adapter/provider lane changes,
+  // while leaving not-yet-visible credentials alone until the list loads.
+  useEffect(() => {
+    if (selectedCredentialIds.length === 0 || credentials.length === 0) return;
+    const compatibleIds = selectedCredentialIds.filter((id) => {
+      const credential = credentials.find((candidate) => candidate.id === id);
+      return credential ? credentialTypesForAdapter.has(credential.type) : true;
+    });
+    if (compatibleIds.length === selectedCredentialIds.length) return;
+    if (isCreate) props.onChange({ credentialIds: compatibleIds });
+    else setOverlay((previous) => ({ ...previous, credentialIds: compatibleIds }));
+  }, [credentials, credentialTypesForAdapter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
@@ -1237,6 +1324,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={adapterType}
                 disabledTypes={disabledTypes}
                 onChange={(t) => {
+                  const nextCredentialTypes = credentialTypesForAdapterType(t);
+                  const nextCredentialIds = selectedCredentialIds.filter((id) => {
+                    const credential = credentials.find((candidate) => candidate.id === id);
+                    return credential ? nextCredentialTypes.has(credential.type) : false;
+                  });
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -1251,6 +1343,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                     }
+                    nextValues.credentialIds = nextCredentialIds;
+                    nextValues.credentialId = null;
                     set!(nextValues);
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
@@ -1258,6 +1352,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
+                      credentialIds: nextCredentialIds,
                       modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
@@ -1284,6 +1379,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
+          )}
+
+          {credentialTypesForAdapter.size > 0 && (
+            <CredentialMultiSelect
+              credentials={availableCredentials}
+              selectedIds={selectedCredentialIds}
+              onToggle={toggleCredential}
+              open={credentialOpen}
+              onOpenChange={setCredentialOpen}
+              enforceCodexAuthMode={enforceCodexAuthMode}
+            />
           )}
 
           {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
@@ -2078,6 +2184,165 @@ function ExperimentalBadge() {
     <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium leading-none text-amber-700 dark:text-amber-200">
       Experimental
     </span>
+  );
+}
+
+const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
+  claude_oauth: "Claude OAuth",
+  claude_api_key: "Claude API key",
+  codex_oauth: "Codex OAuth",
+  gemini_api_key: "Gemini API key",
+  openai_api_key: "OpenAI API key",
+  openrouter_api_key: "OpenRouter API key",
+  deepseek_api_key: "DeepSeek API key",
+  mimo_api_key: "MiMo API key",
+};
+
+function credentialTypesForAdapterType(adapterType: string, acpxAgent?: string): Set<CredentialType> {
+  switch (adapterType) {
+    case "claude_local":
+    case "claude_tui":
+      return new Set(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
+    case "gemini_local":
+      return new Set(["gemini_api_key"]);
+    case "codex_local":
+      return new Set(["codex_oauth", "openai_api_key"]);
+    case "cursor":
+      return new Set(["openai_api_key"]);
+    case "deepseek_api":
+      return new Set(["deepseek_api_key"]);
+    case "opencode_local":
+      return new Set(["openrouter_api_key", "openai_api_key", "claude_api_key", "gemini_api_key"]);
+    case "pi_local":
+      return new Set([
+        "codex_oauth",
+        "openai_api_key",
+        "deepseek_api_key",
+        "mimo_api_key",
+        "openrouter_api_key",
+        "claude_api_key",
+        "gemini_api_key",
+      ]);
+    case "acpx_local":
+      if (acpxAgent === "claude") return new Set(["claude_oauth", "claude_api_key"]);
+      if (acpxAgent === "codex") return new Set(["codex_oauth", "openai_api_key"]);
+      return new Set(["claude_oauth", "claude_api_key", "codex_oauth", "openai_api_key"]);
+    default:
+      return new Set();
+  }
+}
+
+function CredentialMultiSelect({
+  credentials,
+  selectedIds,
+  onToggle,
+  open,
+  onOpenChange,
+  enforceCodexAuthMode,
+}: {
+  credentials: ProviderCredential[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  enforceCodexAuthMode: boolean;
+}) {
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedCredentials = useMemo(
+    () => selectedIds
+      .map((id) => credentials.find((credential) => credential.id === id))
+      .filter((credential): credential is ProviderCredential => Boolean(credential)),
+    [credentials, selectedIds],
+  );
+  const mixedCodexAuthModes = enforceCodexAuthMode && hasMixedCodexAuthModes(credentials, selectedIds);
+
+  return (
+    <Field
+      label="Credentials"
+      hint="Choose the provider credentials this agent may use. Multiple credentials of the same type rotate automatically. Leave empty to use the company default or environment variables."
+    >
+      <Popover open={open} onOpenChange={onOpenChange}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex min-h-9 w-full items-center justify-between gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/50"
+          >
+            <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+              <KeyRound className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {selectedCredentials.length === 0 ? (
+                <span className="text-muted-foreground">No credentials selected</span>
+              ) : selectedCredentials.map((credential) => (
+                <span key={credential.id} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs">
+                  <span className="max-w-36 truncate">{credential.name}</span>
+                  <span className="text-(length:--text-micro) text-muted-foreground">
+                    {CREDENTIAL_TYPE_LABELS[credential.type] ?? credential.type}
+                  </span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Remove ${credential.name}`}
+                    className="rounded p-0.5 hover:bg-accent/50"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggle(credential.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onToggle(credential.id);
+                      }
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </span>
+                </span>
+              ))}
+            </span>
+            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
+          <div className="max-h-72 overflow-y-auto">
+            {credentials.length === 0 ? (
+              <p className="px-2 py-2 text-xs text-muted-foreground">
+                No compatible credentials configured. Add them in Company Settings.
+              </p>
+            ) : credentials.map((credential) => {
+              const selected = selectedSet.has(credential.id);
+              return (
+                <button
+                  key={credential.id}
+                  type="button"
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50",
+                    selected && "bg-accent",
+                  )}
+                  onClick={() => onToggle(credential.id)}
+                >
+                  <span className={cn(
+                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
+                    selected ? "border-primary bg-primary" : "border-border",
+                  )}>
+                    {selected && <span className="h-1.5 w-1.5 rounded-sm bg-primary-foreground" />}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{credential.name}</span>
+                  <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground">
+                    {CREDENTIAL_TYPE_LABELS[credential.type] ?? credential.type}
+                  </span>
+                  {credential.isDefault && <Badge variant="secondary">Default</Badge>}
+                </button>
+              );
+            })}
+          </div>
+          {mixedCodexAuthModes && (
+            <p className="border-t border-border px-2 py-2 text-xs text-destructive">
+              Select either Codex OAuth or OpenAI API-key credentials for this Codex agent, not both.
+            </p>
+          )}
+        </PopoverContent>
+      </Popover>
+    </Field>
   );
 }
 
