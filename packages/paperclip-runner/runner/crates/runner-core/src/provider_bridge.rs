@@ -1297,7 +1297,12 @@ fn canonical_json_number(value: &serde_json::Number) -> String {
         return "0".to_owned();
     }
 
-    let body = if (1e-6..1e21).contains(&float.abs()) {
+    let magnitude = float.abs();
+    // The lower ECMAScript threshold is inclusive: JSON.stringify(1e-6)
+    // produces decimal notation, while values below it use an exponent.
+    // Spell both comparisons out so that the wire-digest boundary is explicit.
+    let uses_decimal_notation = magnitude >= 1e-6 && magnitude < 1e21;
+    let body = if uses_decimal_notation {
         if decimal_position <= 0 {
             format!("0.{}{}", "0".repeat((-decimal_position) as usize), digits)
         } else if decimal_position >= digits.len() as i32 {
@@ -1414,6 +1419,22 @@ fn json_size(value: &impl Serialize, label: &str) -> Result<usize, ProviderBridg
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn canonical_number_uses_decimal_notation_at_javascript_lower_boundary() {
+        for encoded in ["1e-6", "0.000001"] {
+            let value: Value = serde_json::from_str(encoded).unwrap();
+            assert_eq!(canonical_json(&value), "0.000001");
+        }
+
+        for encoded in ["-1e-6", "-0.000001"] {
+            let value: Value = serde_json::from_str(encoded).unwrap();
+            assert_eq!(canonical_json(&value), "-0.000001");
+        }
+
+        let below_boundary: Value = serde_json::from_str("9.99999e-7").unwrap();
+        assert_eq!(canonical_json(&below_boundary), "9.99999e-7");
+    }
 
     #[test]
     fn worst_case_result_identity_overhead_fits_the_admission_reserve() {
