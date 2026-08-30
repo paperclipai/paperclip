@@ -50,6 +50,18 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it.each([
+    ["active run", { activeRuns: [{ companyId, issueId: sourceId, agentId: "agent-1", status: "running" }] }],
+    ["queued wake", { queuedWakeRequests: [{ companyId, issueId: sourceId, agentId: "agent-1", status: "queued" }] }],
+  ])("keeps a terminal issue live while it retains an %s", (_label, livePath) => {
+    const result = classify({
+      issues: [issue({ status: "done" })],
+      ...livePath,
+    });
+
+    expect(result).toMatchObject({ state: "live", liveIssueIds: [sourceId] });
+  });
+
   it("treats non-resumable waiting leaves as stopped work that needs verification", () => {
     const result = classify({
       issues: [

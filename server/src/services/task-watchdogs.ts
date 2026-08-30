@@ -424,12 +424,15 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
     ...(input.pendingInteractions ?? [])
-      .filter((path) => path.companyId === input.watchdog.companyId && isLivePendingInteraction(path))
+      .filter((path) => {
+        const issue = issuesById.get(path.issueId);
+        return path.companyId === input.watchdog.companyId
+          && isLivePendingInteraction(path)
+          && issue != null
+          && !isTerminalIssueStatus(issue.status);
+      })
       .map((path) => path.issueId),
-  ].filter((issueId) => {
-    const issue = issuesById.get(issueId);
-    return includedIdSet.has(issueId) && issue != null && !isTerminalIssueStatus(issue.status);
-  });
+  ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
