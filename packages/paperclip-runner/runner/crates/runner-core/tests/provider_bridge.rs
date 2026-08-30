@@ -725,7 +725,7 @@ fn settlement_preserves_call_ids_for_the_durable_run() {
 }
 
 #[test]
-fn rolls_settled_call_identities_without_reopening_replay() {
+fn exact_identity_overflow_saturates_the_durable_run() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();
 
@@ -753,7 +753,7 @@ fn rolls_settled_call_identities_without_reopening_replay() {
         .settle_turn("provider_turn_terminated")
         .expect("the controlled turn stop retains replay protection");
     assert!(!recovered.durable_run_receipt_limit_reached());
-    assert!(recovered.has_completed_call("settled-0"));
+    assert!(!recovered.has_completed_call("settled-0"));
     assert!(recovered.has_completed_call("last-call"));
     let stopped_turn_receipt = recovered
         .replay_result("last-call", "get_task_context", &json!({}))
@@ -771,9 +771,10 @@ fn rolls_settled_call_identities_without_reopening_replay() {
         .begin_call("overflow".into(), "get_task_context".into(), json!({}))
         .is_err());
     recovered.prepare_turn().unwrap();
-    recovered
+    let saturation = recovered
         .begin_call("next-call".into(), "get_task_context".into(), json!({}))
-        .expect("later turns continue after exact identities roll into the filter");
+        .expect_err("probabilistic history must stop fresh work explicitly");
+    assert!(saturation.is_active_turn_receipt_limit());
 
     recovered.attach_run(tools("computed")).unwrap();
     assert!(!recovered.durable_run_receipt_limit_reached());
@@ -981,7 +982,7 @@ fn settles_pending_receipts_with_explicit_terminal_results() {
 }
 
 #[test]
-fn full_identity_ledger_filters_evicted_history_and_admits_later_calls() {
+fn full_identity_ledger_fails_closed_after_exact_history_spills() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();
     let mut encoded = serde_json::to_value(&bridge).unwrap();
@@ -1003,11 +1004,15 @@ fn full_identity_ledger_filters_evicted_history_and_admits_later_calls() {
     assert_eq!(settled.len(), 1);
     assert_eq!(recovered.pending_calls().count(), 0);
     assert!(recovered.has_completed_call("settled-65535"));
-    assert!(recovered.has_completed_call("settled-00000"));
+    assert!(!recovered.has_completed_call("settled-00000"));
     assert!(recovered.has_completed_call("current-call"));
     assert!(recovered
         .begin_call("settled-00000".into(), "get_task_context".into(), json!({}))
         .is_err());
+    let fresh = recovered
+        .begin_call("fresh-call".into(), "get_task_context".into(), json!({}))
+        .expect_err("a saturated ledger must not classify fresh work as replay");
+    assert!(fresh.is_active_turn_receipt_limit());
 
     let round_trip = serde_json::to_value(&recovered).unwrap();
     assert_eq!(

@@ -30,10 +30,9 @@ pub(crate) const MAX_PENDING_CALLS: usize = 4_096;
 // cannot dispatch the same semantic action again.
 const MAX_DURABLE_CALL_RECEIPTS: usize = 4_096;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
-// Older exact identities roll into this fixed-size, no-false-negative replay
-// filter. A collision can only reject fresh work; it can never admit replayed
-// work. Four independent SHA-256-derived bit positions keep the durable state
-// bounded without imposing a hard run-lifetime identity cutoff.
+// Older exact identities roll into this fixed-size saturation marker. Its
+// probabilistic membership is never used as identity authority: once set, the
+// durable run fails closed with an explicit capacity error.
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
@@ -165,15 +164,6 @@ pub(crate) struct DurableReplayFilter {
 }
 
 impl DurableReplayFilter {
-    pub(crate) fn contains(&self, identity: &str) -> bool {
-        if self.words.is_empty() {
-            return false;
-        }
-        replay_filter_bits(identity).all(|bit| {
-            self.words[bit / u64::BITS as usize] & (1_u64 << (bit % u64::BITS as usize)) != 0
-        })
-    }
-
     pub(crate) fn insert(&mut self, identity: &str) {
         if self.words.is_empty() {
             self.words.resize(REPLAY_FILTER_WORDS, 0);
@@ -230,9 +220,9 @@ pub struct ProviderToolBridge {
     settled_call_ids: SettledCallIds,
     #[serde(default)]
     settled_call_filter: DurableReplayFilter,
-    // Resource exhaustion stops the active turn. A later turn can rotate exact
-    // results while the exact-ID window plus replay filter continue to reject
-    // every identity previously observed by this durable run.
+    // Resource exhaustion stops the active turn. Once exact identities spill
+    // into the saturation marker, later work fails with an explicit capacity
+    // error rather than treating a probabilistic collision as an exact replay.
     #[serde(
         default,
         alias = "settledHistoryResetPending",
@@ -476,7 +466,7 @@ impl ProviderToolBridge {
     }
 
     fn has_settled_call_id(&self, call_id: &str) -> bool {
-        self.settled_call_ids.contains(call_id) || self.settled_call_filter.contains(call_id)
+        self.settled_call_ids.contains(call_id)
     }
 
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
@@ -567,6 +557,13 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::invalid(
                 "provider reused a completed tool call id",
             ));
+        }
+        // The fixed-size replay filter is only a durable saturation marker.
+        // Its probabilistic matches cannot make identity-specific replay
+        // decisions without rejecting unrelated fresh calls on collisions.
+        if !self.settled_call_filter.is_empty() {
+            self.durable_run_receipt_limit_reached = true;
+            return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.durable_run_receipt_limit_reached {
             return Err(ProviderBridgeError::active_turn_receipt_limit());

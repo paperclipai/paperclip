@@ -328,8 +328,9 @@ struct CodexProviderState {
     #[serde(default)]
     completed_provider_turn_id: Option<String>,
     // Unlike the live provider process, the durable run survives restarts.
-    // Recent terminal identities stay exact; older identities roll into the
-    // no-false-negative filter so recovery cannot reopen replayed work.
+    // Recent terminal identities stay exact; spilling an older identity into
+    // the filter saturates the run instead of using a probabilistic match as
+    // identity authority.
     #[serde(default)]
     settled_provider_turn_ids: std::collections::BTreeSet<String>,
     #[serde(default)]
@@ -362,10 +363,10 @@ enum ToolCallAdmission {
 
 fn settled_provider_turn_contains(
     identities: &std::collections::BTreeSet<String>,
-    filter: &DurableReplayFilter,
+    _filter: &DurableReplayFilter,
     provider_turn_id: &str,
 ) -> bool {
-    identities.contains(provider_turn_id) || filter.contains(provider_turn_id)
+    identities.contains(provider_turn_id)
 }
 
 fn remember_settled_provider_turn(
@@ -1290,6 +1291,15 @@ impl CodexCommandExecutor {
 
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         self.restore_provider_if_needed()?;
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.settled_provider_turn_filter.is_empty())
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex durable provider turn identity limit reached",
+            ));
+        }
         if self
             .state
             .as_ref()
@@ -3029,9 +3039,7 @@ mod tests {
             state.settled_provider_turn_ids.len(),
             MAX_SETTLED_PROVIDER_TURN_IDS
         );
-        assert!(state
-            .settled_provider_turn_filter
-            .contains("provider-turn-0000"));
+        assert!(!state.settled_provider_turn_filter.is_empty());
         assert!(state
             .settled_provider_turn_ids
             .contains("provider-turn-final"));

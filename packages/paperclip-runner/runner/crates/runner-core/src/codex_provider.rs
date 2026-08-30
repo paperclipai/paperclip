@@ -161,7 +161,11 @@ impl SettledProviderTurnIds {
     }
 
     fn contains(&self, provider_turn_id: &str) -> bool {
-        self.ids.contains(provider_turn_id) || self.filter.contains(provider_turn_id)
+        self.ids.contains(provider_turn_id)
+    }
+
+    fn is_saturated(&self) -> bool {
+        !self.filter.is_empty()
     }
 
     fn restore(&mut self, provider_turn_id: String) {
@@ -462,6 +466,11 @@ impl CodexProvider {
         if self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
                 "Codex has an unresolved ambiguous provider turn start",
+            ));
+        }
+        if self.settled_provider_turn_ids.is_saturated() {
+            return Err(LocalRunnerError::invalid(
+                "Codex durable provider turn identity limit reached",
             ));
         }
         if message.is_empty() || message.len() > MAX_INSTRUCTIONS_BYTES {
@@ -1940,7 +1949,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_provider_turn_history_rolls_old_identities_into_the_filter() {
+    fn settled_provider_turn_history_marks_exact_ledger_saturation() {
         let mut settled = SettledProviderTurnIds::default();
         for index in 0..MAX_SETTLED_PROVIDER_TURN_IDS {
             assert!(settled.insert(format!("turn-{index}")));
@@ -1949,12 +1958,15 @@ mod tests {
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
         assert!(settled.contains("turn-0"));
         assert!(settled.contains("turn-1"));
+        assert!(!settled.is_saturated());
         assert!(settled.insert(format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
         assert!(settled.contains(&format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
-        assert!(settled.contains("turn-0"));
+        assert!(!settled.contains("turn-0"));
+        assert!(settled.is_saturated());
 
         assert!(settled.insert("turn-0".to_owned()));
+        assert!(settled.contains("turn-0"));
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
     }
 
