@@ -1260,19 +1260,20 @@ mod tests {
     #[test]
     fn url_resolution_rejects_non_loopback_and_ambiguous_inputs() {
         let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 80);
-        assert!(
-            resolve_ws_target_with("ws://example.test:80/path", None, |_, _| Ok(vec![public])).is_err()
-        );
+        assert!(resolve_ws_target_with("ws://example.test:80/path", None, |_, _| Ok(vec![public]))
+            .is_err());
         assert!(resolve_ws_target_with(
             "ws://example.test:80/path",
             Some("example.test"),
             |_, _| Ok(vec![public]),
-        ).is_ok());
+        )
+        .is_ok());
         assert!(resolve_ws_target_with(
             "ws://example.test:80/path",
             Some("other.test"),
             |_, _| Ok(vec![public]),
-        ).is_err());
+        )
+        .is_err());
         for input in [
             "wss://127.0.0.1:80/path",
             "ws://user@127.0.0.1:80/path",
@@ -1436,10 +1437,9 @@ mod tests {
             send_plain(&mut socket, &encrypted, server_config.max_frame_bytes).unwrap();
         });
 
-        let target = ResolvedWsTarget::resolve(
-            &config.connect_url,
-            config.allowed_remote_host.as_deref(),
-        ).unwrap();
+        let target =
+            ResolvedWsTarget::resolve(&config.connect_url, config.allowed_remote_host.as_deref())
+                .unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
         let (_, welcome) =
             AuthenticatedTransport::connect(&target, &config, &state, Some(&ticket), None).unwrap();

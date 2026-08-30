@@ -352,6 +352,60 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("verifies the exact executable in the launch shell before a sandbox exec", async () => {
+    const runner = {
+      execute: vi.fn(async (_input: {
+        onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+      }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: 42,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const onSpawn = vi.fn(async () => {});
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "acme-sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess(
+      "run-verified-sandbox",
+      target,
+      "/opt/paperclip/bin/paperclip-runnerd",
+      ["--run-id", "run-verified-sandbox"],
+      {
+        cwd: "/local/workspace",
+        env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onSpawn,
+        expectedExecutableSha256: `sha256:${"e".repeat(64)}`,
+      },
+    );
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "/bin/sh",
+      args: ["-c", expect.stringMatching(/digest_mismatch[\s\S]+exec \/proc\/self\/fd\/9/)],
+      env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
+      onSpawn: expect.any(Function),
+    }));
+    const passedOnSpawn = runner.execute.mock.calls[0]?.[0].onSpawn;
+    await passedOnSpawn?.({ pid: 42, startedAt: "2026-08-30T00:00:00.000Z" });
+    expect(onSpawn).toHaveBeenCalledWith({
+      pid: 42,
+      processGroupId: null,
+      startedAt: "2026-08-30T00:00:00.000Z",
+    });
+  });
+
   it("preserves stdin when wrapping sandbox adapter commands for run-log streaming", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-log-stdin-"));
     cleanupDirs.push(rootDir);

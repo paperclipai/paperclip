@@ -207,6 +207,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       onLog: async (_stream, chunk) => {
         logs.push(chunk);
       },
+      onDispatch: () => undefined,
       onSpawn: async () => undefined,
     });
     const result = await execute.catch((error) => {
@@ -320,6 +321,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       onLog: async (_stream, chunk) => {
         logs.push(chunk);
       },
+      onDispatch: () => undefined,
       onSpawn: async () => undefined,
     });
     expect(resumed).toMatchObject({

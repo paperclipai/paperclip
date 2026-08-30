@@ -2469,6 +2469,7 @@ async function resolveSpawnTarget(
   options: {
     remoteExecution?: RemoteExecutionSpec | null;
     remoteEnv?: Record<string, string> | null;
+    remoteTrustedSystemShell?: boolean;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   } = {},
 ): Promise<SpawnTarget> {
@@ -2485,6 +2486,7 @@ async function resolveSpawnTarget(
       env: Object.fromEntries(
         Object.entries(options.remoteEnv ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
       ),
+      trustedSystemShell: options.remoteTrustedSystemShell,
     });
     return {
       command: sshResolved,
@@ -3359,6 +3361,7 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    remoteTrustedSystemShell?: boolean;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
@@ -3391,6 +3394,7 @@ export async function runChildProcess(
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteTrustedSystemShell: opts.remoteTrustedSystemShell,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {

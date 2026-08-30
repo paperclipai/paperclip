@@ -981,12 +981,25 @@ Remote mode requires all of the following server settings:
   run-bound `/api/runner/v1/connect/{runId}` path.
 - `PAPERCLIP_RUNNER_REMOTE_DIGEST`: the immutable `sha256:` digest of the
   `paperclip-runnerd` artifact installed in the remote image.
-- `PAPERCLIP_RUNNER_REMOTE_BINARY`: command or absolute path in the remote
-  image; defaults to `paperclip-runnerd`.
+- `PAPERCLIP_RUNNER_REMOTE_BINARY`: absolute POSIX path to the
+  `paperclip-runnerd` artifact in the remote image. The launch fails before
+  credential delivery unless the bytes at this exact path match the configured
+  digest.
 - `PAPERCLIP_RUNNER_REMOTE_RUNTIME_ROOT`: private, ephemeral remote runtime
   root; defaults to `/runner-runtime`.
+- `PAPERCLIP_RUNNER_REMOTE_CODEX_HOME`: optional absolute POSIX path to a
+  pre-provisioned Codex home in the remote image. Paperclip copies only regular,
+  non-symlink `auth.json` and `config.toml` files from it into the private
+  per-run home. When unset, those portable files are staged from the resolved
+  control-plane Codex home.
 
-The remote image owns its Codex home and runner state beneath that runtime root.
+The remote image owns its runner state beneath that runtime root. Paperclip
+creates a private, per-run Codex home there and provisions only the portable
+authentication and configuration files after verifying the runner artifact.
+The image must provide `/bin/sh`, `/proc/self/fd`, and a regular system
+`sha256sum` at `/usr/bin/sha256sum` or `/bin/sha256sum`. Host-provisioned Codex
+seeds also require a regular system `base64` at one of those prefixes. Paperclip
+removes the private runner copy, runner state, and Codex home when the run ends.
 The control plane does not copy SQLite state, caches, or sockets into the lane.
 It also does not inherit the control-plane process environment into a remote
 lane; only the resolved run environment plus the runner-owned bootstrap and

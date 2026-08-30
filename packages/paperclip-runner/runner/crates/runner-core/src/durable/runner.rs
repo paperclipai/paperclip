@@ -81,10 +81,8 @@ pub fn run_durable_runner<E: CommandExecutor>(
     }
     // Resolve once. Every reconnect uses the same validated concrete addresses,
     // so DNS cannot redirect a retry after the trust decision.
-    let target = ResolvedWsTarget::resolve(
-        &config.connect_url,
-        config.allowed_remote_host.as_deref(),
-    )?;
+    let target =
+        ResolvedWsTarget::resolve(&config.connect_url, config.allowed_remote_host.as_deref())?;
     let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;

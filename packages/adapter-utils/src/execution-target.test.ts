@@ -3,11 +3,43 @@ import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  buildVerifiedRemoteExecutableScript,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
 } from "./execution-target.js";
+
+describe("buildVerifiedRemoteExecutableScript", () => {
+  it("fails closed before atomically executing the exact absolute binary", () => {
+    const script = buildVerifiedRemoteExecutableScript({
+      command: "/opt/paperclip/bin/paperclip-runnerd",
+      args: ["--run-id", "run with spaces"],
+      expectedSha256: `sha256:${"a".repeat(64)}`,
+    });
+
+    expect(script).toContain("sha256sum");
+    expect(script).toContain("shasum -a 256");
+    expect(script).toContain("/usr/bin/sha256sum");
+    expect(script).not.toContain("command -v sha256sum");
+    expect(script).toContain("paperclip_runner_remote_digest_mismatch");
+    expect(script).toContain("exec 9<\"$paperclip_runner_binary\"");
+    expect(script).toContain("exec /proc/self/fd/9 '--run-id' 'run with spaces'");
+    expect(script.indexOf("paperclip_runner_remote_digest_mismatch"))
+      .toBeLessThan(script.indexOf("exec /proc/self/fd/9"));
+  });
+
+  it("rejects PATH-resolved commands and malformed digests", () => {
+    expect(() => buildVerifiedRemoteExecutableScript({
+      command: "paperclip-runnerd",
+      expectedSha256: `sha256:${"a".repeat(64)}`,
+    })).toThrow(/absolute POSIX path/);
+    expect(() => buildVerifiedRemoteExecutableScript({
+      command: "/opt/paperclip/bin/paperclip-runnerd",
+      expectedSha256: "latest",
+    })).toThrow(/sha256 digest/);
+  });
+});
 
 describe("runAdapterExecutionTargetShellCommand", () => {
   afterEach(() => {
@@ -277,6 +309,98 @@ describe("runAdapterExecutionTargetProcess", () => {
         env: {
           SAFE_VALUE: "visible",
         },
+      }),
+    );
+  });
+
+  it("uses one verify-and-exec shell for an integrity-bound SSH launch", async () => {
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    });
+    const onSpawn = vi.fn(async () => {});
+
+    await runAdapterExecutionTargetProcess(
+      "run-verified-ssh",
+      {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/srv/paperclip/workspace",
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      "/opt/paperclip/bin/paperclip-runnerd",
+      ["--run-id", "run-verified-ssh"],
+      {
+        cwd: "/tmp/local",
+        env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onSpawn,
+        expectedExecutableSha256: `sha256:${"b".repeat(64)}`,
+      },
+    );
+
+    expect(runChildProcessSpy).toHaveBeenCalledWith(
+      "run-verified-ssh",
+      "/bin/sh",
+      ["-c", expect.stringMatching(/digest_mismatch[\s\S]+exec \/proc\/self\/fd\/9/)],
+      expect.objectContaining({
+        env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
+        onSpawn,
+        remoteTrustedSystemShell: true,
+      }),
+    );
+  });
+
+  it("keeps credential stdin on the trusted SSH shell path", async () => {
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+      stdout: "",
+      stderr: "",
+    });
+    const target = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: "/srv/paperclip/workspace",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+
+    await runAdapterExecutionTargetShellCommand("run-private-seed", target, "read seed", {
+      cwd: "/tmp/local",
+      env: {},
+      stdin: "credential-bytes",
+      trustedSystemShell: true,
+    });
+
+    expect(runSshCommandSpy).toHaveBeenCalledWith(
+      target.spec,
+      "read seed",
+      expect.objectContaining({
+        stdin: "credential-bytes",
+        trustedSystemShell: true,
       }),
     );
   });

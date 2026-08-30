@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  buildVerifiedRemoteExecutableScript,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { Db } from "@paperclipai/db";
@@ -23,6 +25,7 @@ const NATIVE_RUNNER_RUNTIME_ROOT_ENV = "PAPERCLIP_RUNNER_RUNTIME_ROOT";
 const REMOTE_RUNNER_BINARY_ENV = "PAPERCLIP_RUNNER_REMOTE_BINARY";
 const REMOTE_RUNNER_DIGEST_ENV = "PAPERCLIP_RUNNER_REMOTE_DIGEST";
 const REMOTE_RUNNER_RUNTIME_ROOT_ENV = "PAPERCLIP_RUNNER_REMOTE_RUNTIME_ROOT";
+const REMOTE_CODEX_HOME_ENV = "PAPERCLIP_RUNNER_REMOTE_CODEX_HOME";
 const NATIVE_CODEX_SEED_FILES = ["auth.json", "config.toml"] as const;
 const RUNNER_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 type NativeRunnerCancellation = (reason: string) => void;
@@ -149,21 +152,148 @@ export function resolveNativeRunnerRuntimeRoot(
 
 export function resolveRemoteNativeRunnerConfig(
   env: NodeJS.ProcessEnv = process.env,
-): { binary: string; digest: string; runtimeRoot: string } {
-  const binary = env[REMOTE_RUNNER_BINARY_ENV]?.trim() || "paperclip-runnerd";
+): { binary: string; digest: string; runtimeRoot: string; codexHome: string | null } {
+  const binary = env[REMOTE_RUNNER_BINARY_ENV]?.trim() ?? "";
   const digest = env[REMOTE_RUNNER_DIGEST_ENV]?.trim() ?? "";
   const runtimeRoot = env[REMOTE_RUNNER_RUNTIME_ROOT_ENV]?.trim() || "/runner-runtime";
+  const codexHome = env[REMOTE_CODEX_HOME_ENV]?.trim() || null;
   if (!RUNNER_DIGEST_PATTERN.test(digest)) {
     throw new Error(`${REMOTE_RUNNER_DIGEST_ENV} must be a sha256 digest`);
   }
   if (!runtimeRoot.startsWith("/") || runtimeRoot.includes("\\")) {
     throw new Error(`${REMOTE_RUNNER_RUNTIME_ROOT_ENV} must be an absolute POSIX path`);
   }
-  if (binary.includes("\0") || binary.trim().length === 0) {
-    throw new Error(`${REMOTE_RUNNER_BINARY_ENV} is invalid`);
+  if (!binary.startsWith("/") || binary.includes("\\") || binary.includes("\0")) {
+    throw new Error(`${REMOTE_RUNNER_BINARY_ENV} must be an absolute POSIX path`);
   }
-  return { binary, digest, runtimeRoot: posix.resolve(runtimeRoot) };
+  if (
+    codexHome &&
+    (!codexHome.startsWith("/") || codexHome.includes("\\") || codexHome.includes("\0"))
+  ) {
+    throw new Error(`${REMOTE_CODEX_HOME_ENV} must be an absolute POSIX path`);
+  }
+  return {
+    binary: posix.resolve(binary),
+    digest,
+    runtimeRoot: posix.resolve(runtimeRoot),
+    codexHome: codexHome ? posix.resolve(codexHome) : null,
+  };
 }
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function remoteRuntimeKey(runId: string): string {
+  return createHash("sha256").update(runId).digest("hex").slice(0, 24);
+}
+
+function trustedRemotePathScript(): string {
+  return "PATH=/usr/bin:/bin; export PATH";
+}
+
+function readNativeCodexSeedPayload(sourceHome: string | null): string {
+  return `${NATIVE_CODEX_SEED_FILES.map((fileName) => {
+    if (!sourceHome) return "";
+    try {
+      const source = resolve(sourceHome, fileName);
+      if (!lstatSync(source).isFile()) return "";
+      return readFileSync(source).toString("base64");
+    } catch {
+      return "";
+    }
+  }).join("\n")}\n`;
+}
+
+function buildRemoteRunnerInstallScript(input: {
+  sourceBinary: string;
+  digest: string;
+  runtimeRoot: string;
+  runRoot: string;
+  stateDirectory: string;
+  verifiedBinary: string;
+}): string {
+  const tempRunRoot = `${input.runRoot}.prepare`;
+  const tempVerifiedBinary = posix.join(tempRunRoot, "bin", posix.basename(input.verifiedBinary));
+  const tempStateDirectory = posix.join(tempRunRoot, posix.relative(input.runRoot, input.stateDirectory));
+  return [
+    buildVerifiedRemoteExecutableScript({
+      command: input.sourceBinary,
+      expectedSha256: input.digest,
+      execute: false,
+    }),
+    trustedRemotePathScript(),
+    "umask 077",
+    `if [ -L ${shellQuote(input.runtimeRoot)} ]; then echo "paperclip_runner_remote_runtime_symlink" >&2; exit 74; fi`,
+    `mkdir -p ${shellQuote(input.runtimeRoot)} ${shellQuote(posix.dirname(input.runRoot))}`,
+    `chmod 700 ${shellQuote(input.runtimeRoot)} ${shellQuote(posix.dirname(input.runRoot))}`,
+    `rm -rf -- ${shellQuote(tempRunRoot)}`,
+    `mkdir -p ${shellQuote(posix.dirname(tempVerifiedBinary))} ${shellQuote(tempStateDirectory)}`,
+    `chmod 700 ${shellQuote(tempRunRoot)} ${shellQuote(posix.dirname(tempVerifiedBinary))} ${shellQuote(tempStateDirectory)}`,
+    `cp -- /proc/self/fd/9 ${shellQuote(tempVerifiedBinary)}`,
+    `chmod 500 ${shellQuote(tempVerifiedBinary)}`,
+    `rm -rf -- ${shellQuote(input.runRoot)}`,
+    `mv -- ${shellQuote(tempRunRoot)} ${shellQuote(input.runRoot)}`,
+    buildVerifiedRemoteExecutableScript({
+      command: input.verifiedBinary,
+      expectedSha256: input.digest,
+      execute: false,
+    }),
+  ].join("\n");
+}
+
+function buildPrivateRemoteCodexHomeScript(input: {
+  runRoot: string;
+  codexHome: string;
+  sourceCodexHome: string | null;
+}): string {
+  const temporaryHome = `${input.codexHome}.prepare`;
+  const commands = [
+    "set -eu",
+    trustedRemotePathScript(),
+    "umask 077",
+    `if [ -L ${shellQuote(input.runRoot)} ] || [ ! -d ${shellQuote(input.runRoot)} ]; then echo "paperclip_runner_remote_runtime_untrusted" >&2; exit 75; fi`,
+    `rm -rf -- ${shellQuote(temporaryHome)}`,
+    `mkdir -p ${shellQuote(temporaryHome)}`,
+    `chmod 700 ${shellQuote(temporaryHome)}`,
+  ];
+  if (input.sourceCodexHome) {
+    const sourceHome = shellQuote(input.sourceCodexHome);
+    const targetHome = shellQuote(temporaryHome);
+    commands.push(
+      `for paperclip_codex_seed in auth.json config.toml; do paperclip_codex_source=${sourceHome}/$paperclip_codex_seed; if [ -f "$paperclip_codex_source" ] && [ ! -L "$paperclip_codex_source" ]; then cp -- "$paperclip_codex_source" ${targetHome}/$paperclip_codex_seed; chmod 600 ${targetHome}/$paperclip_codex_seed; fi; done`,
+    );
+  } else {
+    commands.push(
+      'if [ -x /usr/bin/base64 ] && [ ! -L /usr/bin/base64 ]; then paperclip_base64=/usr/bin/base64; elif [ -x /bin/base64 ] && [ ! -L /bin/base64 ]; then paperclip_base64=/bin/base64; else echo "paperclip_runner_remote_base64_unsupported" >&2; exit 76; fi',
+      "IFS= read -r paperclip_codex_auth || true",
+      "IFS= read -r paperclip_codex_config || true",
+      `if [ -n "$paperclip_codex_auth" ]; then printf %s "$paperclip_codex_auth" | "$paperclip_base64" -d > ${shellQuote(posix.join(temporaryHome, "auth.json"))}; chmod 600 ${shellQuote(posix.join(temporaryHome, "auth.json"))}; fi`,
+      `if [ -n "$paperclip_codex_config" ]; then printf %s "$paperclip_codex_config" | "$paperclip_base64" -d > ${shellQuote(posix.join(temporaryHome, "config.toml"))}; chmod 600 ${shellQuote(posix.join(temporaryHome, "config.toml"))}; fi`,
+    );
+  }
+  commands.push(
+    `rm -rf -- ${shellQuote(input.codexHome)}`,
+    `mv -- ${shellQuote(temporaryHome)} ${shellQuote(input.codexHome)}`,
+  );
+  return commands.join("\n");
+}
+
+function buildRemoteRuntimeCleanupScript(runRoot: string): string {
+  return [
+    "set -eu",
+    trustedRemotePathScript(),
+    `if [ -L ${shellQuote(runRoot)} ]; then rm -f -- ${shellQuote(runRoot)}; else rm -rf -- ${shellQuote(runRoot)}; fi`,
+    `rm -rf -- ${shellQuote(`${runRoot}.prepare`)}`,
+  ].join("\n");
+}
+
+export const nativeCodexRunnerRemoteInternals = {
+  buildPrivateRemoteCodexHomeScript,
+  buildRemoteRunnerInstallScript,
+  buildRemoteRuntimeCleanupScript,
+  readNativeCodexSeedPayload,
+};
 
 function assertRemoteRunnerConnectUrl(connectUrl: string): string {
   const url = new URL(connectUrl);
@@ -299,6 +429,8 @@ export async function executeNativeCodexRunner(input: {
     providerVersion?: string;
   };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /** Release the atomic issue gate immediately before remote provider dispatch. */
+  onDispatch: () => void;
   onSpawn: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -310,43 +442,119 @@ export async function executeNativeCodexRunner(input: {
     ? resolve(input.runtimeRoot)
     : resolveNativeRunnerRuntimeRoot();
   const remoteConfig = remoteTarget ? resolveRemoteNativeRunnerConfig() : null;
-  const binary = remoteConfig?.binary ?? input.runnerBinary ?? resolvePaperclipRunnerBinary();
+  let binary = remoteConfig?.binary ?? input.runnerBinary ?? resolvePaperclipRunnerBinary();
   const runnerDigest = remoteConfig?.digest
     ?? `sha256:${createHash("sha256").update(readFileSync(binary)).digest("hex")}`;
   const runnerRuntimeRoot = remoteConfig?.runtimeRoot ?? localRuntimeRoot;
-  const runnerStateDirectory = remoteConfig
-    ? posix.resolve(runnerRuntimeRoot, "runner", input.runId)
-    : resolve(runnerRuntimeRoot, "runner", input.runId);
+  let runnerStateDirectory = resolve(runnerRuntimeRoot, "runner", input.runId);
   const sourceCodexHome = input.environment.CODEX_HOME?.trim()
     || process.env.CODEX_HOME?.trim()
     || null;
-  const codexHome = remoteConfig
-    ? posix.resolve(runnerRuntimeRoot, "codex", input.runId)
-    : resolve(runnerRuntimeRoot, "codex", input.runId);
+  let codexHome = remoteConfig ? "" : resolve(runnerRuntimeRoot, "codex", input.runId);
+  let cleanupRemoteRuntime: (() => Promise<void>) | null = null;
   privateDirectory(localRuntimeRoot);
   privateDirectory(resolve(localRuntimeRoot, "control-plane"));
-  if (!remoteTarget) {
+  if (remoteTarget && remoteConfig) {
+    const runRoot = posix.join(runnerRuntimeRoot, "runs", remoteRuntimeKey(input.runId));
+    const verifiedBinary = posix.join(runRoot, "bin", "paperclip-runnerd");
+    runnerStateDirectory = posix.join(runRoot, "state");
+    codexHome = posix.join(runRoot, "codex-home");
+    cleanupRemoteRuntime = async () => {
+      await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        remoteTarget,
+        buildRemoteRuntimeCleanupScript(runRoot),
+        {
+          cwd: remoteTarget.remoteCwd,
+          env: {},
+          trustedSystemShell: true,
+          timeoutSec: 30,
+          graceSec: 5,
+        },
+      ).catch(() => undefined);
+    };
+    try {
+      const installedRunner = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        remoteTarget,
+        buildRemoteRunnerInstallScript({
+          sourceBinary: binary,
+          digest: runnerDigest,
+          runtimeRoot: runnerRuntimeRoot,
+          runRoot,
+          stateDirectory: runnerStateDirectory,
+          verifiedBinary,
+        }),
+        {
+          cwd: remoteTarget.remoteCwd,
+          env: {},
+          trustedSystemShell: true,
+          timeoutSec: 30,
+          graceSec: 5,
+        },
+      );
+      if (installedRunner.timedOut || installedRunner.exitCode !== 0) {
+        const typedFailure = installedRunner.stderr.match(
+          /paperclip_runner_remote_[a-z0-9_]+/,
+        )?.[0];
+        throw new Error(typedFailure ?? "paperclip_runner_remote_runtime_prepare_failed");
+      }
+      binary = verifiedBinary;
+
+      const preparedHome = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        remoteTarget,
+        buildPrivateRemoteCodexHomeScript({
+          runRoot,
+          codexHome,
+          sourceCodexHome: remoteConfig.codexHome,
+        }),
+        {
+          cwd: remoteTarget.remoteCwd,
+          env: {},
+          trustedSystemShell: true,
+          ...(remoteConfig.codexHome
+            ? {}
+            : { stdin: readNativeCodexSeedPayload(sourceCodexHome) }),
+          timeoutSec: 30,
+          graceSec: 5,
+        },
+      );
+      if (preparedHome.timedOut || preparedHome.exitCode !== 0) {
+        throw new Error("paperclip_runner_remote_codex_home_prepare_failed");
+      }
+    } catch (error) {
+      await cleanupRemoteRuntime();
+      throw error;
+    }
+  } else {
     privateDirectory(resolve(runnerRuntimeRoot, "runner"));
     privateDirectory(runnerStateDirectory);
     seedNativeCodexHome(sourceCodexHome, codexHome);
   }
   const runnerCwd = remoteTarget?.remoteCwd ?? input.cwd;
 
-  const prepared = await runnerPrpCoordinator(input.db, {
-    stateRoot: resolve(localRuntimeRoot, "control-plane"),
-  }).prepare({
-    companyId: input.companyId,
-    issueId: input.issueId,
-    runId: input.runId,
-    agentId: input.agentId,
-    runnerInstanceId: input.runnerInstanceId,
-    environmentLeaseId: input.environmentLeaseId,
-    normalizedSessionId: input.normalizedSessionId,
-    turnId: input.turnId,
-    itemId: input.itemId,
-    runnerVersion: RUNNER_VERSION,
-    runnerDigest,
-  });
+  let prepared: PreparedRunnerPrpSession;
+  try {
+    prepared = await runnerPrpCoordinator(input.db, {
+      stateRoot: resolve(localRuntimeRoot, "control-plane"),
+    }).prepare({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      runId: input.runId,
+      agentId: input.agentId,
+      runnerInstanceId: input.runnerInstanceId,
+      environmentLeaseId: input.environmentLeaseId,
+      normalizedSessionId: input.normalizedSessionId,
+      turnId: input.turnId,
+      itemId: input.itemId,
+      runnerVersion: RUNNER_VERSION,
+      runnerDigest,
+    });
+  } catch (error) {
+    await cleanupRemoteRuntime?.();
+    throw error;
+  }
 
   prepared.queueCommand("run.prepare", {
     provider: {
@@ -374,7 +582,11 @@ export async function executeNativeCodexRunner(input: {
       ? assertRemoteRunnerConnectUrl(prepared.connectUrl)
       : undefined;
   } catch (error) {
-    await prepared.release();
+    try {
+      await prepared.release();
+    } finally {
+      await cleanupRemoteRuntime?.();
+    }
     throw error;
   }
   const runnerArguments = buildNativeRunnerArguments({
@@ -399,9 +611,14 @@ export async function executeNativeCodexRunner(input: {
 
   if (remoteTarget) {
     if (activeRemoteNativeRunnerCancellations.has(input.runId)) {
-      await prepared.release();
+      try {
+        await prepared.release();
+      } finally {
+        await cleanupRemoteRuntime?.();
+      }
       throw new Error("paperclip_runner_remote_cancellation_already_registered");
     }
+    input.onDispatch();
     const remoteProcess = runAdapterExecutionTargetProcess(
       input.runId,
       remoteTarget,
@@ -413,6 +630,7 @@ export async function executeNativeCodexRunner(input: {
         timeoutSec: Math.max(1, Math.ceil(input.timeoutMs / 1_000)),
         graceSec: 5,
         onLog: input.onLog,
+        expectedExecutableSha256: runnerDigest,
       },
     );
     let terminationQueued = false;
@@ -475,7 +693,11 @@ export async function executeNativeCodexRunner(input: {
       }
       queueTermination(false);
       await waitForPromiseSettlement(remoteProcess, 5_000).catch(() => false);
-      await prepared.release();
+      try {
+        await prepared.release();
+      } finally {
+        await cleanupRemoteRuntime?.();
+      }
     }
   }
 

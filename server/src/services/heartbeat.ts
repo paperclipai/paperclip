@@ -16704,6 +16704,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             environment,
             executionTarget,
             onLog,
+            onDispatch: markDispatchStarted,
             onSpawn: async (meta) => {
               markDispatchStarted();
               await onSpawn(meta);

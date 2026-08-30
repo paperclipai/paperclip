@@ -490,6 +490,32 @@ describe("ssh env-lab fixture", () => {
     await target.cleanup();
   });
 
+  it("uses the fixed system shell without profiles for an integrity-bound launch", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      command: "/bin/sh",
+      args: ["-c", "exec /proc/self/fd/9"],
+      env: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "one-use" },
+      trustedSystemShell: true,
+    });
+
+    const remoteScript = String(target.args.at(-1) ?? "");
+    expect(remoteScript).toContain("/bin/sh");
+    expect(remoteScript).not.toContain("/etc/profile");
+    expect(remoteScript).not.toContain(".bashrc");
+    expect(remoteScript).toContain("PAPERCLIP_RUNNER_BOOTSTRAP_TICKET");
+    await target.cleanup();
+  });
+
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
       buildSshSpawnTarget({

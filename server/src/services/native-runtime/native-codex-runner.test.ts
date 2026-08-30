@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildNativeRunnerArguments,
   buildNativeRunnerEnvironment,
+  nativeCodexRunnerRemoteInternals,
   queueNativeRunnerTermination,
   requestRemoteNativeRunnerCancellation,
   resolveRemoteNativeRunnerConfig,
@@ -52,19 +53,38 @@ describe("resolveRemoteNativeRunnerConfig", () => {
     expect(resolveRemoteNativeRunnerConfig({
       PAPERCLIP_RUNNER_REMOTE_DIGEST: `sha256:${"c".repeat(64)}`,
       PAPERCLIP_RUNNER_REMOTE_RUNTIME_ROOT: "/runner-runtime",
-      PAPERCLIP_RUNNER_REMOTE_BINARY: "paperclip-runnerd",
+      PAPERCLIP_RUNNER_REMOTE_BINARY: "/opt/paperclip/bin/paperclip-runnerd",
     })).toEqual({
-      binary: "paperclip-runnerd",
+      binary: "/opt/paperclip/bin/paperclip-runnerd",
       digest: `sha256:${"c".repeat(64)}`,
       runtimeRoot: "/runner-runtime",
+      codexHome: null,
     });
     expect(() => resolveRemoteNativeRunnerConfig({
       PAPERCLIP_RUNNER_REMOTE_DIGEST: "latest",
     })).toThrow(/must be a sha256 digest/);
     expect(() => resolveRemoteNativeRunnerConfig({
       PAPERCLIP_RUNNER_REMOTE_DIGEST: `sha256:${"c".repeat(64)}`,
+      PAPERCLIP_RUNNER_REMOTE_BINARY: "/opt/paperclip/bin/paperclip-runnerd",
       PAPERCLIP_RUNNER_REMOTE_RUNTIME_ROOT: "runner-runtime",
     })).toThrow(/absolute POSIX path/);
+    expect(() => resolveRemoteNativeRunnerConfig({
+      PAPERCLIP_RUNNER_REMOTE_DIGEST: `sha256:${"c".repeat(64)}`,
+      PAPERCLIP_RUNNER_REMOTE_BINARY: "paperclip-runnerd",
+    })).toThrow(/REMOTE_BINARY.*absolute POSIX path/);
+  });
+
+  it("accepts an optional pre-provisioned remote Codex home", () => {
+    expect(resolveRemoteNativeRunnerConfig({
+      PAPERCLIP_RUNNER_REMOTE_DIGEST: `sha256:${"d".repeat(64)}`,
+      PAPERCLIP_RUNNER_REMOTE_BINARY: "/opt/paperclip/bin/paperclip-runnerd",
+      PAPERCLIP_RUNNER_REMOTE_CODEX_HOME: "/opt/paperclip/codex-home",
+    }).codexHome).toBe("/opt/paperclip/codex-home");
+    expect(() => resolveRemoteNativeRunnerConfig({
+      PAPERCLIP_RUNNER_REMOTE_DIGEST: `sha256:${"d".repeat(64)}`,
+      PAPERCLIP_RUNNER_REMOTE_BINARY: "/opt/paperclip/bin/paperclip-runnerd",
+      PAPERCLIP_RUNNER_REMOTE_CODEX_HOME: "relative/codex-home",
+    })).toThrow(/REMOTE_CODEX_HOME.*absolute POSIX path/);
   });
 });
 
@@ -85,6 +105,39 @@ describe("buildNativeRunnerEnvironment", () => {
       bootstrapTicket: "one-use-ticket",
       hostEnvironment: { DATABASE_URL: "must-stay-local" },
     })).toMatchObject({ DATABASE_URL: "must-stay-local" });
+  });
+});
+
+describe("remote native runner preparation", () => {
+  it("copies verified bytes into a private run path and verifies that copy", () => {
+    const script = nativeCodexRunnerRemoteInternals.buildRemoteRunnerInstallScript({
+      sourceBinary: "/opt/paperclip/bin/paperclip-runnerd",
+      digest: `sha256:${"e".repeat(64)}`,
+      runtimeRoot: "/runner-runtime",
+      runRoot: "/runner-runtime/runs/abc",
+      stateDirectory: "/runner-runtime/runs/abc/state",
+      verifiedBinary: "/runner-runtime/runs/abc/bin/paperclip-runnerd",
+    });
+    expect(script).toContain("cp -- /proc/self/fd/9");
+    expect(script).toContain("chmod 500");
+    expect(script.match(/paperclip_runner_expected_sha=/g)).toHaveLength(2);
+    expect(script).not.toContain("bootstrap");
+  });
+
+  it("stages Codex seeds through stdin into an atomic private home and removes the run root", () => {
+    const prepareScript = nativeCodexRunnerRemoteInternals.buildPrivateRemoteCodexHomeScript({
+      runRoot: "/runner-runtime/runs/abc",
+      codexHome: "/runner-runtime/runs/abc/codex-home",
+      sourceCodexHome: null,
+    });
+    const cleanupScript = nativeCodexRunnerRemoteInternals.buildRemoteRuntimeCleanupScript(
+      "/runner-runtime/runs/abc",
+    );
+    expect(prepareScript).toContain("IFS= read -r paperclip_codex_auth");
+    expect(prepareScript).toContain("chmod 600");
+    expect(prepareScript).toContain("codex-home.prepare");
+    expect(prepareScript).not.toContain("auth-secret");
+    expect(cleanupScript).toContain("rm -rf -- '/runner-runtime/runs/abc'");
   });
 });
 

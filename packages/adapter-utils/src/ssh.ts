@@ -1197,6 +1197,7 @@ export async function runSshCommand(
     stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
+    trustedSystemShell?: boolean;
   } = {},
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
@@ -1224,21 +1225,24 @@ export async function runSshCommand(
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const remoteShell = options.trustedSystemShell ? "/bin/sh" : "sh";
     const remoteScript = [
-      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      ...(options.trustedSystemShell ? [] : [
+        'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      ]),
       envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
+        ? `exec env ${envArgs.join(" ")} ${shellQuote(remoteShell)} -c ${shellQuote(remoteCommand)}`
+        : `exec ${shellQuote(remoteShell)} -c ${shellQuote(remoteCommand)}`,
     ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      `${shellQuote(remoteShell)} -c ${shellQuote(remoteScript)}`,
     );
 
     return options.stdin != null
@@ -1261,6 +1265,7 @@ export async function buildSshSpawnTarget(input: {
   command: string;
   args: string[];
   env: Record<string, string>;
+  trustedSystemShell?: boolean;
 }): Promise<{
   command: string;
   args: string[];
@@ -1288,11 +1293,14 @@ export async function buildSshSpawnTarget(input: {
   // .bash_profile typically sources .bashrc itself; only source .bashrc
   // directly when no .bash_profile exists, so a host that adds nvm in
   // .bashrc still resolves node without a double-run of the setup.
+  const remoteShell = input.trustedSystemShell ? "/bin/sh" : "sh";
   const remoteScript = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...(input.trustedSystemShell ? [] : [
+      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ]),
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -1303,7 +1311,7 @@ export async function buildSshSpawnTarget(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
+    `${shellQuote(remoteShell)} -c ${shellQuote(remoteScript)}`,
   );
 
   return {

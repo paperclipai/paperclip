@@ -256,11 +256,21 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   settleRunDisposition?: (() => DuplexBrokerRunDisposition) | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
+  /**
+   * Remote-only executable integrity gate. When set, the execution-target
+   * launcher hashes the exact absolute executable path and execs it from the
+   * same open file descriptor only when the bytes match. The caller must first
+   * place mutable source artifacts in a private, non-writable run path.
+   */
+  expectedExecutableSha256?: string;
 }
 
 export interface AdapterExecutionTargetShellOptions {
   cwd: string;
   env: Record<string, string>;
+  stdin?: string;
+  /** Use /bin/sh without user or system profile sourcing. */
+  trustedSystemShell?: boolean;
   timeoutSec?: number;
   graceSec?: number;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -779,6 +789,46 @@ function applyRunDispositionSeam(
   };
 }
 
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Build the fail-closed POSIX launcher used for credential-bearing remote
+ * commands. The configured executable must be an absolute, non-symlink path.
+ * The open descriptor prevents PATH or path replacement between hash and exec.
+ */
+export function buildVerifiedRemoteExecutableScript(input: {
+  command: string;
+  args?: string[];
+  expectedSha256: string;
+  execute?: boolean;
+}): string {
+  if (!path.posix.isAbsolute(input.command) || input.command.includes("\\")) {
+    throw new Error("verified remote executable must be an absolute POSIX path");
+  }
+  if (!SHA256_DIGEST_PATTERN.test(input.expectedSha256)) {
+    throw new Error("verified remote executable digest must be a sha256 digest");
+  }
+  const executable = shellQuote(input.command);
+  const expected = shellQuote(input.expectedSha256.slice("sha256:".length));
+  const verify = [
+    "set -eu",
+    `paperclip_runner_binary=${executable}`,
+    `paperclip_runner_expected_sha=${expected}`,
+    'if [ ! -f "$paperclip_runner_binary" ] || [ ! -x "$paperclip_runner_binary" ] || [ -L "$paperclip_runner_binary" ]; then echo "paperclip_runner_remote_binary_unavailable" >&2; exit 71; fi',
+    'exec 9<"$paperclip_runner_binary"',
+    'if [ ! -e /proc/self/fd/9 ]; then echo "paperclip_runner_remote_digest_unsupported" >&2; exit 72; fi',
+    'if [ -x /usr/bin/sha256sum ] && [ ! -L /usr/bin/sha256sum ]; then paperclip_runner_actual_line=$(/usr/bin/sha256sum <&9); elif [ -x /bin/sha256sum ] && [ ! -L /bin/sha256sum ]; then paperclip_runner_actual_line=$(/bin/sha256sum <&9); elif [ -x /usr/bin/shasum ] && [ ! -L /usr/bin/shasum ]; then paperclip_runner_actual_line=$(/usr/bin/shasum -a 256 <&9); else echo "paperclip_runner_remote_digest_unsupported" >&2; exit 72; fi',
+    'paperclip_runner_actual_sha=${paperclip_runner_actual_line%% *}',
+    'if [ "$paperclip_runner_actual_sha" != "$paperclip_runner_expected_sha" ]; then echo "paperclip_runner_remote_digest_mismatch" >&2; exit 73; fi',
+  ];
+  if (input.execute !== false) {
+    verify.push(
+      `exec /proc/self/fd/9${(input.args ?? []).map((arg) => ` ${shellQuote(arg)}`).join("")}`,
+    );
+  }
+  return verify.join("\n");
+}
+
 export async function runAdapterExecutionTargetProcess(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -796,8 +846,18 @@ export async function runAdapterExecutionTargetProcess(
     const runLogTail = options.runLogTail?.create() ?? null;
     let execCommand = command;
     let execArgs = args;
+    if (options.expectedExecutableSha256) {
+      execCommand = "/bin/sh";
+      execArgs = shellCommandArgs(
+        buildVerifiedRemoteExecutableScript({
+          command,
+          args,
+          expectedSha256: options.expectedExecutableSha256,
+        }),
+      );
+    }
     if (runLogTail) {
-      ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(command, args));
+      ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(execCommand, execArgs));
       runLogTail.start(options.onLog);
     }
     try {
@@ -839,18 +899,32 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  return await runChildProcess(runId, command, args, {
-    cwd: options.cwd,
-    env,
-    stdin: options.stdin,
-    timeoutSec: options.timeoutSec,
-    graceSec: options.graceSec,
-    onLog: options.onLog,
-    onSpawn: options.onSpawn,
-    terminalResultCleanup: options.terminalResultCleanup,
-    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
-    remoteExecution: adapterExecutionTargetToRemoteSpec(target),
-  });
+  const verifiedRemoteScript = target?.kind === "remote" && options.expectedExecutableSha256
+    ? buildVerifiedRemoteExecutableScript({
+        command,
+        args,
+        expectedSha256: options.expectedExecutableSha256,
+      })
+    : null;
+
+  return await runChildProcess(
+    runId,
+    verifiedRemoteScript ? "/bin/sh" : command,
+    verifiedRemoteScript ? ["-c", verifiedRemoteScript] : args,
+    {
+      cwd: options.cwd,
+      env,
+      stdin: options.stdin,
+      timeoutSec: options.timeoutSec,
+      graceSec: options.graceSec,
+      onLog: options.onLog,
+      onSpawn: options.onSpawn,
+      terminalResultCleanup: options.terminalResultCleanup,
+      localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
+      remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+      remoteTrustedSystemShell: verifiedRemoteScript !== null,
+    },
+  );
 }
 
 export async function runAdapterExecutionTargetShellCommand(
@@ -872,6 +946,8 @@ export async function runAdapterExecutionTargetShellCommand(
         // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
         const result = await runSshCommand(target.spec, command, {
           env,
+          stdin: options.stdin,
+          trustedSystemShell: options.trustedSystemShell,
           timeoutMs: (options.timeoutSec ?? 15) * 1000,
         });
         if (result.stdout) await onLog("stdout", result.stdout);
@@ -923,12 +999,13 @@ export async function runAdapterExecutionTargetShellCommand(
       }
     }
 
-    const shellCommand = preferredSandboxShell(target);
+    const shellCommand = options.trustedSystemShell ? "/bin/sh" : preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
       command: shellCommand,
       args: shellCommandArgs(command),
       cwd: target.remoteCwd,
       env,
+      stdin: options.stdin,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
     });
@@ -942,6 +1019,7 @@ export async function runAdapterExecutionTargetShellCommand(
     {
       cwd: options.cwd,
       env: options.env,
+      stdin: options.stdin,
       timeoutSec: options.timeoutSec ?? 15,
       graceSec: options.graceSec ?? 5,
       onLog,
