@@ -377,6 +377,73 @@ describe("runtime context materialization", () => {
     ).toBe(false);
   });
 
+  it("never publishes a partial assignment when recovery copying fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-recovery-"));
+    roots.push(root);
+    const assigned = join(root, "assigned-source");
+    const replacement = join(root, "replacement-source");
+    const instructions = join(root, "instructions-source");
+    const skillsHome = join(root, "codex-home", "skills");
+    await Promise.all([
+      mkdir(assigned),
+      mkdir(replacement),
+      mkdir(instructions),
+    ]);
+    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
+    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
+    await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
+
+    await materializeNativeRuntimeSkills(
+      context(assigned, instructions),
+      skillsHome,
+    );
+    await expect(
+      materializeNativeRuntimeSkills(
+        context(replacement, instructions, "replacement"),
+        skillsHome,
+        {
+          renameTree: async (source, destination) => {
+            if (
+              source.includes(".paperclip-skills-staging-") ||
+              source.includes(".paperclip-skills-previous-")
+            ) {
+              throw new Error("simulated rename failure");
+            }
+            await rename(source, destination);
+          },
+          copyTree: async (_source, destination) => {
+            await mkdir(join(destination, "assigned"), { recursive: true });
+            await writeFile(
+              join(destination, "assigned", "SKILL.md"),
+              "# Partial\n",
+            );
+            throw new Error("simulated mid-copy failure");
+          },
+        },
+      ),
+    ).rejects.toThrow("runtime context skill replacement and rollback failed");
+
+    await expect(stat(skillsHome)).rejects.toThrow();
+    const parentEntries = await readdir(dirname(skillsHome));
+    const previousEntries = parentEntries.filter((entry) =>
+      entry.startsWith(".paperclip-skills-previous-"),
+    );
+    expect(previousEntries).toHaveLength(1);
+    await expect(
+      readFile(
+        join(dirname(skillsHome), previousEntries[0]!, "assigned", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("# Assigned\n");
+    expect(
+      parentEntries.some(
+        (entry) =>
+          entry.startsWith(".paperclip-skills-staging-") ||
+          entry.startsWith(".paperclip-skills-recovery-"),
+      ),
+    ).toBe(false);
+  });
+
   it("rejects skill names that can escape or alias the skills home", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-name-"));
     roots.push(root);

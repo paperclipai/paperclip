@@ -143,12 +143,24 @@ export async function materializeNativeRuntimeSkills(
     removeTree?: (path: string) => Promise<void>;
     /** Internal test seam for swap and rollback failure coverage. */
     renameTree?: (source: string, destination: string) => Promise<void>;
+    /** Internal test seam for partial recovery-copy failure coverage. */
+    copyTree?: (source: string, destination: string) => Promise<void>;
   } = {},
 ): Promise<void> {
   const removeTree =
     dependencies.removeTree ??
     ((path: string) => rm(path, { recursive: true, force: true }));
   const renameTree = dependencies.renameTree ?? rename;
+  const copyTree =
+    dependencies.copyTree ??
+    ((source: string, destination: string) =>
+      cp(source, destination, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        dereference: false,
+        verbatimSymlinks: true,
+      }));
   if (context) {
     const runtimeNames = new Set<string>();
     for (const skill of context.skills) {
@@ -176,6 +188,7 @@ export async function materializeNativeRuntimeSkills(
   const nonce = randomUUID();
   const stagingHome = join(parent, `.paperclip-skills-staging-${nonce}`);
   const previousHome = join(parent, `.paperclip-skills-previous-${nonce}`);
+  const recoveryHome = join(parent, `.paperclip-skills-recovery-${nonce}`);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await mkdir(stagingHome, { mode: 0o700 });
   try {
@@ -207,18 +220,16 @@ export async function materializeNativeRuntimeSkills(
           await renameTree(previousHome, skillsHome);
         } catch (rollbackError) {
           try {
-            // Preserve the all-or-nothing result even when the atomic
-            // rename-back is unavailable: restore the previous tree at the
-            // canonical path before rejecting the replacement.
-            await cp(previousHome, skillsHome, {
-              recursive: true,
-              force: false,
-              errorOnExist: true,
-              dereference: false,
-              verbatimSymlinks: true,
-            });
+            // Never copy directly into the live path. Stage and revalidate a
+            // private recovery tree, then publish it with one atomic rename so
+            // readers see either the complete previous assignment or no tree.
+            await copyTree(previousHome, recoveryHome);
+            await assertSafeTree(recoveryHome);
+            await protectStagedTree(recoveryHome);
+            await renameTree(recoveryHome, skillsHome);
             await removeTree(previousHome).catch(() => undefined);
           } catch (copyError) {
+            await removeTree(recoveryHome).catch(() => undefined);
             throw new AggregateError(
               [error, rollbackError, copyError],
               "runtime context skill replacement and rollback failed",
@@ -236,6 +247,7 @@ export async function materializeNativeRuntimeSkills(
     }
   } catch (error) {
     await removeTree(stagingHome).catch(() => undefined);
+    await removeTree(recoveryHome).catch(() => undefined);
     throw error;
   }
 }
