@@ -424,6 +424,7 @@ describe("claude_local ACP lane", () => {
       claudePath,
       [
         "#!/bin/sh",
+        "cat >/dev/null",
         "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"fixture\"}'",
       ].join("\n"),
       "utf8",
