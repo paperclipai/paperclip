@@ -170,6 +170,62 @@ fn validates_question_sets_and_rejects_duplicate_question_ids() {
         AcpxEventPayload::InputRequested { request_id, .. } if request_id == "input-1"
     ));
 
+    let sensitive = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+            json!({
+                "requestId": "input-sensitive",
+                "questionSet": {
+                    "schema": "paperclip.question_set.v1",
+                    "title": "token=question-set-secret",
+                    "description": "authorization: question-description-secret",
+                    "submitLabel": "secret=submit-label-secret",
+                    "questions": [{
+                        "id": "token=stable-question-id",
+                        "header": "token=question-header-secret",
+                        "prompt": "password=question-prompt-secret",
+                        "helpText": "api_key=question-help-secret",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [{
+                            "id": "token=stable-option-id",
+                            "label": "bearer option-label-secret",
+                            "description": "ticket=option-description-secret"
+                        }],
+                        "customAnswer": {
+                            "enabled": true,
+                            "label": "token=custom-label-secret",
+                            "placeholder": "secret=custom-placeholder-secret"
+                        },
+                        "textValidation": {"pattern": "^token=protocol-value$"}
+                    }]
+                }
+            }),
+        ),
+    )
+    .unwrap();
+    let AcpxEventPayload::InputRequested { question_set, .. } = sensitive else {
+        panic!("input request must retain its question set");
+    };
+    let retained = question_set.to_string();
+    assert!(!retained.contains("question-set-secret"));
+    assert!(!retained.contains("question-prompt-secret"));
+    assert!(!retained.contains("option-label-secret"));
+    assert!(!retained.contains("custom-placeholder-secret"));
+    assert_eq!(
+        question_set["questions"][0]["id"],
+        "token=stable-question-id"
+    );
+    assert_eq!(
+        question_set["questions"][0]["options"][0]["id"],
+        "token=stable-option-id"
+    );
+    assert_eq!(
+        question_set["questions"][0]["textValidation"]["pattern"],
+        "^token=protocol-value$"
+    );
+
     let duplicate = event(
         GeneratedAcpxSidecarEventType::RuntimeInputRequested,
         json!({

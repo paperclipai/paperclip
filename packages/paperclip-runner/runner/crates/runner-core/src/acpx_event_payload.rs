@@ -102,6 +102,7 @@ pub fn decode_acpx_event(
                 LocalRunnerError::invalid("ACPX input request omitted its question set")
             })?;
             validate_question_set(&question_set)?;
+            let question_set = sanitize_question_set(question_set);
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
             Ok(AcpxEventPayload::InputRequested {
                 request_id: required_id(&event.payload, "requestId", "input request")?,
@@ -160,6 +161,50 @@ pub fn decode_acpx_event(
                 message: redact_text(message),
             })
         }
+    }
+}
+
+fn sanitize_question_set(mut value: Value) -> Value {
+    let Some(question_set) = value.as_object_mut() else {
+        return value;
+    };
+    redact_object_text(question_set, &["title", "description", "submitLabel"]);
+    if let Some(questions) = question_set
+        .get_mut("questions")
+        .and_then(Value::as_array_mut)
+    {
+        for question in questions {
+            let Some(question) = question.as_object_mut() else {
+                continue;
+            };
+            // IDs, answer modes, and validation patterns are protocol values:
+            // changing them would break response correlation or semantics.
+            redact_object_text(question, &["header", "prompt", "helpText"]);
+            if let Some(options) = question.get_mut("options").and_then(Value::as_array_mut) {
+                for option in options {
+                    if let Some(option) = option.as_object_mut() {
+                        redact_object_text(option, &["label", "description"]);
+                    }
+                }
+            }
+            if let Some(custom_answer) = question
+                .get_mut("customAnswer")
+                .and_then(Value::as_object_mut)
+            {
+                redact_object_text(custom_answer, &["label", "placeholder"]);
+            }
+        }
+    }
+    value
+}
+
+fn redact_object_text(object: &mut serde_json::Map<String, Value>, keys: &[&str]) {
+    for key in keys {
+        let Some(text) = object.get(*key).and_then(Value::as_str) else {
+            continue;
+        };
+        let redacted = redact_text(text);
+        object.insert((*key).to_owned(), Value::String(redacted));
     }
 }
 
