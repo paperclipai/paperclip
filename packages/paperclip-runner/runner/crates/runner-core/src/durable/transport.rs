@@ -1260,8 +1260,10 @@ mod tests {
     #[test]
     fn url_resolution_rejects_non_loopback_and_ambiguous_inputs() {
         let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 80);
-        assert!(resolve_ws_target_with("ws://example.test:80/path", None, |_, _| Ok(vec![public]))
-            .is_err());
+        assert!(
+            resolve_ws_target_with("ws://example.test:80/path", None, |_, _| Ok(vec![public]))
+                .is_err()
+        );
         assert!(resolve_ws_target_with(
             "ws://example.test:80/path",
             Some("example.test"),
