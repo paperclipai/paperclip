@@ -16167,7 +16167,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactSensitiveText(redactCurrentUserText(chunk, currentUserRedactionOptions)),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -16939,17 +16939,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         usageBasis: adapterResult.usageBasis ?? null,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
-      const runErrorMessage =
+      const rawAdapterErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
-            : redactSensitiveText(
-                redactCurrentUserText(
-                  adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                  currentUserRedactionOptions,
-                ),
-              );
+            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed");
+      const sanitizedAdapterErrorMessage =
+        rawAdapterErrorMessage === null
+          ? null
+          : redactSensitiveText(redactCurrentUserText(rawAdapterErrorMessage, currentUserRedactionOptions));
+      const sanitizedAdapterResult = {
+        ...adapterResult,
+        errorMessage: sanitizedAdapterErrorMessage,
+      };
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
       const runErrorCode =
@@ -17035,7 +17038,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             modelProfileApplication,
           ),
           errorCode: runErrorCode,
-          errorMessage: runErrorMessage,
+          errorMessage: sanitizedAdapterErrorMessage,
         }),
         adapterResult.summary
           ? redactSensitiveText(redactCurrentUserText(adapterResult.summary, currentUserRedactionOptions))
@@ -17044,7 +17047,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: sanitizedAdapterErrorMessage,
         errorCode: runErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -17098,7 +17101,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: sanitizedAdapterErrorMessage,
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
@@ -17119,7 +17122,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issueId,
             issueWorkMode: issueRef?.workMode ?? null,
             outcome,
-            error: runErrorMessage,
+            error: sanitizedAdapterErrorMessage,
           });
         } catch (err) {
           logger.warn(
@@ -17218,7 +17221,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(agent, finalizedRun, sanitizedAdapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
@@ -17240,7 +17243,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: runErrorMessage,
+              lastError: outcome === "succeeded" ? null : (sanitizedAdapterErrorMessage ?? "run_failed"),
             });
           }
         }
@@ -17248,7 +17251,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(
         agent.id,
         outcome,
-        runErrorMessage,
+        outcome === "succeeded" ? null : sanitizedAdapterErrorMessage,
         {
           keepIdleOnFailure:
             outcome === "failed" &&
