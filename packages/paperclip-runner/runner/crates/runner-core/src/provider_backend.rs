@@ -859,8 +859,14 @@ impl CodexCommandExecutor {
         let completed_turn_process_generation = state.completed_turn_process_generation;
         let completed_provider_turn_id = state.completed_provider_turn_id.clone();
         let ambiguous_turn_start_pending = state.ambiguous_turn_start_pending;
+        let tool_receipt_epoch_requires_rollover =
+            state.tool_bridge.receipt_epoch_requires_rollover();
+        let tool_receipt_epoch_has_active_receipts = state.tool_bridge.has_active_receipts();
         let (settled_provider_turn_ids, settled_provider_turn_filter) =
             state.recovered_settled_provider_turn_ids()?;
+        let provider_epoch_requires_rollover = settled_provider_turn_ids.len()
+            >= MAX_SETTLED_PROVIDER_TURN_IDS
+            || !settled_provider_turn_filter.is_empty();
         let mut provider = CodexProvider::start_with_tools_for_generation(
             &state.config,
             state.tool_bridge.authorized_tools().cloned(),
@@ -881,11 +887,16 @@ impl CodexCommandExecutor {
                 ))
             })?;
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
-        let legacy_epoch_is_ambiguous = !settled_provider_turn_filter.is_empty()
-            && (ambiguous_turn_start_pending || recovered_active_turn_id.is_some());
+        let legacy_epoch_is_ambiguous = (provider_epoch_requires_rollover
+            && (ambiguous_turn_start_pending || recovered_active_turn_id.is_some()))
+            || (tool_receipt_epoch_requires_rollover
+                && (ambiguous_turn_start_pending
+                    || recovered_active_turn_id.is_some()
+                    || (previous_active_turn_id.is_some()
+                        && tool_receipt_epoch_has_active_receipts)));
         if legacy_epoch_is_ambiguous {
-            // A legacy probabilistic summary cannot prove whether the
-            // recovered identity already settled. Reap the resumed process
+            // A saturated legacy epoch cannot prove that recovered work can
+            // be identified and settled exactly. Reap the resumed process
             // generation and close the run instead of risking duplicate work.
             let provider_reported_active = recovered_active_turn_id.is_some();
             let provider_shutdown_failed = provider.shutdown().is_err();
@@ -915,7 +926,7 @@ impl CodexCommandExecutor {
                 payload: json!({
                     "provider": "codex",
                     "code": "legacy_provider_turn_epoch_ambiguous",
-                    "message": "Codex recovery could not distinguish an active provider turn from a legacy probabilistic replay summary; Paperclip terminated the provider and closed the durable run",
+                    "message": "Codex recovery could not safely identify and settle active work from a saturated legacy replay epoch; Paperclip terminated the provider and closed the durable run",
                     "paperclipAccepted": false,
                     "providerReportedActive": provider_reported_active,
                     "ambiguousStartPending": ambiguous_turn_start_pending,
@@ -1027,7 +1038,7 @@ impl CodexCommandExecutor {
                 .as_mut()
                 .expect("Codex state remains available during recovery");
             if recovered_turn_ended {
-                if state.settled_provider_turn_filter.is_empty() {
+                if !provider_epoch_requires_rollover {
                     state.settle_active_provider_turn_identity()?;
                 }
                 let settled = state

@@ -448,6 +448,14 @@ impl ProviderToolBridge {
         self.settled_call_ids.contains(call_id)
     }
 
+    pub(crate) fn receipt_epoch_requires_rollover(&self) -> bool {
+        self.settled_call_ids.len() >= MAX_SETTLED_CALL_IDS || !self.settled_call_filter.is_empty()
+    }
+
+    pub(crate) fn has_active_receipts(&self) -> bool {
+        !self.pending.is_empty() || !self.completed.is_empty()
+    }
+
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
         if !self.pending.is_empty() || !self.completed.is_empty() {
             return Err(ProviderBridgeError::invalid(
@@ -539,12 +547,11 @@ impl ProviderToolBridge {
                 "provider reused a completed tool call id",
             ));
         }
-        // Legacy durable state may contain only a probabilistic summary of
-        // evicted identities. It cannot authorize an identity-specific replay
-        // decision, so quarantine the remainder of that recovered turn. The
-        // verified next-turn boundary clears this marker and starts a new
-        // exact receipt epoch.
-        if !self.settled_call_filter.is_empty() {
+        // A legacy global receipt epoch may be exactly full or may contain
+        // only a probabilistic summary of evicted identities. Neither state
+        // can admit more work safely, so quarantine the recovered turn. The
+        // verified next-turn boundary starts a new exact receipt epoch.
+        if self.receipt_epoch_requires_rollover() {
             self.durable_run_receipt_limit_reached = true;
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
@@ -1539,5 +1546,50 @@ mod tests {
                 json!({}),
             )
             .expect("a verified new turn starts a fresh exact receipt epoch");
+    }
+
+    #[test]
+    fn legacy_full_exact_receipt_epoch_is_quarantined_before_dispatch() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the active task context.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        for index in 0..MAX_SETTLED_CALL_IDS {
+            let call_id = format!("legacy-call-{index}");
+            bridge.settled_call_ids.order.push_back(call_id.clone());
+            bridge.settled_call_ids.members.insert(call_id);
+        }
+
+        let error = bridge
+            .begin_call(
+                "fresh-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("a full legacy exact epoch cannot dispatch more work");
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(bridge.pending.is_empty());
+
+        bridge.prepare_turn().unwrap();
+        bridge
+            .begin_call(
+                "fresh-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("a verified new turn rotates the full legacy epoch");
     }
 }

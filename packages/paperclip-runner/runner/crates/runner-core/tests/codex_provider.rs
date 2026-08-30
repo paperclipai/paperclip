@@ -2748,8 +2748,8 @@ fn durable_backend_resumes_the_active_thread_without_restarting_the_turn() {
 }
 
 #[test]
-fn legacy_filtered_active_epoch_is_closed_on_recovery() {
-    let directory = temporary_directory("legacy-filtered-active-recovery");
+fn legacy_full_active_epoch_is_closed_on_recovery() {
+    let directory = temporary_directory("legacy-full-active-recovery");
     let config = provider_config(&directory, &["--hold-turn"]);
     let mut first = CodexCommandExecutor::new(&directory);
     first
@@ -2768,7 +2768,7 @@ fn legacy_filtered_active_epoch_is_closed_on_recovery() {
             "turn",
             3,
             "turn.start",
-            json!({"text": "Hold the legacy-filtered turn."}),
+            json!({"text": "Hold the legacy full-epoch turn."}),
         ))
         .expect("start held provider turn");
     first.shutdown().expect("stop first provider process");
@@ -2781,31 +2781,37 @@ fn legacy_filtered_active_epoch_is_closed_on_recovery() {
     let prior_generation = persisted["providerProcessGeneration"]
         .as_u64()
         .expect("provider generation is persisted");
-    let mut legacy_words = vec![0_u64; 32_768];
-    legacy_words[0] = 1;
-    persisted["settledProviderTurnFilter"] = json!({"words": legacy_words});
+    persisted["settledProviderTurnIds"] = Value::Array(
+        (0..4_096)
+            .map(|index| Value::String(format!("legacy-provider-turn-{index}")))
+            .collect(),
+    );
     fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
-        .expect("write legacy-filtered active state");
+        .expect("write legacy full active state");
 
     let mut recovered = CodexCommandExecutor::new(&directory);
     let events = recovered
         .poll_events()
-        .expect("legacy-filtered recovery remains observable");
+        .expect("legacy full-epoch recovery remains observable");
     assert!(events.iter().any(|event| {
         event.event_type == "harness.diagnostic"
             && event.payload["code"] == "legacy_provider_turn_epoch_ambiguous"
     }));
     let closed: Value =
-        serde_json::from_slice(&fs::read(&state_path).expect("read closed legacy-filtered state"))
-            .expect("parse closed legacy-filtered state");
+        serde_json::from_slice(&fs::read(&state_path).expect("read closed legacy full state"))
+            .expect("parse closed legacy full state");
     assert_eq!(closed["lifecycle"], "closed");
     assert!(closed["activeProviderTurnId"].is_null());
     assert_eq!(closed["ambiguousTurnStartPending"], false);
     assert_eq!(closed["completedTurnAuthoritative"], false);
-    assert!(!closed["settledProviderTurnFilter"]["words"]
+    assert!(closed["settledProviderTurnFilter"]["words"]
         .as_array()
-        .expect("legacy filter remains durable evidence")
+        .expect("legacy filter shape remains valid")
         .is_empty());
+    assert_eq!(
+        closed["settledProviderTurnIds"].as_array().unwrap().len(),
+        4_096
+    );
     assert!(closed["providerProcessGeneration"].as_u64().unwrap() > prior_generation);
     assert!(recovered
         .execute(&command(
@@ -2814,12 +2820,158 @@ fn legacy_filtered_active_epoch_is_closed_on_recovery() {
             "turn.start",
             json!({"text": "Do not reopen closed legacy work."}),
         ))
-        .expect_err("closed legacy-filtered state rejects replacement work")
+        .expect_err("closed legacy full-epoch state rejects replacement work")
         .to_string()
         .contains("closed"));
     assert_eq!(call_count(&directory, "turn/start"), 1);
 
     recovered.shutdown().expect("close recovered executor");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn legacy_filtered_ambiguous_epoch_is_closed_on_recovery() {
+    let directory = temporary_directory("legacy-filtered-ambiguous-recovery");
+    let config = provider_config(&directory, &[]);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    first.shutdown().expect("stop first provider process");
+    drop(first);
+
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read idle provider state"))
+            .expect("parse idle provider state");
+    let mut legacy_words = vec![0_u64; 32_768];
+    legacy_words[0] = 1;
+    persisted["settledProviderTurnFilter"] = json!({"words": legacy_words});
+    persisted["ambiguousTurnStartPending"] = Value::Bool(true);
+    fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
+        .expect("write legacy-filtered ambiguous state");
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let events = recovered
+        .poll_events()
+        .expect("legacy ambiguous recovery remains observable");
+    let diagnostic = events
+        .iter()
+        .find(|event| {
+            event.event_type == "harness.diagnostic"
+                && event.payload["code"] == "legacy_provider_turn_epoch_ambiguous"
+        })
+        .expect("legacy ambiguous recovery emits a terminal diagnostic");
+    assert_eq!(diagnostic.payload["ambiguousStartPending"], true);
+    assert_eq!(diagnostic.payload["providerReportedActive"], false);
+    let closed: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read closed legacy ambiguous state"))
+            .expect("parse closed legacy ambiguous state");
+    assert_eq!(closed["lifecycle"], "closed");
+    assert!(closed["activeProviderTurnId"].is_null());
+    assert_eq!(closed["ambiguousTurnStartPending"], false);
+    assert!(!closed["settledProviderTurnFilter"]["words"]
+        .as_array()
+        .expect("legacy filter remains durable evidence")
+        .is_empty());
+    assert_eq!(call_count(&directory, "turn/start"), 0);
+
+    recovered.shutdown().expect("close recovered executor");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn legacy_full_ended_epoch_reconciles_before_idle_rollover() {
+    let directory = temporary_directory("legacy-full-ended-recovery");
+    let config = provider_config(&directory, &["--hold-turn"]);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Let this legacy turn end while runnerd is away."}),
+        ))
+        .expect("start held provider turn");
+    first.shutdown().expect("stop first provider process");
+    drop(first);
+
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read active provider state"))
+            .expect("parse active provider state");
+    persisted["settledProviderTurnIds"] = Value::Array(
+        (0..4_096)
+            .map(|index| Value::String(format!("legacy-provider-turn-{index}")))
+            .collect(),
+    );
+    fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
+        .expect("write full legacy provider epoch");
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec_pretty(&json!({"threadId": "codex-thread-1"})).unwrap(),
+    )
+    .expect("mark the provider turn ended while runnerd was away");
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let events = recovered
+        .poll_events()
+        .expect("reconcile an ended turn from a full legacy epoch");
+    assert!(events.iter().any(|event| event.event_type == "turn.failed"));
+    let reconciled: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read reconciled legacy state"))
+            .expect("parse reconciled legacy state");
+    assert_eq!(reconciled["lifecycle"], "session_open");
+    assert!(reconciled["activeProviderTurnId"].is_null());
+    assert_eq!(
+        reconciled["settledProviderTurnIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4_096
+    );
+
+    recovered
+        .execute(&command(
+            "replacement-turn",
+            4,
+            "turn.start",
+            json!({"text": "Start only after the idle epoch rolls over."}),
+        ))
+        .expect("roll over the idle full epoch and start replacement work");
+    let rolled: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read rolled legacy state"))
+            .expect("parse rolled legacy state");
+    assert!(rolled["settledProviderTurnIds"]
+        .as_array()
+        .expect("rolled exact identities remain an array")
+        .is_empty());
+    assert!(rolled["settledProviderTurnFilter"]["words"]
+        .as_array()
+        .expect("rolled filter remains valid")
+        .is_empty());
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+
+    recovered.shutdown().expect("stop rolled provider process");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 
