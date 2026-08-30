@@ -675,16 +675,19 @@ fn clean_provider_exit_does_not_refail_a_completed_turn() {
 }
 
 #[test]
-fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
-    let directory = temporary_directory("turn-identity-epoch-rollover");
-    let config = provider_config(&directory, &[]);
+fn durable_backend_reaps_before_rotating_full_provider_identity_epochs() {
+    let directory = temporary_directory("provider-identity-epoch-rollover");
+    let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
     let mut first = CodexCommandExecutor::new(&directory);
     first
         .execute(&command(
             "prepare",
             1,
             "run.prepare",
-            json!({"provider": config}),
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+            }),
         ))
         .expect("prepare Codex provider");
     first
@@ -708,8 +711,14 @@ fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
     persisted["completedTurnAuthoritative"] = Value::Bool(true);
     persisted["completedTurnProcessGeneration"] = json!(prior_generation);
     persisted["completedProviderTurnId"] = json!("provider-turn-4095");
+    persisted["toolBridge"]["settledCallIds"] = Value::Array(
+        (0..65_536)
+            .map(|index| Value::String(format!("semantic-call-{index}")))
+            .collect(),
+    );
+    persisted["toolBridge"]["durableRunReceiptLimitReached"] = Value::Bool(true);
     fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
-        .expect("write full provider identity epoch");
+        .expect("write full provider identity epochs");
 
     let mut recovered = CodexCommandExecutor::new(&directory);
     recovered
@@ -731,6 +740,33 @@ fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
         json!(["provider-turn-4095"])
     );
     assert_eq!(rolled["settledProviderTurnFilter"], json!({"words": []}));
+    assert_eq!(rolled["toolBridge"]["settledCallIds"], json!([]));
+    assert_eq!(
+        rolled["toolBridge"]["settledCallFilter"],
+        json!({"words": []})
+    );
+    assert!(rolled["toolBridge"]["durableRunReceiptLimitReached"].is_null());
+
+    let mut event_types = Vec::new();
+    let semantic_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < semantic_deadline {
+        event_types.extend(
+            poll_and_ack(&mut recovered)
+                .expect("poll semantic work in the fresh provider epoch")
+                .into_iter()
+                .map(|event| event.event_type),
+        );
+        if event_types
+            .iter()
+            .any(|event| event == "semantic_tool.input")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(event_types
+        .iter()
+        .any(|event| event == "semantic_tool.input"));
 
     recovered.shutdown().expect("stop rolled provider process");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -3574,24 +3610,30 @@ fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let rejected_runtime_request = |event: &PolledEvent| {
+        event.event_type == "provider.notice.recorded"
+            && event.payload["summary"]
+                == "rejected a Codex runtime request at the bounded pending-input limit"
+    };
+    let mut rejection_observed = false;
     for _ in 0..4 {
         let events = recovered
             .poll_events()
             .expect("runtime-request cleanup remains bounded across repeated polls");
         assert!(events.len() <= 128);
+        rejection_observed |= events.iter().any(rejected_runtime_request);
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while call_count(&directory, "runtime-response:rejected") == 0
-        && std::time::Instant::now() < deadline
-    {
-        recovered
+    while !rejection_observed && std::time::Instant::now() < deadline {
+        let events = recovered
             .poll_events()
             .expect("continue bounded receipt-limit cleanup polling");
+        rejection_observed |= events.iter().any(rejected_runtime_request);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert!(
-        call_count(&directory, "runtime-response:rejected") > 0,
+        rejection_observed,
         "requests above the pending count/byte envelope are rejected instead of retained"
     );
 

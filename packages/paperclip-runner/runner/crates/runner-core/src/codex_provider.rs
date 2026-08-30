@@ -407,6 +407,10 @@ impl CodexProvider {
         self.process.id()
     }
 
+    pub(crate) fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
     pub fn thread_id(&self) -> &str {
         &self.thread_id
     }
@@ -482,13 +486,10 @@ impl CodexProvider {
         self.rejected_accepted_turn.take()
     }
 
-    fn rollover_settled_turn_epoch_if_needed(&mut self) -> Result<(), LocalRunnerError> {
-        if !self.settled_provider_turn_ids.at_capacity() {
-            return Ok(());
-        }
+    pub(crate) fn restart_idle_identity_epoch(&mut self) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_some() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
-                "Codex provider turn identity epoch cannot rotate while work is active",
+                "Codex provider identity epoch cannot rotate while work is active",
             ));
         }
 
@@ -537,11 +538,23 @@ impl CodexProvider {
                 "Codex provider epoch rollover resumed unowned active work; the provider was terminated",
             ));
         }
-        replacement.completed_turn_authority = completed_turn_authority;
+        if let Some(authority) = completed_turn_authority.as_ref() {
+            replacement.restore_completed_turn_authority(
+                true,
+                Some(authority.process_generation),
+                Some(&authority.provider_turn_id),
+            )?;
+        }
         replacement.completion_reconciliation_pending = completion_reconciliation_pending;
-        replacement.expected_shutdown = replacement.completed_turn_authority.is_some();
         *self = replacement;
         Ok(())
+    }
+
+    fn rollover_settled_turn_epoch_if_needed(&mut self) -> Result<(), LocalRunnerError> {
+        if !self.settled_provider_turn_ids.at_capacity() {
+            return Ok(());
+        }
+        self.restart_idle_identity_epoch()
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {

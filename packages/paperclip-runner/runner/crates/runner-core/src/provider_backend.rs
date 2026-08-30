@@ -1379,10 +1379,15 @@ impl CodexCommandExecutor {
         })
     }
 
-    fn rollover_provider_turn_epoch_if_needed(&mut self) -> Result<(), DurableRunnerError> {
+    fn rollover_provider_identity_epochs_if_needed(&mut self) -> Result<(), DurableRunnerError> {
+        let tool_rollover_required = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.tool_bridge.replay_history_blocks_admission());
         let rollover_required = self.state.as_ref().is_some_and(|state| {
             state.settled_provider_turn_ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS
                 || !state.settled_provider_turn_filter.is_empty()
+                || tool_rollover_required
         });
         if !rollover_required {
             return Ok(());
@@ -1394,25 +1399,50 @@ impl CodexCommandExecutor {
         });
         if !rollover_is_safe {
             return Err(DurableRunnerError::invalid(
-                "Codex provider turn identity epoch cannot rotate while work is active",
+                "Codex provider identity epoch cannot rotate while work is active",
             ));
         }
 
-        if let Some(mut provider) = self.provider.take() {
-            provider.shutdown().map_err(|error| {
+        let process_generation = {
+            let provider = self.provider.as_mut().ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "Codex provider identity epoch cannot rotate without an attached process",
+                )
+            })?;
+            provider.restart_idle_identity_epoch().map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "failed to reap the completed Codex identity epoch: {error}"
+                    "failed to rotate the completed Codex identity epoch: {error}"
                 ))
             })?;
-        }
+            provider.process_generation()
+        };
         let state = self
             .state
             .as_mut()
             .expect("Codex state remains available during identity epoch rollover");
+        state.provider_process_generation = process_generation;
         state.settled_provider_turn_ids.clear();
+        if let Some(completed_provider_turn_id) = state.completed_provider_turn_id.clone() {
+            // The replacement process restored this still-authoritative
+            // terminal into its fresh epoch. Mirror that one tombstone in the
+            // durable ledger until accepting replacement work revokes the
+            // completion authority.
+            state
+                .settled_provider_turn_ids
+                .insert(completed_provider_turn_id);
+        }
         state.settled_provider_turn_filter = DurableReplayFilter::default();
+        if tool_rollover_required {
+            state
+                .tool_bridge
+                .rollover_replay_epoch_after_provider_restart()
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to rotate Codex semantic tool replay authority: {error}"
+                    ))
+                })?;
+        }
         self.save_state()?;
-        self.ensure_provider()?;
         Ok(())
     }
 
@@ -1464,7 +1494,7 @@ impl CodexCommandExecutor {
                     "Codex semantic tool receipts could not prepare the next turn: {error}"
                 ))
             })?;
-        self.rollover_provider_turn_epoch_if_needed()?;
+        self.rollover_provider_identity_epochs_if_needed()?;
         let text = payload
             .get("text")
             .and_then(Value::as_str)

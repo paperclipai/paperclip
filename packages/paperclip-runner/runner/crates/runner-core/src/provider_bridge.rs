@@ -26,9 +26,9 @@ const MAX_RETAINED_TOOL_VALUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SETTLED_RESULT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_PENDING_CALLS: usize = 4_096;
 // Active-turn inputs and results are separately bounded. Settled identities
-// remain exact for the entire durable run so a provider cannot replay an old
-// call ID after crossing a turn boundary. Only attach_run starts a fresh
-// identity ledger.
+// remain exact for a complete provider-process epoch so a delayed request
+// cannot replay an old call ID after crossing a turn boundary. At the bound,
+// the backend must reap the idle process before it rotates this ledger.
 const MAX_DURABLE_CALL_RECEIPTS: usize = 4_096;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
 // Retain the legacy serialized filter shape for recovery compatibility. New
@@ -206,9 +206,9 @@ pub struct ProviderToolBridge {
     #[serde(default)]
     settled_call_filter: DurableReplayFilter,
     // Resource exhaustion stops the active turn. prepare_turn releases bulky
-    // result payloads and recomputes this marker, but permanent replay
-    // ambiguity remains fail-closed until attach_run establishes fresh replay
-    // authority.
+    // result payloads and recomputes this marker, but replay ambiguity remains
+    // fail-closed until attach_run or a verified idle provider-process restart
+    // establishes fresh replay authority.
     #[serde(
         default,
         alias = "settledHistoryResetPending",
@@ -468,6 +468,34 @@ impl ProviderToolBridge {
         !self.pending.is_empty() || !self.completed.is_empty()
     }
 
+    /// Forget an exact replay epoch only after its provider process has been
+    /// reaped and an idle replacement generation has been established. The
+    /// process boundary is what prevents an old provider request from being
+    /// admitted after its tombstone is released; callers must not use this as
+    /// ordinary capacity eviction.
+    pub(crate) fn rollover_replay_epoch_after_provider_restart(
+        &mut self,
+    ) -> Result<(), ProviderBridgeError> {
+        if !self.replay_history_blocks_admission() {
+            return Err(ProviderBridgeError::invalid(
+                "cannot rotate provider tool replay authority before its exact capacity boundary",
+            ));
+        }
+        if !self.pending.is_empty()
+            || !self.completed.is_empty()
+            || !self.settled_results.is_empty()
+            || self.retained_result_bytes != 0
+        {
+            return Err(ProviderBridgeError::invalid(
+                "cannot rotate provider tool replay authority while receipts are retained",
+            ));
+        }
+        self.settled_call_ids.clear();
+        self.settled_call_filter = DurableReplayFilter::default();
+        self.durable_run_receipt_limit_reached = false;
+        Ok(())
+    }
+
     fn settled_identity_capacity_allows(&self, additional_calls: usize) -> bool {
         self.settled_call_ids
             .len()
@@ -485,7 +513,7 @@ impl ProviderToolBridge {
         // The authoritative result bodies are needed only while the provider
         // can replay the just-settled turn. Release that bulky data at the
         // verified turn boundary, but retain every call-ID tombstone and any
-        // recovered legacy filter for the lifetime of this durable run.
+        // recovered legacy filter until the owning provider process is reaped.
         self.settled_results.clear();
         self.retained_result_bytes = 0;
         self.durable_run_receipt_limit_reached = self.replay_history_blocks_admission();
@@ -571,8 +599,8 @@ impl ProviderToolBridge {
         }
         // A durable receipt ledger may be exactly full or legacy state may
         // contain only a probabilistic summary of evicted identities. Neither
-        // state can admit more work safely, so quarantine the durable run.
-        // Only attach_run establishes a new exact receipt ledger.
+        // state can admit more work safely in this provider-process epoch. The
+        // backend reaps an idle process before establishing a fresh epoch.
         if self.replay_history_blocks_admission() {
             self.durable_run_receipt_limit_reached = true;
             return Err(ProviderBridgeError::active_turn_receipt_limit());
@@ -770,8 +798,8 @@ impl ProviderToolBridge {
         ensure_settled_result_capacity(next_retained_bytes, std::iter::empty())?;
 
         // Byte capacity was reserved at admission. Keep every identity exact
-        // for the lifetime of the durable run; prepare_turn releases only the
-        // bulky result bodies.
+        // for the lifetime of this provider-process epoch; prepare_turn
+        // releases only the bulky result bodies.
         let new_identity_count = settled_entries
             .keys()
             .filter(|call_id| !self.settled_call_ids.contains(call_id))
@@ -1841,5 +1869,68 @@ mod tests {
                 json!({}),
             )
             .expect("a new durable run resets the full legacy ledger");
+    }
+
+    #[test]
+    fn provider_restart_rotates_only_an_idle_replay_epoch() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the active task context.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+            .begin_call(
+                "old-epoch-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .unwrap();
+        bridge
+            .apply_result(ToolResult {
+                call_id: "old-epoch-call".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        bridge.settled_call_filter.words = vec![0; REPLAY_FILTER_WORDS];
+        bridge.settled_call_filter.words[0] = 1;
+
+        let error = bridge
+            .rollover_replay_epoch_after_provider_restart()
+            .expect_err("retained replay results keep the current epoch authoritative");
+        assert!(error.to_string().contains("receipts are retained"));
+        assert!(bridge
+            .begin_call(
+                "old-epoch-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .is_err());
+
+        bridge.prepare_turn().unwrap();
+        bridge
+            .rollover_replay_epoch_after_provider_restart()
+            .expect("an idle replacement process establishes fresh replay authority");
+        bridge
+            .begin_call(
+                "old-epoch-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("the fresh process generation remains live after bounded rotation");
     }
 }
