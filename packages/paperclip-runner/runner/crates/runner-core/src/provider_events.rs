@@ -12,6 +12,29 @@ pub struct NormalizedProviderEvent {
     pub payload: Value,
 }
 
+pub(crate) fn normalized_codex_terminal_event_type(
+    method: &str,
+    params: &Value,
+) -> Option<&'static str> {
+    let status = match method {
+        "turn/failed" => "failed",
+        "turn/cancelled" => "cancelled",
+        "turn/interrupted" => "interrupted",
+        "turn/completed" => string(
+            params
+                .pointer("/turn/status")
+                .or_else(|| params.get("status")),
+        ),
+        _ => return None,
+    };
+    Some(match status {
+        "failed" | "error" => "turn.failed",
+        "cancelled" | "canceled" => "turn.cancelled",
+        "interrupted" | "aborted" => "turn.interrupted",
+        _ => "turn.completed",
+    })
+}
+
 fn bounded_text(value: &str, max_chars: usize) -> String {
     redact_text(value).chars().take(max_chars).collect()
 }
@@ -118,18 +141,19 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "providerTurnId": params.pointer("/turn/id").or_else(|| params.get("turnId")).and_then(Value::as_str),
             }),
         ),
-        "turn/completed" => {
-            let status = string(
-                params
-                    .pointer("/turn/status")
-                    .or_else(|| params.get("status")),
-            );
-            let event_type = match status {
-                "failed" | "error" => "turn.failed",
-                "cancelled" | "canceled" => "turn.cancelled",
-                "interrupted" | "aborted" => "turn.interrupted",
-                _ => "turn.completed",
+        "turn/completed" | "turn/failed" | "turn/cancelled" | "turn/interrupted" => {
+            let status = match method {
+                "turn/failed" => "failed",
+                "turn/cancelled" => "cancelled",
+                "turn/interrupted" => "interrupted",
+                _ => string(
+                    params
+                        .pointer("/turn/status")
+                        .or_else(|| params.get("status")),
+                ),
             };
+            let event_type = normalized_codex_terminal_event_type(method, params)
+                .expect("matched Codex terminal method has a normalized terminal type");
             push(
                 &mut events,
                 event_type,
@@ -366,6 +390,16 @@ mod tests {
         );
         assert_eq!(terminal[0].event_type, "turn.failed");
         assert_eq!(terminal[0].priority, EventPriority::P0);
+        for (method, expected) in [
+            ("turn/failed", "turn.failed"),
+            ("turn/cancelled", "turn.cancelled"),
+            ("turn/interrupted", "turn.interrupted"),
+        ] {
+            let terminal =
+                normalize_codex_notification(method, &json!({"turnId": "provider-turn"}));
+            assert_eq!(terminal[0].event_type, expected);
+            assert_eq!(terminal[0].priority, EventPriority::P0);
+        }
 
         let usage = normalize_codex_notification(
             "thread/tokenUsage/updated",
