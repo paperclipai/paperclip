@@ -164,6 +164,7 @@ impl ProviderToolBridge {
                     || call_id != &result.call_id
                     || self.settled_call_ids.contains(call_id)
                     || validate_retained_result(result).is_err()
+                    || validate_tool_result_contract(&self.authorized, result).is_err()
             })
             || self.settled_call_ids.iter().any(|call_id| {
                 self.pending.contains_key(call_id) || self.completed.contains_key(call_id)
@@ -177,16 +178,18 @@ impl ProviderToolBridge {
                     || self.completed.contains_key(call_id)
                     || self.settled_call_ids.contains(call_id)
                     || self.settled_results.contains_key(call_id)
+                    || validate_pending_tool_call(&self.authorized, call).is_err()
             })
             || self.completed.iter().any(|(call_id, result)| {
                 !is_stable_call_id(call_id)
                     || call_id != &result.call_id
                     || self.pending.contains_key(call_id)
                     || validate_retained_result(result).is_err()
+                    || validate_tool_result_contract(&self.authorized, result).is_err()
             })
         {
             return Err(ProviderBridgeError::invalid(
-                "recovered settled provider tool call identities are invalid",
+                "recovered provider tool call state is invalid",
             ));
         }
         self.retained_result_bytes =
@@ -238,31 +241,12 @@ impl ProviderToolBridge {
         operation_id: String,
         input: Value,
     ) -> Result<PendingToolCall, ProviderBridgeError> {
-        if !is_stable_call_id(&call_id) {
-            return Err(ProviderBridgeError::invalid("tool call id is invalid"));
-        }
-        validate_operation_id(&operation_id)?;
-        let authorized = self.authorized.get(&operation_id).ok_or_else(|| {
-            ProviderBridgeError::invalid(format!(
-                "provider requested unauthorized tool {operation_id}"
-            ))
-        })?;
-        let validator = jsonschema::validator_for(&authorized.input_schema).map_err(|_| {
-            ProviderBridgeError::invalid(format!(
-                "tool {operation_id} has an invalid durable input JSON Schema"
-            ))
-        })?;
-        if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::invalid(format!(
-                "provider arguments for {operation_id} failed JSON Schema validation"
-            )));
-        }
-        bounded_json(&input, MAX_TOOL_VALUE_BYTES, "provider tool input")?;
         let call = PendingToolCall {
             call_id: call_id.clone(),
             operation_id,
             input,
         };
+        validate_pending_tool_call(&self.authorized, &call)?;
         if let Some(existing) = self.pending.get(&call_id) {
             return if existing == &call {
                 Ok(existing.clone())
@@ -351,30 +335,7 @@ impl ProviderToolBridge {
                 "tool result operation does not match its call",
             ));
         }
-        let authorized = self.authorized.get(&result.operation_id).ok_or_else(|| {
-            ProviderBridgeError::invalid("tool result operation is no longer authorized")
-        })?;
-        let validator = jsonschema::validator_for(&authorized.response_schema).map_err(|_| {
-            ProviderBridgeError::invalid(format!(
-                "tool {} has an invalid durable response JSON Schema",
-                result.operation_id
-            ))
-        })?;
-        let response = semantic_response_value(&result)?;
-        if !result.is_error {
-            // Paperclip semantic dispatchers return an authoritative envelope;
-            // provider contracts describe the operation-specific value inside
-            // `result`. Direct values remain valid for compatibility with v1
-            // peers that do not wrap their semantic result.
-            if let Some(response) = response {
-                if !validator.is_valid(response) {
-                    return Err(ProviderBridgeError::invalid(format!(
-                        "tool result for {} failed JSON Schema validation",
-                        result.operation_id
-                    )));
-                }
-            }
-        }
+        validate_tool_result_contract(&self.authorized, &result)?;
         let result_bytes = retained_result_entry_bytes(&result.call_id, &result)?;
         let next_retained_bytes = self
             .retained_result_bytes
@@ -460,6 +421,66 @@ fn validate_retained_result(result: &ToolResult) -> Result<(), ProviderBridgeErr
         MAX_TOOL_VALUE_BYTES,
         "retained provider tool result",
     )
+}
+
+fn validate_pending_tool_call(
+    authorized: &BTreeMap<String, AuthorizedTool>,
+    call: &PendingToolCall,
+) -> Result<(), ProviderBridgeError> {
+    if !is_stable_call_id(&call.call_id) {
+        return Err(ProviderBridgeError::invalid("tool call id is invalid"));
+    }
+    validate_operation_id(&call.operation_id)?;
+    let tool = authorized.get(&call.operation_id).ok_or_else(|| {
+        ProviderBridgeError::invalid(format!(
+            "provider requested unauthorized tool {}",
+            call.operation_id
+        ))
+    })?;
+    let validator = jsonschema::validator_for(&tool.input_schema).map_err(|_| {
+        ProviderBridgeError::invalid(format!(
+            "tool {} has an invalid durable input JSON Schema",
+            call.operation_id
+        ))
+    })?;
+    if !validator.is_valid(&call.input) {
+        return Err(ProviderBridgeError::invalid(format!(
+            "provider arguments for {} failed JSON Schema validation",
+            call.operation_id
+        )));
+    }
+    bounded_json(&call.input, MAX_TOOL_VALUE_BYTES, "provider tool input")
+}
+
+fn validate_tool_result_contract(
+    authorized: &BTreeMap<String, AuthorizedTool>,
+    result: &ToolResult,
+) -> Result<(), ProviderBridgeError> {
+    let tool = authorized.get(&result.operation_id).ok_or_else(|| {
+        ProviderBridgeError::invalid("tool result operation is no longer authorized")
+    })?;
+    let validator = jsonschema::validator_for(&tool.response_schema).map_err(|_| {
+        ProviderBridgeError::invalid(format!(
+            "tool {} has an invalid durable response JSON Schema",
+            result.operation_id
+        ))
+    })?;
+    let response = semantic_response_value(result)?;
+    if !result.is_error {
+        // Paperclip semantic dispatchers return an authoritative envelope;
+        // provider contracts describe the operation-specific value inside
+        // `result`. Direct values remain valid for compatibility with v1
+        // peers that do not wrap their semantic result.
+        if let Some(response) = response {
+            if !validator.is_valid(response) {
+                return Err(ProviderBridgeError::invalid(format!(
+                    "tool result for {} failed JSON Schema validation",
+                    result.operation_id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_authorized_tool_set(tool_set: &AuthorizedToolSet) -> Result<(), ProviderBridgeError> {

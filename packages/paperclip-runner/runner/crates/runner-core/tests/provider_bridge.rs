@@ -258,6 +258,65 @@ fn recovery_rejects_tampered_authorization_catalog_bindings() {
 }
 
 #[test]
+fn recovery_rejects_tampered_pending_call_contracts() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    bridge
+        .begin_call("call-1".into(), "get_task_context".into(), json!({}))
+        .unwrap();
+    let encoded = serde_json::to_value(&bridge).unwrap();
+
+    let mut unauthorized = encoded.clone();
+    unauthorized["pending"]["call-1"]["operationId"] = json!("delete_company");
+    let mut recovered: ProviderToolBridge = serde_json::from_value(unauthorized).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+
+    let mut invalid_input = encoded;
+    invalid_input["pending"]["call-1"]["input"] = json!(["not", "an", "object"]);
+    let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_input).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+
+    let mut oversized_input = serde_json::to_value(&bridge).unwrap();
+    oversized_input["pending"]["call-1"]["input"] = json!({"value": "x".repeat(1024 * 1024)});
+    let mut recovered: ProviderToolBridge = serde_json::from_value(oversized_input).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+}
+
+#[test]
+fn recovery_rejects_tampered_retained_result_contracts() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    bridge
+        .begin_call("call-1".into(), "get_task_context".into(), json!({}))
+        .unwrap();
+    bridge
+        .apply_result(ToolResult {
+            call_id: "call-1".into(),
+            operation_id: "get_task_context".into(),
+            result: json!({"ok": true}),
+            is_error: false,
+        })
+        .unwrap();
+    let completed = serde_json::to_value(&bridge).unwrap();
+
+    let mut unauthorized = completed.clone();
+    unauthorized["completed"]["call-1"]["operationId"] = json!("delete_company");
+    let mut recovered: ProviderToolBridge = serde_json::from_value(unauthorized).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+
+    let mut invalid_output = completed;
+    invalid_output["completed"]["call-1"]["result"] = json!(["not", "an", "object"]);
+    let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_output).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+
+    bridge.settle_turn().unwrap();
+    let mut invalid_settled_output = serde_json::to_value(&bridge).unwrap();
+    invalid_settled_output["settledResults"]["call-1"]["result"] = json!("invalid");
+    let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_settled_output).unwrap();
+    assert!(recovered.attach_existing_run().is_err());
+}
+
+#[test]
 fn recovery_preserves_a_reverse_ordered_authorization_catalog() {
     let mut tool_set = tools("computed");
     tool_set.operations.push(AuthorizedTool {
