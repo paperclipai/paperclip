@@ -3233,7 +3233,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_limit_deadline_progresses_with_unacknowledged_events() {
+    fn receipt_limit_deadline_settlement_preserves_unacknowledged_events() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-provider-receipt-deadline-{}",
             std::process::id()
@@ -3283,12 +3283,22 @@ mod tests {
         });
         executor.restore_checked = true;
 
-        executor.poll_provider().unwrap();
+        // Exercise receipt-limit recovery directly. `poll_provider` also
+        // restores a missing provider by design, while this unit test
+        // intentionally injects state without constructing a provider.
+        executor.retry_receipt_limit_interrupt().unwrap();
+        executor
+            .settle_receipt_limit_interrupt_if_deadline_elapsed()
+            .unwrap();
 
         let state = executor.state.as_ref().unwrap();
         assert_eq!(state.lifecycle, "provider_exited");
         assert!(state.active_provider_turn_id.is_none());
         assert!(!state.receipt_limit_interrupt_pending);
+        assert!(state.pending_events.iter().any(|event| {
+            event.event_type == "provider.notice.recorded"
+                && event.payload == json!({"message": "awaiting acknowledgement"})
+        }));
         assert!(state
             .pending_events
             .iter()
