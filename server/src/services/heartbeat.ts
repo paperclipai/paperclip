@@ -13,6 +13,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  type AskUserQuestionsInteraction,
   type BillingType,
   type CostStatus,
   type EnvironmentLeaseStatus,
@@ -133,6 +134,7 @@ import {
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
+import { formatDurableQuestionResponseSummary } from "./question-response-delivery.js";
 import {
   buildWorkspaceReadyComment,
   buildWorkspaceReadyMetadata,
@@ -5628,6 +5630,59 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+async function answeredQuestionAgentMessage(input: {
+  db: Db;
+  companyId: string;
+  issueId: string | null;
+  contextSnapshot: Record<string, unknown>;
+}) {
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  if (
+    !input.issueId ||
+    !interactionId ||
+    readNonEmptyString(input.contextSnapshot.interactionKind) !== "ask_user_questions" ||
+    readNonEmptyString(input.contextSnapshot.interactionStatus) !== "answered"
+  ) {
+    return null;
+  }
+
+  const interaction = await input.db
+    .select({
+      id: issueThreadInteractions.id,
+      sourceRunId: issueThreadInteractions.sourceRunId,
+      title: issueThreadInteractions.title,
+      kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status,
+      payload: issueThreadInteractions.payload,
+      result: issueThreadInteractions.result,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      eq(issueThreadInteractions.status, "answered"),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!interaction) return null;
+
+  const result = parseObject(interaction.result);
+  if (result.cancelled === true || !Array.isArray(result.answers)) return null;
+
+  return {
+    text: formatDurableQuestionResponseSummary({
+      id: interaction.id,
+      sourceRunId: interaction.sourceRunId,
+      title: interaction.title,
+      status: "answered",
+      payload: interaction.payload as AskUserQuestionsInteraction["payload"],
+      result: interaction.result as AskUserQuestionsInteraction["result"],
+    }),
+    source: "question_response",
+  };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -5664,8 +5719,20 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
-  const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
-  const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
+  const storedAgentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
+  const storedAgentMessageText = sanitizeAgentSessionMessageText(storedAgentMessage.text);
+  const interactionAgentMessage = storedAgentMessageText
+    ? null
+    : await answeredQuestionAgentMessage({
+        db: input.db,
+        companyId: input.companyId,
+        issueId,
+        contextSnapshot: input.contextSnapshot,
+      });
+  const agentMessage: Record<string, unknown> = storedAgentMessageText
+    ? storedAgentMessage
+    : interactionAgentMessage ?? {};
+  const agentMessageText = storedAgentMessageText ?? sanitizeAgentSessionMessageText(interactionAgentMessage?.text);
   const issueSummary =
     input.issueSummary ??
     (issueId

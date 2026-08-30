@@ -4,12 +4,13 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-// End-to-end coverage for scripts/paperclip-issue-update.sh: the helper must
+// End-to-end coverage for the helper bundled with the operational Paperclip
+// skill: the helper must
 // only exit 0 when the server confirms the write by echoing the update, must
 // classify failures (retry connection-level faults and 5xx, never retry a
 // definitive 4xx), and must stop at two attempts total to honor the shared
 // bounded-write-retry rule.
-const HELPER_PATH = path.resolve("scripts/paperclip-issue-update.sh");
+const HELPER_PATH = path.resolve("skills/paperclip/scripts/paperclip-issue-update.sh");
 
 interface HelperResult {
   code: number | null;
@@ -91,6 +92,65 @@ describe("paperclip issue update helper", () => {
   }
 
   const doneArgs = ["--issue-id", "issue-1", "--status", "done", "--comment", "closing note"];
+
+  it("hands completed work to the issue's responsible user for review", async () => {
+    const { baseUrl, requests } = await startServer((request, _attempt, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      if (request.method === "GET") {
+        res.end(JSON.stringify({ id: "issue-1", responsibleUserId: "user-1" }));
+        return;
+      }
+      const payload = JSON.parse(request.body) as {
+        status?: string;
+        comment?: string;
+        assigneeAgentId?: string | null;
+        assigneeUserId?: string | null;
+      };
+      res.end(JSON.stringify({ id: "issue-1", ...payload }));
+    });
+
+    const result = await runHelper(baseUrl, [
+      "--issue-id",
+      "issue-1",
+      "--review-for-responsible-user",
+      "--comment",
+      "ready for review",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({ method: "GET", url: "/api/issues/issue-1" });
+    expect(requests[1]).toMatchObject({ method: "PATCH", url: "/api/issues/issue-1" });
+    expect(JSON.parse(requests[1]?.body ?? "{}")).toEqual({
+      status: "in_review",
+      comment: "ready for review",
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+    });
+  });
+
+  it("does not attempt a review handoff when the issue has no responsible user", async () => {
+    const { baseUrl, requests } = await startServer((_request, _attempt, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "issue-1", responsibleUserId: null }));
+    });
+
+    const result = await runHelper(baseUrl, [
+      "--issue-id",
+      "issue-1",
+      "--review-for-responsible-user",
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("has no responsibleUserId");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("GET");
+  });
 
   it("exits 0 and prints the issue JSON when the server echoes the requested status", async () => {
     const { baseUrl, requests } = await startServer((request, _attempt, res) => {

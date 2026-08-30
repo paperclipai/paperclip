@@ -873,6 +873,7 @@ export async function startServer(): Promise<StartedServer> {
     authPublicBaseUrl: config.authPublicBaseUrl,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    delegateMode: config.delegateMode,
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,

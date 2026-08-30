@@ -20,6 +20,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockHealthApi = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
   NavLink: ({ to, children, className, ...props }: {
     to: string;
@@ -76,6 +80,10 @@ vi.mock("../api/attention", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/health", () => ({
+  healthApi: mockHealthApi,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -148,6 +156,7 @@ describe("Sidebar", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockAttentionApi.list.mockResolvedValue({ items: [] });
+    mockHealthApi.get.mockResolvedValue({ features: { delegateMode: false } });
     mockSidebar.isMobile = false;
     mockSidebar.collapsed = false;
     mockSidebar.peeking = false;
@@ -434,6 +443,24 @@ describe("Sidebar", () => {
       (anchor) => anchor.textContent?.trim() === "Conference Room",
     );
     expect(link?.getAttribute("href")).toBe("/board-chat");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Chief of Staff Conference Room in delegate navigation when enabled", async () => {
+    mockHealthApi.get.mockResolvedValue({ features: { delegateMode: true } });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    const root = await renderSidebar();
+
+    const labels = [...container.querySelectorAll("nav a")].map((anchor) => anchor.textContent?.trim());
+    expect(labels).toEqual(["Today", "Conference Room", "Tasks", "History", "Settings", "Advanced"]);
+    expect(
+      [...container.querySelectorAll("nav a")]
+        .find((anchor) => anchor.textContent?.trim() === "Conference Room")
+        ?.getAttribute("href"),
+    ).toBe("/board-chat");
 
     flushSync(() => {
       root.unmount();

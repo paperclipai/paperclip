@@ -56,7 +56,17 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function Issues() {
+export function Issues({
+  statusFilter,
+  excludePlanning = false,
+  title = "Tasks",
+  viewStateKey = "paperclip:issues-view",
+}: {
+  statusFilter?: string;
+  excludePlanning?: boolean;
+  title?: string;
+  viewStateKey?: string;
+} = {}) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
@@ -118,16 +128,16 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Tasks",
+        title,
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, title],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Tasks" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: title }]);
+  }, [setBreadcrumbs, title]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -143,6 +153,8 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
+      "status",
+      statusFilter ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
       "compact",
@@ -151,6 +163,7 @@ export function Issues() {
       issuePageSize,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
+      status: statusFilter,
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
@@ -166,7 +179,10 @@ export function Issues() {
     placeholderData: (previousData) => previousData,
   });
 
-  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const issues = useMemo(() => {
+    const merged = mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[];
+    return excludePlanning ? merged.filter((issue) => issue.workMode !== "planning") : merged;
+  }, [excludePlanning, issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
@@ -199,7 +215,7 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey={viewStateKey}
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}

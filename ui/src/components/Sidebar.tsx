@@ -23,6 +23,7 @@ import {
   MessagesSquare,
   GanttChartSquare,
   LayoutGrid,
+  CalendarCheck2,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -37,6 +38,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -61,6 +63,10 @@ export function Sidebar() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
   });
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
@@ -110,6 +116,40 @@ export function Sidebar() {
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
+  const delegateMode = health?.features?.delegateMode === true;
+
+  if (delegateMode) {
+    return (
+      <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
+        <div className="flex h-12 shrink-0 items-center px-3">
+          <SidebarCompanyMenu />
+        </div>
+        <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-2">
+          <div className="flex flex-col gap-0.5">
+            <button
+              onClick={() => openNewIssue()}
+              data-slot="icon-button"
+              aria-label={rail ? "New task" : undefined}
+              className="mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
+            >
+              <SquarePen className="size-4 shrink-0" />
+              <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New task</span>
+            </button>
+            <SidebarNavItem to="/today" label="Today" icon={CalendarCheck2} />
+            {conferenceRoomChatEnabled ? (
+              <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            ) : null}
+            <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
+            <SidebarNavItem to="/history" label="History" icon={History} />
+          </div>
+          <div className="mt-auto flex flex-col gap-0.5">
+            <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+            <SidebarNavItem to="/dashboard" label="Advanced" icon={LayoutDashboard} />
+          </div>
+        </nav>
+      </aside>
+    );
+  }
 
   const pluginContext = {
     companyId: selectedCompanyId,

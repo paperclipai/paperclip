@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$delegate_repo_root"
+
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 24 || (major === 24 && minor < 11)) { console.error(`Node 24.11+ is required; found ${process.version}`); process.exit(1); }'
+
+corepack enable >/dev/null 2>&1 || true
+if [[ "${PAPERCLIP_DELEGATE_SKIP_BUILD:-false}" != "true" ]]; then
+  pnpm install --frozen-lockfile
+  pnpm build
+fi
+
+delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+delegate_instance="${PAPERCLIP_INSTANCE_ID:-default}"
+delegate_instance_dir="$delegate_home/instances/$delegate_instance"
+delegate_env_path="$delegate_instance_dir/.env"
+delegate_config_path="$delegate_instance_dir/config.json"
+delegate_profile_path="$delegate_instance_dir/delegate-profile.json"
+delegate_node="$(command -v node)"
+delegate_bootstrap="$delegate_repo_root/scripts/delegate-bootstrap.mjs"
+mkdir -p "$delegate_instance_dir"
+
+DELEGATE_ENV_PATH="$delegate_env_path" node <<'NODE'
+const fs = require("node:fs");
+const file = process.env.DELEGATE_ENV_PATH;
+const desired = {
+  PAPERCLIP_DELEGATE_MODE: "true",
+  PAPERCLIP_DB_BACKUP_ENABLED: "false",
+};
+const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\r?\n/) : [];
+const seen = new Set();
+const next = current.filter(Boolean).map((line) => {
+  const key = line.split("=", 1)[0]?.trim();
+  if (key && Object.hasOwn(desired, key)) {
+    seen.add(key);
+    return `${key}=${desired[key]}`;
+  }
+  return line;
+});
+for (const [key, value] of Object.entries(desired)) {
+  if (!seen.has(key)) next.push(`${key}=${value}`);
+}
+fs.writeFileSync(file, `${next.join("\n")}\n`, { mode: 0o600 });
+NODE
+
+PAPERCLIP_CONFIG="$delegate_config_path" \
+PAPERCLIP_DELEGATE_ENV_PATH="$delegate_env_path" \
+PAPERCLIP_DELEGATE_INSTANCE_DIR="$delegate_instance_dir" \
+  "$delegate_node" "$delegate_bootstrap" ensure-instance
+
+delegate_configured_port=""
+if [[ -f "$delegate_config_path" ]]; then
+  delegate_configured_port="$(DELEGATE_CONFIG_PATH="$delegate_config_path" node -e '
+    const fs = require("node:fs");
+    const config = JSON.parse(fs.readFileSync(process.env.DELEGATE_CONFIG_PATH, "utf8"));
+    if (Number.isInteger(config.server?.port)) process.stdout.write(String(config.server.port));
+  ')"
+fi
+delegate_api_url="${PAPERCLIP_API_URL:-http://127.0.0.1:${delegate_configured_port:-3100}}"
+delegate_tsx="$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs"
+delegate_mcp_entry="$delegate_repo_root/packages/mcp-server/src/stdio.ts"
+delegate_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-delegate-setup.XXXXXX")"
+delegate_desired_path="$delegate_tmp_dir/desired.json"
+delegate_server_pid=""
+
+cleanup_delegate_setup() {
+  if [[ -n "$delegate_server_pid" ]] && kill -0 "$delegate_server_pid" 2>/dev/null; then
+    kill -TERM "$delegate_server_pid" 2>/dev/null || true
+    wait "$delegate_server_pid" 2>/dev/null || true
+  fi
+  rm -r "$delegate_tmp_dir"
+}
+trap cleanup_delegate_setup EXIT
+trap 'exit 130' INT TERM
+
+PAPERCLIP_DELEGATE_PROFILE_PATH="$delegate_profile_path" \
+PAPERCLIP_DELEGATE_DESIRED_PATH="$delegate_desired_path" \
+PAPERCLIP_DELEGATE_INSTANCE_DIR="$delegate_instance_dir" \
+  "$delegate_node" "$delegate_bootstrap" prepare
+
+if ! PAPERCLIP_API_URL="$delegate_api_url" "$delegate_node" -e '
+  fetch(`${process.env.PAPERCLIP_API_URL.replace(/\/$/, "")}/api/health`)
+    .then((response) => { if (!response.ok) process.exit(1); })
+    .catch(() => process.exit(1));
+'; then
+  PAPERCLIP_HOME="$delegate_home" \
+  PAPERCLIP_INSTANCE_ID="$delegate_instance" \
+  PAPERCLIP_OPEN_ON_LISTEN=false \
+    "$delegate_repo_root/run-delegate" &
+  delegate_server_pid=$!
+fi
+
+PAPERCLIP_API_URL="$delegate_api_url" \
+PAPERCLIP_DELEGATE_PROFILE_PATH="$delegate_profile_path" \
+PAPERCLIP_DELEGATE_DESIRED_PATH="$delegate_desired_path" \
+  "$delegate_node" "$delegate_bootstrap" provision
+
+IFS=$'\t' read -r delegate_company_id delegate_agent_id < <(
+  PAPERCLIP_DELEGATE_PROFILE_PATH="$delegate_profile_path" \
+    "$delegate_node" "$delegate_bootstrap" profile-ids
+)
+
+if [[ "${PAPERCLIP_DELEGATE_SKIP_CLIENT_CONFIG:-false}" != "true" ]]; then
+  if command -v codex >/dev/null 2>&1; then
+    codex mcp remove paperclip >/dev/null 2>&1 || true
+    codex mcp add paperclip \
+      --env "PAPERCLIP_API_URL=$delegate_api_url" \
+      --env "PAPERCLIP_COMPANY_ID=$delegate_company_id" \
+      --env "PAPERCLIP_AGENT_ID=$delegate_agent_id" \
+      -- "$delegate_node" "$delegate_tsx" "$delegate_mcp_entry"
+  fi
+
+  if command -v claude >/dev/null 2>&1; then
+    claude mcp remove paperclip --scope user >/dev/null 2>&1 || true
+    claude mcp add --transport stdio --scope user paperclip \
+      --env "PAPERCLIP_API_URL=$delegate_api_url" \
+      --env "PAPERCLIP_COMPANY_ID=$delegate_company_id" \
+      --env "PAPERCLIP_AGENT_ID=$delegate_agent_id" \
+      -- "$delegate_node" "$delegate_tsx" "$delegate_mcp_entry"
+  fi
+fi
+
+delegate_skill_source="$delegate_repo_root/skills/plan-my-day"
+for delegate_skill_home in "${CODEX_HOME:-$HOME/.codex}/skills" "${CLAUDE_HOME:-$HOME/.claude}/skills"; do
+  mkdir -p "$delegate_skill_home/plan-my-day"
+  cp "$delegate_skill_source/SKILL.md" "$delegate_skill_home/plan-my-day/SKILL.md"
+done
+
+echo "Delegate mode is ready at $delegate_api_url."
+echo "Restart Claude Code or Codex, then say: Plan my day."
+
+if [[ "${PAPERCLIP_DELEGATE_SKIP_OPEN:-false}" != "true" ]] && command -v open >/dev/null 2>&1; then
+  open "$delegate_api_url"
+fi
+
+if [[ "${PAPERCLIP_DELEGATE_EXIT_AFTER_SETUP:-false}" == "true" ]]; then
+  exit 0
+fi
+
+if [[ -n "$delegate_server_pid" ]]; then
+  set +e
+  wait "$delegate_server_pid"
+  delegate_exit_code=$?
+  set -e
+  delegate_server_pid=""
+  exit "$delegate_exit_code"
+fi

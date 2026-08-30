@@ -6,6 +6,7 @@ export function buildNewAgentRuntimeConfig(input?: {
   intervalSec?: number;
   cheapModel?: string;
   cheapModelEnabled?: boolean;
+  maxConcurrentRuns?: number;
 }): Record<string, unknown> {
   const config: Record<string, unknown> = {
     heartbeat: {
@@ -14,7 +15,7 @@ export function buildNewAgentRuntimeConfig(input?: {
       wakeOnDemand: true,
       skipTimerWhenNoActionableWork: true,
       cooldownSec: 10,
-      maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+      maxConcurrentRuns: input?.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
     },
   };
 

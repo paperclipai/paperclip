@@ -108,3 +108,51 @@ describe("sw.js offline fallback", () => {
     expect(response!.type).toBe("error");
   });
 });
+
+describe("sw.js notification clicks", () => {
+  it("focuses an existing Paperclip client and navigates it to the notification task", async () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const navigate = vi.fn(async () => undefined);
+    const focus = vi.fn(async () => undefined);
+    const client = { url: "https://app.example.com/JAW/today", navigate, focus };
+    const swSelf = {
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+      skipWaiting: vi.fn(),
+      clients: {
+        claim: vi.fn(),
+        matchAll: vi.fn(async () => [client]),
+        openWindow: vi.fn(),
+      },
+      location: { origin: "https://app.example.com" },
+    };
+    const caches = {
+      match: vi.fn(),
+      open: vi.fn(async () => ({ put: vi.fn() })),
+      keys: vi.fn(async () => []),
+      delete: vi.fn(async () => true),
+    };
+    const code = readFileSync(resolve(uiRoot, "public/sw.js"), "utf8");
+    new Function("self", "caches", "fetch", "Response", "URL", code)(
+      swSelf,
+      caches,
+      vi.fn(),
+      Response,
+      URL,
+    );
+
+    const close = vi.fn();
+    let pending: Promise<unknown> | undefined;
+    listeners.get("notificationclick")?.({
+      notification: { close, data: { href: "/JAW/issues/JAW-4" } },
+      waitUntil: (promise: Promise<unknown>) => {
+        pending = promise;
+      },
+    });
+    await pending;
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith("https://app.example.com/JAW/issues/JAW-4");
+    expect(focus).toHaveBeenCalledOnce();
+    expect(swSelf.clients.openWindow).not.toHaveBeenCalled();
+  });
+});

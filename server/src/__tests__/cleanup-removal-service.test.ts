@@ -6,11 +6,13 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   documents,
   documentRevisions,
   heartbeatRunEvents,
   heartbeatRuns,
+  financeEvents,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
@@ -52,6 +54,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(routines);
@@ -259,6 +263,42 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
+  });
+
+  it("removes finance and cost events before deleting their heartbeat run", async () => {
+    const { agentId, companyId, issueId, runId } = await seedFixture();
+    const costEventId = randomUUID();
+
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      issueId,
+      heartbeatRunId: runId,
+      provider: "openai",
+      model: "gpt-test",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    await db.insert(financeEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      issueId,
+      heartbeatRunId: runId,
+      costEventId,
+      eventKind: "model_usage",
+      biller: "openai",
+      amountCents: 1,
+      occurredAt: new Date(),
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
   });
 
   it("removes routines before deleting company agents", async () => {

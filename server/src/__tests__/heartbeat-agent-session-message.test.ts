@@ -1,8 +1,88 @@
 import { describe, expect, it } from "vitest";
+import { issueThreadInteractions } from "@paperclipai/db";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 
 describe("agent session wake messages", () => {
+  it("materializes answered questions at run preparation without content-bearing wake context", async () => {
+    const interaction = {
+      id: "interaction-1",
+      sourceRunId: "source-run-1",
+      title: "Candidate materials needed",
+      kind: "ask_user_questions",
+      status: "answered",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "candidate_context",
+            prompt: "Please provide the candidate context.",
+            selectionMode: "single",
+            required: true,
+            options: [],
+          },
+        ],
+      },
+      result: {
+        version: 1,
+        answers: [
+          {
+            questionId: "candidate_context",
+            optionIds: [],
+            otherText: "Alex Chen has seven years of B2B SaaS product experience.",
+          },
+        ],
+      },
+    };
+    const db = {
+      select: () => ({
+        from: (table: unknown) => {
+          const rows = table === issueThreadInteractions ? [interaction] : [];
+          const query: Record<string, unknown> = {};
+          const finish = () => Promise.resolve(rows);
+          query.where = finish;
+          query.orderBy = finish;
+          query.limit = finish;
+          query.innerJoin = () => query;
+          query.leftJoin = () => query;
+          query.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
+            Promise.resolve(rows).then(resolve, reject);
+          return query;
+        },
+      }),
+    };
+    const contextSnapshot = {
+      wakeReason: "issue_commented",
+      issueId: "issue-1",
+      interactionId: interaction.id,
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+    };
+
+    expect(JSON.stringify(contextSnapshot)).not.toContain("Alex Chen");
+    const wakePayload = await buildPaperclipWakePayload({
+      db: db as never,
+      companyId: "company-1",
+      contextSnapshot,
+      issueSummary: {
+        id: "issue-1",
+        identifier: "JAW-2",
+        title: "Draft hiring recommendation for Maya",
+        description: "Prepare the decision brief.",
+        status: "in_progress",
+        priority: "critical",
+        workMode: "standard",
+      },
+    });
+
+    expect(wakePayload?.agentMessage).toMatchObject({
+      source: "question_response",
+      text: expect.stringContaining("Alex Chen has seven years"),
+    });
+    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
+    expect(renderPaperclipWakePrompt(wakePayload)).toContain("Alex Chen has seven years");
+  });
+
   it("includes the issue brief and requires fallback fetch when a long description is truncated", async () => {
     const description = [
       "Update launch-card.svg and change the CTA to Try Team free.",

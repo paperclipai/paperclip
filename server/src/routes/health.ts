@@ -104,6 +104,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    delegateMode?: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     runtimeEnv?: CloudInstanceEnv;
@@ -112,6 +113,7 @@ export function healthRoutes(
     deploymentExposure: "private",
     authReady: true,
     companyDeletionEnabled: true,
+    delegateMode: false,
   },
 ) {
   const router = Router();
@@ -332,6 +334,7 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+        delegateMode: opts.delegateMode === true,
       },
       serverInfo,
       ...(databaseBackup ? { databaseBackup } : {}),

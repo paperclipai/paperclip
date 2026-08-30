@@ -280,7 +280,12 @@ export function BoardChat() {
   });
 
   const ceoAgent = useMemo(
-    () => agents?.find((a) => a.role === "ceo" && a.status !== "terminated"),
+    () =>
+      agents?.find(
+        (agent) =>
+          agent.status !== "terminated" &&
+          agent.metadata?.delegateRole === "chief_of_staff",
+      ) ?? agents?.find((agent) => agent.role === "ceo" && agent.status !== "terminated"),
     [agents],
   );
 
@@ -660,7 +665,7 @@ export function BoardChat() {
         <div className="text-center max-w-sm">
           <h2 className="text-lg font-semibold">No organization selected</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select an organization to start chatting with your board concierge.
+            Select an organization to start chatting with your Chief of Staff.
           </p>
         </div>
       </div>

@@ -161,6 +161,9 @@ export interface AcceptedPlanDecompositionChild {
   assigneeUserId?: string | null;
   requestDepth?: number;
   billingCode?: string | null;
+  neededAt?: Date | string | null;
+  reviewBy?: Date | string | null;
+  estimatedReviewMinutes?: number | null;
   assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionWorkspaceId?: string | null;
@@ -796,6 +799,7 @@ export interface Issue {
   description: string | null;
   descriptionTruncated?: boolean;
   status: IssueStatus;
+  statusVersion?: number;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   reviewPolicy: IssueReviewPolicy | null;
@@ -816,6 +820,9 @@ export interface Issue {
   originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
+  neededAt?: Date | null;
+  reviewBy?: Date | null;
+  estimatedReviewMinutes?: number | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
@@ -899,6 +906,9 @@ export type CompactIssue = Pick<
   | "originRunId"
   | "requestDepth"
   | "billingCode"
+  | "neededAt"
+  | "reviewBy"
+  | "estimatedReviewMinutes"
   | "executionWorkspaceId"
   | "startedAt"
   | "completedAt"
@@ -1061,6 +1071,9 @@ export interface SuggestedTaskDraft {
   projectId?: string | null;
   goalId?: string | null;
   billingCode?: string | null;
+  neededAt?: Date | string | null;
+  reviewBy?: Date | string | null;
+  estimatedReviewMinutes?: number | null;
   labels?: string[];
   hiddenInPreview?: boolean;
 }

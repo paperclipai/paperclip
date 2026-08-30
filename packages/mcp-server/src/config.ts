@@ -1,6 +1,6 @@
 export interface PaperclipMcpConfig {
   apiUrl: string;
-  apiKey: string;
+  apiKey: string | null;
   companyId: string | null;
   agentId: string | null;
   runId: string | null;
@@ -25,12 +25,14 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Papercl
     throw new Error("Missing PAPERCLIP_API_URL");
   }
   const apiKey = nonEmpty(env.PAPERCLIP_API_KEY);
-  if (!apiKey) {
-    throw new Error("Missing PAPERCLIP_API_KEY");
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const hostname = new URL(normalizedApiUrl).hostname;
+  if (!apiKey && hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1") {
+    throw new Error("Missing PAPERCLIP_API_KEY for non-loopback Paperclip server");
   }
 
   return {
-    apiUrl: normalizeApiUrl(apiUrl),
+    apiUrl: normalizedApiUrl,
     apiKey,
     companyId: nonEmpty(env.PAPERCLIP_COMPANY_ID),
     agentId: nonEmpty(env.PAPERCLIP_AGENT_ID),

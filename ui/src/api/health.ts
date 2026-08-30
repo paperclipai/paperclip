@@ -32,6 +32,7 @@ export type HealthStatus = {
   bootstrapInviteActive?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
+    delegateMode?: boolean;
   };
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;

@@ -10,9 +10,13 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   listComments: vi.fn(),
 }));
+const mockAgentService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
 const mockSpawn = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  agentService: () => mockAgentService,
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
   issueService: () => mockIssueService,
 }));
@@ -35,6 +39,7 @@ async function createApp(deploymentMode: "local_trusted" | "authenticated" = "lo
 describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAgentService.list.mockResolvedValue([]);
   });
 
   it("returns 403 FEATURE_DISABLED when enableConferenceRoomChat is off", async () => {
@@ -102,6 +107,31 @@ describe("board-chat client disconnect", () => {
     ]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
     mockIssueService.listComments.mockResolvedValue([]);
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "chief-1",
+        name: "Chief of Staff",
+        role: "ceo",
+        status: "idle",
+        reportsTo: null,
+        adapterType: "codex_local",
+        adapterConfig: {
+          cwd: "/tmp/chief-workspace",
+          dangerouslyBypassApprovalsAndSandbox: true,
+        },
+        metadata: { delegateRole: "chief_of_staff" },
+      },
+      {
+        id: "generalist-1",
+        name: "Generalist",
+        role: "general",
+        status: "idle",
+        reportsTo: "chief-1",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        metadata: { delegateRole: "generalist" },
+      },
+    ]);
     const fakeProc = makeFakeProc();
     mockSpawn.mockReturnValue(fakeProc);
     const app = await createApp();
@@ -116,6 +146,25 @@ describe("board-chat client disconnect", () => {
     );
 
     await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+    const [command, args, options] = mockSpawn.mock.calls[0]!;
+    expect(command).toBe("codex");
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-",
+    ]);
+    expect(options.cwd).toBe("/tmp/chief-workspace");
+    expect(fakeProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "You are Chief of Staff, the user's Chief of Staff (agent ID chief-1)",
+      ),
+    );
+    expect(options.env).toMatchObject({
+      PAPERCLIP_AGENT_ID: "chief-1",
+      PAPERCLIP_GENERALIST_AGENT_ID: "generalist-1",
+    });
     expect(fakeProc.kill).not.toHaveBeenCalled();
 
     // Client walks away mid-stream.
