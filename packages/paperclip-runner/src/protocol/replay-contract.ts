@@ -210,7 +210,6 @@ function ajvIssue(error: ErrorObject): ProtocolValidationIssue {
 interface SemanticCallBinding {
   envelope: PrpSemanticToolEnvelope;
   index: number;
-  sourceInstanceId: string;
 }
 
 function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
@@ -293,7 +292,6 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
         call[phase] = {
           envelope: semanticTool,
           index,
-          sourceInstanceId: event.sourceInstanceId,
         };
         semanticCalls.set(semanticTool.callId, call);
       }
@@ -331,14 +329,9 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       }
     }
     if (call.reconciled !== undefined) {
-      if (call.input.sourceInstanceId !== call.reconciled.sourceInstanceId) {
-        issues.push({
-          code: "binding_mismatch",
-          path: `/events/${call.reconciled.index}/sourceInstanceId`,
-          message:
-            "semantic_tool reconciled sourceInstanceId must match its input event",
-        });
-      }
+      // A replacement runner may reconcile a call after recovering the run.
+      // The authenticated ingestion boundary owns runner authorization, while
+      // replay keeps each event's sourceInstanceId as immutable provenance.
       for (const field of [
         "operationId",
         "idempotencyKey",

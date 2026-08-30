@@ -190,24 +190,30 @@ describe("PRP v1 JSON Schema contract", () => {
     });
   });
 
-  it("rejects reconciliation from a different runner instance", async () => {
-    const fixture = await readFixture("semantic-tool-artifact-happy-path.json");
-    const events = fixture.events as Array<Record<string, unknown>>;
-    const reconciled = reconciledEvent(events);
-    reconciled.sourceInstanceId = "runner_semantic_other";
-    events[1] = reconciled;
+  it(
+    "preserves replacement-runner provenance during reconciliation",
+    async () => {
+      const fixture = await readFixture(
+        "semantic-tool-artifact-happy-path.json",
+      );
+      const events = fixture.events as Array<Record<string, unknown>>;
+      const reconciled = reconciledEvent(events);
+      const inputSourceInstanceId = events[0]!.sourceInstanceId;
+      reconciled.sourceInstanceId = "runner_semantic_other";
+      events[1] = reconciled;
 
-    expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
-      ok: false,
-      issues: expect.arrayContaining([
-        expect.objectContaining({
-          code: "binding_mismatch",
-          path: "/events/1/sourceInstanceId",
-          message: expect.stringContaining("must match its input event"),
-        }),
-      ]),
-    });
-  });
+      const result = parsePrpFixtureText(JSON.stringify(fixture));
+      expect(result).toMatchObject({ ok: true });
+      if (result.ok) {
+        expect(result.fixture.events[0]?.sourceInstanceId).toBe(
+          inputSourceInstanceId,
+        );
+        expect(result.fixture.events[1]?.sourceInstanceId).toBe(
+          "runner_semantic_other",
+        );
+      }
+    },
+  );
 
   it("rejects result and reconciliation as two terminal phases for one call", async () => {
     const fixture = await readFixture("semantic-tool-artifact-happy-path.json");
