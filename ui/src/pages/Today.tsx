@@ -19,6 +19,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { DelegateBrowserNotificationControl } from "@/components/DelegateBrowserNotifications";
 
 type TodayGroup = "needsYou" | "ready" | "working" | "upNext" | "done";
 
@@ -173,6 +174,8 @@ export function Today() {
           New task
         </Button>
       </header>
+
+      <DelegateBrowserNotificationControl />
 
       {issuesQuery.isError ? (
         <div className="border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">

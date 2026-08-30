@@ -19,6 +19,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { DelegateBrowserNotificationCoordinator } from "./DelegateBrowserNotifications";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
@@ -712,6 +713,7 @@ export function Layout() {
       <NewGoalDialog />
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <DelegateBrowserNotificationCoordinator />
       <ToastViewport />
       </div>
     </GeneralSettingsProvider>

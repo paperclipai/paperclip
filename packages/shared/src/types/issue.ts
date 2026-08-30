@@ -799,6 +799,7 @@ export interface Issue {
   description: string | null;
   descriptionTruncated?: boolean;
   status: IssueStatus;
+  statusVersion?: number;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   reviewPolicy: IssueReviewPolicy | null;
