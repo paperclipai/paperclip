@@ -246,6 +246,8 @@ enum AmbiguousTurnMessage {
 
 pub struct CodexProvider {
     process: SupervisedProcess,
+    config: CodexProviderConfig,
+    authorized_tools: Vec<AuthorizedTool>,
     next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
@@ -268,6 +270,7 @@ pub struct CodexProvider {
     ambiguous_turn_start_pending: bool,
     settled_provider_turn_ids: SettledProviderTurnIds,
     rejected_accepted_turn: Option<RejectedAcceptedTurn>,
+    quarantined: bool,
 }
 
 impl CodexProvider {
@@ -298,7 +301,9 @@ impl CodexProvider {
                 "Codex process generation must be positive",
             ));
         }
-        let (dynamic_tools, authorized_tool_ids) = codex_dynamic_tools(authorized_tools)?;
+        let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let (dynamic_tools, authorized_tool_ids) =
+            codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let mut provider = Self {
             process: SupervisedProcess::spawn(
                 &config.command,
@@ -306,6 +311,8 @@ impl CodexProvider {
                 Duration::from_secs(2),
                 CODEX_APP_SERVER_MAX_FRAME_BYTES,
             )?,
+            config: config.clone(),
+            authorized_tools,
             next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
@@ -328,6 +335,7 @@ impl CodexProvider {
             ambiguous_turn_start_pending: false,
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
             rejected_accepted_turn: None,
+            quarantined: false,
         };
         let initialized = provider.request(
             "initialize",
@@ -465,7 +473,72 @@ impl CodexProvider {
         self.rejected_accepted_turn.take()
     }
 
+    fn rollover_settled_turn_epoch_if_needed(&mut self) -> Result<(), LocalRunnerError> {
+        if !self.settled_provider_turn_ids.at_capacity() {
+            return Ok(());
+        }
+        if self.active_provider_turn_id.is_some() || self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex provider turn identity epoch cannot rotate while work is active",
+            ));
+        }
+
+        let next_generation = self.process_generation.checked_add(1).ok_or_else(|| {
+            LocalRunnerError::invalid("Codex process generation exhausted during epoch rollover")
+        })?;
+        let config = self.config.clone();
+        let authorized_tools = self.authorized_tools.clone();
+        let thread_id = self.thread_id.clone();
+        let completed_turn_authority = self.completed_turn_authority.clone();
+        let completion_reconciliation_pending = self.completion_reconciliation_pending;
+
+        // Exact turn identities may be forgotten only after the provider
+        // process that could emit them is gone. Resume the same thread in a
+        // fresh process generation, then preserve prior completion authority
+        // until a replacement turn identity is actually accepted.
+        self.shutdown()?;
+        let mut replacement = Self::start_with_tools_for_generation(
+            &config,
+            authorized_tools,
+            Some(&thread_id),
+            next_generation,
+        )?;
+        if replacement.active_provider_turn_id.is_some() {
+            // A terminal can race the provider's own durable idle-state write.
+            // This process has work Paperclip never dispatched in the new
+            // epoch, so revoke its request authority and reap it. Retain the
+            // exact ledger for diagnostics, but never expose the unexpected
+            // turn as ordinary active work or admit a replacement.
+            replacement.settled_provider_turn_ids =
+                std::mem::take(&mut self.settled_provider_turn_ids);
+            replacement.active_provider_turn_id = None;
+            replacement.ambiguous_turn_start_pending = true;
+            replacement.rejected_accepted_turn = Some(RejectedAcceptedTurn::InvalidIdentity);
+            replacement.quarantined = true;
+            replacement.pending_messages.clear();
+            replacement.deferred_ambiguous_messages.clear();
+            replacement.pending_message_bytes = 0;
+            let _ = replacement.cancel_pending_requests();
+            let _ = replacement.process.terminate_group();
+            replacement.expected_shutdown = false;
+            *self = replacement;
+            return Err(LocalRunnerError::invalid(
+                "Codex provider epoch rollover resumed unowned active work; the provider was terminated",
+            ));
+        }
+        replacement.completed_turn_authority = completed_turn_authority;
+        replacement.completion_reconciliation_pending = completion_reconciliation_pending;
+        replacement.expected_shutdown = replacement.completed_turn_authority.is_some();
+        *self = replacement;
+        Ok(())
+    }
+
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
+        if self.quarantined {
+            return Err(LocalRunnerError::invalid(
+                "Codex provider is quarantined after unsafe recovered work",
+            ));
+        }
         if self.active_provider_turn_id.is_some() {
             return Err(LocalRunnerError::invalid(
                 "Codex already has an active provider turn",
@@ -476,16 +549,12 @@ impl CodexProvider {
                 "Codex has an unresolved ambiguous provider turn start",
             ));
         }
-        if self.settled_provider_turn_ids.at_capacity() {
-            return Err(LocalRunnerError::invalid(
-                "Codex durable provider turn identity limit reached",
-            ));
-        }
         if message.is_empty() || message.len() > MAX_INSTRUCTIONS_BYTES {
             return Err(LocalRunnerError::invalid(
                 "Codex turn text is empty or exceeds the 1 MiB limit",
             ));
         }
+        self.rollover_settled_turn_epoch_if_needed()?;
         // Preserve the prior durable result until a replacement turn identity
         // is accepted. A rejected, ambiguous, or transport-failed attempt does
         // not prove that replacement work superseded the completed turn.
@@ -731,6 +800,30 @@ impl CodexProvider {
     }
 
     pub fn poll(&mut self) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        if self.quarantined {
+            // Never interpret provider-originated requests after fail-closed
+            // quarantine. Drain output only so process termination cannot
+            // deadlock on a full pipe, then surface an unequivocal failure.
+            if self
+                .process
+                .receive_stdout_line(Duration::from_millis(1))?
+                .is_some()
+            {
+                return Ok(None);
+            }
+            return Ok(self
+                .process
+                .try_wait()?
+                .map(|exit| CodexProviderEvent::Exited {
+                    exit_code: exit.exit_code,
+                    success: false,
+                    completed_turn_authoritative: false,
+                    completed_turn_observed_by_process: false,
+                    completion_reconciles_exit: false,
+                    process_generation: self.process_generation,
+                    completed_turn_process_generation: None,
+                }));
+        }
         let buffered = self.pending_messages.pop_front();
         if let Some(buffered) = buffered.as_ref() {
             self.pending_message_bytes = self.pending_message_bytes.saturating_sub(json_size(

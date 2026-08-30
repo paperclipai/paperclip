@@ -137,14 +137,15 @@ fn poll_and_ack(
 fn wait_for_notification(provider: &mut CodexProvider, expected_method: &str) -> Value {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        if let Some(CodexProviderEvent::Notification { method, params }) =
-            provider.poll().expect("poll provider notification")
-        {
-            if method == expected_method {
-                return params;
+        match provider.poll().expect("poll provider notification") {
+            Some(CodexProviderEvent::Notification { method, params }) => {
+                if method == expected_method {
+                    return params;
+                }
             }
+            Some(_) => {}
+            None => std::thread::sleep(std::time::Duration::from_millis(1)),
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     panic!("did not observe Codex {expected_method} notification before the deadline");
 }
@@ -661,6 +662,78 @@ fn durable_backend_reaps_before_rotating_a_full_turn_identity_epoch() {
     assert_eq!(rolled["settledProviderTurnFilter"], json!({"words": []}));
 
     recovered.shutdown().expect("stop rolled provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
+    let directory = temporary_directory("direct-turn-identity-epoch-rollover");
+    let config = provider_config(&directory, &["--require-dynamic-tool"]);
+    let mut provider = CodexProvider::start_with_tools(&config, [task_context_tool()], None)
+        .expect("start Codex provider");
+    let initial_process_id = provider.process_id();
+
+    // Keep every identity exact until the process boundary makes it safe to
+    // forget them. The next turn must transparently resume in a new process
+    // generation instead of permanently rejecting this session.
+    for index in 0..4_096 {
+        provider
+            .start_turn(&format!("Complete provider turn {index}."), &config.cwd)
+            .expect("start provider turn before identity rollover");
+        wait_for_notification(&mut provider, "turn/completed");
+    }
+
+    provider
+        .start_turn(
+            "Continue after the exact identity epoch fills.",
+            &config.cwd,
+        )
+        .expect("roll over the provider process and start fresh work");
+    assert_ne!(provider.process_id(), initial_process_id);
+    assert_eq!(call_count(&directory, "thread/resume"), 1);
+    wait_for_notification(&mut provider, "turn/completed");
+
+    // Fill the next process epoch and force its resume probe to observe an
+    // active turn. Rollover must retain that work instead of dispatching a
+    // concurrent replacement after forgetting the old exact identities.
+    for index in 1..4_096 {
+        provider
+            .start_turn(
+                &format!("Complete rolled provider turn {index}."),
+                &config.cwd,
+            )
+            .expect("start provider turn in the rolled identity epoch");
+        wait_for_notification(&mut provider, "turn/completed");
+    }
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec_pretty(&json!({
+            "threadId": provider.thread_id(),
+            "activeTurnId": "provider-turn-raced",
+        }))
+        .unwrap(),
+    )
+    .expect("race the provider idle-state write before rollover");
+    let error = provider
+        .start_turn(
+            "Do not overlap the turn recovered during epoch rollover.",
+            &config.cwd,
+        )
+        .expect_err("a resumed active turn is reaped before replacement work");
+    assert!(error
+        .to_string()
+        .contains("resumed unowned active work; the provider was terminated"));
+    assert_eq!(provider.active_provider_turn_id(), None);
+    assert!(provider
+        .start_turn(
+            "Never admit replacement work after quarantine.",
+            &config.cwd,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("quarantined after unsafe recovered work"));
+    wait_for_provider_exit(&mut provider);
+
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 
