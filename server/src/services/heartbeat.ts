@@ -17517,7 +17517,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             nativeRunnerErrorCode(outerErr) ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
-          logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+          logger.error(
+            { runId, errorCode: setupFailureErrorCode, error: message },
+            "heartbeat execution setup failed",
+          );
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,

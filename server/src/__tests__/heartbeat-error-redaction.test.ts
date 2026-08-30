@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
   agentTaskSessions,
@@ -15,6 +15,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import { logger } from "../middleware/logger.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
@@ -25,6 +26,7 @@ const CREDENTIAL_VALUE = "hap128-secret-value";
 const CREDENTIAL_PREFIX = "hap128-secret-";
 const CREDENTIAL_SUFFIX = "value";
 const DIAGNOSTIC = "Provider rejected request";
+const SETUP_DIAGNOSTIC = "Workspace setup rejected request";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -51,6 +53,8 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let throwAfterLog = false;
+  let failRuntimeStateSetup = false;
+  let adapterExecuteCalls = 0;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-error-redaction-");
@@ -59,6 +63,7 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
     registerServerAdapter({
       type: TEST_ADAPTER_TYPE,
       execute: async ({ onLog }) => {
+        adapterExecuteCalls += 1;
         // Adapter process streams have arbitrary chunk boundaries. Split both
         // the sensitive field name and value so per-chunk redaction cannot see
         // the credential. Keep stderr unterminated to prove completion flushes
@@ -93,6 +98,8 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
 
   afterEach(async () => {
     throwAfterLog = false;
+    failRuntimeStateSetup = false;
+    adapterExecuteCalls = 0;
     await heartbeat.drainActiveRunExecutions();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -212,6 +219,105 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
       expect(serializedLiveLogEvents).not.toContain(CREDENTIAL_PREFIX);
     } finally {
       unsubscribe();
+    }
+  });
+
+  it("redacts a credential-bearing pre-dispatch setup failure before logger and run persistence", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const taskKey = "hap-128-setup-failure";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Heartbeat Setup Redaction Test",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Setup Redaction Test Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: TEST_ADAPTER_TYPE,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    });
+
+    const originalSelect = db.select.bind(db);
+    const selectSpy = vi.spyOn(db, "select");
+    selectSpy.mockImplementation((...args) => {
+      const query = originalSelect(...args) as unknown as {
+        from: (source: unknown) => unknown;
+      };
+      const originalFrom = query.from.bind(query);
+      query.from = (source) => {
+        if (failRuntimeStateSetup && source === agentRuntimeState) {
+          failRuntimeStateSetup = false;
+          const setupError = new Error(`${SETUP_DIAGNOSTIC} apiKey: \"${CREDENTIAL_VALUE}\"`);
+          setupError.stack = `Error: ${SETUP_DIAGNOSTIC} apiKey: \"${CREDENTIAL_VALUE}\"\n    at test setup`;
+          throw setupError;
+        }
+        return originalFrom(source);
+      };
+      return query as never;
+    });
+    const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+
+    try {
+      failRuntimeStateSetup = true;
+      const queued = await heartbeat.invoke(agentId, "on_demand", { taskKey }, "manual");
+      expect(queued).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, queued!.id);
+      expect(finished?.status).toBe("failed");
+      await heartbeat.drainActiveRunExecutions();
+
+      expect(adapterExecuteCalls).toBe(0);
+
+      selectSpy.mockRestore();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const runEvents = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, queued!.id));
+
+      expect(run?.error).toContain(SETUP_DIAGNOSTIC);
+      expect(agent).toMatchObject({ status: "error" });
+      expect(runEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: "error",
+            message: expect.stringContaining(SETUP_DIAGNOSTIC),
+          }),
+        ]),
+      );
+      for (const durableValue of [run, agent, runEvents]) {
+        const serialized = JSON.stringify(durableValue);
+        expect(serialized ?? "").not.toContain(CREDENTIAL_VALUE);
+        expect(serialized ?? "").not.toContain(CREDENTIAL_PREFIX);
+      }
+
+      const setupFailureLog = loggerErrorSpy.mock.calls.find(
+        (call) => call[1] === "heartbeat execution setup failed",
+      );
+      expect(setupFailureLog).toBeDefined();
+      const loggedFields = setupFailureLog?.[0] as Record<string, unknown>;
+      expect(loggedFields).toMatchObject({
+        runId: queued!.id,
+        errorCode: "setup_failed",
+        error: expect.stringContaining(SETUP_DIAGNOSTIC),
+      });
+      expect(loggedFields).not.toHaveProperty("err");
+      const serializedLoggerFields = JSON.stringify(loggedFields);
+      expect(serializedLoggerFields).not.toContain(CREDENTIAL_VALUE);
+      expect(serializedLoggerFields).not.toContain(CREDENTIAL_PREFIX);
+    } finally {
+      selectSpy.mockRestore();
+      loggerErrorSpy.mockRestore();
     }
   });
 });
