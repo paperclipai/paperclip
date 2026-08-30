@@ -678,7 +678,8 @@ fn clean_provider_exit_does_not_refail_a_completed_turn() {
 fn durable_backend_reaps_before_rotating_full_provider_identity_epochs() {
     let directory = temporary_directory("provider-identity-epoch-rollover");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
-    let mut first = CodexCommandExecutor::new(&directory);
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
     first
         .execute(&command(
             "prepare",
@@ -720,7 +721,7 @@ fn durable_backend_reaps_before_rotating_full_provider_identity_epochs() {
     fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
         .expect("write full provider identity epochs");
 
-    let mut recovered = CodexCommandExecutor::new(&directory);
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
     recovered
         .execute(&command(
             "turn",
@@ -773,9 +774,116 @@ fn durable_backend_reaps_before_rotating_full_provider_identity_epochs() {
 }
 
 #[test]
+fn durable_backend_closes_when_identity_rollover_resumes_unowned_work() {
+    let directory = temporary_directory("provider-identity-rollover-unowned-work");
+    let config = provider_config(&directory, &["--resume-unowned-turn-when-marked"]);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    drop(first);
+
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value = serde_json::from_slice(
+        &fs::read(&state_path).expect("read provider state before unsafe rollover"),
+    )
+    .expect("parse provider state before unsafe rollover");
+    persisted["settledProviderTurnIds"] = Value::Array(
+        (0..4_096)
+            .map(|index| Value::String(format!("provider-turn-{index}")))
+            .collect(),
+    );
+    fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap())
+        .expect("write full provider identity epoch");
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    poll_and_ack(&mut recovered).expect("attach an idle provider before rollover");
+    wait_for_fake_provider_idle(&directory);
+    let attached: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read attached provider state"))
+            .expect("parse attached provider state");
+    let attached_generation = attached["providerProcessGeneration"]
+        .as_u64()
+        .expect("attached provider generation is persisted");
+
+    // Race the provider's idle snapshot with work Paperclip never dispatched.
+    // The replacement process observes this turn during thread/resume and must
+    // close the durable run instead of leaving a quarantined session open.
+    fs::write(directory.join("resume-unowned-turn"), b"armed")
+        .expect("arm unowned provider work before rollover");
+    let resumes_before_rollover = call_count(&directory, "thread/resume");
+    let error = recovered
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Never overlap the unowned provider turn."}),
+        ))
+        .expect_err("identity rollover fails closed after resuming unowned work");
+    assert!(error
+        .to_string()
+        .contains("identity epoch rollover failed closed after an invalid accepted identity"));
+    assert_eq!(
+        call_count(&directory, "thread/resume"),
+        resumes_before_rollover + 1,
+    );
+
+    let closed: Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read fail-closed provider state"))
+            .expect("parse fail-closed provider state");
+    assert_eq!(closed["lifecycle"], "closed");
+    assert!(closed["activeProviderTurnId"].is_null());
+    assert_eq!(closed["ambiguousTurnStartPending"], false);
+    assert_eq!(closed["completedTurnAuthoritative"], false);
+    assert!(closed["providerProcessGeneration"].as_u64().unwrap() > attached_generation);
+
+    let events = poll_and_ack(&mut recovered).expect("read fail-closed rollover diagnostic");
+    assert!(events.iter().any(|event| {
+        event.event_type == "harness.diagnostic"
+            && event.payload["code"] == "provider_turn_identity_invalid"
+            && event.payload["paperclipAccepted"] == false
+            && event.payload["providerAccepted"] == true
+    }));
+
+    let resumes_before_retry = call_count(&directory, "thread/resume");
+    assert!(recovered
+        .execute(&command(
+            "turn-retry",
+            4,
+            "turn.start",
+            json!({"text": "Do not resume the quarantined provider."}),
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("provider session is closed"));
+    assert_eq!(
+        call_count(&directory, "thread/resume"),
+        resumes_before_retry,
+        "closed rollover state must never resume the unowned provider turn",
+    );
+
+    recovered.shutdown().expect("close fail-closed executor");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
     let directory = temporary_directory("direct-turn-identity-epoch-rollover");
-    let config = provider_config(&directory, &["--require-dynamic-tool"]);
+    let config = provider_config(
+        &directory,
+        &[
+            "--require-dynamic-tool",
+            "--resume-unowned-turn-when-marked",
+        ],
+    );
     let mut provider = CodexProvider::start_with_tools(&config, [task_context_tool()], None)
         .expect("start Codex provider");
     let initial_process_id = provider.process_id();
@@ -813,18 +921,11 @@ fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
         wait_for_notification(&mut provider, "turn/completed");
     }
     // The terminal notification is flushed before the fake provider persists
-    // its idle state. Wait for that write so the injected recovery snapshot
-    // cannot be overwritten by the just-completed turn.
+    // its idle state. Wait for that write, then arm a one-shot resume race so
+    // only the replacement generation reports unowned active work.
     wait_for_fake_provider_idle(&directory);
-    fs::write(
-        directory.join("fake-state.json"),
-        serde_json::to_vec_pretty(&json!({
-            "threadId": provider.thread_id(),
-            "activeTurnId": "provider-turn-raced",
-        }))
-        .unwrap(),
-    )
-    .expect("race the provider idle-state write before rollover");
+    fs::write(directory.join("resume-unowned-turn"), b"armed")
+        .expect("arm unowned work for the replacement provider resume");
     let error = provider
         .start_turn(
             "Do not overlap the turn recovered during epoch rollover.",
@@ -1076,7 +1177,11 @@ fn rejected_replacement_turn_start_does_not_hide_contradictory_turn_evidence() {
         "unexpected duplicate-start error: {duplicate_error}"
     );
     let mut contradictory_turn_seen = false;
-    let rejected_start_exit = (0..64).find_map(|_| {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let rejected_start_exit = loop {
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
         match provider
             .poll()
             .expect("poll exit after contradictory replacement rejection")
@@ -1087,21 +1192,23 @@ fn rejected_replacement_turn_start_does_not_hide_contradictory_turn_evidence() {
                         == Some("provider-turn-contradiction") =>
             {
                 contradictory_turn_seen = true;
-                None
             }
             Some(CodexProviderEvent::Exited {
                 success,
                 completed_turn_authoritative,
                 completion_reconciles_exit,
                 ..
-            }) => Some((
-                success,
-                completed_turn_authoritative,
-                completion_reconciles_exit,
-            )),
-            _ => None,
+            }) => {
+                break Some((
+                    success,
+                    completed_turn_authoritative,
+                    completion_reconciles_exit,
+                ));
+            }
+            _ => {}
         }
-    });
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     assert!(contradictory_turn_seen);
     assert_eq!(
         provider.active_provider_turn_id(),
@@ -3610,30 +3717,24 @@ fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let rejected_runtime_request = |event: &PolledEvent| {
-        event.event_type == "provider.notice.recorded"
-            && event.payload["summary"]
-                == "rejected a Codex runtime request at the bounded pending-input limit"
-    };
-    let mut rejection_observed = false;
     for _ in 0..4 {
         let events = recovered
             .poll_events()
             .expect("runtime-request cleanup remains bounded across repeated polls");
         assert!(events.len() <= 128);
-        rejection_observed |= events.iter().any(rejected_runtime_request);
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !rejection_observed && std::time::Instant::now() < deadline {
-        let events = recovered
+    while call_count(&directory, "runtime-response:rejected") == 0
+        && std::time::Instant::now() < deadline
+    {
+        recovered
             .poll_events()
             .expect("continue bounded receipt-limit cleanup polling");
-        rejection_observed |= events.iter().any(rejected_runtime_request);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert!(
-        rejection_observed,
+        call_count(&directory, "runtime-response:rejected") > 0,
         "requests above the pending count/byte envelope are rejected instead of retained"
     );
 

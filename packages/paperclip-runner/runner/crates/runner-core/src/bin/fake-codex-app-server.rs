@@ -199,6 +199,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_tool_call_on_resume = args
         .iter()
         .any(|value| value == "--emit-tool-call-on-resume");
+    let resume_unowned_turn_when_marked = args
+        .iter()
+        .any(|value| value == "--resume-unowned-turn-when-marked");
     let replay_completed_tool_call_count = argument(&args, "--replay-completed-tool-call-count")
         .map(|value| value.parse::<u64>())
         .transpose()?
@@ -423,6 +426,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "thread/resume" => {
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/resume omitted the authorized dynamic tool".into());
+                }
+                let unowned_turn_marker = state_path.with_file_name("resume-unowned-turn");
+                if resume_unowned_turn_when_marked && unowned_turn_marker.exists() {
+                    state.active_turn_id = Some("provider-turn-unowned".to_owned());
+                    save_state(&state_path, &state)?;
+                    fs::remove_file(unowned_turn_marker)?;
                 }
                 send(json!({
                     "id": id,

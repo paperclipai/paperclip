@@ -1379,6 +1379,63 @@ impl CodexCommandExecutor {
         })
     }
 
+    fn close_after_rejected_provider_acceptance(
+        &mut self,
+        rejected_accepted_turn: &RejectedAcceptedTurn,
+    ) -> Result<(), DurableRunnerError> {
+        let provider_process_generation = self
+            .provider
+            .as_ref()
+            .map(CodexProvider::process_generation);
+        // The provider has already been terminated. Drop its quarantined
+        // handle before persisting the closure so recovery can never resume
+        // work that Codex accepted without Paperclip accepting its identity.
+        self.provider = None;
+        let state = self
+            .state
+            .as_mut()
+            .expect("Codex state remains available after rejected provider acceptance");
+        if let Some(provider_process_generation) = provider_process_generation {
+            state.provider_process_generation = provider_process_generation;
+        }
+        state.active_provider_turn_id = None;
+        state.ambiguous_turn_start_pending = false;
+        state.completed_turn_authoritative = false;
+        state.completed_turn_process_generation = None;
+        state.completed_provider_turn_id = None;
+        state.receipt_limit_diagnostic_emitted = false;
+        state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_interrupt_accepted = false;
+        state.receipt_limit_interrupt_attempts = 0;
+        state.receipt_limit_interrupt_deadline_unix_ms = None;
+        state.last_agent_message = None;
+        state.lifecycle = "closed".to_owned();
+        // Closure is the safety boundary. Preserve it even if a saturated
+        // event queue cannot retain this additional diagnostic.
+        let _ = state.push_terminal_event(NormalizedProviderEvent {
+            event_type: "harness.diagnostic".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({
+                "provider": "codex",
+                "code": match rejected_accepted_turn {
+                    RejectedAcceptedTurn::ReusedIdentity(_) => "provider_turn_identity_reused",
+                    RejectedAcceptedTurn::InvalidIdentity => "provider_turn_identity_invalid",
+                },
+                "providerTurnId": match rejected_accepted_turn {
+                    RejectedAcceptedTurn::ReusedIdentity(provider_turn_id) => json!(provider_turn_id),
+                    RejectedAcceptedTurn::InvalidIdentity => Value::Null,
+                },
+                "message": match rejected_accepted_turn {
+                    RejectedAcceptedTurn::ReusedIdentity(_) => "Codex accepted work with a previously settled turn identity; Paperclip terminated the provider and closed the durable run",
+                    RejectedAcceptedTurn::InvalidIdentity => "Codex accepted work without a valid bounded turn identity; Paperclip terminated the provider and closed the durable run",
+                },
+                "paperclipAccepted": false,
+                "providerAccepted": true,
+            }),
+        });
+        self.save_state()
+    }
+
     fn rollover_provider_identity_epochs_if_needed(&mut self) -> Result<(), DurableRunnerError> {
         let tool_rollover_required = self
             .state
@@ -1403,18 +1460,33 @@ impl CodexCommandExecutor {
             ));
         }
 
-        let process_generation = {
+        let (restart_result, process_generation, rejected_accepted_turn) = {
             let provider = self.provider.as_mut().ok_or_else(|| {
                 DurableRunnerError::invalid(
                     "Codex provider identity epoch cannot rotate without an attached process",
                 )
             })?;
-            provider.restart_idle_identity_epoch().map_err(|error| {
-                DurableRunnerError::invalid(format!(
-                    "failed to rotate the completed Codex identity epoch: {error}"
-                ))
-            })?;
-            provider.process_generation()
+            let restart_result = provider.restart_idle_identity_epoch();
+            (
+                restart_result,
+                provider.process_generation(),
+                provider.take_rejected_accepted_turn(),
+            )
+        };
+        if let Err(error) = restart_result {
+            if let Some(rejected_accepted_turn) = rejected_accepted_turn {
+                let failure_kind = match &rejected_accepted_turn {
+                    RejectedAcceptedTurn::ReusedIdentity(_) => "accepted identity reuse",
+                    RejectedAcceptedTurn::InvalidIdentity => "an invalid accepted identity",
+                };
+                self.close_after_rejected_provider_acceptance(&rejected_accepted_turn)?;
+                return Err(DurableRunnerError::invalid(format!(
+                    "Codex identity epoch rollover failed closed after {failure_kind}: {error}"
+                )));
+            }
+            return Err(DurableRunnerError::invalid(format!(
+                "failed to rotate the completed Codex identity epoch: {error}"
+            )));
         };
         let state = self
             .state
@@ -1536,45 +1608,7 @@ impl CodexCommandExecutor {
                 // identity. The provider has already been terminated; close
                 // this run before returning so recovery cannot resume the
                 // untracked turn from the provider's thread snapshot.
-                self.provider = None;
-                let state = self
-                    .state
-                    .as_mut()
-                    .expect("Codex state remains available after reused turn acceptance");
-                state.active_provider_turn_id = None;
-                state.ambiguous_turn_start_pending = false;
-                state.completed_turn_authoritative = false;
-                state.completed_turn_process_generation = None;
-                state.completed_provider_turn_id = None;
-                state.receipt_limit_diagnostic_emitted = false;
-                state.receipt_limit_interrupt_pending = false;
-                state.receipt_limit_interrupt_accepted = false;
-                state.receipt_limit_interrupt_attempts = 0;
-                state.receipt_limit_interrupt_deadline_unix_ms = None;
-                state.last_agent_message = None;
-                state.lifecycle = "closed".to_owned();
-                state.push_terminal_event(NormalizedProviderEvent {
-                    event_type: "harness.diagnostic".to_owned(),
-                    priority: EventPriority::P0,
-                    payload: json!({
-                        "provider": "codex",
-                        "code": match &rejected_accepted_turn {
-                            RejectedAcceptedTurn::ReusedIdentity(_) => "provider_turn_identity_reused",
-                            RejectedAcceptedTurn::InvalidIdentity => "provider_turn_identity_invalid",
-                        },
-                        "providerTurnId": match &rejected_accepted_turn {
-                            RejectedAcceptedTurn::ReusedIdentity(provider_turn_id) => json!(provider_turn_id),
-                            RejectedAcceptedTurn::InvalidIdentity => Value::Null,
-                        },
-                        "message": match &rejected_accepted_turn {
-                            RejectedAcceptedTurn::ReusedIdentity(_) => "Codex accepted work with a previously settled turn identity; Paperclip terminated the provider and closed the durable run",
-                            RejectedAcceptedTurn::InvalidIdentity => "Codex accepted work without a valid bounded turn identity; Paperclip terminated the provider and closed the durable run",
-                        },
-                        "paperclipAccepted": false,
-                        "providerAccepted": true,
-                    }),
-                })?;
-                self.save_state()?;
+                self.close_after_rejected_provider_acceptance(&rejected_accepted_turn)?;
                 let failure_kind = match &rejected_accepted_turn {
                     RejectedAcceptedTurn::ReusedIdentity(_) => "accepted identity reuse",
                     RejectedAcceptedTurn::InvalidIdentity => "an invalid accepted identity",
