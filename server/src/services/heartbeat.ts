@@ -285,7 +285,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactSensitiveText, redactSensitiveValue } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
@@ -10026,14 +10026,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
+      ? redactSensitiveText(redactCurrentUserText(event.message, currentUserRedactionOptions))
       : event.message;
     const boundedPayload = event.payload
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
       : event.payload;
     const secretSanitizedPayload = boundedPayload ? redactEventPayload(boundedPayload) : boundedPayload;
     const sanitizedPayload = secretSanitizedPayload
-      ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
+      ? redactSensitiveValue(redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions))
       : secretSanitizedPayload;
     const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
     const progress = buildRunEventRuntimeProgress({
@@ -16944,9 +16944,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
+            : redactSensitiveText(
+                redactCurrentUserText(
+                  adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                  currentUserRedactionOptions,
+                ),
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
@@ -17022,7 +17024,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...parseObject(adapterResult.resultJson),
+                ...redactSensitiveValue(
+                  redactCurrentUserValue(parseObject(adapterResult.resultJson), currentUserRedactionOptions),
+                ),
                 configFreshness: configFreshnessResultMetadata,
               },
               errorFamily: adapterResult.errorFamily ?? null,
@@ -17033,7 +17037,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorCode: runErrorCode,
           errorMessage: runErrorMessage,
         }),
-        adapterResult.summary ?? null,
+        adapterResult.summary
+          ? redactSensitiveText(redactCurrentUserText(adapterResult.summary, currentUserRedactionOptions))
+          : null,
       );
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
@@ -17252,9 +17258,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       );
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
-        await getCurrentUserRedactionOptions(),
+      const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const message = redactSensitiveText(
+        redactCurrentUserText(
+          err instanceof Error ? err.message : "Unknown adapter failure",
+          currentUserRedactionOptions,
+        ),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
@@ -17291,7 +17300,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+          resultJson: redactSensitiveValue(
+            redactCurrentUserValue(
+              workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+              currentUserRedactionOptions,
+            ),
+          ),
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -17404,9 +17418,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } else {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = redactCurrentUserText(
-            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
-            await getCurrentUserRedactionOptions(),
+          const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+          const message = redactSensitiveText(
+            redactCurrentUserText(
+              outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+              currentUserRedactionOptions,
+            ),
           );
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
@@ -17437,12 +17454,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
-                resultJson:
-                  workspaceValidationSetupFailure?.resultJson ??
-                  configurationIncompleteSetupFailure?.resultJson ??
-                  (unresolvedBaseRefSetupFailure
-                    ? buildUnresolvedWorkspaceBaseRefResultJson(run, unresolvedBaseRefSetupFailure)
-                    : null),
+                resultJson: redactSensitiveValue(
+                  redactCurrentUserValue(
+                    workspaceValidationSetupFailure?.resultJson
+                      ?? configurationIncompleteSetupFailure?.resultJson
+                      ?? (unresolvedBaseRefSetupFailure
+                        ? buildUnresolvedWorkspaceBaseRefResultJson(run, unresolvedBaseRefSetupFailure)
+                        : null),
+                    currentUserRedactionOptions,
+                  ),
+                ),
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));

@@ -85,6 +85,23 @@ function sanitizeValue(value: unknown): unknown {
   return sanitizeRecord(value);
 }
 
+/**
+ * Redact arbitrary JSON-like output before it crosses a durable or live
+ * boundary. Unlike event-payload redaction, adapter results often place
+ * unstructured process output under neutral keys such as `result` or `stderr`.
+ */
+export function redactSensitiveValue<T>(value: T): T {
+  if (typeof value === "string") return redactSensitiveText(value) as T;
+  if (Array.isArray(value)) return value.map((entry) => redactSensitiveValue(entry)) as T;
+  if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) return value;
+  if (!isPlainObject(value)) return value;
+
+  const keySanitized = sanitizeRecord(value);
+  return Object.fromEntries(
+    Object.entries(keySanitized).map(([key, entry]) => [key, redactSensitiveValue(entry)]),
+  ) as T;
+}
+
 function isSecretRefBinding(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "secret_ref" && typeof value.secretId === "string";

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  redactSensitiveValue,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -61,6 +67,26 @@ describe("redaction", () => {
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({
       password: REDACTED_EVENT_VALUE,
       safe: "value",
+    });
+  });
+
+  it("redacts credential-shaped text nested in adapter result values", () => {
+    const result = redactSensitiveValue({
+      summary: "completed safely",
+      output: [
+        "PAPERCLIP_API_KEY=synthetic-test-only-secret",
+        { stderr: 'adapter emitted {"accessToken":"synthetic-test-only-token"}' },
+      ],
+      finishedAt: new Date("2026-08-30T00:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      summary: "completed safely",
+      output: [
+        `PAPERCLIP_API_KEY=${REDACTED_EVENT_VALUE}`,
+        { stderr: `adapter emitted {"accessToken":"${REDACTED_EVENT_VALUE}"}` },
+      ],
+      finishedAt: new Date("2026-08-30T00:00:00.000Z"),
     });
   });
 
