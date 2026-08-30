@@ -239,6 +239,12 @@ export async function materializeNativeRuntimeSkills(
               // path without introducing symlink/junction semantics.
               await renameTree(previousHome, skillsHome);
             } catch (finalRollbackError) {
+              // No portable finite fallback can publish a complete directory
+              // after every atomic rename and recovery copy has failed. Reject
+              // so the failure propagates before normal provider startup and
+              // leave previousHome intact; an empty canonical directory or an
+              // in-place/link-based fallback would expose partial state or
+              // unsafe link semantics.
               throw new AggregateError(
                 [error, rollbackError, copyError, finalRollbackError],
                 "runtime context skill replacement and rollback failed",

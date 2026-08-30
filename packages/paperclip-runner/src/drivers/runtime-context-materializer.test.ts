@@ -439,6 +439,91 @@ describe("runtime context materialization", () => {
     ).toBe(false);
   });
 
+  it("fails closed and preserves the previous assignment when no atomic publication can succeed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-terminal-"));
+    roots.push(root);
+    const assigned = join(root, "assigned-source");
+    const replacement = join(root, "replacement-source");
+    const instructions = join(root, "instructions-source");
+    const skillsHome = join(root, "codex-home", "skills");
+    await Promise.all([
+      mkdir(assigned),
+      mkdir(replacement),
+      mkdir(instructions),
+    ]);
+    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
+    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
+    await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
+
+    await materializeNativeRuntimeSkills(
+      context(assigned, instructions),
+      skillsHome,
+    );
+    const stagedSwapError = new Error("simulated permanent staged swap failure");
+    const rollbackError = new Error("simulated permanent rollback failure");
+    const recoveryError = new Error("simulated permanent copy failure");
+    const finalRollbackError = new Error(
+      "simulated permanent final rollback failure",
+    );
+    let rollbackAttempts = 0;
+    let terminalError: unknown;
+    try {
+      await materializeNativeRuntimeSkills(
+        context(replacement, instructions, "replacement"),
+        skillsHome,
+        {
+          renameTree: async (source, destination) => {
+            if (source.includes(".paperclip-skills-staging-")) {
+              throw stagedSwapError;
+            }
+            if (source.includes(".paperclip-skills-previous-")) {
+              rollbackAttempts += 1;
+              throw rollbackAttempts === 1
+                ? rollbackError
+                : finalRollbackError;
+            }
+            await rename(source, destination);
+          },
+          copyTree: async (_source, destination) => {
+            await mkdir(join(destination, "assigned"), { recursive: true });
+            await writeFile(
+              join(destination, "assigned", "SKILL.md"),
+              "# Partial\n",
+            );
+            throw recoveryError;
+          },
+        },
+      );
+    } catch (error) {
+      terminalError = error;
+    }
+
+    expect(terminalError).toBeInstanceOf(AggregateError);
+    expect((terminalError as AggregateError).errors).toEqual([
+      stagedSwapError,
+      rollbackError,
+      recoveryError,
+      finalRollbackError,
+    ]);
+    await expect(stat(skillsHome)).rejects.toThrow();
+    const parentEntries = await readdir(dirname(skillsHome));
+    const previousEntries = parentEntries.filter((entry) =>
+      entry.startsWith(".paperclip-skills-previous-"),
+    );
+    expect(previousEntries).toHaveLength(1);
+    const preservedHome = join(dirname(skillsHome), previousEntries[0]!);
+    await expect(
+      readFile(join(preservedHome, "assigned", "SKILL.md"), "utf8"),
+    ).resolves.toBe("# Assigned\n");
+    await expect(stat(join(preservedHome, "replacement"))).rejects.toThrow();
+    expect(
+      parentEntries.filter((entry) =>
+        entry.startsWith(".paperclip-skills-staging-")
+        || entry.startsWith(".paperclip-skills-recovery-"),
+      ),
+    ).toEqual([]);
+  });
+
   it("rejects skill names that can escape or alias the skills home", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-name-"));
     roots.push(root);
