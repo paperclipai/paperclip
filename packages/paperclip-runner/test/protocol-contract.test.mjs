@@ -157,7 +157,27 @@ test("the ACPX question fixture enforces its provider-native contract", async ()
   patternBearingQuestion.canonicalResponse.answers = {
     "field-1-environment-ba5285161ba6": { text: "staging" },
   };
-  assert.doesNotThrow(() => assertAcpxQuestionFixture(patternBearingQuestion));
+  assert.throws(
+    () => assertAcpxQuestionFixture(patternBearingQuestion),
+    /native property environment uses an unsupported pattern/,
+  );
+
+  const optionPattern = structuredClone(canonical);
+  optionPattern.nativeRequest.params.requestedSchema.properties.environment
+    .pattern = "^staging$";
+  assert.doesNotThrow(() => assertAcpxQuestionFixture(optionPattern));
+
+  const emptyOptionalAnswer = structuredClone(canonical);
+  emptyOptionalAnswer.nativeRequest.params.requestedSchema.required = [];
+  emptyOptionalAnswer.nativeResponse.content = {};
+  emptyOptionalAnswer.canonicalQuestionSet.questions[0] = {
+    ...emptyOptionalAnswer.canonicalQuestionSet.questions[0],
+    required: false,
+  };
+  emptyOptionalAnswer.canonicalResponse.answers = {
+    [emptyOptionalAnswer.canonicalQuestionSet.questions[0].id]: {},
+  };
+  assert.doesNotThrow(() => assertAcpxQuestionFixture(emptyOptionalAnswer));
 
   const emptyOption = structuredClone(canonical);
   emptyOption.nativeRequest.params.requestedSchema.properties.environment
@@ -447,10 +467,7 @@ test("every question adapter fixture satisfies its declared schema", async () =>
   emptyOptionalAnswer.canonicalResponse.answers = {
     [requiredQuestionId]: {},
   };
-  assert.throws(
-    () => assertQuestionAdapterFixture(emptyOptionalAnswer),
-    /empty answer for optional question .* must be omitted/,
-  );
+  assert.doesNotThrow(() => assertQuestionAdapterFixture(emptyOptionalAnswer));
 
   const textModeMismatch = structuredClone(canonical);
   textModeMismatch.canonicalQuestionSet.questions[0] = {

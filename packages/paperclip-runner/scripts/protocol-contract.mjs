@@ -283,15 +283,9 @@ export function assertQuestionAdapterFixture(fixture) {
         throw contractError("invalid_question_adapter_fixture", `single-select answer for ${question.id} mixes option and custom values`);
       }
     }
-    const hasValue =
-      (typeof text === "string" && text.trim().length > 0)
-      || (typeof customText === "string" && customText.trim().length > 0)
-      || selectedOptionIds.length > 0;
+    const hasValue = fixtureAnswerHasValue(answer);
     if (question.required && !hasValue) {
       throw contractError("invalid_question_adapter_fixture", `answer for required question ${question.id} is empty`);
-    }
-    if (!hasValue) {
-      throw contractError("invalid_question_adapter_fixture", `empty answer for optional question ${question.id} must be omitted`);
     }
     const boundedText = question.answerMode === "text" ? text : customText;
     if (boundedText !== undefined) {
@@ -365,6 +359,17 @@ export function assertAcpxQuestionFixture(fixture) {
   const required = normalizedAcpxRequired(requestedSchema);
   for (const [name, property] of properties) {
     assertAcpxProperty(name, property);
+    if (
+      isPlainRecord(property)
+      && property.type === "string"
+      && acpxEnumValues(property, "oneOf").length === 0
+      && optionalFixtureText(property.pattern) !== undefined
+    ) {
+      throw contractError(
+        "invalid_acpx_question_fixture",
+        `native property ${name} uses an unsupported pattern`,
+      );
+    }
   }
 
   const response = fixture.nativeResponse;
@@ -418,7 +423,10 @@ function projectAcpxFixture(params, canonicalResponse) {
   const content = {};
   for (const binding of bindings) {
     const answer = canonicalResponse.answers?.[binding.question.id];
-    if (!answer) continue;
+    // The production parser accepts explicit empty optional answers and omits
+    // them from its normalized response. Mirror that before projecting ACP
+    // content so the fixture gate certifies the same wire behavior.
+    if (!answer || !fixtureAnswerHasValue(answer)) continue;
     if (binding.type === "string" && binding.question.answerMode === "text") {
       if (answer.text !== undefined) defineAcpxResponseProperty(content, binding.name, answer.text);
     } else if (binding.type === "number" || binding.type === "integer") {
@@ -444,6 +452,14 @@ function projectAcpxFixture(params, canonicalResponse) {
     }
   }
   return { questionSet, nativeResponse: { action: "accept", content } };
+}
+
+function fixtureAnswerHasValue(answer) {
+  return (
+    (typeof answer.text === "string" && answer.text.trim().length > 0)
+    || (typeof answer.customText === "string" && answer.customText.trim().length > 0)
+    || (Array.isArray(answer.selectedOptionIds) && answer.selectedOptionIds.length > 0)
+  );
 }
 
 function defineAcpxResponseProperty(content, name, value) {
