@@ -6,7 +6,9 @@ use crate::acpx_provider_state::AcpxProviderStateEvent;
 use crate::durable::{redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::semantic_value_digest;
-use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
+use crate::stable_identity::{
+    is_stable_id, project_acpx_runtime_request_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS,
+};
 
 const MAX_TEXT_CHARS: usize = 4_000;
 
@@ -156,7 +158,9 @@ pub fn project_acpx_state_event(
             question_set,
             origin,
         } => {
-            validate_projection_identity(request_id, "request", SHORT_STABLE_ID_CHARS)?;
+            let request_id = project_acpx_runtime_request_id(request_id).ok_or_else(|| {
+                LocalRunnerError::invalid("ACPX event projection request identity is invalid")
+            })?;
             let prompt = question_set
                 .get("title")
                 .or_else(|| question_set.pointer("/questions/0/prompt"))

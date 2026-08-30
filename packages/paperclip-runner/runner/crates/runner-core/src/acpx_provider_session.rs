@@ -573,7 +573,17 @@ impl AcpxProviderSession {
         resolution: &Value,
     ) -> Result<(), LocalRunnerError> {
         self.ensure_bound_turn(turn_id)?;
-        validate_text(request_id, 240, "ACPX input request id")?;
+        validate_text(request_id, SHORT_STABLE_ID_CHARS, "ACPX input request id")?;
+        if !is_stable_id(request_id, SHORT_STABLE_ID_CHARS) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX input request id is not a stable runtime request identity",
+            ));
+        }
+        let provider_request_id = self
+            .state
+            .pending_provider_input_request_id(request_id)
+            .ok_or_else(|| LocalRunnerError::invalid("ACPX input request is stale or unknown"))?
+            .to_owned();
         let question_set = self
             .state
             .pending_question_set(request_id)
@@ -583,7 +593,7 @@ impl AcpxProviderSession {
         next_state.complete_input(request_id)?;
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::InputResolve,
-            json!({"requestId":request_id,"turnId":turn_id,"resolution":resolution}),
+            json!({"requestId":provider_request_id,"turnId":turn_id,"resolution":resolution}),
         ) {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),

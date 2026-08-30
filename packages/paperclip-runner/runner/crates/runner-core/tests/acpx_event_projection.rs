@@ -215,15 +215,7 @@ fn rejects_invalid_durable_projection_identity() {
         assert!(error.contains(&format!("{field} identity")), "{error}");
     }
 
-    for request_id in [
-        String::new(),
-        "x".repeat(161),
-        "request\n1".to_owned(),
-        "request 1".to_owned(),
-        "réquest-1".to_owned(),
-        "request/1".to_owned(),
-        "_request-1".to_owned(),
-    ] {
+    for request_id in [String::new(), "x".repeat(241), "request\n1".to_owned()] {
         let request = AcpxProviderStateEvent::InputRequest {
             request_id,
             question_set: json!({
@@ -252,6 +244,48 @@ fn rejects_invalid_durable_projection_identity() {
             .to_string();
         assert!(error.contains(&format!("{field} identity")), "{error}");
     }
+}
+
+#[test]
+fn deterministically_projects_bounded_upstream_request_ids() {
+    let question_set = json!({
+        "schema":"paperclip.question_set.v1",
+        "questions":[],
+    });
+    for upstream_id in [
+        "request 1".to_owned(),
+        "réquest-1".to_owned(),
+        "request/1".to_owned(),
+        "_request-1".to_owned(),
+        "x".repeat(240),
+    ] {
+        let event = AcpxProviderStateEvent::InputRequest {
+            request_id: upstream_id.clone(),
+            question_set: question_set.clone(),
+            origin: None,
+        };
+        let first = project_acpx_state_event(&context(), &event).unwrap();
+        let second = project_acpx_state_event(&context(), &event).unwrap();
+        let projected_id = first[0].payload["request"]["requestId"].as_str().unwrap();
+        assert_ne!(projected_id, upstream_id);
+        assert_eq!(second[0].payload["request"]["requestId"], projected_id);
+        assert!(projected_id.starts_with("acpx-request-"));
+        assert!(projected_id.len() <= 160);
+        assert!(projected_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character)));
+    }
+
+    let canonical = AcpxProviderStateEvent::InputRequest {
+        request_id: "request-1".to_owned(),
+        question_set,
+        origin: None,
+    };
+    assert_eq!(
+        project_acpx_state_event(&context(), &canonical).unwrap()[0].payload["request"]
+            ["requestId"],
+        "request-1"
+    );
 }
 
 #[test]
