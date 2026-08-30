@@ -4,6 +4,7 @@ import {
   ACPX_SIDECAR_MAX_FRAME_BYTES,
   boundedSidecarText,
   boundedSidecarValue,
+  frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   safeSidecarText,
   sanitizeAcpxPlanEntries,
@@ -91,6 +92,33 @@ describe("ACPX sidecar request parsing", () => {
       boundedSidecarValue({ type: "tool_call", title }, 128 * 1024),
     ).toEqual({ type: "tool_call", title });
     expect(boundedSidecarText(`safe\ud83d`, 10)).toBe("safe\uFFFD");
+  });
+
+  it("classifies an oversized tool kind before retaining its bounded frame value", () => {
+    const classification = frameAcpxToolClassification(
+      `${"x".repeat(128 * 1024)}\ud800WRITE`,
+      "Provider tool",
+    );
+    const payload = boundedSidecarValue(
+      {
+        type: "tool_call",
+        toolCallId: "tool-oversized-kind",
+        title: "Provider tool",
+        ...classification,
+        locations: [],
+      },
+      128 * 1024,
+    );
+
+    expect(payload).toMatchObject({
+      type: "tool_call",
+      kind: "x".repeat(4_000),
+      toolOperation: "edit",
+    });
+    expect(payload).not.toHaveProperty("omitted");
+    expect(stringifyAcpxSidecarFrame(payload)).not.toMatch(
+      /\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu,
+    );
   });
 
   it("emits only Rust-decodable Unicode scalar values in sidecar frames", () => {

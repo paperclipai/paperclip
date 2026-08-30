@@ -255,10 +255,23 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     bounded_optional_text(location, "path", 4_000, "runtime tool path")?;
                 }
             }
-            tool_operation = Some(classify_generated_acpx_tool_operation(
-                payload.get("kind").and_then(Value::as_str).unwrap_or(""),
-                title.as_deref().unwrap_or(""),
-            ));
+            tool_operation = Some(match payload.get("toolOperation") {
+                Some(Value::String(operation)) => {
+                    bounded_optional_text(payload, "kind", 4_000, "runtime tool kind")?;
+                    admitted_tool_operation(operation).ok_or_else(|| {
+                        LocalRunnerError::invalid("ACPX runtime tool operation is not admitted")
+                    })?
+                }
+                Some(_) => {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool operation must be text",
+                    ))
+                }
+                None => classify_generated_acpx_tool_operation(
+                    payload.get("kind").and_then(Value::as_str).unwrap_or(""),
+                    title.as_deref().unwrap_or(""),
+                ),
+            });
             AcpxRuntimeEventKind::ToolCall
         }
         "semantic_result" => {
@@ -296,6 +309,14 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         tool_operation,
         payload: sanitize_value(payload),
     })
+}
+
+fn admitted_tool_operation(operation: &str) -> Option<&'static str> {
+    if operation == "unknown" {
+        return Some("unknown");
+    }
+    let classified = classify_generated_acpx_tool_operation(operation, "");
+    (classified == operation).then_some(classified)
 }
 
 fn validate_plan(payload: &Value) -> Result<(), LocalRunnerError> {

@@ -33,9 +33,9 @@ import {
   ACPX_SIDECAR_PROTOCOL_VERSION,
   boundedSidecarText,
   boundedSidecarValue,
+  frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   record,
-  safeSidecarText,
   sanitizeAcpxPlanEntries,
   stringifyAcpxSidecarFrame,
   text,
@@ -672,11 +672,14 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       typeof event.title === "string"
         ? boundedSidecarText(event.title, 4_000)
         : null;
-    // Keep the complete provider kind for operation classification, but make
-    // every tool field a valid Unicode scalar sequence before it crosses the
-    // Rust JSON boundary.
-    const toolKind =
-      typeof event.kind === "string" ? safeSidecarText(event.kind) : null;
+    // Classify the complete provider kind before retaining its bounded display
+    // prefix. The canonical operation keeps runner-core and the location
+    // attestation decision aligned even when the mutation token is outside the
+    // retained prefix.
+    const toolClassification = frameAcpxToolClassification(
+      event.kind,
+      toolTitle,
+    );
     return boundedSidecarValue(
       {
         type: "tool_call",
@@ -689,11 +692,11 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
             ? boundedSidecarText(event.status, 100)
             : null,
         title: toolTitle,
-        kind: toolKind,
+        ...toolClassification,
         locations: safeAcpxLocations(
           event.locations,
           openParams?.workingDirectory,
-          toolKind,
+          event.kind,
           toolTitle,
         ),
         ...safeOutput(event.rawOutput),

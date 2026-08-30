@@ -110,6 +110,46 @@ fn admits_sidecar_replacement_scalars_in_tool_fields() {
 }
 
 #[test]
+fn retains_full_kind_classification_from_a_bounded_sidecar_frame() {
+    let scope = active_scope();
+    let decoded = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            json!({
+                "type": "tool_call",
+                "toolCallId": "tool-oversized-kind",
+                "kind": "x".repeat(4_000),
+                "toolOperation": "edit",
+                "status": "pending",
+                "title": "Provider tool",
+                "locations": [],
+            }),
+        ),
+    )
+    .expect("a bounded tool frame with sidecar classification must remain admissible");
+
+    assert!(matches!(
+        decoded,
+        AcpxEventPayload::Runtime {
+            kind: AcpxRuntimeEventKind::ToolCall,
+            tool_operation: Some("edit"),
+            payload,
+        } if payload["type"] == "tool_call"
+            && payload["kind"].as_str().is_some_and(|value| value.chars().count() == 4_000)
+    ));
+
+    let invalid = event(
+        GeneratedAcpxSidecarEventType::RuntimeEvent,
+        json!({"type": "tool_call", "toolOperation": "write"}),
+    );
+    assert!(decode_acpx_event(&scope, &invalid)
+        .unwrap_err()
+        .to_string()
+        .contains("tool operation is not admitted"));
+}
+
+#[test]
 fn rejects_unclassified_and_malformed_runtime_payloads() {
     let scope = active_scope();
     for payload in [

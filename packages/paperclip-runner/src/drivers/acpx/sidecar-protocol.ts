@@ -2,8 +2,10 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import {
+  classifyGeneratedAcpxToolOperation,
   GENERATED_ACPX_SIDECAR_COMMANDS,
   GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+  type GeneratedAcpxToolOperation,
   type GeneratedAcpxSidecarCommand,
   type GeneratedAcpxSidecarEventType,
 } from "./generated-sidecar-contract.js";
@@ -195,6 +197,32 @@ export function boundedSidecarText(
     bounded.push(safeSidecarCodePoint(codePoint));
   }
   return bounded.join("");
+}
+
+/**
+ * Classifies the complete provider value before retaining a bounded display
+ * copy. `toolOperation` is the sidecar's classification authority when the
+ * provider token lies beyond the retained prefix; older frames can continue
+ * to be classified from `kind` and `title` by runner-core.
+ */
+export function frameAcpxToolClassification(
+  toolKind: unknown,
+  boundedToolTitle: unknown,
+): {
+  kind: string | null;
+  toolOperation: GeneratedAcpxToolOperation;
+} {
+  const toolOperation = classifyGeneratedAcpxToolOperation(
+    toolKind,
+    boundedToolTitle,
+  );
+  return {
+    kind:
+      typeof toolKind === "string"
+        ? boundedSidecarText(toolKind, 4_000)
+        : null,
+    toolOperation,
+  };
 }
 
 function safeSidecarCodePoint(codePoint: string): string {
