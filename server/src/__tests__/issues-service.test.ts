@@ -4689,6 +4689,62 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("excludes task-watchdog children from parent completion readiness", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const parentId = randomUUID();
+    const deliveryChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: deliveryChildId,
+        companyId,
+        parentId,
+        title: "Delivery child",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        parentId,
+        title: "Watchdog review",
+        status: "in_progress",
+        priority: "medium",
+        originKind: "task_watchdog",
+      },
+    ]);
+
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+      id: parentId,
+      childIssueIds: [deliveryChildId],
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

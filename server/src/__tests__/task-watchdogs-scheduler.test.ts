@@ -329,6 +329,74 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdogIssues).toHaveLength(0);
   });
 
+  it.each(["blocked", "in_review"])(
+    "does not trigger or reopen a watchdog while a %s source awaits a resumable interaction",
+    async (status) => {
+      const companyId = await seedCompany();
+      const sourceId = await seedIssue(companyId, { identifier: "WDOG-INTERACTION", status });
+      const agentId = await seedAgent(companyId);
+      await seedWatchdog(companyId, sourceId, agentId);
+      const { service, wakes } = createService();
+
+      const initial = await service.reconcileTaskWatchdogs({ companyId });
+      expect(initial).toMatchObject({ checked: 1, triggered: 1 });
+      const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, watchdog!.watchdogIssueId!));
+      await db.insert(issueThreadInteractions).values({
+        companyId,
+        issueId: sourceId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        effectiveResolverPolicy: "human_only",
+        payload: { version: 1, prompt: "Confirm the next step." },
+        createdByAgentId: agentId,
+      });
+
+      const firstWaitingTick = await service.reconcileTaskWatchdogs({ companyId });
+      const secondWaitingTick = await service.reconcileTaskWatchdogs({ companyId });
+
+      expect(firstWaitingTick).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+      expect(secondWaitingTick).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+      expect(wakes).toHaveLength(1);
+      const [source] = await db.select().from(issues).where(eq(issues.id, sourceId));
+      const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdog!.watchdogIssueId!));
+      expect(source?.status).toBe(status);
+      expect(watchdogIssue?.status).toBe("done");
+    },
+  );
+
+  it("recomputes a stopped state once a resumable interaction is no longer pending", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INTERACTION-ENDED", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: sourceId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Confirm the next step." },
+      createdByAgentId: agentId,
+    }).returning();
+    const { service, wakes } = createService();
+
+    const waiting = await service.reconcileTaskWatchdogs({ companyId });
+    expect(waiting).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+
+    await db.update(issueThreadInteractions)
+      .set({ status: "expired", resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+    const ended = await service.reconcileTaskWatchdogs({ companyId });
+    const repeated = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(ended).toMatchObject({ checked: 1, triggered: 1 });
+    expect(repeated).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
   it("does not trigger while a descendant has a queued assignment wake", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAKE", status: "in_progress" });
@@ -456,6 +524,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       issueId: waitingLeafId,
       kind: "request_confirmation",
       status: "pending",
+      continuationPolicy: "none",
       payload: { version: 1, prompt: "Confirm the stop." },
       createdByAgentId: agentId,
     });
@@ -605,6 +674,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       issueId: sourceId,
       kind: "request_confirmation",
       status: "pending",
+      continuationPolicy: "none",
       payload: { version: 1, prompt: "Confirm the reviewed stop." },
       createdByAgentId: agentId,
     });

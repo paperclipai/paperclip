@@ -89,6 +89,8 @@ export type TaskWatchdogClassifierWaitingPath = {
   id?: string | null;
   kind?: string | null;
   status: string;
+  continuationPolicy?: string | null;
+  effectiveResolverPolicy?: string | null;
 };
 
 export type TaskWatchdogClassifierRelation = {
@@ -301,6 +303,16 @@ function waitingPathIds(
     .sort();
 }
 
+function isLivePendingInteraction(path: TaskWatchdogClassifierWaitingPath) {
+  return path.status === "pending"
+    && (path.continuationPolicy === "wake_assignee" || path.continuationPolicy === "wake_assignee_on_accept")
+    && (
+      path.effectiveResolverPolicy === "anyone"
+      || path.effectiveResolverPolicy === "not_creator"
+      || path.effectiveResolverPolicy === "human_only"
+    );
+}
+
 function stableStopFingerprint(input: {
   companyId: string;
   watchedIssueId: string;
@@ -411,12 +423,18 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
-  ].filter((issueId) => includedIdSet.has(issueId));
+    ...(input.pendingInteractions ?? [])
+      .filter((path) => path.companyId === input.watchdog.companyId && isLivePendingInteraction(path))
+      .map((path) => path.issueId),
+  ].filter((issueId) => {
+    const issue = issuesById.get(issueId);
+    return includedIdSet.has(issueId) && issue != null && !isTerminalIssueStatus(issue.status);
+  });
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason: "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, or resumable pending interaction.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
@@ -1018,6 +1036,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           id: issueThreadInteractions.id,
           kind: issueThreadInteractions.kind,
           status: issueThreadInteractions.status,
+          continuationPolicy: issueThreadInteractions.continuationPolicy,
+          effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
         })
         .from(issueThreadInteractions)
         .where(and(

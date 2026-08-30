@@ -10896,7 +10896,7 @@ export function issueRoutes(
         });
         await destroyReusableSandboxLeasesForTerminalIssue(issue);
       }
-      if (becameTerminal && issue.parentId) {
+      if (becameTerminal && issue.parentId && issue.originKind !== TASK_WATCHDOG_ORIGIN_KIND) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
           addWakeup(parent.assigneeAgentId, {
@@ -12933,7 +12933,7 @@ export function issueRoutes(
         });
         await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
       }
-      if (becameTerminal && currentIssue.parentId) {
+      if (becameTerminal && currentIssue.parentId && currentIssue.originKind !== TASK_WATCHDOG_ORIGIN_KIND) {
         const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
         if (parent) {
           addWakeup(parent.assigneeAgentId, {

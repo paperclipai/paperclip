@@ -50,7 +50,7 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
-  it("treats terminal and waiting leaves as stopped work that needs verification", () => {
+  it("treats non-resumable waiting leaves as stopped work that needs verification", () => {
     const result = classify({
       issues: [
         issue({ status: "done" }),
@@ -62,6 +62,8 @@ describe("task watchdog subtree classifier", () => {
         id: "interaction-1",
         kind: "request_confirmation",
         status: "pending",
+        continuationPolicy: "none",
+        effectiveResolverPolicy: "human_only",
       }],
     });
 
@@ -84,6 +86,47 @@ describe("task watchdog subtree classifier", () => {
     expect(result.pendingInteractionsByIssueId).toEqual({
       [childId]: [{ id: "interaction-1", kind: "request_confirmation" }],
     });
+  });
+
+  it.each(["blocked", "in_review"])(
+    "treats a %s issue with a resolvable resumable interaction as live",
+    (status) => {
+      const result = classify({
+        issues: [issue({ status })],
+        pendingInteractions: [{
+          companyId,
+          issueId: sourceId,
+          id: "interaction-1",
+          kind: "request_confirmation",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          effectiveResolverPolicy: "human_only",
+        }],
+      });
+
+      expect(result).toMatchObject({ state: "live", liveIssueIds: [sourceId] });
+    },
+  );
+
+  it.each([
+    ["no continuation", "none", "human_only"],
+    ["invalid resolver", "wake_assignee", "unknown"],
+    ["resolved interaction", "wake_assignee", "human_only", "accepted"],
+  ])("does not treat an interaction with %s as live", (_label, continuationPolicy, effectiveResolverPolicy, status = "pending") => {
+    const result = classify({
+      issues: [issue({ status: "blocked" })],
+      pendingInteractions: [{
+        companyId,
+        issueId: sourceId,
+        id: "interaction-1",
+        kind: "request_confirmation",
+        status,
+        continuationPolicy,
+        effectiveResolverPolicy,
+      }],
+    });
+
+    expect(result.state).toBe("stopped");
   });
 
   it("keeps the material fingerprint stable across metadata-only ticks", () => {

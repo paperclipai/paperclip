@@ -681,4 +681,29 @@ describe("issue dependency wakeups in issue routes", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mockWakeup).not.toHaveBeenCalled();
   });
+
+  it("does not wake the watched source when a task-watchdog child becomes terminal", async () => {
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: "watchdog-1",
+      identifier: "PAP-102",
+      title: "Watchdog review",
+      status: "in_progress",
+      parentId: "source-1",
+      originKind: "task_watchdog",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: "watchdog-1",
+      identifier: "PAP-102",
+      title: "Watchdog review",
+      status: "done",
+      parentId: "source-1",
+      originKind: "task_watchdog",
+    }));
+
+    const res = await request(await createApp()).patch("/api/issues/watchdog-1").send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getWakeableParentAfterChildCompletion).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
 });
