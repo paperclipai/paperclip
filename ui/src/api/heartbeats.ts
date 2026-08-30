@@ -15,6 +15,7 @@ export interface RunLivenessFields {
 
 export interface ActiveRunForIssue {
   id: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -44,6 +45,7 @@ export interface ActiveRunForIssue {
 
 export interface LiveRunForIssue {
   id: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   invocationSource: string;
   triggerDetail: string | null;

@@ -310,8 +310,37 @@ export function transcriptToTaskChatItems(
         resetInline();
         break;
       }
-      // init / result / stderr / stdout / system / user carry no thread-visible
-      // content in the live turn (status is rendered separately).
+      case "result": {
+        if (
+          entry.subtype !== "paperclip_runner_usage" &&
+          entry.subtype !== "paperclip_runner_session_usage"
+        ) break;
+        const inputTokens = entry.inputTokens || 0;
+        const outputTokens = entry.outputTokens || 0;
+        items.push({
+          id: `${runId}:usage:${i}`,
+          kind: "usage",
+          ...(entry.subtype === "paperclip_runner_session_usage"
+            ? {
+                label: "Provider session total",
+                detail:
+                  entry.text ||
+                  "This cumulative usage can include earlier runs in the resumed provider session.",
+              }
+            : {}),
+          usage: {
+            used: inputTokens + outputTokens + (entry.cachedTokens || 0),
+            size: 0,
+            inputTokens,
+            outputTokens,
+            ...(entry.costUsd > 0 ? { costUsd: entry.costUsd } : {}),
+          },
+        });
+        resetInline();
+        break;
+      }
+      // init / stderr / stdout / system / user and non-runner result entries
+      // carry no thread-visible content (status is rendered separately).
       default:
         break;
     }
@@ -451,7 +480,13 @@ export function buildTurnSummary(
     else if (entry.kind === "diff") {
       if (entry.changeType === "add") added += 1;
       else if (entry.changeType === "remove") removed += 1;
-    } else if (entry.kind === "result") {
+    } else if (
+      entry.kind === "result" &&
+      entry.subtype !== "paperclip_runner_session_usage"
+    ) {
+      // Session-cumulative measurements remain visible in the expanded
+      // transcript, but they can include earlier runs. Only run-scoped usage
+      // belongs in this turn (and therefore in a merged-turn total).
       tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
     }
   }

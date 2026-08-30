@@ -1310,7 +1310,7 @@ function AskUserQuestionsCard({
                  * free-text option so the card never shows two ways to type an
                  * answer (PAP-419).
                  */}
-                {hasFreeTextOption ? null : (
+                {hasFreeTextOption || question.allowOther === false ? null : (
                   <>
                     <button
                       type="button"

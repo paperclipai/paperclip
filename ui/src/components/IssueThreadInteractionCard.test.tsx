@@ -354,6 +354,32 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
   });
 
+  it("keeps a closed native select set closed while preserving direct-question defaults", () => {
+    const closed = {
+      ...pendingAskUserQuestionsInteraction,
+      payload: {
+        ...pendingAskUserQuestionsInteraction.payload,
+        questions: pendingAskUserQuestionsInteraction.payload.questions.map((question) => ({
+          ...question,
+          allowOther: false,
+        })),
+      },
+    };
+    const host = renderCard({ interaction: closed, onSubmitInteractionAnswers: vi.fn() });
+    expect(Array.from(host.querySelectorAll("button")).some((button) => button.textContent === "Other"))
+      .toBe(false);
+
+    act(() => root?.unmount());
+    host.remove();
+    root = null;
+    const legacy = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+    expect(Array.from(legacy.querySelectorAll("button")).some((button) => button.textContent === "Other"))
+      .toBe(true);
+  });
+
   it("only shows question cancellation when a cancel handler is wired", () => {
     const withoutHandler = renderCard({
       interaction: pendingAskUserQuestionsInteraction,

@@ -870,9 +870,9 @@ export const suggestTasksResultSchema = z.object({
 });
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  label: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).nullable().optional(),
+  id: z.string().trim().min(1).max(160),
+  label: z.string().trim().min(1).max(1000),
+  description: z.string().trim().max(4000).nullable().optional(),
   freeText: z
     .boolean()
     .optional()
@@ -882,12 +882,13 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  prompt: z.string().trim().min(1).max(500),
-  helpText: z.string().trim().max(1000).nullable().optional(),
+  id: z.string().trim().min(1).max(160),
+  prompt: z.string().trim().min(1).max(4000),
+  helpText: z.string().trim().max(4000).nullable().optional(),
   selectionMode: z.enum(["single", "multi"]),
   required: z.boolean().optional(),
-  options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
+  allowOther: z.boolean().optional(),
+  options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(129),
 });
 
 const paperclipQuestionOptionSchema = z.object({
@@ -918,14 +919,54 @@ const paperclipQuestionSchema = z.object({
     minimum: z.number().finite().optional(),
     maximum: z.number().finite().optional(),
   }).optional(),
+}).superRefine((value, ctx) => {
+  if (value.answerMode === "text" && value.options && value.options.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "text questions cannot define options", path: ["options"] });
+  }
+  if (value.answerMode !== "text" && (!value.options || value.options.length === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "select questions require options", path: ["options"] });
+  }
+  if (value.answerMode === "text" && value.customAnswer) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "text questions cannot define customAnswer", path: ["customAnswer"] });
+  }
+  if (
+    value.textValidation?.minLength !== undefined
+    && value.textValidation.maxLength !== undefined
+    && value.textValidation.minLength > value.textValidation.maxLength
+  ) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "minLength cannot exceed maxLength", path: ["textValidation"] });
+  }
+  if (
+    value.textValidation?.minimum !== undefined
+    && value.textValidation.maximum !== undefined
+    && value.textValidation.minimum > value.textValidation.maximum
+  ) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "minimum cannot exceed maximum", path: ["textValidation"] });
+  }
+  if (value.textValidation?.pattern !== undefined) {
+    try {
+      new RegExp(value.textValidation.pattern);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "pattern must be a valid regular expression", path: ["textValidation", "pattern"] });
+    }
+  }
+  const optionIds = value.options?.map((option) => option.id) ?? [];
+  if (new Set(optionIds).size !== optionIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "option ids must be unique", path: ["options"] });
+  }
 });
 
-const paperclipQuestionSetSchema = z.object({
+export const paperclipQuestionSetPayloadSchema = z.object({
   schema: z.literal("paperclip.question_set.v1"),
   title: z.string().max(1000).optional(),
   description: z.string().max(4000).optional(),
   submitLabel: z.string().max(200).optional(),
   questions: z.array(paperclipQuestionSchema).min(1).max(64),
+}).superRefine((value, ctx) => {
+  const questionIds = value.questions.map((question) => question.id);
+  if (new Set(questionIds).size !== questionIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "question ids must be unique", path: ["questions"] });
+  }
 });
 
 export const askUserQuestionsPayloadSchema = z.object({
@@ -933,9 +974,9 @@ export const askUserQuestionsPayloadSchema = z.object({
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
-  questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+  questions: z.array(askUserQuestionsQuestionSchema).min(1).max(64),
   /** Exact canonical presentation retained for a recovered harness request. */
-  questionSet: paperclipQuestionSetSchema.optional(),
+  questionSet: paperclipQuestionSetPayloadSchema.optional(),
   /** Stable correlation for draft handoff from a live runtime request. */
   runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
 }).superRefine((value, ctx) => {
@@ -976,16 +1017,16 @@ export const askUserQuestionsPayloadSchema = z.object({
 });
 
 export const askUserQuestionsAnswerSchema = z.object({
-  questionId: z.string().trim().min(1).max(120),
-  optionIds: z.array(z.string().trim().min(1).max(120)).max(20),
-  otherText: multilineTextSchema.pipe(z.string().trim().max(4000)).nullable().optional(),
+  questionId: z.string().trim().min(1).max(160),
+  optionIds: z.array(z.string().trim().min(1).max(160)).max(129),
+  otherText: multilineTextSchema.pipe(z.string().trim().max(100000)).nullable().optional(),
 });
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(64),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   expirationReason: z.enum(["superseded_by_comment", "superseded_by_newer_interaction"]).optional(),

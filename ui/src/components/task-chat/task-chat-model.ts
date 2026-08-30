@@ -196,6 +196,9 @@ export interface TaskChatUsageItem {
   id: string;
   kind: "usage";
   usage: TaskChatTokenUsage;
+  /** Present when the measurement is not scoped to the current run. */
+  label?: string;
+  detail?: string;
 }
 
 export interface TaskChatActivityPhaseItem {

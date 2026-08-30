@@ -199,8 +199,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let run_delta = params
                 .get("tokenUsage")
                 .and_then(|value| value.get("last"))
-                .or_else(|| params.get("last"))
-                .unwrap_or(cumulative);
+                .or_else(|| params.get("last"));
             push(
                 &mut events,
                 "usage.reported",
@@ -211,7 +210,11 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "providerSessionId": params.get("threadId").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "providerRequestId": Value::Null,
                     "cumulative": measurement(cumulative),
-                    "runDelta": measurement(run_delta),
+                    // `total` is session-cumulative. Preserve whether Codex
+                    // supplied a per-run delta so consumers never relabel a
+                    // session total or a placeholder zero as run usage.
+                    "runDeltaAvailable": run_delta.is_some(),
+                    "runDelta": measurement(run_delta.unwrap_or(&Value::Null)),
                 }),
             );
         }
@@ -370,6 +373,28 @@ mod tests {
         );
         assert_eq!(usage[0].event_type, "usage.reported");
         assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 12);
+        assert_eq!(usage[0].payload["runDeltaAvailable"], false);
+        assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 0);
         assert_eq!(usage[0].priority, EventPriority::P0);
+    }
+
+    #[test]
+    fn does_not_substitute_session_cumulative_usage_for_a_missing_run_delta() {
+        let first = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {"total": {"inputTokens": 12, "outputTokens": 3}}}),
+        );
+        let second = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {"total": {"inputTokens": 20, "outputTokens": 5}}}),
+        );
+
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 0);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 0);
+        assert_eq!(first[0].payload["runDeltaAvailable"], false);
+        assert_eq!(second[0].payload["runDelta"]["inputTokens"], 0);
+        assert_eq!(second[0].payload["runDelta"]["outputTokens"], 0);
+        assert_eq!(second[0].payload["runDeltaAvailable"], false);
+        assert_eq!(second[0].payload["cumulative"]["inputTokens"], 20);
     }
 }

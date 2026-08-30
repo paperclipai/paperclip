@@ -55,6 +55,9 @@ type QuestionResponseSteer = (input: {
   message: string;
   correlationId: string;
 }) => Promise<{ turnId?: string | null }>;
+type NativeQuestionResponseResolver = (
+  interaction: AskUserQuestionsInteraction,
+) => Promise<"not_native" | "pending" | "queued">;
 
 export interface QuestionResponseDeliveryEnvelope {
   schema: "paperclip.question_response_delivery.v1";
@@ -77,6 +80,8 @@ export interface QuestionResponseDeliveryServiceOptions {
   heartbeat: Heartbeat;
   /** Optional native steering seam. Direct adapters use the durable wake fallback. */
   steer?: QuestionResponseSteer;
+  /** Resolve the original in-flight native input request before considering a continuation run. */
+  resolveNativeQuestion?: NativeQuestionResponseResolver;
   now?: () => Date;
   /** Test-only lease timings. Production callers use the bounded defaults. */
   claimStaleMs?: number;
@@ -260,6 +265,7 @@ export function questionResponseDeliveryService(
   options: QuestionResponseDeliveryServiceOptions,
 ) {
   const steer = options.steer;
+  const resolveNativeQuestion = options.resolveNativeQuestion;
   const now = options.now ?? (() => new Date());
   const claimStaleMs = Math.max(2, options.claimStaleMs ?? DELIVERY_CLAIM_STALE_MS);
   const claimRefreshMs = Math.max(
@@ -568,7 +574,8 @@ export function questionResponseDeliveryService(
     const queuedSuccessor = issueRuns.find((run) =>
       (run.status === "queued" || run.status === "scheduled_retry") && run.id !== interaction.sourceRunId,
     ) ?? null;
-    const envelope = buildQuestionResponseDeliveryEnvelope(hydrateQuestionInteraction(interaction));
+    const hydratedInteraction = hydrateQuestionInteraction(interaction);
+    const envelope = buildQuestionResponseDeliveryEnvelope(hydratedInteraction);
     if (nativeSha256(envelope) !== claimed.payloadSha256) {
       return recordTerminal({
         delivery: claimed,
@@ -579,6 +586,53 @@ export function questionResponseDeliveryService(
         adapter,
         errorCode: "question_response_payload_digest_mismatch",
       });
+    }
+
+    if (resolveNativeQuestion) {
+      try {
+        const nativeDisposition = await withClaimLease(
+          claimed,
+          () => resolveNativeQuestion(hydratedInteraction),
+        );
+        if (nativeDisposition === "queued") {
+          return recordTerminal({
+            delivery: claimed,
+            interaction,
+            status: "delivered",
+            mode: "steered",
+            targetRunId: interaction.sourceRunId,
+            adapter,
+          });
+        }
+        if (nativeDisposition === "pending") {
+          await releaseForRetry(claimed, "native_question_session_unavailable", { bounded: false });
+          return null;
+        }
+      } catch (error) {
+        if (error instanceof DeliveryClaimUnavailableError) return terminalOutcome(interactionId);
+        const errorCode = error instanceof Error && compactLine(error.message)
+          ? compactLine(error.message)!.slice(0, 160)
+          : "native_question_delivery_failed";
+        const exhausted = await releaseForRetry(claimed, errorCode);
+        logger.warn({
+          err: error,
+          deliveryId: claimed.id,
+          interactionId,
+          attemptCount: claimed.attemptCount,
+          errorCount: claimed.errorCount + 1,
+          exhausted,
+        }, "native question response delivery will retry");
+        if (!exhausted) return null;
+        return recordTerminal({
+          delivery: claimed,
+          interaction,
+          status: "failed",
+          mode: null,
+          targetRunId: interaction.sourceRunId,
+          adapter,
+          errorCode,
+        });
+      }
     }
 
     let steeringErrorCode: string | null = null;

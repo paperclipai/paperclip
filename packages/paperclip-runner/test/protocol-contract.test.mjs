@@ -85,6 +85,27 @@ test("accepted fixtures satisfy the complete JSON Schemas", async () => {
   assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, unsupported, "required-v2", false));
 });
 
+test("provider descriptors require coherent provider, driver, and execution combinations", async () => {
+  const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
+  const validators = compileProtocolValidators(schemas);
+  const codex = {
+    provider: "codex",
+    driver: "codex_app_server",
+    model: "gpt-5.3-codex",
+    executionKind: "local_process",
+    providerVersion: "1",
+  };
+  assert.doesNotThrow(() => assertSchemaInstance(validators.providerDescriptor, codex, "codex-provider"));
+  assert.throws(
+    () => assertSchemaInstance(
+      validators.providerDescriptor,
+      { ...codex, driver: "opencode_server" },
+      "mismatched-provider",
+    ),
+    /schema_validation_failed: mismatched-provider must be accepted/,
+  );
+});
+
 test("the Codex question fixture uses stable provider-neutral IDs", async () => {
   const value = await fixture("questions/codex.json");
   assert.doesNotThrow(() => assertCodexQuestionFixture(value));

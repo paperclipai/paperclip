@@ -40,6 +40,7 @@ export interface IssueChatComment extends IssueComment {
 
 export interface IssueChatLinkedRun {
   runId: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType?: string;

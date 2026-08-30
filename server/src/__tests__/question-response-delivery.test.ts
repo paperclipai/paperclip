@@ -241,6 +241,56 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Node.js");
   });
 
+  it("resolves an in-flight native input request before creating a continuation", async () => {
+    const seeded = await seed({
+      adapterType: "paperclip_runner",
+      runtimeMode: "native",
+      sourceStatus: "running",
+    });
+    const wakeup = vi.fn();
+    const resolveNativeQuestion = vi.fn().mockResolvedValue("queued" as const);
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      resolveNativeQuestion,
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({
+      status: "delivered",
+      mode: "steered",
+      targetRunId: seeded.sourceRunId,
+    });
+    expect(resolveNativeQuestion).toHaveBeenCalledWith(expect.objectContaining({
+      id: seeded.interaction.id,
+      status: "answered",
+    }));
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps native input delivery pending while its PRP session is unavailable", async () => {
+    const seeded = await seed({
+      adapterType: "paperclip_runner",
+      runtimeMode: "native",
+      sourceStatus: "running",
+    });
+    const wakeup = vi.fn();
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      resolveNativeQuestion: vi.fn().mockResolvedValue("pending" as const),
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toBeNull();
+    expect(wakeup).not.toHaveBeenCalled();
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      errorCount: 0,
+      lastErrorCode: "native_question_session_unavailable",
+    });
+  });
+
   it("coalesces into a queued successor without creating another wake", async () => {
     const seeded = await seed({ successorStatus: "queued" });
     const successor = await db.select().from(heartbeatRuns)
