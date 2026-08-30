@@ -361,16 +361,18 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
 
 // --- App builder with a capturing request logger -----------------------------
 
-function loadRouteModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("pino")>("pino"),
-    vi.importActual<typeof import("pino-http")>("pino-http"),
-    vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+async function loadRouteModules() {
+  // Sequential on purpose: concurrent vi.importActual() calls can drop a
+  // factory mock, because Vitest keeps one shared mock-resolution callstack.
+  return [
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    await vi.importActual<typeof import("pino")>("pino"),
+    await vi.importActual<typeof import("pino-http")>("pino-http"),
+    await vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
       "../middleware/redact-sensitive.js",
     ),
-  ]);
+  ] as const;
 }
 
 let routeModules: Awaited<ReturnType<typeof loadRouteModules>>;

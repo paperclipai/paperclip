@@ -497,10 +497,12 @@ function boardActor() {
 
 describe("agent issue mutation checkout ownership", () => {
   const routeModules = hoistModuleGraph(registerRouteMocks, async () => {
-    const [{ errorHandler }, { issueRoutes, __clearIssueListResponseCacheForTests }] = await Promise.all([
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    const [{ errorHandler }, { issueRoutes, __clearIssueListResponseCacheForTests }] = [
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ];
     return { errorHandler, issueRoutes, __clearIssueListResponseCacheForTests };
   });
 

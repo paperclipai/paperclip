@@ -364,10 +364,12 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, COMPANY_2
 }
 
 async function loadRouteModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  // Sequential on purpose: concurrent vi.importActual() calls can drop a
+  // factory mock, because Vitest keeps one shared mock-resolution callstack.
+  return [
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ] as const;
 }
 
 async function createApp() {

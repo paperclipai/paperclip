@@ -89,12 +89,14 @@ function localAdminActor() {
 
 describe("instance settings routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [{ errorHandler }, { instanceSettingsRoutes }, { cloudControlMiddleware }, controlIdentity] = await Promise.all([
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
-      vi.importActual<typeof import("../middleware/cloud-control.js")>("../middleware/cloud-control.js"),
-      vi.importActual<typeof import("../services/cloud-runtime-identity.js")>("../services/cloud-runtime-identity.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    const [{ errorHandler }, { instanceSettingsRoutes }, { cloudControlMiddleware }, controlIdentity] = [
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      await vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
+      await vi.importActual<typeof import("../middleware/cloud-control.js")>("../middleware/cloud-control.js"),
+      await vi.importActual<typeof import("../services/cloud-runtime-identity.js")>("../services/cloud-runtime-identity.js"),
+    ];
     return { errorHandler, instanceSettingsRoutes, cloudControlMiddleware, controlIdentity };
   });
 

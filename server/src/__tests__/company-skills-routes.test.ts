@@ -291,10 +291,12 @@ function createSkillTestRunDetails(overrides: Record<string, unknown> = {}) {
 
 describe("company skill mutation permissions", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    const [{ companySkillRoutes }, { errorHandler }] = [
+      await vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     return { companySkillRoutes, errorHandler };
   });
 

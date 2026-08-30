@@ -158,10 +158,12 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  // Sequential on purpose: concurrent vi.importActual() calls can drop a
+  // factory mock, because Vitest keeps one shared mock-resolution callstack.
+  const [{ issueRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -227,10 +229,10 @@ describe("document annotation routes", () => {
     mockAnnotationService.updateThread.mockResolvedValue({ ...annotationThread, status: "resolved" });
     mockAnnotationService.remapOpenThreadsForDocument.mockResolvedValue([]);
     // Cold route transforms belong to fixture setup, not the request timeout.
-    await Promise.all([
-      vi.importActual("../routes/issues.js"),
-      vi.importActual("../middleware/index.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    await vi.importActual("../routes/issues.js");
+    await vi.importActual("../middleware/index.js");
   });
 
   it("includes compact open annotations without comment bodies by default for agent document reads", async () => {

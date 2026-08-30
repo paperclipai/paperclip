@@ -46,10 +46,12 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile", ()
     vi.doUnmock("../routes/user-profiles.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    const [routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../routes/user-profiles.js")>("../routes/user-profiles.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    const [routes, middleware] = [
+      await vi.importActual<typeof import("../routes/user-profiles.js")>("../routes/user-profiles.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     userProfileRoutes = routes.userProfileRoutes;
     errorHandler = middleware.errorHandler;
     companyId = randomUUID();
