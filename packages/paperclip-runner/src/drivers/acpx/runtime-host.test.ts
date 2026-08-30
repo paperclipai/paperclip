@@ -389,14 +389,12 @@ describe("ACPX runtime host", () => {
     await host.close({ reason: "complete" });
   });
 
-  it("retains resources until turn cancellation retry succeeds", async () => {
+  it("cleans runtime resources after a turn cancellation timeout", async () => {
     vi.useFakeTimers();
     try {
       const fixture = await hostFixture();
       const turn = runtimeTurn();
-      turn.cancel
-        .mockImplementationOnce(() => new Promise(() => undefined))
-        .mockResolvedValue(undefined);
+      turn.cancel.mockImplementation(() => new Promise(() => undefined));
       const runtime = runtimePort({ startTurn: () => turn });
       const host = await AcpxRuntimeHost.open(
         {
@@ -413,12 +411,13 @@ describe("ACPX runtime host", () => {
       const closing = host.close({ reason: "shutdown" });
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(closing).rejects.toThrow(/cleanup failed/);
-      expect(runtime.close).not.toHaveBeenCalled();
-      expect(fixture.commandClose).not.toHaveBeenCalled();
+      expect(turn.cancel).toHaveBeenCalledOnce();
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(fixture.commandClose).toHaveBeenCalledOnce();
       await expect(
-        host.close({ reason: "retry after cancellation timeout" }),
+        host.close({ reason: "observe completed cleanup" }),
       ).resolves.toBeUndefined();
-      expect(turn.cancel).toHaveBeenCalledTimes(2);
+      expect(turn.cancel).toHaveBeenCalledOnce();
       expect(runtime.close).toHaveBeenCalledOnce();
       expect(fixture.commandClose).toHaveBeenCalledOnce();
     } finally {

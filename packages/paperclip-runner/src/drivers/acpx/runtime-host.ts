@@ -347,24 +347,16 @@ export class AcpxRuntimeHost {
   }
 
   async #close(reason: string): Promise<void> {
+    const errors: unknown[] = [];
     const activeTurn = this.#activeTurn;
     if (activeTurn) {
-      let cancellationError: unknown | null = null;
       try {
-        cancellationError = await boundedCancellation(
+        const cancellationError = await boundedCancellation(
           activeTurn.cancel({ reason }),
         );
+        if (cancellationError !== null) errors.push(cancellationError);
       } catch (error) {
-        cancellationError = error;
-      }
-      if (cancellationError !== null) {
-        // The provider may still be using its command and staged credentials.
-        // Keep ownership of every runtime resource so a later close can retry
-        // cancellation before releasing any of them.
-        throw new AggregateError(
-          [cancellationError],
-          "ACPX runtime cleanup failed",
-        );
+        errors.push(error);
       }
     }
     const cleanupError = await cleanupRuntimeResources(
@@ -377,7 +369,10 @@ export class AcpxRuntimeHost {
       if (this.#activeTurn === activeTurn) this.#activeTurn = null;
       this.#closed = true;
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) errors.push(...cleanupError.errors);
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "ACPX runtime cleanup failed");
+    }
   }
 }
 
