@@ -121,6 +121,28 @@ describe("ACPX sidecar request parsing", () => {
     );
   });
 
+  it("preserves a bounded tool-call identity when aggregate fields overflow", () => {
+    const identity = {
+      type: "tool_call",
+      toolCallId: "tool-aggregate-overflow",
+      title: "Write",
+      kind: "write",
+      toolOperation: "edit",
+    };
+
+    expect(
+      boundedSidecarValue(
+        { ...identity, locations: [{ path: "x".repeat(140 * 1024) }] },
+        128 * 1024,
+        identity,
+      ),
+    ).toEqual({
+      ...identity,
+      omitted: true,
+      reason: "payload_limit",
+    });
+  });
+
   it("emits only Rust-decodable Unicode scalar values in sidecar frames", () => {
     const frame = stringifyAcpxSidecarFrame({
       payload: {

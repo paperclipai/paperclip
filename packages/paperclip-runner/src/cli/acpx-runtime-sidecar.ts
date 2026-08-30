@@ -680,19 +680,22 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       event.kind,
       toolTitle,
     );
+    const toolCallIdentity = {
+      type: "tool_call",
+      toolCallId:
+        typeof event.toolCallId === "string"
+          ? boundedSidecarText(event.toolCallId, 240)
+          : null,
+      status:
+        typeof event.status === "string"
+          ? boundedSidecarText(event.status, 100)
+          : null,
+      title: toolTitle,
+      ...toolClassification,
+    };
     return boundedSidecarValue(
       {
-        type: "tool_call",
-        toolCallId:
-          typeof event.toolCallId === "string"
-            ? boundedSidecarText(event.toolCallId, 240)
-            : null,
-        status:
-          typeof event.status === "string"
-            ? boundedSidecarText(event.status, 100)
-            : null,
-        title: toolTitle,
-        ...toolClassification,
+        ...toolCallIdentity,
         locations: safeAcpxLocations(
           event.locations,
           openParams?.workingDirectory,
@@ -702,6 +705,7 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
         ...safeOutput(event.rawOutput),
       },
       128 * 1024,
+      toolCallIdentity,
     );
   }
   if (event.type === "error") {

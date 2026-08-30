@@ -116,23 +116,44 @@ export function parseAcpxSidecarRequest(value: unknown): AcpxSidecarRequest {
 export function boundedSidecarValue(
   value: unknown,
   maxBytes = 64 * 1024,
+  overflowFallback?: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error("ACPX sidecar value limit must be a positive integer");
   }
+  const omitted = (reason: string): Record<string, unknown> => {
+    const marker = { omitted: true, reason };
+    if (overflowFallback === undefined) return marker;
+    try {
+      const serialized = stringifyAcpxSidecarFrame({
+        ...overflowFallback,
+        ...marker,
+      });
+      if (Buffer.byteLength(serialized) <= maxBytes) {
+        const parsed = JSON.parse(serialized);
+        if (typeof parsed === "object" && parsed !== null) {
+          return parsed as Record<string, unknown>;
+        }
+      }
+    } catch {
+      // Fall through to the bounded type-less marker when even the caller's
+      // minimal identity cannot be serialized safely.
+    }
+    return marker;
+  };
   try {
     const serialized = stringifyAcpxSidecarFrame(value);
     if (!serialized || Buffer.byteLength(serialized) > maxBytes) {
-      return { omitted: true, reason: "payload_limit" };
+      return omitted("payload_limit");
     }
     const parsed = JSON.parse(serialized);
     return typeof parsed === "object" &&
       parsed !== null &&
       !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
-      : { omitted: true, reason: "object_required" };
+      : omitted("object_required");
   } catch {
-    return { omitted: true, reason: "serialization_failed" };
+    return omitted("serialization_failed");
   }
 }
 
