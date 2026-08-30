@@ -107,6 +107,11 @@ type InteractionActor = {
   resolutionDetails?: Record<string, unknown>;
 };
 
+type CreateInteractionOptions = {
+  /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
+  supersedePendingSiblingInteractions?: boolean;
+};
+
 type InteractionWakeup = (agentId: string, options: {
   source: "automation";
   triggerDetail: "system";
@@ -126,6 +131,14 @@ export type IssueThreadInteractionServiceOptions = {
   wakeup?: InteractionWakeup;
   pullRequestCacheTtlMs?: number;
   now?: () => Date;
+};
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type InteractionResolutionMutationOptions = {
+  afterResolveInTransaction?: (
+    tx: DbTransaction,
+    interaction: IssueThreadInteraction,
+  ) => Promise<void>;
 };
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
@@ -2469,6 +2482,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
+      options: CreateInteractionOptions = {},
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
       const usedDeprecatedResolverPolicyAlias =
@@ -2634,10 +2648,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // result shape. Scoped strictly to the same agent + issue + kind, so
           // other agents' or other kinds' pending cards are untouched.
           const canSupersedeSiblingCards =
-            (data.kind === "request_confirmation"
-              && data.payload.toolAction === undefined
-              && data.payload.secretProposal === undefined)
-            || data.kind === "ask_user_questions";
+            options.supersedePendingSiblingInteractions !== false
+            && (
+              (data.kind === "request_confirmation"
+                && data.payload.toolAction === undefined
+                && data.payload.secretProposal === undefined)
+              || data.kind === "ask_user_questions"
+            );
           if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }
@@ -3481,6 +3498,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       interactionId: string,
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
@@ -3546,6 +3564,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           ))
           .returning();
         if (!row) throw interactionAlreadyResolvedError();
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(row));
         return row;
       });
 
@@ -3628,6 +3647,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const data = cancelIssueThreadInteractionSchema.parse(input);
@@ -3649,32 +3669,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       }
 
       const reason = data.reason?.trim() || null;
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        const resolvedAt = new Date();
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: {
+              version: 1,
+              answers: [],
+              cancelled: true,
+              cancellationReason: reason,
+              summaryMarkdown: null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) throw interactionAlreadyResolvedError();
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(row));
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const cancelled = hydrateInteraction(updated);

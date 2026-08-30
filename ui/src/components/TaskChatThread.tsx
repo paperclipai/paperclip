@@ -4,6 +4,7 @@ import {
   useLiveRunTranscripts,
   type RunTranscriptSource,
 } from "@/components/transcript/useLiveRunTranscripts";
+import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
@@ -215,6 +216,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         id: r.runId,
         status: r.status,
         adapterType: r.adapterType ?? "",
+        runtimeMode: r.runtimeMode,
         hasStoredOutput: r.hasStoredOutput,
         logBytes: r.logBytes,
       });
@@ -224,6 +226,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         id: r.id,
         status: r.status,
         adapterType: r.adapterType,
+        runtimeMode: r.runtimeMode,
         hasStoredOutput: map.get(r.id)?.hasStoredOutput,
         logBytes: r.logBytes,
         lastOutputBytes: r.lastOutputBytes,
@@ -234,6 +237,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         id: activeRun.id,
         status: activeRun.status,
         adapterType: activeRun.adapterType,
+        runtimeMode: activeRun.runtimeMode,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
       });
@@ -241,7 +245,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
-  const { transcriptByRun } = useLiveRunTranscripts({ runs, companyId });
+  const legacyRuns = useMemo(
+    () => runs.filter((run) => run.runtimeMode !== "native"),
+    [runs],
+  );
+  const nativeRuns = useMemo(
+    () => runs.filter((run) => run.runtimeMode === "native"),
+    [runs],
+  );
+  const { transcriptByRun: legacyTranscriptByRun } = useLiveRunTranscripts({
+    runs: legacyRuns,
+    companyId,
+  });
+  const { transcriptByRun: nativeTranscriptByRun } = useNativeRunTranscripts(nativeRuns);
+  const transcriptByRun = useMemo(
+    () => new Map([...legacyTranscriptByRun, ...nativeTranscriptByRun]),
+    [legacyTranscriptByRun, nativeTranscriptByRun],
+  );
 
   // The single in-flight run whose turn we stream live (non-terminal).
   const liveRun = useMemo(() => {

@@ -5,6 +5,7 @@ export type { RunLivenessState } from "@paperclipai/shared";
 
 export interface RunForIssue {
   runId: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType: string;

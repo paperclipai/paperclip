@@ -28,7 +28,7 @@
     "itemId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "eventType": {
       "enum": [
-        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
+        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
         "plan.updated",
@@ -43,7 +43,7 @@
         "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
         "turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled",
         "item.started", "item.delta", "item.completed", "item.failed", "usage.reported",
-        "semantic_tool.input", "semantic_tool.result",
+        "semantic_tool.input", "semantic_tool.result", "semantic_tool.reconciled",
         "mcp_app.discovered", "mcp_app.resource.resolved", "mcp_app.initializing", "mcp_app.ready", "mcp_app.tool_input", "mcp_app.tool_result", "mcp_app.action.requested", "mcp_app.action.resolved", "mcp_app.host_context.changed", "mcp_app.failed", "mcp_app.teardown",
         "runtime_request.created", "runtime_request.resolved", "runtime_request.expired", "runtime_request.cancelled",
         "interaction.request.proposed", "interaction.request.materialized", "interaction.request.rejected", "interaction.response.progressed", "interaction.response.resolved", "interaction.response.delivered",
@@ -144,6 +144,25 @@
                 "allOf": [
                   { "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json" },
                   { "type": "object", "properties": { "phase": { "const": "result" } } }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "semantic_tool.reconciled" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  { "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json" },
+                  { "type": "object", "properties": { "phase": { "const": "reconciled" } } }
                 ]
               }
             },

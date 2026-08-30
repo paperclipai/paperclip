@@ -12,9 +12,7 @@ const baseResult = {
   completionClaim: {
     contractRevision: "1",
     objectiveSatisfied: true,
-    criteria: [
-      { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
-    ],
+    criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
     remainingWork: [],
   },
   evidence: [],
@@ -24,68 +22,52 @@ const baseResult = {
 };
 
 describe("provider-neutral completion result schema", () => {
-  const validate = new Ajv2020({ allErrors: true, strict: false }).compile(
-    PRP_COMPLETION_RESULT_OUTPUT_SCHEMA,
-  );
+  const validate = new Ajv2020({ allErrors: true, strict: false })
+    .compile(PRP_COMPLETION_RESULT_OUTPUT_SCHEMA);
 
   it("allows done with no verification and no actionable attention", () => {
     expect(validate(structuredClone(baseResult))).toBe(true);
   });
 
   it("allows provider tool callers to omit the constant schema discriminator", () => {
-    const providerValidate = new Ajv2020({
-      allErrors: true,
-      strict: false,
-    }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
-    const providerResult = structuredClone(baseResult) as Record<
-      string,
-      unknown
-    >;
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false })
+      .compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const providerResult = structuredClone(baseResult) as Record<string, unknown>;
     delete providerResult.schema;
     expect(providerValidate(providerResult)).toBe(true);
   });
 
   it("admits known smaller-model aliases at the provider boundary for canonical normalization", () => {
-    const providerValidate = new Ajv2020({
-      allErrors: true,
-      strict: false,
-    }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false })
+      .compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
     const providerResult = structuredClone(baseResult);
     providerResult.schema = "paperclip_paperclip_finish";
     providerResult.reportedWorkDisposition = "completed";
     providerResult.completionClaim.criteria[0]!.status = "passed";
-    providerResult.verification = [
-      { commandOrCheck: "model check", status: "pass" } as never,
-    ];
+    providerResult.verification = [{ commandOrCheck: "model check", status: "pass" } as never];
     expect(providerValidate(providerResult)).toBe(true);
   });
 
   it("requires a reason code for verification that was not run", () => {
     const result = structuredClone(baseResult);
-    result.verification = [
-      { commandOrCheck: "Run tests", status: "not_run" } as never,
-    ];
+    result.verification = [{ commandOrCheck: "Run tests", status: "not_run" } as never];
     expect(validate(result)).toBe(false);
 
-    result.verification = [
-      {
-        commandOrCheck: "Run tests",
-        status: "not_run",
-        reasonCode: "tool_unavailable",
-      } as never,
-    ];
+    result.verification = [{
+      commandOrCheck: "Run tests",
+      status: "not_run",
+      reasonCode: "tool_unavailable",
+    } as never];
     expect(validate(result)).toBe(true);
   });
 
   it("requires needs_review for actionable attention", () => {
     const result = structuredClone(baseResult);
-    result.attentionRequests = [
-      {
-        kind: "review",
-        summary: "Confirm the external result.",
-        ownerClass: "human",
-      } as never,
-    ];
+    result.attentionRequests = [{
+      kind: "review",
+      summary: "Confirm the external result.",
+      ownerClass: "human",
+    } as never];
     expect(validate(result)).toBe(false);
 
     result.reportedWorkDisposition = "needs_review";
@@ -95,13 +77,11 @@ describe("provider-neutral completion result schema", () => {
   it("requires agent-owned attention to identify its target agent", () => {
     const result = structuredClone(baseResult);
     result.reportedWorkDisposition = "needs_review";
-    result.attentionRequests = [
-      {
-        kind: "agent_handoff",
-        summary: "Ask the deployment agent to continue.",
-        ownerClass: "agent",
-      } as never,
-    ];
+    result.attentionRequests = [{
+      kind: "agent_handoff",
+      summary: "Ask the deployment agent to continue.",
+      ownerClass: "agent",
+    } as never];
     expect(validate(result)).toBe(false);
   });
 });

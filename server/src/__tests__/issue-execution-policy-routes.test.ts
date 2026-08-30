@@ -792,6 +792,8 @@ describe("issue execution policy routes", () => {
         actorUserId: "local-board",
       }),
       expect.anything(),
+      undefined,
+      expect.any(Array),
     );
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
@@ -849,6 +851,8 @@ describe("issue execution policy routes", () => {
         actorUserId: "local-board",
       }),
       expect.anything(),
+      undefined,
+      expect.any(Array),
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(updatePatch.status).toBe("cancelled");

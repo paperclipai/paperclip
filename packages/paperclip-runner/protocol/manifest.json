@@ -30,7 +30,7 @@
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "d69ac4acfd9cd265f9dcb6a6580e949a67a50347093d0a7c12c2000a2da6d482"
+      "sha256": "e9827a7c31f004ae91388964a96b4ddf6ab40b85f29bf3922683d5dcf64f2559"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -45,12 +45,12 @@
     {
       "path": "schemas/provider-descriptor.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
-      "sha256": "26e8af9314f1ca49578bfbacdcc111332225b422ea4ff68918a25ddac59129a6"
+      "sha256": "a56c0c8501171c34bb72f6fba08d3872839a8b45bbc10daa93620afc9dc2b669"
     },
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "84521ea87ae782a7c07d1ef68b70f87fc4c436e79951a8076b7ba55e923fa88b"
+      "sha256": "e0ffb95cbde4afb65783106f471c5154cbcc59055461f96838cd8a5239e5ec56"
     },
     {
       "path": "schemas/question-adapter-fixture.schema.json",
@@ -75,7 +75,7 @@
     {
       "path": "schemas/result.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/result.schema.json",
-      "sha256": "90f02c0a96e8ab9f75970fd788b61c18ccbd9abbd005bedfba280701729adce0"
+      "sha256": "86d3b3c4d0f79de34a3e2e37beb183ea08d3bc9f70437a9f6f2b98bdf8faf828"
     },
     {
       "path": "schemas/semantic-tool.schema.json",
@@ -95,7 +95,7 @@
     {
       "path": "schemas/usage.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/usage.schema.json",
-      "sha256": "28fdbb3202095144649dddc438e6270c66d599c6f7e86838687f58d644726456"
+      "sha256": "34b1478d2054f898d64b54b62a9bb738670087893bb1e5967da541539d2daf36"
     },
     {
       "path": "schemas/workspace-diff.schema.json",

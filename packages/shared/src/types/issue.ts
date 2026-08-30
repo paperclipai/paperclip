@@ -1109,6 +1109,8 @@ export interface AskUserQuestionsQuestion {
   helpText?: string | null;
   selectionMode: "single" | "multi";
   required?: boolean;
+  /** False suppresses the legacy free-form fallback for closed select sets. */
+  allowOther?: boolean;
   options: AskUserQuestionsQuestionOption[];
 }
 

@@ -122,6 +122,7 @@ export function compileProtocolValidators(schemaRecords) {
     conformanceFixture: get("conformance-fixture"),
     conformanceOutput: get("conformance-output"),
     fixture: get("fixture"),
+    providerDescriptor: get("provider-descriptor"),
     questionAdapterFixture: get("question-adapter-fixture"),
   };
 }
