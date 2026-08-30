@@ -632,7 +632,13 @@ fn is_stable_call_id(value: &str) -> bool {
 pub fn authorized_tool_catalog_digest(
     operations: &[AuthorizedTool],
 ) -> Result<String, ProviderBridgeError> {
-    let value = serde_json::to_value(operations)
+    // Catalog identity is independent of projection order. Durable bridge
+    // state stores tools in a BTreeMap, so hashing operation-id order here
+    // keeps an accepted catalog byte-stable when it is serialized and
+    // recovered.
+    let mut canonical_operations = operations.iter().collect::<Vec<_>>();
+    canonical_operations.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
+    let value = serde_json::to_value(canonical_operations)
         .map_err(|_| ProviderBridgeError::invalid("authorized tool catalog is not serializable"))?;
     let canonical = canonical_json(&value);
     let digest = Sha256::digest(canonical.as_bytes());

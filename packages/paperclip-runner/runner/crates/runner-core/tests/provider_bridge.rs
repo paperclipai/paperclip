@@ -258,6 +258,30 @@ fn recovery_rejects_tampered_authorization_catalog_bindings() {
 }
 
 #[test]
+fn recovery_preserves_a_reverse_ordered_authorization_catalog() {
+    let mut tool_set = tools("computed");
+    tool_set.operations.push(AuthorizedTool {
+        operation_id: "answer_status_question".to_owned(),
+        version: 1,
+        description: "Answer a status question.".to_owned(),
+        input_schema: json!({"type": "object"}),
+        response_schema: json!({"type": "object"}),
+    });
+    assert!(tool_set.operations[0].operation_id > tool_set.operations[1].operation_id);
+    tool_set.catalog_digest = authorized_tool_catalog_digest(&tool_set.operations).unwrap();
+
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tool_set).unwrap();
+    let encoded = serde_json::to_string(&bridge).unwrap();
+    let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
+
+    recovered
+        .attach_existing_run()
+        .expect("recovery must preserve a valid catalog regardless of projection order");
+    assert_eq!(recovered.authorized_tools().count(), 2);
+}
+
+#[test]
 fn settles_completed_receipts_before_the_next_turn() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();
