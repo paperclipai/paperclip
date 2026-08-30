@@ -80,6 +80,7 @@ fn task_context_tool_set() -> AuthorizedToolSet {
 fn durable_config(directory: &Path) -> DurableRunnerConfig {
     DurableRunnerConfig {
         connect_url: "ws://127.0.0.1:3000/runner".to_owned(),
+        allowed_remote_host: None,
         state_dir: directory.to_path_buf(),
         runner_instance_id: "runner-1".to_owned(),
         environment_lease_id: "lease-1".to_owned(),
