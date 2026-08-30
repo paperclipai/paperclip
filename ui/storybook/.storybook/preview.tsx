@@ -1,7 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  CONNECTABLE_APP_DEFINITIONS,
+  type WorkTimelineResult,
+} from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
+import { ONBOARDING_STORAGE_KEY } from "@/components/OnboardingWizard";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { CompanyProvider } from "@/context/CompanyContext";
 import { DialogProvider } from "@/context/DialogContext";
@@ -20,11 +25,59 @@ import {
   storybookIssues,
   storybookLiveRuns,
   storybookProjects,
+  storybookSecretAccessEvents,
+  storybookSecretBindings,
+  storybookSecretProviderConfigs,
+  storybookSecretProviderDiscoveryPreview,
+  storybookSecretProviderHealth,
+  storybookSecretProviders,
+  storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
+import timelineSample from "../fixtures/workTimeline.human.sample.json";
 import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
+
+const STORYBOOK_USER_AVATAR =
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=96&q=80";
+
+function withStorybookTimelineDetails(
+  data: WorkTimelineResult,
+): WorkTimelineResult {
+  return {
+    ...data,
+    actors: data.actors.map((actor) =>
+      actor.type === "user"
+        ? { ...actor, avatar: STORYBOOK_USER_AVATAR }
+        : actor,
+    ),
+    spans: data.spans.map((span, index) => {
+      const inputTokens = 42_000 + index * 137;
+      const cachedInputTokens = index % 3 === 0 ? 8_000 : 0;
+      const outputTokens = 5_400 + index * 29;
+      return {
+        ...span,
+        usage: span.usage ?? {
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          totalTokens: inputTokens + cachedInputTokens + outputTokens,
+        },
+      };
+    }),
+  };
+}
+
+const storybookTimelineSample = withStorybookTimelineDetails(
+  timelineSample as WorkTimelineResult,
+);
+
+// Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
+// caches in adapter config renderers) hit our fixtures before they reach the
+// network. Some renderers issue a fetch from useEffect on first paint, which
+// can otherwise race the StorybookProviders mount.
+installStorybookApiFixtures();
 
 function installStorybookApiFixtures() {
   if (typeof window === "undefined") return;
@@ -87,21 +140,243 @@ function installStorybookApiFixtures() {
       });
     }
 
+    if (url.pathname === "/api/instance/settings") {
+      return Response.json({});
+    }
+
+    // The onboarding wizard's connect step reads these. An empty environment
+    // list is the cloud-tenant shape — agents run in a managed sandbox rather
+    // than a configured environment — and it is also the state that produces
+    // the "no managed sandbox environment is available" notice, which is worth
+    // being able to look at rather than only meeting it on a live stack.
+    if (/^\/api\/companies\/[^/]+\/environments$/.test(url.pathname)) {
+      return Response.json([]);
+    }
+
+    if (/^\/api\/companies\/[^/]+\/adapters\/[^/]+\/models$/.test(url.pathname)) {
+      return Response.json([]);
+    }
+
+    if (
+      url.pathname ===
+      "/api/connection-intents/interaction-connection-intent-default/setup-options"
+    ) {
+      return Response.json({
+        version: 1,
+        interaction: null,
+        service: {
+          service: "notion",
+          name: "Notion",
+          description: "Search and update a Notion workspace.",
+          logoUrl: null,
+          methods: [
+            { key: "mcp-oauth", label: "Sign in with Notion", auth: "oauth" },
+          ],
+          state: "needs_user_action",
+          connectionId: null,
+        },
+        requestedAgentId: "11111111-1111-4111-8111-111111111111",
+        existingConnections: [
+          {
+            id: "connection-storybook-notion",
+            companyId: "company-storybook",
+            applicationId: "application-storybook-notion",
+            name: "Board Operator’s Notion",
+            uid: "notion/storybook",
+            transport: "mcp_remote",
+            authKind: "oauth",
+            credentialPolicy: "per_user",
+            status: "active",
+            enabled: true,
+            config: { sourceTemplateKey: "notion" },
+            transportConfig: { sourceTemplateKey: "notion" },
+            credentialRefs: [],
+            credentialSecretRefs: [],
+          },
+        ],
+      });
+    }
+
+    if (url.pathname === "/api/companies/company-storybook/tools/gallery") {
+      return Response.json({
+        apps: CONNECTABLE_APP_DEFINITIONS.filter(
+          (app) => app.slug === "notion",
+        ),
+        capabilities: {
+          canSetCompanyInstall: true,
+          companyInstallReason: null,
+        },
+      });
+    }
+    if (
+      url.pathname === "/api/companies/company-storybook/tools/applications"
+    ) {
+      return Response.json({ applications: [] });
+    }
+    if (url.pathname === "/api/companies/company-storybook/tools/connections") {
+      return Response.json({ connections: [] });
+    }
+
+    if (url.pathname === "/api/adapters") {
+      return Response.json([
+        {
+          type: "claude_local",
+          label: "Claude Code",
+          source: "builtin",
+          modelsCount: 2,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+        {
+          type: "codex_local",
+          label: "Codex",
+          source: "builtin",
+          modelsCount: 3,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+      ]);
+    }
+
+    const adapterModelsMatch = url.pathname.match(
+      /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/(models|model-profiles)$/,
+    );
+    if (adapterModelsMatch) {
+      const [, , resource] = adapterModelsMatch;
+      if (resource === "models") {
+        return Response.json([
+          { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+          { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+          { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+        ]);
+      }
+      return Response.json([
+        {
+          key: "cheap",
+          label: "Cheap",
+          adapterConfig: { model: "claude-sonnet-4-6" },
+          source: "adapter_default",
+        },
+      ]);
+    }
+
     if (url.pathname === "/api/plugins/ui-contributions") {
       return Response.json([]);
     }
 
-    const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
+    const adapterSchemaMatch = url.pathname.match(
+      /^\/api\/adapters\/([^/]+)\/config-schema$/,
+    );
+    if (adapterSchemaMatch) {
+      const [, adapterType] = adapterSchemaMatch;
+      const schemas = (
+        window as typeof window & {
+          __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+        }
+      ).__paperclipStorybookAdapterSchemas;
+      const schema = schemas?.[adapterType];
+      if (schema) return Response.json(schema);
+    }
+
+    const secretsListMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secrets$/,
+    );
+    if (secretsListMatch) {
+      const [, companyId] = secretsListMatch;
+      return Response.json(
+        companyId === "company-storybook" ? storybookSecrets : [],
+      );
+    }
+
+    const secretProvidersMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers$/,
+    );
+    if (secretProvidersMatch) {
+      return Response.json(storybookSecretProviders);
+    }
+
+    const secretProviderHealthMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers\/health$/,
+    );
+    if (secretProviderHealthMatch) {
+      return Response.json(storybookSecretProviderHealth);
+    }
+
+    const secretProviderConfigsMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs$/,
+    );
+    if (secretProviderConfigsMatch) {
+      return Response.json(storybookSecretProviderConfigs);
+    }
+
+    const secretProviderConfigDiscoveryPreviewMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs\/discovery\/preview$/,
+    );
+    if (
+      secretProviderConfigDiscoveryPreviewMatch &&
+      init?.method?.toUpperCase() === "POST"
+    ) {
+      return Response.json(storybookSecretProviderDiscoveryPreview);
+    }
+
+    const secretUsageMatch = url.pathname.match(
+      /^\/api\/secrets\/([^/]+)\/usage$/,
+    );
+    if (secretUsageMatch) {
+      const [, secretId] = secretUsageMatch;
+      return Response.json({
+        secretId,
+        bindings: storybookSecretBindings.filter(
+          (binding) => binding.secretId === secretId,
+        ),
+      });
+    }
+
+    const secretEventsMatch = url.pathname.match(
+      /^\/api\/secrets\/([^/]+)\/access-events$/,
+    );
+    if (secretEventsMatch) {
+      const [, secretId] = secretEventsMatch;
+      return Response.json(
+        storybookSecretAccessEvents.filter(
+          (event) => event.secretId === secretId,
+        ),
+      );
+    }
+
+    const companyResourceMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/([^/]+)$/,
+    );
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
       if (resource === "agents") {
-        return Response.json(companyId === "company-storybook" ? storybookAgents : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookAgents : [],
+        );
       }
       if (resource === "projects") {
-        return Response.json(companyId === "company-storybook" ? storybookProjects : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookProjects : [],
+        );
       }
       if (resource === "approvals") {
-        return Response.json(companyId === "company-storybook" ? storybookApprovals : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookApprovals : [],
+        );
       }
       if (resource === "dashboard") {
         return Response.json({
@@ -109,11 +384,37 @@ function installStorybookApiFixtures() {
           companyId,
         });
       }
+      if (resource === "timeline") {
+        return Response.json(
+          companyId === "company-storybook"
+            ? storybookTimelineSample
+            : {
+                actors: [],
+                spans: [],
+                events: [],
+                edges: [],
+                pagination: {
+                  limit: 100,
+                  offset: 0,
+                  totalIssues: 0,
+                  hasMore: false,
+                },
+                window: {
+                  from:
+                    url.searchParams.get("from") ?? new Date(0).toISOString(),
+                  to: url.searchParams.get("to") ?? new Date(0).toISOString(),
+                  capped: false,
+                },
+              },
+        );
+      }
       if (resource === "heartbeat-runs") {
         return Response.json([]);
       }
       if (resource === "live-runs") {
-        return Response.json(companyId === "company-storybook" ? storybookLiveRuns : []);
+        return Response.json(
+          companyId === "company-storybook" ? storybookLiveRuns : [],
+        );
       }
       if (resource === "inbox-dismissals") {
         return Response.json([]);
@@ -134,19 +435,29 @@ function installStorybookApiFixtures() {
         return Response.json(
           query
             ? issues.filter((issue) =>
-                `${issue.identifier ?? ""} ${issue.title} ${issue.description ?? ""}`.toLowerCase().includes(query),
+                `${issue.identifier ?? ""} ${issue.title} ${issue.description ?? ""}`
+                  .toLowerCase()
+                  .includes(query),
               )
             : issues,
         );
       }
     }
 
-    if (url.pathname.startsWith("/api/invites/") && url.pathname.endsWith("/logo")) {
+    if (
+      url.pathname.startsWith("/api/invites/") &&
+      url.pathname.endsWith("/logo")
+    ) {
       return new Response(null, { status: 204 });
     }
 
     return originalFetch(input, init);
   };
+}
+
+// Install fetch fixtures at module load so React Query never sees a real network failure.
+if (typeof window !== "undefined") {
+  installStorybookApiFixtures();
 }
 
 function applyStorybookTheme(theme: "light" | "dark") {
@@ -174,9 +485,12 @@ function StorybookProviders({
       }),
   );
 
+  if (typeof window !== "undefined") {
+    installStorybookApiFixtures();
+  }
+
   useEffect(() => {
     applyStorybookTheme(theme);
-    installStorybookApiFixtures();
   }, [theme]);
 
   return (
@@ -265,6 +579,28 @@ const preview: Preview = {
         },
       },
     },
+  },
+
+  /**
+   * Every story starts without an onboarding draft.
+   *
+   * `localStorage` is per-origin and the preview frame keeps one for the whole
+   * session, so a story that seeds a draft would otherwise hand it to whatever a
+   * reviewer opens next: the wizard restores that saved step ahead of the step
+   * the new story asked for, and the reviewer lands on a screen they never
+   * clicked on.
+   *
+   * Cleared here rather than on the seeding story's unmount, deliberately.
+   * Switching stories navigates the preview iframe, so the page is torn down
+   * rather than React-unmounted and an unmount cleanup never runs — which is
+   * exactly how the first attempt at this leaked anyway.
+   */
+  beforeEach: () => {
+    try {
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Storage access throws in some privacy modes; nothing to clean up there.
+    }
   },
 };
 

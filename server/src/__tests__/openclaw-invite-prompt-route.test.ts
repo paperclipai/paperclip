@@ -129,7 +129,6 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
 describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
   const companyBranding = {
     name: "Acme AI",
-    brandColor: "#225577",
     logoAssetId: "logo-1",
   };
   const logoAsset = {
@@ -171,6 +170,28 @@ describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
+  });
+
+  it("rejects CEO agent callers outside the target company scope", async () => {
+    const db = createDbStub();
+    const app = createApp(
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-2",
+        source: "agent_key",
+      },
+      db,
+    );
+
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("another company");
+    expect(mockAgentService.getById).not.toHaveBeenCalled();
+    expect((db as any).__insertValues).not.toHaveBeenCalled();
   });
 
   it("allows CEO agent callers and creates an agent-only invite", async () => {
@@ -223,7 +244,7 @@ describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.companyName).toBe("Acme AI");
-    expect(res.body.companyBrandColor).toBe("#225577");
+    expect(res.body).not.toHaveProperty("companyBrandColor");
     expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
     expect(res.body.allowedJoinTypes).toBe("agent");

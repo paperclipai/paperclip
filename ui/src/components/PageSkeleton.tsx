@@ -99,7 +99,7 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
   if (variant === "org-chart") {
     return (
       <div className="space-y-4">
-        <Skeleton className="h-[calc(100vh-4rem)] w-full rounded-lg border border-border" />
+        <Skeleton className="h-(--sz-calc-17) w-full rounded-lg border border-border" />
       </div>
     );
   }

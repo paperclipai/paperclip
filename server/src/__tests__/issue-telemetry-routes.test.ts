@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -15,6 +16,33 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  for: () => ({
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        agentId: "agent-1",
+        contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+        permissions: null,
+      }]).then(onFulfilled, onRejected),
+  }),
+  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+    Promise.resolve([{
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      agentId: "agent-1",
+      contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+      permissions: null,
+    }]).then(onFulfilled, onRejected),
+})));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDb = vi.hoisted(() => ({
+  select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect })),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -28,13 +56,23 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => ({
       canUser: vi.fn(),
+      decide: vi.fn(async () => ({
+        allowed: true,
+        action: "issue:mutate",
+        reason: "allow_test",
+        explanation: "Allowed by test mock.",
+      })),
       hasPermission: vi.fn(),
     }),
     agentService: () => mockAgentService,
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
@@ -57,6 +95,16 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueThreadInteractionService: () => ({
+      listForIssue: vi.fn(async () => []),
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
+      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+    }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
     }),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
@@ -92,7 +140,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -110,11 +158,34 @@ describe("issue telemetry routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("todo"),
       ...patch,
+    }));
+    mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "22222222-2222-4222-8222-222222222222",
+            companyId: "company-1",
+            agentId: "agent-1",
+            contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([{
+          id: "22222222-2222-4222-8222-222222222222",
+          companyId: "company-1",
+          agentId: "agent-1",
+          contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+          permissions: null,
+        }]).then(onFulfilled, onRejected),
     }));
   });
 
@@ -131,7 +202,7 @@ describe("issue telemetry routes", () => {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
-      runId: null,
+      runId: "22222222-2222-4222-8222-222222222222",
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")

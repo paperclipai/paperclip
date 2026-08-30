@@ -6,12 +6,15 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 
 // Layout constants
 const CARD_W = 200;
@@ -159,14 +162,14 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
+  running: "var(--hex-22d3ee)",
+  active: "var(--hex-4ade80)",
+  paused: "var(--hex-facc15)",
+  idle: "var(--hex-facc15)",
+  error: "var(--hex-f87171)",
+  terminated: "var(--hex-a3a3a3)",
 };
-const defaultDotColor = "#a3a3a3";
+const defaultDotColor = "var(--hex-a3a3a3)";
 
 // ── Main component ──────────────────────────────────────────────────────
 
@@ -174,6 +177,13 @@ export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
+  // button is hidden rather than dead-ending. Export stays available. Both
+  // buttons also respect the operator-hidden settings registry.
+  const isCloud = Boolean(useCloudInstance());
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const showImport = !isCloud && !hiddenSettings.has("company.import");
+  const showExport = !hiddenSettings.has("company.export");
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -429,7 +439,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message="Select an organization to view the org chart." />;
   }
 
   if (isLoading) {
@@ -441,20 +451,24 @@ export function OrgChart() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-9rem)] min-h-[420px] flex-col md:h-full md:min-h-0">
+    <div className="flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0">
       <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
-        <Link to="/company/import">
-          <Button variant="outline" size="sm">
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
-          </Button>
-        </Link>
-        <Link to="/company/export">
-          <Button variant="outline" size="sm">
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
-          </Button>
-        </Link>
+        {showImport && (
+          <Link to="/company/import">
+            <Button variant="outline" size="sm">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              Import organization
+            </Button>
+          </Link>
+        )}
+        {showExport && (
+          <Link to="/company/export">
+            <Button variant="outline" size="sm">
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Export organization
+            </Button>
+          </Link>
+        )}
       </div>
       <div
         ref={containerRef}
@@ -510,7 +524,7 @@ export function OrgChart() {
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
-            className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
+            className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
             title="Fit to screen"
             aria-label="Fit chart to screen"
@@ -562,10 +576,10 @@ export function OrgChart() {
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
 
             return (
-              <div
+              <Card
                 key={node.id}
                 data-org-card
-                className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+                className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none"
                 style={{
                   left: node.x,
                   top: node.y,
@@ -596,22 +610,22 @@ export function OrgChart() {
                     <span className="text-sm font-semibold text-foreground leading-tight">
                       {node.name}
                     </span>
-                    <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
+                    <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
                       {agent?.title ?? roleLabel(node.role)}
                     </span>
                     {agent && (
-                      <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
+                      <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
                         {getAdapterLabel(agent.adapterType)}
                       </span>
                     )}
                     {agent && agent.capabilities && (
-                      <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
+                      <span className="text-(length:--text-nano) text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
                         {agent.capabilities}
                       </span>
                     )}
                   </div>
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>

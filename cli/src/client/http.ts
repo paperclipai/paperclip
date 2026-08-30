@@ -81,6 +81,22 @@ export class PaperclipApiClient {
     }, opts);
   }
 
+  put<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, opts);
+  }
+
+  /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
+  putRaw<T>(path: string, body: Uint8Array, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: body as unknown as BodyInit,
+      headers: { "content-type": "application/octet-stream" },
+    }, opts);
+  }
+
   delete<T>(path: string, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, { method: "DELETE" }, opts);
   }
@@ -217,7 +233,7 @@ function buildConnectionErrorMessage(input: {
     "This usually means the Paperclip server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
     "",
     "Try:",
-    "- Start Paperclip with `pnpm dev` or `pnpm paperclipai run`.",
+    "- Start Paperclip with `pnpm dev` (from a source checkout) or `npx paperclipai run`.",
     `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
     `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
   );

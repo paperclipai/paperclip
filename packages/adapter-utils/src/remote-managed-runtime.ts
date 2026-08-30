@@ -1,16 +1,44 @@
 import path from "node:path";
+import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
+  runSshCommand,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
+import {
+  mergeExcludes,
+  referencedSourceIgnoreExcludeEntries,
+  type SandboxAdditionalSource,
+  type SandboxManagedRuntimeAssetRestoreContext,
+} from "./sandbox-managed-runtime.js";
+import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
+import type { RuntimeProgressSink } from "./runtime-progress.js";
+
+// The fixed heavy-directory excludes every referenced project drops,
+// regardless of its ignore resolution. A `git`-resolved project additionally
+// drops its own resolved ignored paths (see `referencedSourceIgnoreExcludeEntries`
+// and the per-project merge below); an `other` project keeps only this set.
+const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
 export interface PreparedRemoteManagedRuntime {
@@ -19,7 +47,13 @@ export interface PreparedRemoteManagedRuntime {
   workspaceRemoteDir: string;
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
-  restoreWorkspace(): Promise<void>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. A project whose staging failed is
+   * absent (per-project failure isolation).
+   */
+  additionalSourceDirs: Record<string, string>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -36,6 +70,17 @@ function asNumber(value: unknown): number {
   return typeof value === "number" ? value : Number(value);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string): Promise<Buffer> {
+  const result = await runSshCommand(spec, `base64 < ${shellQuote(remotePath)}`, {
+    maxBuffer: 1024 * 1024,
+  });
+  return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+}
+
 export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec | null) {
   if (!spec) return null;
   return {
@@ -44,7 +89,6 @@ export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec
     port: spec.port,
     username: spec.username,
     remoteCwd: spec.remoteCwd,
-    ...(spec.paperclipApiUrl ? { paperclipApiUrl: spec.paperclipApiUrl } : {}),
   } as const;
 }
 
@@ -58,26 +102,52 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
     asString(parsedSaved.host) === currentIdentity.host &&
     asNumber(parsedSaved.port) === currentIdentity.port &&
     asString(parsedSaved.username) === currentIdentity.username &&
-    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd &&
-    asString(parsedSaved.paperclipApiUrl) === asString(currentIdentity.paperclipApiUrl)
+    asString(parsedSaved.remoteCwd) === currentIdentity.remoteCwd
   );
 }
 
 export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
+  runId: string;
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   assets?: RemoteManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
+  // Upload progress sink. Threaded for the byte-counting transport rewrite; the
+  // child task wires it into the workspace/asset transfers.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
-  const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const syncWorkspace = input.syncWorkspace !== false;
+  const workspaceRemoteDir = syncWorkspace
+    ? path.posix.join(
+        baseWorkspaceRemoteDir,
+        ".paperclip-runtime",
+        "runs",
+        input.runId,
+        "workspace",
+      )
+    : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
-  await prepareWorkspaceForSshExecution({
-    spec: input.spec,
-    localDir: input.workspaceLocalDir,
-    remoteDir: workspaceRemoteDir,
-  });
+  const preparedWorkspace = syncWorkspace
+    ? await prepareWorkspaceForSshExecution({
+        spec: input.spec,
+        localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir,
+        onProgress: input.onProgress,
+      })
+    : null;
+  const baselineSnapshot = preparedWorkspace
+    ? await captureDirectorySnapshot(input.workspaceLocalDir, {
+        exclude: preparedWorkspace.gitBacked
+          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
+          : [".paperclip-runtime"],
+      })
+    : null;
 
   const assetDirs: Record<string, string> = {};
   try {
@@ -90,15 +160,68 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir,
         followSymlinks: asset.followSymlinks,
         exclude: asset.exclude,
+        onProgress: input.onProgress,
+        progressLabel: asset.key,
       });
     }
   } catch (error) {
-    await restoreWorkspaceFromSshExecution({
-      spec: input.spec,
-      localDir: input.workspaceLocalDir,
-      remoteDir: workspaceRemoteDir,
-    });
+    if (preparedWorkspace && baselineSnapshot) {
+      await restoreWorkspaceFromSshExecution({
+        spec: input.spec,
+        localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir,
+        baselineSnapshot,
+        restoreGitHistory: preparedWorkspace.gitBacked,
+        onProgress: input.onProgress,
+      });
+    }
     throw error;
+  }
+
+  // Stage each referenced (additional) project as a plain, read-only tree in its
+  // OWN isolated remote directory (`project-<projectId>`). Additional sources
+  // never get the anchor's git-history/overlay semantics. Per-project failure
+  // isolation: one project's failure logs a warning and is skipped; the run and
+  // the other projects continue (no workspace restore, unlike an asset failure).
+  const additionalSourceDirs: Record<string, string> = {};
+  for (const source of input.additionalSources ?? []) {
+    const { localPath, projectId, ignoreResolution } = source;
+    try {
+      if (!path.posix.isAbsolute(localPath)) {
+        throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
+      }
+      if (
+        projectId.length === 0 ||
+        projectId.includes("/") ||
+        projectId.includes("\\") ||
+        projectId.includes("..")
+      ) {
+        throw new Error(`additional source projectId is not a simple path segment: ${projectId}`);
+      }
+      // Fail closed: a project whose ignore resolution failed is not staged at
+      // all — the existing per-project skip-and-warn path below handles it.
+      if (ignoreResolution.kind === "failed") {
+        throw new Error(`referenced project ignore resolution failed: ${ignoreResolution.reason}`);
+      }
+      const remoteDir = path.posix.join(runtimeRootDir, `project-${projectId}`);
+      const exclude = mergeExcludes(
+        REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES,
+        referencedSourceIgnoreExcludeEntries(ignoreResolution),
+      );
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: localPath,
+        remoteDir,
+        exclude,
+        onProgress: input.onProgress,
+        progressLabel: `project-${projectId}`,
+      });
+      additionalSourceDirs[projectId] = remoteDir;
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${String(error)}`,
+      );
+    }
   }
 
   return {
@@ -107,12 +230,25 @@ export async function prepareRemoteManagedRuntime(input: {
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
-    restoreWorkspace: async () => {
-      await restoreWorkspaceFromSshExecution({
-        spec: input.spec,
-        localDir: input.workspaceLocalDir,
-        remoteDir: workspaceRemoteDir,
-      });
+    additionalSourceDirs,
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+      if (preparedWorkspace && baselineSnapshot) {
+        await restoreWorkspaceFromSshExecution({
+          spec: input.spec,
+          localDir: input.workspaceLocalDir,
+          remoteDir: workspaceRemoteDir,
+          baselineSnapshot,
+          restoreGitHistory: preparedWorkspace.gitBacked,
+          onProgress,
+        });
+      }
+      for (const asset of input.assets ?? []) {
+        if (!asset.restore) continue;
+        await asset.restore({
+          assetDir: path.posix.join(runtimeRootDir, asset.key),
+          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+        });
+      }
     },
   };
 }

@@ -1,10 +1,13 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildIssueChanges } from "../services/issue-change-receipt.ts";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -75,12 +78,16 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
@@ -88,6 +95,10 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({
@@ -101,6 +112,12 @@ function registerModuleMocks() {
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
     }),
+    issueThreadInteractionService: () => ({
+      listForIssue: vi.fn(async () => []),
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
+      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
@@ -109,7 +126,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(db: unknown = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -126,7 +143,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -141,8 +158,29 @@ function makeIssue() {
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Activity event issue",
+    description: null,
+    priority: "medium",
     executionPolicy: null,
     executionState: null,
+    updatedAt: new Date("2026-07-30T12:00:00.000Z"),
+  };
+}
+
+function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Record<string, unknown>) {
+  const {
+    actorAgentId: _actorAgentId,
+    actorUserId: _actorUserId,
+    blockedByIssueIds: _blockedByIssueIds,
+    ...issuePatch
+  } = patch;
+  const updated = {
+    ...issue,
+    ...issuePatch,
+    updatedAt: new Date("2026-07-30T12:01:00.000Z"),
+  };
+  return {
+    ...updated,
+    changes: buildIssueChanges(issue, updated),
   };
 }
 
@@ -163,6 +201,7 @@ describe("issue activity event routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -189,6 +228,161 @@ describe("issue activity event routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+  });
+
+  it("returns a field-change receipt and omits a requested no-op field", async () => {
+    const issue = makeIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+
+    const changed = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+    expect(changed.status).toBe(200);
+    expect(changed.body.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+    });
+
+    const noOp = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ title: issue.title });
+    expect(noOp.status).toBe(200);
+    expect(noOp.body.changes).not.toHaveProperty("title");
+  });
+
+  it("echoes scalar blocker state and summaries when setting and clearing blockers", async () => {
+    const issue = makeIssue();
+    const blockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let blockedByIssueIds: string[] = [];
+    const relationSummaries = () => ({
+      blockedBy: blockedByIssueIds.map((id) => ({
+        id,
+        identifier: "PAP-10",
+        title: "Blocker",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      })),
+      blocks: [],
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getRelationSummaries.mockImplementation(async () => relationSummaries());
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      const from = blockedByIssueIds;
+      blockedByIssueIds = [...new Set(patch.blockedByIssueIds as string[])].sort();
+      return {
+        ...issueUpdateWithReceipt(issue, patch),
+        blockedByIssueIds,
+        changes: buildIssueChanges(issue, issue, {
+          blockedByIssueIds: { from, to: blockedByIssueIds },
+        }),
+      };
+    });
+
+    const setResponse = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ blockedByIssueIds: [blockerId] });
+    expect(setResponse.status).toBe(200);
+    expect(setResponse.body).toMatchObject({
+      blockedByIssueIds: [blockerId],
+      blockedBy: [{ id: blockerId }],
+      blocks: [],
+      changes: { blockedByIssueIds: { from: [], to: [blockerId] } },
+    });
+
+    const clearResponse = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ blockedByIssueIds: [] });
+    expect(clearResponse.status).toBe(200);
+    expect(clearResponse.body).toMatchObject({
+      blockedByIssueIds: [],
+      blockedBy: [],
+      blocks: [],
+      changes: { blockedByIssueIds: { from: [blockerId], to: [] } },
+    });
+  });
+
+  it("truncates long text receipt values to 200 characters and marks them updated", async () => {
+    const issue = {
+      ...makeIssue(),
+      title: "a".repeat(240),
+      description: "b".repeat(240),
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+
+    const response = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ title: "c".repeat(240), description: "d".repeat(240) });
+
+    expect(response.status).toBe(200);
+    expect(response.body.changes).toEqual({
+      title: { from: "a".repeat(200), to: "c".repeat(200), updated: true },
+      description: { from: "b".repeat(200), to: "d".repeat(200), updated: true },
+    });
+  });
+
+  it("returns only the minimal receipt fields when requested", async () => {
+    const issue = makeIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+
+    const response = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .set("Prefer", "respond-async, return=minimal")
+      .send({ priority: "high" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers["preference-applied"]).toBe("return=minimal");
+    expect(response.body).toEqual({
+      id: issue.id,
+      identifier: issue.identifier,
+      updatedAt: "2026-07-30T12:01:00.000Z",
+      changes: { priority: { from: "medium", to: "high" } },
+      comment: null,
+    });
+  });
+
+  it("preserves the default full response body with additive receipt fields", async () => {
+    const issue = makeIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+
+    const response = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers["preference-applied"]).toBeUndefined();
+    expect(response.body).toMatchInlineSnapshot(`
+      {
+        "assigneeAgentId": "22222222-2222-4222-8222-222222222222",
+        "assigneeUserId": null,
+        "changes": {
+          "priority": {
+            "from": "medium",
+            "to": "high",
+          },
+        },
+        "comment": null,
+        "companyId": "company-1",
+        "createdByUserId": "local-board",
+        "description": null,
+        "executionPolicy": null,
+        "executionState": null,
+        "id": "11111111-1111-4111-8111-111111111111",
+        "identifier": "PAP-580",
+        "priority": "high",
+        "status": "todo",
+        "title": "Activity event issue",
+        "updatedAt": "2026-07-30T12:01:00.000Z",
+      }
+    `);
   });
 
   it("logs blocker activity with added and removed issue summaries", async () => {
@@ -265,6 +459,165 @@ describe("issue activity event routes", () => {
       );
     });
   }, 15_000);
+
+  it("logs readable workspace change activity details for issue updates", async () => {
+    const previousProjectWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const nextExecutionWorkspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const issue = {
+      ...makeIssue(),
+      projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      projectWorkspaceId: previousProjectWorkspaceId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+      changes: {
+        executionWorkspaceId: {
+          from: issue.executionWorkspaceId,
+          to: nextExecutionWorkspaceId,
+        },
+      },
+    }));
+
+    const dbMock = {
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: async () => {
+            const tableName = getTableName(table as Parameters<typeof getTableName>[0]);
+            if (tableName === "project_workspaces") {
+              return [{ id: previousProjectWorkspaceId, name: "Main workspace" }];
+            }
+            if (tableName === "execution_workspaces") {
+              return [{ id: nextExecutionWorkspaceId, name: "Feature workspace" }];
+            }
+            return [];
+          },
+        }),
+      })),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ executionWorkspaceId: nextExecutionWorkspaceId });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.updated",
+          details: expect.objectContaining({
+            executionWorkspaceId: nextExecutionWorkspaceId,
+            workspaceChange: {
+              from: {
+                label: "Main workspace",
+                projectWorkspaceId: previousProjectWorkspaceId,
+                executionWorkspaceId: null,
+                mode: "shared_workspace",
+              },
+              to: {
+                label: "Feature workspace",
+                projectWorkspaceId: previousProjectWorkspaceId,
+                executionWorkspaceId: nextExecutionWorkspaceId,
+                mode: "shared_workspace",
+              },
+            },
+            _previous: expect.objectContaining({
+              executionWorkspaceId: null,
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("logs successful_run_handoff_resolved when an in_progress issue transitions to done with a pending required handoff", async () => {
+    const issue = { ...makeIssue(), status: "in_progress" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const handoffActivityRow = {
+      entityId: issue.id,
+      action: "issue.successful_run_handoff_required",
+      agentId: issue.assigneeAgentId,
+      runId: "run-1",
+      details: {
+        sourceRunId: "run-1",
+        correctiveRunId: "run-2",
+      },
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+    };
+    const dbMock = {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [handoffActivityRow],
+          }),
+        }),
+      }),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.successful_run_handoff_resolved",
+          entityId: issue.id,
+          details: expect.objectContaining({
+            identifier: "PAP-580",
+            sourceRunId: "run-1",
+            correctiveRunId: "run-2",
+            resolvedByStatus: "done",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not log successful_run_handoff_resolved when status stays in_progress", async () => {
+    const issue = { ...makeIssue(), status: "in_progress" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const dbMock = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [],
+          }),
+        }),
+      }),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ title: "Updated title" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.successful_run_handoff_resolved" }),
+    );
+  });
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
     const existingPolicy = normalizeIssueExecutionPolicy({

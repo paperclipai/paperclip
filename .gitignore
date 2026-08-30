@@ -10,6 +10,9 @@ drizzle/meta/
 .vite/
 coverage/
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
 data/
 .paperclip/
 .pnpm-store/
@@ -18,6 +21,8 @@ cli/tmp/
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
+!.github/scripts/check-*.mjs
+!.github/scripts/tests/check-*.mjs
 !scripts/check-*.mjs
 new-agent*.json
 newcompany.json
@@ -43,6 +48,7 @@ diagnostics/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+.paperclip-runtime/
 /.idea/
 /.agents/
 
@@ -54,5 +60,16 @@ tests/e2e/test-results/
 tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
+test-results/issue-detail-perf/
+tests/storybook-visual/.cache/
+tests/storybook-visual/.snapshots/
+tests/storybook-visual/baseline-review/
+tests/storybook-visual/test-results/
+tests/storybook-visual/playwright-report/
 .superset/
+.superpowers/
 .claude/worktrees/
+.herenow
+.vercel/
+.env.local
+test-results/

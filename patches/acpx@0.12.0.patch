@@ -1,0 +1,157 @@
+diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
+index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73ee2ad1626 100644
+--- a/dist/live-checkpoint-ClPCSdrW.js
++++ b/dist/live-checkpoint-ClPCSdrW.js
+@@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+ 	"RedactedThinking",
+ 	"ToolUse"
+ ]);
+-const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results"]);
++const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results", "acpx.session_options.env"]);
+ const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
+ 	"agent_capabilities",
+ 	"messages.Agent.content.ToolUse.input",
+@@ -2557,7 +2557,7 @@ function readCommandLineChar(state) {
+ 		escaping: false,
+ 		hasPart: true
+ 	};
+-	if (state.ch === "\\" && state.quote !== "'") return {
++	if (process.platform !== "win32" && state.ch === "\\" && state.quote !== "'") return {
+ 		current: state.current,
+ 		quote: state.quote,
+ 		escaping: true,
+@@ -2914,15 +2914,15 @@
+ }
+-function buildAgentEnvironment(authCredentials, sessionEnv) {
+-	const env = { ...process.env };
+-	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
+-	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
+-		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
+-		assignAuthCredentialEnv(env, methodId, credential);
+-	}
+-	if (sessionEnv) for (const [key, value] of Object.entries(sessionEnv)) {
+-		if (typeof value !== "string" || protectedAuthEnvKeys.has(protectedEnvKey(key))) continue;
+-		assignSessionEnv(env, key, value);
+-	}
+-	return env;
+-}
++function buildAgentEnvironment(authCredentials, sessionEnv, inheritProcessEnv = true) {
++	const env = inheritProcessEnv ? { ...process.env } : {};
++	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
++	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
++		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
++		assignAuthCredentialEnv(env, methodId, credential);
++	}
++	if (sessionEnv) for (const [key, value] of Object.entries(sessionEnv)) {
++		if (typeof value !== "string" || protectedAuthEnvKeys.has(protectedEnvKey(key))) continue;
++		assignSessionEnv(env, key, value);
++	}
++	return env;
++}
+ function assignSessionEnv(env, key, value) {
+@@ -2957,14 +2957,14 @@
+ }
+-function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv) {
+-	return {
+-		cwd,
+-		env: buildAgentEnvironment(authCredentials, sessionEnv),
+-		stdio: [
+-			"pipe",
+-			"pipe",
+-			"pipe"
+-		],
+-		windowsHide: true
+-	};
+-}
++function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv, inheritProcessEnv) {
++	return {
++		cwd,
++		env: buildAgentEnvironment(authCredentials, sessionEnv, inheritProcessEnv),
++		stdio: [
++			"pipe",
++			"pipe",
++			"pipe"
++		],
++		windowsHide: true
++	};
++}
+ //#endregion
+@@ -3959,7 +3959,24 @@ var AcpClient = class {
+-		this.attachAgentLifecycleObservers(child);
++		this.attachAgentLifecycleObservers(child);
++		if (this.options.onAgentSpawn) {
++			try {
++				if (typeof child.pid !== "number" || child.pid <= 0) {
++					throw new Error("ACPX agent spawn did not expose a valid process id.");
++				}
++				await this.options.onAgentSpawn({ pid: child.pid, startedAt: this.agentStartedAt });
++			} catch (error) {
++				try {
++					child.kill("SIGKILL");
++				} catch {}
++				throw error;
++			}
++		}
+ 		const startupStderr = [];
+ 		child.stderr.on("data", (chunk) => {
+ 			this.captureStartupStderr(startupStderr, chunk);
++			if (this.options.onAgentStderr) {
++				this.options.onAgentStderr(chunk.toString());
++				return;
++			}
+ 			if (!this.options.verbose) return;
+ 			process.stderr.write(chunk);
+ 		});
+@@ -3994,7 +4011,7 @@ var AcpClient = class {
+ 			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
+ 			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
+ 			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
+-			spawnOptions: buildAgentSpawnOptions(this.options.cwd, this.options.authCredentials, this.options.sessionOptions?.env)
++			spawnOptions: buildAgentSpawnOptions(this.options.spawnCwd ?? this.options.cwd, this.options.authCredentials, this.options.sessionOptions?.env, this.options.inheritProcessEnv)
+ 		};
+ 	}
+ 	logAgentLaunch(plan) {
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index ccdbe5b032521518022223733049b8b38793473b..3d4e04231e78efeecd8540735b08e1e43547ff2d 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -266,6 +266,10 @@ type AcpRuntimeOptions = {
+   timeoutMs?: number;
+   probeAgent?: string;
+   verbose?: boolean;
++  onAgentStderr?: (chunk: string) => void;
++  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
++  spawnCwd?: string;
++  inheritProcessEnv?: boolean;
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
+diff --git a/dist/runtime.js b/dist/runtime.js
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..33b5054b2906502d1d4b512bfa259bd2ba5a9f05 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
+ 		this.deps = deps;
+ 	}
+ 	createClient(options) {
+-		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
++		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
++		return this.deps.clientFactory?.(clientOptions) ?? new AcpClient(clientOptions);
+ 	}
+ 	async readPendingPersistentClient(record, options) {
+ 		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
+diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
+index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..680bc080fc5d6ffd266ed1b27d3d5056add9d980 100644
+--- a/dist/session-options-jkYbBxGE.d.ts
++++ b/dist/session-options-jkYbBxGE.d.ts
+@@ -84,6 +84,10 @@ type AcpClientOptions = {
+   terminal?: boolean;
+   suppressSdkConsoleErrors?: boolean;
+   verbose?: boolean;
++  onAgentStderr?: (chunk: string) => void;
++  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
++  spawnCwd?: string;
++  inheritProcessEnv?: boolean;
+   sessionOptions?: {
+     model?: string;
+     allowedTools?: string[];

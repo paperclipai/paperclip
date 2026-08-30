@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Luo ensimmäinen yrityksesi",
+      "description": "Aloita luomalla yritys.",
+      "newCompany": "Uusi yritys"
+    }
+  }
+}

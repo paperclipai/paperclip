@@ -72,8 +72,8 @@ export function GoalDetail() {
   });
 
   const { data: allProjects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId!),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived: true }),
     enabled: !!resolvedCompanyId
   });
 
@@ -99,7 +99,7 @@ export function GoalDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(
         resolvedCompanyId,
         file,

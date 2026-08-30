@@ -1,22 +1,33 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InlineEntitySelector } from "./InlineEntitySelector";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 describe("InlineEntitySelector", () => {
   let container: HTMLDivElement;
+  let originalMatchMedia: typeof window.matchMedia;
 
   beforeEach(() => {
+    originalMatchMedia = window.matchMedia;
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
+    window.matchMedia = originalMatchMedia;
     container.remove();
     document.body.innerHTML = "";
   });
@@ -35,10 +46,10 @@ describe("InlineEntitySelector", () => {
             { id: "agent:agent-1", label: "CodexCoder" },
             { id: "agent:agent-2", label: "DesignBot" },
           ]}
-          placeholder="Assignee"
-          noneLabel="No assignee"
-          searchPlaceholder="Search assignees..."
-          emptyMessage="No assignees found."
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
           onChange={onChange}
         />,
       );
@@ -51,7 +62,7 @@ describe("InlineEntitySelector", () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const searchInput = document.querySelector('input[placeholder="Search assignees..."]') as HTMLInputElement | null;
+    const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
     searchInput?.focus();
 
@@ -73,6 +84,138 @@ describe("InlineEntitySelector", () => {
     expect(onChange).toHaveBeenCalledWith("agent:agent-1");
 
     document.removeEventListener("keydown", documentKeyDown);
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("focuses the search input when opened on coarse pointers", async () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[
+            { id: "agent:agent-1", label: "CodexCoder" },
+            { id: "agent:agent-2", label: "DesignBot" },
+          ]}
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+    expect(document.activeElement).toBe(searchInput);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not open the popover when disabled", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "agent:agent-1", label: "CodexCoder" }]}
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
+          onChange={onChange}
+          disabled
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+    expect(trigger?.disabled).toBe(true);
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.querySelector('input[placeholder="Search responsible..."]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("filters options as the user types in the search box", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[
+            { id: "agent:agent-1", label: "CodexCoder" },
+            { id: "agent:agent-2", label: "DesignBot" },
+          ]}
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeInputValue?.call(searchInput, "design");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const optionLabels = Array.from(document.querySelectorAll("[role='dialog'] button, .max-h-56 button")).map(
+      (el) => el.textContent ?? "",
+    );
+    const joined = optionLabels.join("|");
+    expect(joined).toContain("DesignBot");
+    expect(joined).not.toContain("CodexCoder");
+
     act(() => {
       root.unmount();
     });

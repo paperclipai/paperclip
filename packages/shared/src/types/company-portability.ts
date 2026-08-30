@@ -1,5 +1,7 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
+import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
   company: boolean;
@@ -32,9 +34,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   path: string;
   name: string;
   description: string | null;
-  brandColor: string | null;
   logoPath: string | null;
-  attachmentMaxBytes: number | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
@@ -47,6 +47,39 @@ export interface CompanyPortabilitySidebarOrder {
   projects: string[];
 }
 
+export interface CompanyPortabilityLabelManifestEntry {
+  name: string;
+  color: string;
+}
+
+export interface CompanyPortabilityBlobManifestEntry {
+  sha256: string;
+  byteSize: number;
+  contentType: string;
+}
+
+export interface CompanyPortabilityEmbeddedAssetManifestEntry {
+  /**
+   * The asset id on the SOURCE board. Source ids are only meaningful as the
+   * rewrite key for the /api/assets/<assetId>/content references embedded in
+   * the bundle's markdown; the importer mints fresh asset ids and rewrites
+   * every reference to them.
+   */
+  assetId: string;
+  /** Content address of the image bytes in the bundle's blobs/ store. */
+  sha256: string;
+  contentType: string;
+  originalFilename: string | null;
+  /**
+   * Export categories whose files reference this asset ("agents",
+   * "projects", "skills", "tasks", "routines"), or "always" when an
+   * always-exported root file references it. Lets export selection follow
+   * the toggles of the referencing files. Absent entries are treated as
+   * always included.
+   */
+  ownedBy?: string[];
+}
+
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
@@ -56,6 +89,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   leadAgentSlug: string | null;
   targetDate: string | null;
   color: string | null;
+  icon: string | null;
   status: string | null;
   env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -94,6 +128,51 @@ export interface CompanyPortabilityIssueRoutineManifestEntry {
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
+export interface CompanyPortabilityIssueCommentManifestEntry {
+  body: string;
+  authorType: IssueCommentAuthorType;
+  authorAgentSlug: string | null;
+  authorUserId: string | null;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
+  createdAt: string | null;
+}
+
+export interface CompanyPortabilityIssueDocumentManifestEntry {
+  key: string;
+  title: string | null;
+  format: string;
+  path: string;
+}
+
+export interface CompanyPortabilityIssueWorkProductManifestEntry {
+  type: string;
+  provider: string;
+  externalId: string | null;
+  title: string;
+  url: string | null;
+  status: string;
+  reviewState: string;
+  isPrimary: boolean;
+  healthStatus: string;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface CompanyPortabilityIssueMonitorManifestEntry {
+  notes: string | null;
+  scheduledBy: string | null;
+  hadSchedule: boolean;
+}
+
+export interface CompanyPortabilityIssueAttachmentManifestEntry {
+  sha256: string;
+  contentType: string;
+  originalFilename: string | null;
+  byteSize: number;
+  commentIndex: number | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -109,9 +188,24 @@ export interface CompanyPortabilityIssueManifestEntry {
   status: string | null;
   priority: string | null;
   labelIds: string[];
+  labelNames?: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
+  comments: CompanyPortabilityIssueCommentManifestEntry[];
+  blockedBy?: string[];
+  documents?: CompanyPortabilityIssueDocumentManifestEntry[];
+  workProducts?: CompanyPortabilityIssueWorkProductManifestEntry[];
+  monitor?: CompanyPortabilityIssueMonitorManifestEntry | null;
+  attachments?: CompanyPortabilityIssueAttachmentManifestEntry[];
+  /** Slug of the parent task when it is part of the same bundle (schemaVersion >= 7). */
+  parentSlug?: string | null;
+  /** Preserved source timestamps as ISO strings (schemaVersion >= 7); absent in older bundles. */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -125,10 +219,16 @@ export interface CompanyPortabilityAgentManifestEntry {
   icon: string | null;
   capabilities: string | null;
   reportsToSlug: string | null;
+  reportsToExistingAgentId: string | null;
+  reportsToExistingAgentSlug: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
   permissions: Record<string, unknown>;
+  permissionGrants: Array<{
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  }>;
   budgetMonthlyCents: number;
   metadata: Record<string, unknown> | null;
 }
@@ -161,6 +261,9 @@ export interface CompanyPortabilityManifest {
   includes: CompanyPortabilityInclude;
   company: CompanyPortabilityCompanyManifestEntry | null;
   sidebar: CompanyPortabilitySidebarOrder | null;
+  labels?: CompanyPortabilityLabelManifestEntry[];
+  blobs?: CompanyPortabilityBlobManifestEntry[];
+  embeddedAssets?: CompanyPortabilityEmbeddedAssetManifestEntry[];
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
@@ -202,6 +305,13 @@ export type CompanyPortabilitySource =
       type: "inline";
       rootPath?: string | null;
       files: Record<string, CompanyPortabilityFileEntry>;
+      /**
+       * Client-declared file count (`Object.keys(files).length`). The import
+       * path fails closed when the received file set is smaller, so a
+       * truncated inline body cannot import a fragment. Optional for callers
+       * that predate the check.
+       */
+      expectedFileCount?: number;
     }
   | {
       type: "github";
@@ -281,6 +391,8 @@ export interface CompanyPortabilityAdapterOverride {
 
 export interface CompanyPortabilityImportRequest extends CompanyPortabilityPreviewRequest {
   adapterOverrides?: Record<string, CompanyPortabilityAdapterOverride>;
+  secretValues?: Record<string, string>;
+  pauseAutomations?: boolean;
 }
 
 export interface CompanyPortabilityImportResult {
@@ -296,12 +408,28 @@ export interface CompanyPortabilityImportResult {
     name: string;
     reason: string | null;
   }[];
+  skills: {
+    originalKey: string;
+    originalSlug: string;
+    key: string;
+    slug: string;
+    id: string;
+    action: "created" | "renamed" | "replaced" | "skipped";
+    reason: string | null;
+  }[];
   projects: {
     slug: string;
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
     reason: string | null;
+  }[];
+  routines: {
+    slug: string;
+    id: string | null;
+    action: "created";
+    title: string;
+    status: string;
   }[];
   envInputs: CompanyPortabilityEnvInput[];
   warnings: string[];

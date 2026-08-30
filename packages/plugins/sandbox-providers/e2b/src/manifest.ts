@@ -28,19 +28,20 @@ const manifest: PaperclipPluginManifestV1 = {
         properties: {
           template: {
             type: "string",
-            description: "E2B sandbox template name.",
+            description: "E2B sandbox template name. Defaults to base when omitted.",
             default: "base",
           },
           apiKey: {
             type: "string",
             format: "secret-ref",
             description:
-              "Paperclip secret reference for the E2B API key. Falls back to E2B_API_KEY if omitted.",
+              "Environment-specific E2B API key. Paste a key or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Falls back to E2B_API_KEY if omitted.",
           },
           timeoutMs: {
             type: "number",
-            description: "Sandbox timeout in milliseconds.",
-            default: 300000,
+            description:
+              "Sandbox lifetime in milliseconds, refreshed on each command. Defaults to 1 hour. Raise this if your runs commonly idle longer than the default between commands.",
+            default: 3600000,
           },
           reuseLease: {
             type: "boolean",
@@ -48,7 +49,6 @@ const manifest: PaperclipPluginManifestV1 = {
             default: false,
           },
         },
-        required: ["template"],
       },
     },
   ],

@@ -19,6 +19,9 @@ function collectWorkspaceStrategyCommandPaths(raw: unknown, prefix: string): str
   if (hasOwn(raw, "provisionCommand")) {
     paths.push(prefixPath(prefix, "provisionCommand"));
   }
+  if (hasOwn(raw, "runtimeProvisionCommand")) {
+    paths.push(prefixPath(prefix, "runtimeProvisionCommand"));
+  }
   if (hasOwn(raw, "teardownCommand")) {
     paths.push(prefixPath(prefix, "teardownCommand"));
   }
@@ -30,6 +33,9 @@ function collectExecutionWorkspaceConfigCommandPaths(raw: unknown, prefix: strin
   const paths: string[] = [];
   if (hasOwn(raw, "provisionCommand")) {
     paths.push(prefixPath(prefix, "provisionCommand"));
+  }
+  if (hasOwn(raw, "runtimeProvisionCommand")) {
+    paths.push(prefixPath(prefix, "runtimeProvisionCommand"));
   }
   if (hasOwn(raw, "teardownCommand")) {
     paths.push(prefixPath(prefix, "teardownCommand"));
@@ -47,11 +53,14 @@ export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: s
   );
 }
 
-export function collectAgentAdapterWorkspaceCommandPaths(adapterConfig: unknown): string[] {
+export function collectAgentAdapterWorkspaceCommandPaths(
+  adapterConfig: unknown,
+  prefix = "adapterConfig",
+): string[] {
   if (!isRecord(adapterConfig)) return [];
   return collectWorkspaceStrategyCommandPaths(
     adapterConfig.workspaceStrategy,
-    "adapterConfig.workspaceStrategy",
+    `${prefix}.workspaceStrategy`,
   );
 }
 

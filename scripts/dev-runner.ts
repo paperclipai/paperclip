@@ -6,9 +6,10 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
-import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
+import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
-import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -21,6 +22,18 @@ import {
 const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
 type BindMode = (typeof BIND_MODES)[number];
 
+const mode = process.argv[2] === "watch" ? "watch" : "dev";
+let cliArgs: string[];
+let dataDir: string | null;
+try {
+  const appliedOptions = applyDevRunnerOptions(process.argv.slice(3), process.env, repoRoot);
+  cliArgs = appliedOptions.forwardedArgs;
+  dataDir = appliedOptions.dataDir;
+} catch (error) {
+  console.error(`[paperclip] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
 const worktreeEnvBootstrap = bootstrapDevRunnerWorktreeEnv(repoRoot, process.env);
 if (worktreeEnvBootstrap.missingEnv) {
   console.error(
@@ -28,14 +41,19 @@ if (worktreeEnvBootstrap.missingEnv) {
   );
   process.exit(1);
 }
+if (isWorktreeSeedPending(repoRoot)) {
+  console.error(
+    "[paperclip] this worktree database is seed-pending. Run `pnpm paperclipai worktree ensure-seeded` before `pnpm dev`.",
+  );
+  process.exit(1);
+}
 
-const mode = process.argv[2] === "watch" ? "watch" : "dev";
-const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
@@ -46,6 +64,7 @@ const watchedDirectories = [
   "packages/adapter-utils",
   "packages/adapters",
   "packages/db",
+  "packages/skills-catalog",
   "packages/plugins/sdk",
   "packages/shared",
 ].map((relativePath) => path.join(repoRoot, relativePath));
@@ -70,6 +89,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -81,6 +101,7 @@ const tailscaleAuthFlagNames = new Set([
 let tailscaleAuth = false;
 let bindMode: BindMode | null = null;
 let bindHost: string | null = null;
+const managedRuntimeExposure = process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https";
 const forwardedArgs: string[] = [];
 
 for (let index = 0; index < cliArgs.length; index += 1) {
@@ -124,14 +145,23 @@ if (!bindMode && process.env.npm_config_bind && BIND_MODES.includes(process.env.
 if (!bindHost && process.env.npm_config_bind_host) {
   bindHost = process.env.npm_config_bind_host;
 }
+if (managedRuntimeExposure) {
+  bindMode = "custom";
+  bindHost = "127.0.0.1";
+}
 if (bindMode === "custom" && !bindHost) {
   console.error("[paperclip] --bind custom requires --bind-host <host>");
   process.exit(1);
 }
 
+// Managed HTTPS runtimes serve the built UI bundle: the Vite dev middleware's
+// unbundled module waterfall stalls behind the Tailscale HTTPS proxy and the
+// first page load in a fresh browser profile stays blank forever (PAP-18043).
+const explicitUiDevMiddleware = process.env.PAPERCLIP_UI_DEV_MIDDLEWARE;
+const serveBuiltUiForManagedRuntime = managedRuntimeExposure && explicitUiDevMiddleware === undefined;
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: explicitUiDevMiddleware ?? (serveBuiltUiForManagedRuntime ? "false" : "true"),
 };
 
 if (mode === "dev") {
@@ -165,7 +195,7 @@ if (tailscaleAuth || bindMode) {
   } else {
     env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
     env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+    env.PAPERCLIP_AUTH_BASE_URL_MODE = managedRuntimeExposure ? "explicit" : "auto";
     console.log(
       `[paperclip] dev mode: authenticated/private (bind=${effectiveBind}${bindHost ? `:${bindHost}` : ""})`,
     );
@@ -182,7 +212,7 @@ if (tailscaleAuth || bindMode) {
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
 const devService = createDevServiceIdentity({
   mode,
-  forwardedArgs,
+  forwardedArgs: dataDir ? [...forwardedArgs, `--data-dir=${dataDir}`] : forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
 });
@@ -258,68 +288,14 @@ function exitForSignal(signal: NodeJS.Signals) {
   process.exit(1);
 }
 
-function toRelativePath(absolutePath: string) {
-  return path.relative(repoRoot, absolutePath).split(path.sep).join("/");
-}
-
-function readSignature(absolutePath: string) {
-  const stats = statSync(absolutePath);
-  return `${Math.trunc(stats.mtimeMs)}:${stats.size}`;
-}
-
-function addFileToSnapshot(snapshot: Map<string, string>, absolutePath: string) {
-  const relativePath = toRelativePath(absolutePath);
-  if (ignoredRelativePaths.has(relativePath)) return;
-  if (!shouldTrackDevServerPath(relativePath)) return;
-  snapshot.set(relativePath, readSignature(absolutePath));
-}
-
-function walkDirectory(snapshot: Map<string, string>, absoluteDirectory: string) {
-  if (!existsSync(absoluteDirectory)) return;
-
-  for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
-    if (ignoredDirectoryNames.has(entry.name)) continue;
-
-    const absolutePath = path.join(absoluteDirectory, entry.name);
-    if (entry.isDirectory()) {
-      walkDirectory(snapshot, absolutePath);
-      continue;
-    }
-    if (entry.isFile() || entry.isSymbolicLink()) {
-      addFileToSnapshot(snapshot, absolutePath);
-    }
-  }
-}
-
 function collectWatchedSnapshot() {
-  const snapshot = new Map<string, string>();
-
-  for (const absoluteDirectory of watchedDirectories) {
-    walkDirectory(snapshot, absoluteDirectory);
-  }
-  for (const absoluteFile of watchedFiles) {
-    if (!existsSync(absoluteFile)) continue;
-    addFileToSnapshot(snapshot, absoluteFile);
-  }
-
-  return snapshot;
-}
-
-function diffSnapshots(previous: Map<string, string>, next: Map<string, string>) {
-  const changed = new Set<string>();
-
-  for (const [relativePath, signature] of next) {
-    if (previous.get(relativePath) !== signature) {
-      changed.add(relativePath);
-    }
-  }
-  for (const relativePath of previous.keys()) {
-    if (!next.has(relativePath)) {
-      changed.add(relativePath);
-    }
-  }
-
-  return [...changed].sort();
+  return collectDevServerWatchedSnapshot({
+    repoRoot,
+    watchedDirectories,
+    watchedFiles,
+    ignoredDirectoryNames,
+    ignoredRelativePaths,
+  }) as Map<string, string>;
 }
 
 function ensureDevStatusDirectory() {
@@ -348,6 +324,13 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -421,7 +404,7 @@ async function runPnpm(args: string[], options: {
 
 async function getMigrationStatusPayload() {
   const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
+    ["--silent", "--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
   );
   if (status.code !== 0) {
@@ -433,16 +416,26 @@ async function getMigrationStatusPayload() {
     process.exit(status.code);
   }
 
-  try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
-  } catch (error) {
-    process.stderr.write(
-      status.stderr ||
-        status.stdout ||
-        "[paperclip] migration-status returned invalid JSON payload\n",
-    );
-    throw toError(error, "Unable to parse migration-status JSON output");
+  // pnpm can interleave its own reporter lines (e.g. "Unsupported engine"
+  // warnings) into stdout, so parse the last line that is a JSON object
+  // instead of trusting the whole stream.
+  const jsonLines = status.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("{"));
+  for (let index = jsonLines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(jsonLines[index]) as { status?: string; pendingMigrations?: string[] };
+    } catch {
+      // keep scanning earlier JSON-looking lines
+    }
   }
+  process.stderr.write(
+    status.stderr ||
+      status.stdout ||
+      "[paperclip] migration-status returned invalid JSON payload\n",
+  );
+  throw new Error("Unable to parse migration-status JSON output");
 }
 
 async function refreshPendingMigrations() {
@@ -527,6 +520,53 @@ async function buildPluginSdk() {
     console.error("[paperclip] plugin sdk build failed");
     process.exit(result.code);
   }
+}
+
+function newestMtimeMs(target: string): number {
+  const stat = statSync(target, { throwIfNoEntry: false });
+  if (!stat) return 0;
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  let newest = stat.mtimeMs;
+  for (const entry of readdirSync(target)) {
+    if (entry === "node_modules" || entry === ".git" || entry === "dist") continue;
+    const childNewest = newestMtimeMs(path.join(target, entry));
+    if (childNewest > newest) newest = childNewest;
+  }
+  return newest;
+}
+
+function uiBundleIsFresh(): boolean {
+  const distIndex = path.join(repoRoot, "ui", "dist", "index.html");
+  const distStat = statSync(distIndex, { throwIfNoEntry: false });
+  if (!distStat) return false;
+  const sources = [
+    path.join(repoRoot, "ui", "src"),
+    path.join(repoRoot, "ui", "public"),
+    path.join(repoRoot, "ui", "index.html"),
+    path.join(repoRoot, "ui", "package.json"),
+    path.join(repoRoot, "ui", "vite.config.ts"),
+    path.join(repoRoot, "packages", "shared", "src"),
+  ];
+  return sources.every((source) => newestMtimeMs(source) <= distStat.mtimeMs);
+}
+
+async function buildUiBundleForManagedRuntime(): Promise<boolean> {
+  console.log("[paperclip] managed runtime: building the UI bundle for static serving...");
+  const result = await runPnpm(
+    ["--filter", "@paperclipai/ui", "build"],
+    { stdio: "inherit" },
+  );
+  if (result.signal) {
+    exitForSignal(result.signal);
+    return false;
+  }
+  if (result.code !== 0) {
+    console.error(
+      "[paperclip] UI bundle build failed; falling back to the Vite dev middleware (the page may load slowly or stay blank over HTTPS)",
+    );
+    return false;
+  }
+  return true;
 }
 
 async function markChildAsCurrent() {
@@ -633,7 +673,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequested = consumeDevServerRestartRequest();
+  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -645,11 +686,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }
@@ -722,7 +767,20 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+// The managed runtime readiness window is tight, so reuse a fresh bundle
+// when possible and overlap a needed rebuild with the migration preflight.
+let uiBundleBuild: Promise<boolean> | null = null;
+if (serveBuiltUiForManagedRuntime) {
+  if (uiBundleIsFresh()) {
+    console.log("[paperclip] managed runtime: reusing the up-to-date UI bundle in ui/dist");
+  } else {
+    uiBundleBuild = buildUiBundleForManagedRuntime();
+  }
+}
 await maybePreflightMigrations();
+if (uiBundleBuild) {
+  env.PAPERCLIP_UI_DEV_MIDDLEWARE = (await uiBundleBuild) ? "false" : "true";
+}
 await startServerChild();
 installDevIntervals();
 

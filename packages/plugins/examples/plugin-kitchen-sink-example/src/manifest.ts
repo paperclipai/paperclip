@@ -195,6 +195,13 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: EXPORT_NAMES.settingsPage,
       },
       {
+        type: "companySettingsPage",
+        id: SLOT_IDS.companySettingsPage,
+        displayName: "Kitchen Sink",
+        exportName: EXPORT_NAMES.companySettingsPage,
+        routePath: "kitchen-sink",
+      },
+      {
         type: "dashboardWidget",
         id: SLOT_IDS.dashboardWidget,
         displayName: "Kitchen Sink",

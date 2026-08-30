@@ -1,10 +1,9 @@
 ---
 name: pr-report
 description: >
-  Review a pull request or contribution deeply, explain it tutorial-style for a
-  maintainer, and produce a polished report artifact such as HTML or Markdown.
-  Use when asked to analyze a PR, explain a contributor's design decisions,
-  compare it with similar systems, or prepare a merge recommendation.
+  Produce a maintainer-grade PR or contribution report as HTML or Markdown. Use
+  when asked to deeply review a PR, explain a design, compare systems, or prepare
+  a merge recommendation.
 ---
 
 # PR Report Skill

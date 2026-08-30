@@ -23,7 +23,7 @@ export function DashboardLive() {
     return (
       <EmptyState
         icon={RadioTower}
-        message={companies.length === 0 ? "Create a company to view live runs." : "Select a company to view live runs."}
+        message={companies.length === 0 ? "Create an organization to view live runs." : "Select an organization to view live runs."}
       />
     );
   }
@@ -54,7 +54,7 @@ export function DashboardLive() {
         fetchLimit={DASHBOARD_LIVE_RUN_LIMIT}
         cardLimit={DASHBOARD_LIVE_RUN_LIMIT}
         gridClassName="gap-3 md:grid-cols-2 2xl:grid-cols-3"
-        cardClassName="h-[420px]"
+        cardClassName="h-(--sz-420px)"
         emptyMessage="No active or recent agent runs."
         queryScope="dashboard-live"
         showMoreLink={false}

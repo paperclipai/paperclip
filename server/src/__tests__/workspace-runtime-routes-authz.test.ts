@@ -26,8 +26,17 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockWorkspaceRuntimeLeaseService = vi.hoisted(() => ({
+  claim: vi.fn(async () => ({ outcome: "created", ownerKey: "issue:issue-1", lease: null, reclaimedFrom: null })),
+  release: vi.fn(async () => ({ released: false, ownerKey: null })),
+  get: vi.fn(async () => null),
+}));
+const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
+}));
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 
@@ -36,12 +45,16 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+  heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
@@ -62,12 +75,16 @@ function registerWorkspaceRouteMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
     environmentService: () => mockEnvironmentService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
+    heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
+    workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
+    LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
@@ -192,6 +209,12 @@ describe.sequential("workspace runtime service route authorization", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockEnvironmentService.getById.mockResolvedValue(null);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
@@ -387,6 +410,7 @@ describe.sequential("workspace runtime service route authorization", () => {
           workspaceStrategy: {
             type: "git_worktree",
             provisionCommand: "touch /tmp/paperclip-rce",
+            runtimeProvisionCommand: "touch /tmp/paperclip-runtime-rce",
           },
         },
       });

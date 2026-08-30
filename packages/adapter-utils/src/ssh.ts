@@ -1,8 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Transform } from "node:stream";
+import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import {
+  createUnrelatedHistoryGraftCommit,
+  GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  readSanitizedOriginRemoteUrl,
+} from "./git-workspace-sync.js";
+import type { RunProcessResult } from "./server-utils.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import {
+  createRuntimeProgressReporter,
+  type RuntimeProgressDirection,
+  type RuntimeProgressPhase,
+  type RuntimeProgressSink,
+} from "./runtime-progress.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -21,7 +38,85 @@ export interface SshCommandResult {
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
-  paperclipApiUrl?: string | null;
+}
+
+export function createSshCommandManagedRuntimeRunner(input: {
+  spec: SshRemoteExecutionSpec;
+  defaultCwd?: string | null;
+  maxBufferBytes?: number | null;
+}): CommandManagedRuntimeRunner {
+  const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
+  const maxBufferBytes =
+    typeof input.maxBufferBytes === "number" && Number.isFinite(input.maxBufferBytes) && input.maxBufferBytes > 0
+      ? Math.trunc(input.maxBufferBytes)
+      : 1024 * 1024;
+
+  return {
+    execute: async (commandInput): Promise<RunProcessResult> => {
+      const startedAt = new Date().toISOString();
+      const command = commandInput.command.trim();
+      const args = commandInput.args ?? [];
+      const cwd = commandInput.cwd?.trim() || defaultCwd;
+      const envEntries = Object.entries(commandInput.env ?? {})
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      const envPrefix = envEntries.length > 0
+        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        : "";
+      const exportPrefix = envEntries.length > 0
+        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
+        : "";
+      const commandScript = command === "sh" || command === "bash"
+        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
+          ? `${exportPrefix}${args[1]}`
+          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
+
+      try {
+        const result = await runSshCommand(input.spec, remoteCommand, {
+          stdin: commandInput.stdin,
+          timeoutMs: commandInput.timeoutMs,
+          maxBuffer: maxBufferBytes,
+        });
+        if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+        if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          pid: null,
+          startedAt,
+        };
+      } catch (error) {
+        const failure = error as {
+          stdout?: unknown;
+          stderr?: unknown;
+          code?: unknown;
+          signal?: unknown;
+          killed?: unknown;
+        };
+        const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+        const stderr = typeof failure.stderr === "string"
+          ? failure.stderr
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        if (stdout) await commandInput.onLog?.("stdout", stdout);
+        if (stderr) await commandInput.onLog?.("stderr", stderr);
+        return {
+          exitCode: typeof failure.code === "number" ? failure.code : null,
+          signal: typeof failure.signal === "string" ? failure.signal : null,
+          timedOut: failure.killed === true,
+          stdout,
+          stderr,
+          pid: null,
+          startedAt,
+        };
+      }
+    },
+  };
 }
 
 export interface SshEnvLabSupport {
@@ -83,10 +178,6 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     port: portValue,
     username,
     remoteCwd,
-    paperclipApiUrl:
-      typeof parsed.paperclipApiUrl === "string" && parsed.paperclipApiUrl.trim().length > 0
-        ? parsed.paperclipApiUrl.trim()
-        : null,
     remoteWorkspacePath:
       typeof parsed.remoteWorkspacePath === "string" && parsed.remoteWorkspacePath.trim().length > 0
         ? parsed.remoteWorkspacePath.trim()
@@ -96,50 +187,6 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
   };
-}
-
-function normalizeHttpUrlCandidate(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-    return parsed.origin;
-  } catch {
-    return null;
-  }
-}
-
-export async function findReachablePaperclipApiUrlOverSsh(input: {
-  config: SshConnectionConfig;
-  candidates: string[];
-  timeoutMs?: number;
-}): Promise<string | null> {
-  const uniqueCandidates = Array.from(
-    new Set(
-      input.candidates
-        .map((candidate) => normalizeHttpUrlCandidate(candidate))
-        .filter((candidate): candidate is string => candidate !== null),
-    ),
-  );
-
-  for (const candidate of uniqueCandidates) {
-    const healthUrl = new URL("/api/health", candidate).toString();
-    try {
-      await runSshCommand(
-        input.config,
-        `sh -lc ${shellQuote(`curl -fsS -m ${Math.max(1, Math.ceil((input.timeoutMs ?? 5_000) / 1000))} ${shellQuote(healthUrl)} >/dev/null`)}`,
-        { timeoutMs: input.timeoutMs ?? 5_000 },
-      );
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
 }
 
 async function execFileText(
@@ -172,6 +219,113 @@ async function execFileText(
   });
 }
 
+async function spawnText(
+  file: string,
+  args: string[],
+  options: {
+    stdin?: string;
+    timeout?: number;
+    maxBuffer?: number;
+  } = {},
+): Promise<SshCommandResult> {
+  return await new Promise<SshCommandResult>((resolve, reject) => {
+    const child = spawn(file, args, {
+      stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+    });
+
+    const maxBuffer = options.maxBuffer ?? 1024 * 128;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      error.killed = timedOut;
+      reject(error);
+    };
+
+    const append = (
+      streamName: "stdout" | "stderr",
+      chunk: unknown,
+    ) => {
+      const text = String(chunk);
+      if (streamName === "stdout") {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+      if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
+          code: null,
+        }));
+      }
+    };
+
+    let killEscalation: NodeJS.Timeout | null = null;
+    const timeout = options.timeout && options.timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          // Escalate to SIGKILL after a 5s grace window so a hung remote
+          // command that ignores SIGTERM cannot keep the child alive
+          // indefinitely.
+          killEscalation = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // child may have already exited between the SIGTERM and the
+              // escalation — that's fine.
+            }
+          }, 5_000);
+          killEscalation.unref?.();
+        }, options.timeout)
+      : null;
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (killEscalation) clearTimeout(killEscalation);
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      append("stdout", chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      append("stderr", chunk);
+    });
+
+    child.on("error", (error) => {
+      clearTimers();
+      finishReject(Object.assign(error, { code: null }));
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimers();
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+        stdout,
+        stderr,
+        code,
+        signal,
+        killed: timedOut,
+      }));
+    });
+
+    if (options.stdin != null && child.stdin) {
+      child.stdin.end(options.stdin);
+    }
+  });
+}
+
 async function runLocalGit(
   localDir: string,
   args: string[],
@@ -189,7 +343,7 @@ async function commandExists(command: string): Promise<boolean> {
 
 async function resolveCommandPath(command: string): Promise<string | null> {
   try {
-    const result = await execFileText("sh", ["-lc", `command -v ${shellQuote(command)}`], {
+    const result = await execFileText("sh", ["-c", `command -v ${shellQuote(command)}`], {
       timeout: 5_000,
       maxBuffer: 8 * 1024,
     });
@@ -267,6 +421,152 @@ function tarSpawnEnv(): NodeJS.ProcessEnv {
   };
 }
 
+// Converts a tar `--exclude` pattern into a regexp for the local-size estimate.
+// We only need approximate fidelity here (the estimate feeds a clamped percent),
+// so we support the literal names and `*`/`?` globs used in practice.
+function tarPatternToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]");
+  return new RegExp(`^${escaped}$`);
+}
+
+// Walks `localDir` summing regular-file sizes, mirroring tar's `--exclude`
+// handling (plus the implicit `._*`) and `followSymlinks` so the to-ssh upload
+// can report an estimated total before tar finishes producing the stream.
+async function estimateLocalDirSize(input: {
+  localDir: string;
+  exclude?: string[];
+  followSymlinks?: boolean;
+}): Promise<number> {
+  const regexes = ["._*", ...(input.exclude ?? [])].map(tarPatternToRegExp);
+  const isExcluded = (relPath: string, base: string) =>
+    regexes.some((regex) => regex.test(relPath) || regex.test(base));
+
+  let total = 0;
+  const walk = async (dir: string, relative: string): Promise<void> => {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (isExcluded(entryRelative, entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      const stats = await (input.followSymlinks ? fs.stat(full) : fs.lstat(full)).catch(() => null);
+      if (!stats) continue;
+      if (stats.isDirectory()) {
+        await walk(full, entryRelative);
+      } else if (stats.isFile()) {
+        total += stats.size;
+      }
+    }
+  };
+  await walk(input.localDir, "");
+  return total;
+}
+
+// Best-effort remote size probe for the from-ssh restore. `du -sk` is POSIX and
+// available on the BSD/Linux remotes we target; it over-counts (block-rounded,
+// includes excluded dirs) which keeps the reported percent safely below 100
+// until the stream actually closes. Returns null when unavailable so the caller
+// falls back to MB-received mode.
+async function probeRemoteDirSize(input: {
+  spec: SshConnectionConfig;
+  remoteDir: string;
+}): Promise<number | null> {
+  try {
+    const result = await runSshScript(
+      input.spec,
+      `du -sk ${shellQuote(input.remoteDir)} 2>/dev/null | cut -f1`,
+      { timeoutMs: 15_000, maxBuffer: 16 * 1024 },
+    );
+    const kilobytes = Number.parseInt(result.stdout.trim(), 10);
+    return Number.isFinite(kilobytes) && kilobytes > 0 ? kilobytes * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+interface TransferProgress {
+  // Backpressure-respecting counter to splice into a transport pipe.
+  counter: Transform;
+  // Last cumulative byte count observed by the counter.
+  transferred: () => number;
+  // Emit the terminal completion line. Idempotent.
+  finish: () => Promise<void>;
+  // Emit a terminal failure marker instead of a completion line. Idempotent.
+  fail: () => Promise<void>;
+}
+
+// Wraps a throttled progress reporter behind a counting Transform so transports
+// can `source.pipe(progress.counter).pipe(dest)`. When `totalBytes` is a known
+// exact size (e.g. a git bundle) the reporter emits an exact percentage. When it
+// is an estimate (tar upload / remote probe) we clamp the reported bytes to 99%
+// of the estimate so an inaccurate total never shows a premature 100%; `finish`
+// then emits the terminal 100% (or, in MB-only mode, the final MB) line.
+//
+// `totalBytes` may be a promise so an expensive size estimate (a local dir walk
+// or a remote `du` probe) runs concurrently with the transfer instead of
+// blocking the pipe from opening. Until it resolves the counter reports bytes in
+// MB-only mode, then adopts the percentage once the total is known; `finish`
+// awaits the estimate so the terminal 100% line is still guaranteed.
+function createTransferProgress(input: {
+  onProgress: RuntimeProgressSink;
+  phase: RuntimeProgressPhase;
+  direction: RuntimeProgressDirection;
+  label?: string;
+  totalBytes: number | null | Promise<number | null>;
+  estimated: boolean;
+}): TransferProgress {
+  const reporter = createRuntimeProgressReporter({
+    sink: input.onProgress,
+    phase: input.phase,
+    direction: input.direction,
+    label: input.label,
+    target: "ssh",
+  });
+
+  let total: number | null = null;
+  let cap: number | null = null;
+  const applyTotal = (value: number | null) => {
+    total = value != null && value > 0 ? value : null;
+    cap = total != null && input.estimated ? Math.floor(total * 0.99) : null;
+  };
+  const totalReady: Promise<void> =
+    input.totalBytes != null && typeof (input.totalBytes as Promise<number | null>).then === "function"
+      ? (input.totalBytes as Promise<number | null>).then(applyTotal, () => applyTotal(null))
+      : (applyTotal(input.totalBytes as number | null), Promise.resolve());
+
+  let transferred = 0;
+  let chain: Promise<void> = Promise.resolve();
+  const enqueue = (work: () => Promise<void>) => {
+    chain = chain.then(work).catch(() => undefined);
+  };
+
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      transferred += chunk.length;
+      const reported = cap != null ? Math.min(transferred, cap) : transferred;
+      const totalSnapshot = total;
+      enqueue(() => reporter.report(reported, totalSnapshot));
+      callback(null, chunk);
+    },
+  });
+
+  return {
+    counter,
+    transferred: () => transferred,
+    finish: async () => {
+      await chain.catch(() => undefined);
+      await totalReady.catch(() => undefined);
+      await reporter.complete(total != null ? total : transferred, total).catch(() => undefined);
+    },
+    fail: async () => {
+      await chain.catch(() => undefined);
+      await reporter.fail(transferred, total).catch(() => undefined);
+    },
+  };
+}
+
 async function runSshScript(
   config: SshConnectionConfig,
   script: string,
@@ -277,7 +577,7 @@ async function runSshScript(
 ): Promise<SshCommandResult> {
   return await runSshCommand(
     config,
-    `sh -lc ${shellQuote(script)}`,
+    script,
     options,
   );
 }
@@ -351,6 +651,7 @@ async function streamLocalFileToSsh(input: {
   spec: SshConnectionConfig;
   localFile: string;
   remoteScript: string;
+  progress?: TransferProgress;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -358,7 +659,7 @@ async function streamLocalFileToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(input.remoteScript)}`,
+    `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -383,7 +684,12 @@ async function streamLocalFileToSsh(input: {
     });
     source.on("error", fail);
     ssh.on("error", fail);
-    source.pipe(ssh.stdin ?? null);
+    if (input.progress) {
+      input.progress.counter.on("error", fail);
+      source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
+    } else {
+      source.pipe(ssh.stdin ?? null);
+    }
     ssh.on("close", (code) => {
       if (settled) return;
       settled = true;
@@ -400,6 +706,7 @@ async function streamSshToLocalFile(input: {
   spec: SshConnectionConfig;
   remoteScript: string;
   localFile: string;
+  progress?: TransferProgress;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -407,7 +714,7 @@ async function streamSshToLocalFile(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(input.remoteScript)}`,
+    `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -427,7 +734,12 @@ async function streamSshToLocalFile(input: {
       reject(error);
     };
 
-    ssh.stdout?.pipe(sink);
+    if (input.progress) {
+      input.progress.counter.on("error", fail);
+      ssh.stdout?.pipe(input.progress.counter).pipe(sink);
+    } else {
+      ssh.stdout?.pipe(sink);
+    }
     ssh.stderr?.on("data", (chunk) => {
       sshStderr += String(chunk);
     });
@@ -452,10 +764,13 @@ async function importGitWorkspaceToSsh(input: {
   localDir: string;
   remoteDir: string;
   snapshot: LocalGitWorkspaceSnapshot;
+  onProgress?: RuntimeProgressSink;
 }): Promise<void> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const tempRef = "refs/paperclip/ssh-sync/import";
+  // Per-import unique ref so concurrent imports against the same local repo
+  // can't race on `update-ref` between this run's update and bundle create.
+  const tempRef = `refs/paperclip/ssh-sync/import/${randomUUID()}`;
 
   try {
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
@@ -466,6 +781,7 @@ async function importGitWorkspaceToSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
 
     const remoteSetupScript = [
       "set -e",
@@ -474,19 +790,50 @@ async function importGitWorkspaceToSsh(input: {
       'trap \'rm -f "$tmp_bundle"\' EXIT',
       'cat > "$tmp_bundle"',
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
+      // Carry the workspace's (credential-scrubbed) origin into the transported
+      // repo so branches there keep a publishable remote instead of reading as
+      // remote-less snapshots. set-url covers a reused workspace whose origin
+      // changed; add covers the fresh-init case. Best-effort under `set -e`.
+      ...(originUrl
+        ? [
+          `{ git -C ${shellQuote(input.remoteDir)} remote set-url origin ${shellQuote(originUrl)} >/dev/null 2>&1 || git -C ${shellQuote(input.remoteDir)} remote add origin ${shellQuote(originUrl)} >/dev/null 2>&1; } || true`,
+        ]
+        : []),
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
       input.snapshot.branchName
-        ? `git -C ${shellQuote(input.remoteDir)} checkout -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
-        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+        ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
+        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+      // Drop the per-import ref on the remote side too so it can't accumulate.
+      `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
     ].join("\n");
 
-    await streamLocalFileToSsh({
-      spec: input.spec,
-      localFile: bundlePath,
-      remoteScript: remoteSetupScript,
-    });
+    // The git bundle is a real local file of known size, so report an exact
+    // percentage. No `workspace` label: the "Importing git history" phase is
+    // already self-describing in the log line.
+    const progress = input.onProgress
+      ? createTransferProgress({
+        onProgress: input.onProgress,
+        phase: "Importing git history",
+        direction: "to",
+        totalBytes: (await fs.stat(bundlePath)).size,
+        estimated: false,
+      })
+      : null;
+
+    try {
+      await streamLocalFileToSsh({
+        spec: input.spec,
+        localFile: bundlePath,
+        remoteScript: remoteSetupScript,
+        progress: progress ?? undefined,
+      });
+      await progress?.finish();
+    } catch (error) {
+      await progress?.fail();
+      throw error;
+    }
   } finally {
     await runLocalGit(input.localDir, ["update-ref", "-d", tempRef], {
       timeout: 10_000,
@@ -500,10 +847,13 @@ async function exportGitWorkspaceFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
   localDir: string;
-}): Promise<void> {
+  importedRef?: string;
+  resetLocalWorkspace?: boolean;
+  onProgress?: RuntimeProgressSink;
+}): Promise<string> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const importedRef = "refs/paperclip/ssh-sync/imported";
+  const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
 
   try {
     const exportScript = [
@@ -517,27 +867,175 @@ async function exportGitWorkspaceFromSsh(input: {
       'cat "$tmp_bundle"',
     ].join("\n");
 
-    await streamSshToLocalFile({
-      spec: input.spec,
-      remoteScript: exportScript,
-      localFile: bundlePath,
-    });
+    // The remote bundle size isn't known before streaming, so report bytes
+    // received (MB mode) with a terminal completion line.
+    const progress = input.onProgress
+      ? createTransferProgress({
+        onProgress: input.onProgress,
+        phase: "Exporting git history",
+        direction: "from",
+        totalBytes: null,
+        estimated: false,
+      })
+      : null;
+
+    try {
+      await streamSshToLocalFile({
+        spec: input.spec,
+        remoteScript: exportScript,
+        localFile: bundlePath,
+        progress: progress ?? undefined,
+      });
+      await progress?.finish();
+    } catch (error) {
+      await progress?.fail();
+      throw error;
+    }
 
     await runLocalGit(input.localDir, ["fetch", "--force", bundlePath, `refs/paperclip/ssh-sync/export:${importedRef}`], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
-  } finally {
-    await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+    if (input.resetLocalWorkspace !== false) {
+      await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024,
+      });
+    }
+    const importedHead = await runLocalGit(input.localDir, ["rev-parse", importedRef], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    }).catch(() => undefined);
+    });
+    return importedHead.stdout.trim();
+  } finally {
+    if (input.resetLocalWorkspace !== false) {
+      await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     await fs.rm(bundleDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function integrateImportedGitHead(input: {
+  localDir: string;
+  importedHead: string;
+}): Promise<void> {
+  const isConcurrentRefUpdateError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("cannot lock ref") && message.includes("expected");
+  };
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const snapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+    if (!snapshot) return;
+
+    const currentHead = snapshot.headCommit;
+    if (!currentHead || currentHead === input.importedHead) return;
+
+    const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+    // `git merge-base` exits 1 when the commits share no ancestor — the only
+    // outcome that authorizes the graft fallback below. Every other failure
+    // (timeout, missing object, repository error) must keep failing the
+    // integration instead of silently rewriting the tip.
+    let noCommonAncestor = false;
+    const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    }).catch((error: unknown) => {
+      noCommonAncestor = (error as { code?: unknown } | null)?.code === 1;
+      return null;
+    });
+    const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
+
+    if (mergeBaseHead === input.importedHead) {
+      return;
+    }
+
+    if (mergeBaseHead === currentHead) {
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    if (noCommonAncestor) {
+      // No common ancestor — merging is impossible and failing here would
+      // discard the imported work. Graft it onto the current head instead;
+      // see createUnrelatedHistoryGraftCommit.
+      const graftCommit = await createUnrelatedHistoryGraftCommit({
+        localDir: input.localDir,
+        currentHead,
+        importedHead: input.importedHead,
+        syncLabel: "Paperclip SSH sync",
+      });
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    let mergedTree;
+    try {
+      mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
+        timeout: 60_000,
+        maxBuffer: 256 * 1024,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Failed to merge concurrent SSH git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
+      );
+    }
+    const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
+    if (!mergedTreeId) {
+      throw new Error("Failed to compute a merged git tree for SSH workspace restore.");
+    }
+
+    const mergeCommit = await runLocalGit(
+      input.localDir,
+      [
+        ...GIT_SYNC_COMMIT_IDENTITY_ARGS,
+        "commit-tree",
+        mergedTreeId,
+        "-p",
+        currentHead,
+        "-p",
+        input.importedHead,
+        "-m",
+        `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
+      ],
+      {
+        timeout: 60_000,
+        maxBuffer: 64 * 1024,
+      },
+    );
+    try {
+      await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      });
+      return;
+    } catch (error) {
+      if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+      throw error;
+    }
+  }
+
+  throw new Error(`Failed to integrate concurrent SSH git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
 }
 
 async function clearRemoteDirectory(input: {
@@ -661,6 +1159,13 @@ async function isSshEnvLabFixtureProcess(state: Pick<SshEnvLabFixtureState, "pid
 }
 
 export async function getSshEnvLabSupport(): Promise<SshEnvLabSupport> {
+  if (process.platform === "darwin" && process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB !== "1") {
+    return {
+      supported: false,
+      reason: "SSH env-lab fixture is disabled on macOS; set PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB=1 to opt in.",
+    };
+  }
+
   for (const command of ["ssh", "sshd", "ssh-keygen"]) {
     if (!(await commandExists(command))) {
       return {
@@ -688,6 +1193,8 @@ export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
+    env?: Record<string, string>;
+    stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
@@ -697,18 +1204,53 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const envEntries = Object.entries(options.env ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+    for (const [key] of envEntries) {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+    }
+
+    // Mirror buildSshSpawnTarget: source the login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
+    // profile re-exports. The SSH target is an operator-configured host, not a
+    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
+    // through a login profile; a non-login SSH command would miss that PATH.
+    // Source `/etc/profile` first so a host that exposes the PATH through
+    // `/etc/profile.d` scripts still resolves node and the agent CLI.
+    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists, so a host that adds nvm in
+    // .bashrc still resolves node without a double-run of the setup.
+    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const remoteScript = [
+      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      envArgs.length > 0
+        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
+        : `exec sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      remoteCommand,
+      `sh -c ${shellQuote(remoteScript)}`,
     );
 
-    return await execFileText("ssh", sshArgs, {
-      timeout: options.timeoutMs ?? 15_000,
-      maxBuffer: options.maxBuffer ?? 1024 * 128,
-    });
+    return options.stdin != null
+      ? await spawnText("ssh", sshArgs, {
+          stdin: options.stdin,
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        })
+      : await execFileText("ssh", sshArgs, {
+          timeout: options.timeoutMs ?? 15_000,
+          maxBuffer: options.maxBuffer ?? 1024 * 128,
+        });
   } finally {
     await cleanup();
   }
@@ -735,12 +1277,22 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  // Source the login profiles first, then run `env KEY=VAL cmd` so
+  // user-supplied identity overrides win over anything a profile re-exports.
+  // The SSH target is an operator-configured host, not a Paperclip sandbox
+  // image, so it can expose `node` or an agent CLI only through a login
+  // profile; a non-login SSH command would miss that PATH. Source
+  // `/etc/profile` first so a host that exposes the PATH through
+  // `/etc/profile.d` scripts still resolves node and the agent CLI. The script
+  // no longer sources `nvm.sh`; a profile that adds nvm still runs.
+  // .bash_profile typically sources .bashrc itself; only source .bashrc
+  // directly when no .bash_profile exists, so a host that adds nvm in
+  // .bashrc still resolves node without a double-run of the setup.
   const remoteScript = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -751,7 +1303,7 @@ export async function buildSshSpawnTarget(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(remoteScript)}`,
+    `sh -c ${shellQuote(remoteScript)}`,
   );
 
   return {
@@ -767,6 +1319,8 @@ export async function syncDirectoryToSsh(input: {
   remoteDir: string;
   exclude?: string[];
   followSymlinks?: boolean;
+  onProgress?: RuntimeProgressSink;
+  progressLabel?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -774,10 +1328,30 @@ export async function syncDirectoryToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
+    `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
-  await new Promise<void>((resolve, reject) => {
+  // tar's archive size isn't known until tar finishes, so estimate it from the
+  // local file sizes and clamp the reported percent to 99% until the pipe closes.
+  // The estimate walk runs concurrently with the transfer so it never delays the
+  // pipe from opening on large workspaces.
+  const progress = input.onProgress
+    ? createTransferProgress({
+      onProgress: input.onProgress,
+      phase: "Syncing",
+      direction: "to",
+      label: input.progressLabel,
+      totalBytes: estimateLocalDirSize({
+        localDir: input.localDir,
+        exclude: input.exclude,
+        followSymlinks: input.followSymlinks,
+      }),
+      estimated: true,
+    })
+    : null;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
     const tarArgs = [
       ...(input.followSymlinks ? ["-h"] : []),
       "-C",
@@ -829,7 +1403,12 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
-    tar.stdout?.pipe(ssh.stdin ?? null);
+    if (progress) {
+      progress.counter.on("error", fail);
+      tar.stdout?.pipe(progress.counter).pipe(ssh.stdin ?? null);
+    } else {
+      tar.stdout?.pipe(ssh.stdin ?? null);
+    }
     tar.stderr?.on("data", (chunk) => {
       tarStderr += String(chunk);
     });
@@ -849,7 +1428,12 @@ export async function syncDirectoryToSsh(input: {
       sshExitCode = code;
       maybeFinish();
     });
-  }).finally(auth.cleanup);
+    }).finally(auth.cleanup);
+    await progress?.finish();
+  } catch (error) {
+    await progress?.fail();
+    throw error;
+  }
 }
 
 export async function syncDirectoryFromSsh(input: {
@@ -858,6 +1442,8 @@ export async function syncDirectoryFromSsh(input: {
   localDir: string;
   exclude?: string[];
   preserveLocalEntries?: string[];
+  onProgress?: RuntimeProgressSink;
+  progressLabel?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
@@ -870,8 +1456,23 @@ export async function syncDirectoryFromSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -lc ${shellQuote(remoteTarScript)}`,
+    `sh -c ${shellQuote(remoteTarScript)}`,
   ];
+
+  // The remote tar size isn't known locally, so probe the remote directory for
+  // an estimate (clamped to 99%). The probe runs concurrently with the transfer
+  // so its round-trip never delays the restore; when it is unavailable we report
+  // bytes received in MB mode with a terminal completion line.
+  const progress = input.onProgress
+    ? createTransferProgress({
+      onProgress: input.onProgress,
+      phase: "Restoring",
+      direction: "from",
+      label: input.progressLabel,
+      totalBytes: probeRemoteDirSize({ spec: input.spec, remoteDir: input.remoteDir }),
+      estimated: true,
+    })
+    : null;
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -913,7 +1514,12 @@ export async function syncDirectoryFromSsh(input: {
         reject(error);
       };
 
-      ssh.stdout?.pipe(tar.stdin ?? null);
+      if (progress) {
+        progress.counter.on("error", fail);
+        ssh.stdout?.pipe(progress.counter).pipe(tar.stdin ?? null);
+      } else {
+        ssh.stdout?.pipe(tar.stdin ?? null);
+      }
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
       });
@@ -934,9 +1540,13 @@ export async function syncDirectoryFromSsh(input: {
         maybeFinish();
       });
     });
+    await progress?.finish();
 
     await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
     await copyDirectoryContents(stagingDir, input.localDir);
+  } catch (error) {
+    await progress?.fail();
+    throw error;
   } finally {
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     await auth.cleanup();
@@ -947,7 +1557,8 @@ export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
-}): Promise<void> {
+  onProgress?: RuntimeProgressSink;
+}): Promise<{ gitBacked: boolean }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
@@ -957,19 +1568,22 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
+      onProgress: input.onProgress,
     });
     await syncDirectoryToSsh({
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
       exclude: [".git", ".paperclip-runtime"],
+      onProgress: input.onProgress,
+      progressLabel: "workspace",
     });
     await removeDeletedPathsOnSsh({
       spec: input.spec,
       remoteDir,
       deletedPaths: gitSnapshot.deletedPaths,
     });
-    return;
+    return { gitBacked: true };
   }
 
   await clearRemoteDirectory({
@@ -982,15 +1596,71 @@ export async function prepareWorkspaceForSshExecution(input: {
     localDir: input.localDir,
     remoteDir,
     exclude: [".paperclip-runtime"],
+    onProgress: input.onProgress,
+    progressLabel: "workspace",
   });
+  return { gitBacked: false };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  baselineSnapshot?: DirectorySnapshot;
+  restoreGitHistory?: boolean;
+  onProgress?: RuntimeProgressSink;
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  if (input.baselineSnapshot) {
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const importedRef = input.restoreGitHistory
+      ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
+      : null;
+    try {
+      const importedHead = input.restoreGitHistory
+        ? await exportGitWorkspaceFromSsh({
+          spec: input.spec,
+          remoteDir,
+          localDir: input.localDir,
+          importedRef: importedRef ?? undefined,
+          resetLocalWorkspace: false,
+          onProgress: input.onProgress,
+        })
+        : null;
+      await syncDirectoryFromSsh({
+        spec: input.spec,
+        remoteDir,
+        localDir: stagingDir,
+        exclude: input.baselineSnapshot.exclude,
+        onProgress: input.onProgress,
+        progressLabel: "workspace",
+      });
+      await mergeDirectoryWithBaseline({
+        baseline: input.baselineSnapshot,
+        sourceDir: stagingDir,
+        targetDir: input.localDir,
+        // Git history advances via integrateImportedGitHead; the working tree
+        // still comes from the remote file snapshot so dirty remote edits win.
+        beforeApply: importedHead
+          ? async () => {
+            await integrateImportedGitHead({
+              localDir: input.localDir,
+              importedHead,
+            });
+          }
+          : undefined,
+      });
+    } finally {
+      if (importedRef) {
+        await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        }).catch(() => undefined);
+      }
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
@@ -998,6 +1668,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
+      onProgress: input.onProgress,
     });
     await syncDirectoryFromSsh({
       spec: input.spec,
@@ -1005,6 +1676,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
       localDir: input.localDir,
       exclude: [".git", ".paperclip-runtime"],
       preserveLocalEntries: [".git"],
+      onProgress: input.onProgress,
+      progressLabel: "workspace",
     });
     return;
   }
@@ -1014,6 +1687,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
     remoteDir,
     localDir: input.localDir,
     exclude: [".paperclip-runtime"],
+    onProgress: input.onProgress,
+    progressLabel: "workspace",
   });
 }
 
@@ -1022,38 +1697,159 @@ export async function ensureSshWorkspaceReady(
 ): Promise<{ remoteCwd: string }> {
   const result = await runSshCommand(
     config,
-    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`)}`,
+    `mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`,
   );
   return {
     remoteCwd: result.stdout.trim(),
   };
 }
 
+const SSH_ENV_LAB_FIXTURE_PATH_FIELDS = [
+  "rootDir",
+  "workspaceDir",
+  "statePath",
+  "clientPrivateKeyPath",
+  "clientPublicKeyPath",
+  "hostPrivateKeyPath",
+  "hostPublicKeyPath",
+  "authorizedKeysPath",
+  "knownHostsPath",
+  "sshdConfigPath",
+  "sshdLogPath",
+] as const satisfies readonly (keyof SshEnvLabFixtureState)[];
+
+// True when candidate is an absolute path equal to rootDir or nested under
+// it. Used to reject a state file whose paths point outside the fixture
+// root it was read from.
+function isPathRootedAt(candidate: string, rootDir: string): boolean {
+  if (!path.isAbsolute(candidate)) return false;
+  if (candidate === rootDir) return true;
+  const relative = path.relative(rootDir, candidate);
+  return (
+    relative.length > 0 &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+// The state file is untrusted input: any local process running as the same
+// user can write one. A forged pid or an empty sshdConfigPath would weaken
+// isSshEnvLabFixtureProcess's identity check — an empty string is a
+// substring of every command line, so it would match any running process.
+// Reject a state file that fails this check before any identity check or
+// signal runs against it.
+function isValidSshEnvLabFixtureState(
+  raw: SshEnvLabFixtureState,
+  expectedRootDir: string,
+): boolean {
+  if (!Number.isSafeInteger(raw.pid) || raw.pid <= 0) return false;
+  if (raw.rootDir !== expectedRootDir) return false;
+
+  for (const field of SSH_ENV_LAB_FIXTURE_PATH_FIELDS) {
+    const value = raw[field];
+    if (typeof value !== "string" || !isPathRootedAt(value, expectedRootDir)) {
+      return false;
+    }
+  }
+
+  const expectedSshdConfigPath = path.join(expectedRootDir, "sshd_config");
+  if (raw.sshdConfigPath.length === 0 || raw.sshdConfigPath !== expectedSshdConfigPath) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function readSshEnvLabFixtureState(
   statePath: string,
 ): Promise<SshEnvLabFixtureState | null> {
   try {
-    const raw = JSON.parse(await fs.readFile(statePath, "utf8")) as SshEnvLabFixtureState;
+    // Resolve a relative statePath against the current working directory
+    // before use. The state validator below only accepts absolute paths, and
+    // a relative statePath must resolve to the same absolute directory every
+    // time a caller reads it, no matter the process working directory.
+    const resolvedStatePath = path.resolve(statePath);
+    const raw = JSON.parse(await fs.readFile(resolvedStatePath, "utf8")) as SshEnvLabFixtureState;
     if (!raw || raw.kind !== "ssh_openbsd") return null;
+    if (!isValidSshEnvLabFixtureState(raw, path.dirname(resolvedStatePath))) return null;
     return raw;
   } catch {
     return null;
   }
 }
 
-export async function stopSshEnvLabFixture(statePath: string): Promise<boolean> {
-  const state = await readSshEnvLabFixtureState(statePath);
+async function waitUntilFixtureProcessExits(
+  state: Pick<SshEnvLabFixtureState, "pid" | "sshdConfigPath">,
+  timeoutMs: number,
+  intervalMs = 100,
+): Promise<boolean> {
+  const timeoutAt = Date.now() + timeoutMs;
+  while (true) {
+    if (!(await isSshEnvLabFixtureProcess(state))) return true;
+    if (Date.now() >= timeoutAt) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+// Sends a signal to a pid and treats an already-dead process as success.
+// The identity check that runs before this call is not free: it spawns
+// `ps`, which opens a real gap between the check and the signal. If the
+// process exits inside that gap, `process.kill` throws ESRCH even though
+// the outcome the caller wants (the process is gone) already holds. Any
+// other error, such as EPERM for a pid that belongs to another user, must
+// still propagate.
+function signalFixtureProcess(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+// Bounded shutdown escalation shared by every caller that must stop a
+// fixture process: send SIGTERM, wait, re-check process identity (the pid
+// can be reused in the gap between two signals), then SIGKILL, then wait
+// again. Returns true only when the listener is confirmed gone.
+async function escalateSshEnvLabFixtureShutdown(
+  state: Pick<SshEnvLabFixtureState, "pid" | "sshdConfigPath">,
+): Promise<boolean> {
+  if (!(await isSshEnvLabFixtureProcess(state))) return true;
+
+  if (!signalFixtureProcess(state.pid, "SIGTERM")) return true;
+  if (await waitUntilFixtureProcessExits(state, 5_000)) return true;
+
+  if (!(await isSshEnvLabFixtureProcess(state))) return true;
+  if (!signalFixtureProcess(state.pid, "SIGKILL")) return true;
+  if (await waitUntilFixtureProcessExits(state, 2_000)) return true;
+
+  return !(await isSshEnvLabFixtureProcess(state));
+}
+
+// Accepts a state path or an already-read state so a caller that already
+// holds the fixture state in memory does not have to depend on the state
+// file, which a teardown step may have already removed.
+export async function stopSshEnvLabFixture(
+  stateOrPath: string | SshEnvLabFixtureState,
+): Promise<boolean> {
+  const state = typeof stateOrPath === "string"
+    ? await readSshEnvLabFixtureState(stateOrPath)
+    : stateOrPath;
   if (!state) return false;
 
-  if (await isSshEnvLabFixtureProcess(state)) {
-    process.kill(state.pid, "SIGTERM");
-    await waitForCondition(async () => {
-      if (await isSshEnvLabFixtureProcess(state)) {
-        throw new Error("SSH fixture process is still running.");
-      }
-    }, { timeoutMs: 5_000, intervalMs: 100 });
+  if (!(await escalateSshEnvLabFixtureShutdown(state))) {
+    throw new Error(
+      `SSH env-lab fixture did not stop: pid ${state.pid} on port ${state.port} is still running after SIGKILL.`,
+    );
   }
 
+  // Remove the root directory only after the listener process is confirmed
+  // gone. Removing it earlier would delete the state file the process needs
+  // for a later stop attempt to find and signal it.
   await fs.rm(state.rootDir, { recursive: true, force: true }).catch(() => undefined);
   return true;
 }
@@ -1062,8 +1858,17 @@ export async function startSshEnvLabFixture(input: {
   statePath: string;
   bindHost?: string;
   host?: string;
+  // Test-only. Shortens the readiness wait below its 10 second default, so
+  // a regression test can force the start-failure cleanup path without a
+  // real 10 second wait.
+  readinessTimeoutMs?: number;
 }): Promise<SshEnvLabFixtureState> {
-  const existing = await readSshEnvLabFixtureState(input.statePath);
+  // Resolve a relative statePath against the current working directory once,
+  // up front. Every derived path (rootDir and the persisted statePath field)
+  // must be absolute, so the state validator in readSshEnvLabFixtureState
+  // accepts the file that this function writes.
+  const statePath = path.resolve(input.statePath);
+  const existing = await readSshEnvLabFixtureState(statePath);
   if (existing && await isSshEnvLabFixtureProcess(existing)) {
     return existing;
   }
@@ -1082,7 +1887,7 @@ export async function startSshEnvLabFixture(input: {
 
   const bindHost = input.bindHost ?? "127.0.0.1";
   const host = input.host ?? bindHost;
-  const rootDir = path.dirname(input.statePath);
+  const rootDir = path.dirname(statePath);
   await fs.mkdir(rootDir, { recursive: true });
 
   const username = os.userInfo().username;
@@ -1154,7 +1959,7 @@ export async function startSshEnvLabFixture(input: {
     username,
     rootDir,
     workspaceDir,
-    statePath: input.statePath,
+    statePath,
     pid: child.pid ?? 0,
     createdAt: new Date().toISOString(),
     clientPrivateKeyPath,
@@ -1179,14 +1984,28 @@ export async function startSshEnvLabFixture(input: {
       }
       const config = await buildSshEnvLabFixtureConfig(state);
       await ensureSshWorkspaceReady(config);
-    }, { timeoutMs: 10_000, intervalMs: 250 });
-    await fs.writeFile(input.statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+    }, { timeoutMs: input.readinessTimeoutMs ?? 10_000, intervalMs: 250 });
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
     return state;
   } catch (error) {
-    if (await isPidRunning(state.pid)) {
-      process.kill(state.pid, "SIGTERM");
+    // No state file exists on this path yet, so a later stopSshEnvLabFixture
+    // call can never find this pid. Escalate and wait for exit here, the
+    // same way stopSshEnvLabFixture does, before the root directory goes
+    // away — otherwise a slow-to-exit sshd survives as an orphan with its
+    // root directory already gone.
+    const stopped = await escalateSshEnvLabFixtureShutdown(state);
+    if (stopped) {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => undefined);
+    } else {
+      const survivalNote =
+        `SSH env-lab fixture pid ${state.pid} on port ${state.port} is still running after SIGKILL. ` +
+        `Kept ${rootDir} for inspection; no state file exists to target it with a later stop call.`;
+      if (error instanceof Error) {
+        error.message = `${error.message}\n${survivalNote}`;
+      } else {
+        console.error(survivalNote);
+      }
     }
-    await fs.rm(rootDir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }

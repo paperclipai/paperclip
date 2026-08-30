@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { authRoutes } from "../routes/auth.js";
 
@@ -58,8 +58,15 @@ describe.sequential("auth routes", () => {
     email: "jane@example.com",
     image: "https://example.com/jane.png",
   };
+  const originalSentryDsn = process.env.SENTRY_DSN;
+
+  afterEach(() => {
+    if (originalSentryDsn === undefined) delete process.env.SENTRY_DSN;
+    else process.env.SENTRY_DSN = originalSentryDsn;
+  });
 
   it("returns the persisted user profile in the session payload", async () => {
+    delete process.env.SENTRY_DSN;
     const app = await createApp(
       {
         type: "board",
@@ -78,7 +85,58 @@ describe.sequential("auth routes", () => {
         userId: "user-1",
       },
       user: baseUser,
+      sentryDsn: null,
     });
+  });
+
+  it("sends sentryDsn for a board actor when SENTRY_DSN is set", async () => {
+    process.env.SENTRY_DSN = "https://public@o0.ingest.sentry.io/1";
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
+  });
+
+  it("sends a null sentryDsn when SENTRY_DSN is unset", async () => {
+    delete process.env.SENTRY_DSN;
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sentryDsn).toBe(null);
+  });
+
+  it("answers 401 and sends no DSN when the actor type is none", async () => {
+    process.env.SENTRY_DSN = "https://public@o0.ingest.sentry.io/1";
+    const app = await createApp(
+      {
+        type: "none",
+        source: "none",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(401);
+    expect(res.body.sentryDsn).toBeUndefined();
   });
 
   it("updates the signed-in profile", async () => {

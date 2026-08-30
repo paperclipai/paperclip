@@ -33,6 +33,7 @@ docker run --name paperclip \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+  -e PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
@@ -56,6 +57,7 @@ Single container, no external database. Data persists via a bind mount.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
   docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
@@ -117,9 +119,47 @@ services:
 - bootstrap invite URL defaults
 - hostname allowlist defaults (hostname extracted from URL)
 
+For fresh `authenticated/private` Docker or appliance-style installs, the first
+admin can now be claimed entirely from the browser after sign-in. Open the
+Paperclip URL, sign in or create an account, then choose `Claim this instance`
+on the setup screen. This browser claim is disabled for `authenticated/public`;
+public deployments should run the high-entropy CLI invite fallback instead:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
+
 Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
+
+### Optional Vercel Connect credentials
+
+Vercel Connect's backend integration is retained for controlled testing and
+existing Vercel-backed connections, but its new-connection UI is currently
+withheld from **Apps → Browse**. Setting
+`PAPERCLIP_VERCEL_CONNECT_ENABLED=true` does not expose a customer-facing setup
+entry. Native provider setup screens remain unchanged. Vercel-hosted deployments use the
+workload OIDC token Vercel injects. Other hosted and self-hosted deployments
+can provide `PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN` as a deployment bootstrap
+secret only when that token type is accepted by the live Connect API:
+
+```yaml
+services:
+  paperclip:
+    environment:
+      PAPERCLIP_VERCEL_CONNECT_ENABLED: "true"
+      PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN: ${PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN}
+```
+
+Do not save that access token in a company secret or connection config. It is
+instance bootstrap authority for the operator-selected Vercel account. A token's
+long expiry and broad Vercel scope do not prove Connect compatibility; validate
+it with connector metadata before rollout. Workload OIDC takes precedence when
+both authorities are present. Turning the feature flag off hides new
+Vercel-backed setup; existing connections keep resolving while workload OIDC or
+the bootstrap token remains available. Missing or invalid authority fails
+closed. See the [Vercel Connect operator guide](./connections/VERCEL-CONNECT.md).
 
 ## Claude + Codex Local Adapters in Docker
 
@@ -177,6 +217,7 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    ```sh
    cat > ~/.config/containers/systemd/paperclip.env <<EOL
    BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+   PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32)
    POSTGRES_USER=paperclip
    POSTGRES_PASSWORD=paperclip
    POSTGRES_DB=paperclip
@@ -246,6 +287,8 @@ Notes:
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.
+- Set `SMOKE_CONTAINER_NAME` to fix the container's name up front. Automation that has to collect diagnostics when the script *fails* needs a name it already knows, rather than one it can only read back out of a successful run. Defaults to the image name.
+- The container's logs are dumped to `SMOKE_LOG_FILE` (default `$TMPDIR/<container name>.log`) before the script tears the container down, so a run that never became ready still leaves its logs behind.
 - The image definition is in `docker/Dockerfile.onboard-smoke`.
 
 ## General Notes

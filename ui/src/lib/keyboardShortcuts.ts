@@ -13,7 +13,14 @@ const MODIFIER_ONLY_KEYS = new Set(["Shift", "Meta", "Control", "Alt"]);
 
 export type InboxQuickArchiveKeyAction = "ignore" | "archive" | "disarm";
 export type InboxUndoArchiveKeyAction = "ignore" | "undo_archive";
-export type IssueDetailGoKeyAction = "ignore" | "arm" | "navigate_inbox" | "focus_comment" | "disarm";
+export type IssueDetailGoKeyAction =
+  | "ignore"
+  | "arm"
+  | "navigate_inbox"
+  | "focus_comment"
+  | "open_file_viewer"
+  | "disarm";
+export type AttentionQueueKeyAction = "ignore" | "next" | "previous" | "toggle" | "dismiss";
 
 export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -77,6 +84,44 @@ export function shouldBlurPageSearchOnEscape({
 
 export function isModifierOnlyKey(key: string): boolean {
   return MODIFIER_ONLY_KEYS.has(key);
+}
+
+export function resolveAttentionQueueKeyAction({
+  defaultPrevented,
+  key,
+  metaKey,
+  ctrlKey,
+  altKey,
+  target,
+  hasOpenDialog,
+  hasSelection,
+}: {
+  defaultPrevented: boolean;
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  target: EventTarget | null;
+  hasOpenDialog: boolean;
+  hasSelection: boolean;
+}): AttentionQueueKeyAction {
+  if (defaultPrevented || metaKey || ctrlKey || altKey || isModifierOnlyKey(key)) return "ignore";
+  if (hasOpenDialog || isKeyboardShortcutTextInputTarget(target)) return "ignore";
+
+  switch (key) {
+    case "j":
+    case "ArrowDown":
+      return "next";
+    case "k":
+    case "ArrowUp":
+      return "previous";
+    case "Enter":
+      return hasSelection ? "toggle" : "ignore";
+    case "x":
+      return hasSelection ? "dismiss" : "ignore";
+    default:
+      return "ignore";
+  }
 }
 
 export function resolveInboxQuickArchiveKeyAction({
@@ -162,6 +207,7 @@ export function resolveIssueDetailGoKeyAction({
   if (!armed) return normalizedKey === "g" ? "arm" : "ignore";
   if (normalizedKey === "i") return "navigate_inbox";
   if (normalizedKey === "c") return "focus_comment";
+  if (normalizedKey === "f") return "open_file_viewer";
   if (normalizedKey === "g") return "arm";
   return "disarm";
 }

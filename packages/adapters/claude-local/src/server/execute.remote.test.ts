@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 const {
   runChildProcess,
@@ -10,8 +11,9 @@ const {
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
+  startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
+  runChildProcess: vi.fn(async (): Promise<RunProcessResult> => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -26,9 +28,17 @@ const {
   })),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: claude"),
-  prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
+  prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   syncDirectoryToSsh: vi.fn(async () => undefined),
+  startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+    env: {
+      PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+      PAPERCLIP_API_KEY: "bridge-token",
+      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    },
+    stop: async () => {},
+  })),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -55,6 +65,16 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
+vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+    "@paperclipai/adapter-utils/execution-target",
+  );
+  return {
+    ...actual,
+    startAdapterExecutionTargetPaperclipBridge,
+  };
+});
+
 import { execute } from "./execute.js";
 
 describe("claude remote execution", () => {
@@ -73,8 +93,11 @@ describe("claude remote execution", () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
+    const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
     const instructionsPath = path.join(rootDir, "instructions.md");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
     await mkdir(workspaceDir, { recursive: true });
+    await mkdir(alternateWorkspaceDir, { recursive: true });
     await writeFile(instructionsPath, "Use the remote workspace.\n", "utf8");
 
     await execute({
@@ -95,12 +118,37 @@ describe("claude remote execution", () => {
       config: {
         command: "claude",
         instructionsFilePath: instructionsPath,
+        env: {
+          QA_PROJECT_WORKSPACE_CWD: workspaceDir,
+          RANDOM_WORKSPACE_CWD: workspaceDir,
+          OTHER_ENV: workspaceDir,
+        },
       },
       context: {
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
+          strategy: "git_worktree",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "main",
+          branchName: "feature/remote-claude",
+          worktreePath: workspaceDir,
         },
+        paperclipWorkspaces: [
+          {
+            workspaceId: "workspace-1",
+            cwd: workspaceDir,
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+          },
+          {
+            workspaceId: "workspace-2",
+            cwd: alternateWorkspaceDir,
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "feature/other",
+          },
+        ],
       },
       executionTransport: {
         remoteExecution: {
@@ -112,7 +160,6 @@ describe("claude remote execution", () => {
           privateKey: "PRIVATE KEY",
           knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
           strictHostKeyChecking: true,
-          paperclipApiUrl: "http://198.51.100.10:3102",
         },
       },
       onLog: async () => {},
@@ -121,27 +168,59 @@ describe("claude remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
-      remoteDir: "/remote/workspace",
+      remoteDir: managedRemoteWorkspace,
     }));
-    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    // One sync per registered runtime asset: skills and mcp-config.
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: "/remote/workspace/.paperclip-runtime/claude/skills",
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
+      followSymlinks: true,
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
       followSymlinks: true,
     }));
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[2]).toContain("--allowedTools");
+    expect(call?.[2]).toContain(
+      "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
+    );
+    expect(call?.[2]).not.toContain("--dangerously-skip-permissions");
     expect(call?.[2]).toContain("--append-system-prompt-file");
-    expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills/agent-instructions.md");
+    expect(call?.[2]).toContain(
+      `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,
+    );
     expect(call?.[2]).toContain("--add-dir");
-    expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills");
-    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://198.51.100.10:3102");
-    expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
+    expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+      {
+        workspaceId: "workspace-1",
+        cwd: managedRemoteWorkspace,
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "main",
+      },
+      {
+        workspaceId: "workspace-2",
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "feature/other",
+      },
+    ]);
+    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+    expect(call?.[3].env.QA_PROJECT_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].env.RANDOM_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].env.OTHER_ENV).toBe(workspaceDir);
+    expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
+    expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
-      remoteDir: "/remote/workspace",
+      remoteDir: managedRemoteWorkspace,
     }));
   });
 
@@ -161,12 +240,12 @@ describe("claude remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "session-123",
+        sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
-          sessionId: "session-123",
+          sessionId: "12345678-1234-4abc-9def-123456789012",
           cwd: "/remote/workspace",
         },
-        sessionDisplayId: "session-123",
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
       config: {
@@ -202,6 +281,7 @@ describe("claude remote execution", () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-match-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
 
     await execute({
@@ -214,19 +294,19 @@ describe("claude remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "session-123",
+        sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
-          sessionId: "session-123",
-          cwd: "/remote/workspace",
+          sessionId: "12345678-1234-4abc-9def-123456789012",
+          cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
             port: 2222,
             username: "fixture",
-            remoteCwd: "/remote/workspace",
+            remoteCwd: managedRemoteWorkspace,
           },
         },
-        sessionDisplayId: "session-123",
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
       config: {
@@ -256,7 +336,71 @@ describe("claude remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
-    expect(call?.[2]).toContain("session-123");
+    expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
+  });
+
+  it("forwards the duplex_channel_lost transport code on the unparsed Claude result path", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-duplex-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // The run-disposition seam sets `errorCode: "duplex_channel_lost"` on the
+    // process result, and the CLI stdout has no parsed Claude result. This
+    // drives `toAdapterResult` into the unparsed branch, which must forward the
+    // transport code rather than drop it to a provider classification.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "not a Claude JSON result\n",
+      stderr:
+        "[paperclip] The sandbox duplex control channel was lost (provider_exit) before the run completed.\n",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+      errorCode: "duplex_channel_lost",
+    });
+
+    const result = await execute({
+      runId: "run-ssh-duplex-lost",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
   });
 
 });

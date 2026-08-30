@@ -36,7 +36,7 @@ describe("recent selection ordering", () => {
   it("keeps the no-value option first when it is selected", () => {
     const ordered = orderItemsBySelectedAndRecent(
       [
-        { id: "", label: "No assignee" },
+        { id: "", label: "No responsible" },
         { id: "agent-1", label: "Agent 1" },
         { id: "agent-2", label: "Agent 2" },
       ],

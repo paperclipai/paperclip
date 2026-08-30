@@ -17,6 +17,7 @@ import type {
   UserProfileWindowStats,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { visibleIssueCondition } from "../services/issue-visibility.js";
 import { assertCompanyAccess } from "./authz.js";
 
 type CompanyUserRow = {
@@ -147,7 +148,7 @@ async function loadWindowStats(
       assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) then ${issues.id} end)::int`,
     })
     .from(issues)
-    .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+    .where(and(eq(issues.companyId, companyId), visibleIssueCondition()));
 
   const commentConditions = [
     eq(issueComments.companyId, companyId),
@@ -252,7 +253,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
     .where(
       and(
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
         eq(issues.status, "done"),
         gte(issues.completedAt, firstDay),
         userIssueInvolvementSql(companyId, userId),
@@ -333,7 +334,7 @@ export function userProfileRoutes(db: Db) {
         .where(
           and(
             eq(issues.companyId, companyId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
             userIssueInvolvementSql(companyId, userId),
           ),
         )

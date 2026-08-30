@@ -56,9 +56,14 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    // Local-trusted mode and board bearer keys are not browser-session requests.
+    // Local-trusted mode, board bearer keys, and trusted Cloud tenant calls are
+    // not browser-session requests.
     // In these modes, origin/referer headers can be absent; do not block those mutations.
-    if (req.actor.source === "local_implicit" || req.actor.source === "board_key") {
+    if (
+      req.actor.source === "local_implicit"
+      || req.actor.source === "board_key"
+      || req.actor.source === "cloud_tenant"
+    ) {
       next();
       return;
     }

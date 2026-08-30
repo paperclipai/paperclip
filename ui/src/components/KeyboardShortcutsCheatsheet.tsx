@@ -3,7 +3,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 interface ShortcutEntry {
   keys: string[];
   label: string;
+  /** Render keys as a simultaneous chord (joined with "+") rather than a
+   *  "then" sequence. */
+  combo?: boolean;
 }
+
+// Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
+// the same key the user actually presses (re-pointed in the collapsible sidebar
+// work — Cmd/Ctrl+B toggles the rail).
+function getPlatformLabel() {
+  if (typeof navigator === "undefined") return "";
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return nav.userAgentData?.platform || navigator.userAgent || "";
+}
+
+const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
 
 interface ShortcutSection {
   title: string;
@@ -28,7 +42,7 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
-    title: "Issue detail",
+    title: "Task detail",
     shortcuts: [
       { keys: ["y"], label: "Quick-archive back to inbox" },
       { keys: ["g", "i"], label: "Go to inbox" },
@@ -36,11 +50,23 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
+    title: "Decisions",
+    shortcuts: [
+      { keys: ["j"], label: "Move down" },
+      { keys: ["↓"], label: "Move down" },
+      { keys: ["k"], label: "Move up" },
+      { keys: ["↑"], label: "Move up" },
+      { keys: ["Enter"], label: "Open or close selected decision" },
+      { keys: ["x"], label: "Dismiss selected decision" },
+    ],
+  },
+  {
     title: "Global",
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New issue" },
+      { keys: ["c"], label: "New task" },
       { keys: ["["], label: "Toggle sidebar" },
+      { keys: [META_KEY, "B"], label: "Collapse or expand sidebar", combo: true },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
@@ -49,7 +75,7 @@ const sections: ShortcutSection[] = [
 
 function KeyCap({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-[0_1px_0_1px_hsl(var(--border))]">
+    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-(--shadow-extract-10)">
       {children}
     </kbd>
   );
@@ -61,7 +87,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       <div className="divide-y divide-border border-t border-border">
         {sections.map((section) => (
           <div key={section.title} className="px-5 py-3">
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-wider text-muted-foreground">
               {section.title}
             </h3>
             <div className="space-y-1.5">
@@ -74,7 +100,11 @@ export function KeyboardShortcutsCheatsheetContent() {
                   <div className="flex items-center gap-1">
                     {shortcut.keys.map((key, i) => (
                       <span key={key} className="flex items-center gap-1">
-                        {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
+                        {i > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {shortcut.combo ? "+" : "then"}
+                          </span>
+                        )}
                         <KeyCap>{key}</KeyCap>
                       </span>
                     ))}

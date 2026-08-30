@@ -58,7 +58,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
@@ -101,7 +101,69 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the agent from payload when approval does not reference a pending agent", async () => {
+    const approved = {
+      ...createApproval("approved"),
+      payload: {
+        name: "New Agent",
+        adapterConfig: {
+          env: {
+            API_KEY: {
+              type: "secret_ref",
+              secretId: "secret-1",
+              version: "latest",
+            },
+          },
+        },
+      },
+    };
+    const dbStub = createDbStub([[{ ...createApproval("pending"), payload: approved.payload }]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: approved.payload.adapterConfig,
+      }),
+    );
+  });
+});
+
+describe("approvalService.findOpenHireApprovalForAgent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the open hire approval the company/type/status/agentId filter yields", async () => {
+    const match = {
+      ...createApproval("pending"),
+      id: "approval-match",
+      payload: { agentId: "agent-1" },
+    };
+    // The company, type, open-status and payload->>'agentId' predicates run in
+    // SQL, so the DB hands back only the matching row.
+    const dbStub = createDbStub([[match]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+
+    expect(result?.id).toBe("approval-match");
+    expect(dbStub.selectWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when no open approval matches the agent", async () => {
+    const dbStub = createDbStub([[]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+
+    expect(result).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -70,7 +71,7 @@ function SkillList({ values }: { values: unknown }) {
         {items.map((item) => (
           <span
             key={item}
-            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground"
           >
             {item}
           </span>
@@ -161,11 +162,19 @@ export function BoardApprovalPayload({
   );
 }
 
+/**
+ * Risks render inside a custom bullet row, so a leading markdown list marker
+ * would nest a second bullet inside the first. Strip one leading marker.
+ */
+function stripLeadingListMarker(value: string): string {
+  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
+}
+
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
+        .map((value) => stripLeadingListMarker(value.trim()))
         .filter(Boolean)
     : [];
   const title = firstNonEmptyString(payload.title);
@@ -178,38 +187,38 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
     <div className="mt-4 space-y-3.5 text-sm">
       {title && (
         <div className="space-y-1">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Title</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Title</p>
           <p className="font-medium leading-6 text-foreground">{title}</p>
         </div>
       )}
       {summary && (
         <div className="space-y-1">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Summary</p>
+          <MarkdownBody className="leading-6 text-foreground/90">{summary}</MarkdownBody>
         </div>
       )}
       {recommendedAction && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{recommendedAction}</MarkdownBody>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</MarkdownBody>
         </div>
       )}
       {risks.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Risks</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Risks</p>
           <ul className="space-y-1 text-sm text-muted-foreground">
-            {risks.map((risk) => (
-              <li key={risk} className="flex items-start gap-2">
-                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-                <span className="leading-6">{risk}</span>
+            {risks.map((risk, index) => (
+              <li key={`${index}-${risk}`} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                <MarkdownBody className="leading-6">{risk}</MarkdownBody>
               </li>
             ))}
           </ul>
@@ -217,7 +226,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       )}
       {proposedComment && (
         <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
             Proposed comment
           </p>
           <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">

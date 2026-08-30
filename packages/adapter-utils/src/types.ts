@@ -4,6 +4,7 @@
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
+import type { RuntimeStatusSink } from "./runtime-progress.js";
 
 export interface AdapterAgent {
   id: string;
@@ -64,7 +65,13 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream";
+export type AdapterExecutionErrorFamily =
+  | "transient_upstream"
+  | "provider_quota"
+  | "model_refusal"
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -77,6 +84,13 @@ export interface AdapterExecutionResult {
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
+   * How `usage` totals are scoped. "per_run" means the tokens cover only this
+   * execution; "session_cumulative" means they are running totals for the
+   * persisted session, and the server must delta consecutive runs. Absent
+   * means unknown — the server applies its legacy session-delta heuristic.
+   */
+  usageBasis?: "per_run" | "session_cumulative" | null;
+  /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.
    */
   sessionId?: string | null;
@@ -87,8 +101,23 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Provider-billed cost after prompt-cache discounts. Adapters should set
+   * this when they expose it separately; otherwise the server treats a
+   * provider-reported `costUsd` as the cache-adjusted billed amount.
+   */
+  cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  /**
+   * Each referenced (mentioned) project that failed to stage into the remote sandbox for this run,
+   * by `projectId`. The run continues without a failed project (per-project failure isolation); this
+   * field carries the failure back so the server counts it in the requested-vs-synced observability
+   * instead of losing it to a warning line. Each entry pairs the `projectId` with the failure
+   * `error`, so a reader of the run learns why the project dropped. Absent or empty on a local
+   * target, or when every staged referenced project succeeded.
+   */
+  referencedProjectStagingFailures?: Array<{ projectId: string; error: string }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {
@@ -119,12 +148,49 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export interface AdapterRuntimeMcpServer {
+  name: string;
+  url: string;
+  token: string;
+  connectionId: string;
+}
+
+export interface AdapterRuntimeMcpAccess {
+  getServers(): AdapterRuntimeMcpServer[];
+}
+
+export type AdapterRuntimeToolDelivery = "native_mcp" | "environment" | "invocation_context";
+
+export interface AdapterRuntimeToolAccess {
+  version: 1;
+  /** Provider-neutral instructions shared by every delivery strategy. */
+  guidance: string;
+  mcpEndpoint: string;
+  rest: {
+    connectionsSearch: string;
+    connectionRequest: string;
+  };
+  bearerToken: string;
+  expiresAt: string;
+  tools: readonly ["connections_search", "connection_request"];
+}
+
+export interface AdapterRuntimeEvent {
+  eventType: string;
+  stream?: "system" | "stdout" | "stderr";
+  level?: "info" | "warn" | "error";
+  color?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
    * Legacy remote transport view. Prefer `executionTarget`, which is the
@@ -133,15 +199,44 @@ export interface AdapterExecutionContext {
   executionTransport?: {
     remoteExecution?: Record<string, unknown> | null;
   };
+  runtimeMcp?: AdapterRuntimeMcpAccess;
+  runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  onRuntimeProgress?: RuntimeStatusSink;
+  /**
+   * Reports that execution has crossed the adapter's dispatch boundary.
+   * Process-backed adapters normally report this through `onSpawn`; adapters
+   * without a local process should call this immediately before starting the
+   * remote operation.
+   */
+  onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * The injected OpenTelemetry startup trace context (tracer + root
+   * parent-context helper). The server passes the real, endpoint-gated
+   * implementation; when absent, the ACPX engine uses a no-op, so the whole
+   * span path stays inert. The type is an inline import so this module keeps no
+   * top-level dependency on the timing helper.
+   */
+  startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
 export interface AdapterModel {
   id: string;
   label: string;
+}
+
+export type AdapterModelProfileKey = "cheap";
+
+export interface AdapterModelProfileDefinition {
+  key: AdapterModelProfileKey;
+  label: string;
+  description?: string;
+  adapterConfig: Record<string, unknown>;
+  source?: "adapter_default" | "discovered";
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -175,17 +270,16 @@ export type AdapterSkillState =
 
 export type AdapterSkillOrigin =
   | "company_managed"
-  | "paperclip_required"
   | "user_installed"
   | "external_unknown";
 
 export interface AdapterSkillEntry {
   key: string;
   runtimeName: string | null;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
-  required?: boolean;
-  requiredReason?: string | null;
   state: AdapterSkillState;
   origin?: AdapterSkillOrigin;
   originLabel?: string | null;
@@ -201,6 +295,7 @@ export interface AdapterSkillSnapshot {
   supported: boolean;
   mode: AdapterSkillSyncMode;
   desiredSkills: string[];
+  desiredSkillEntries?: Array<{ key: string; versionId: string | null }>;
   entries: AdapterSkillEntry[];
   warnings: string[];
 }
@@ -216,6 +311,20 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /**
+   * Optional execution target the adapter should run probes against.
+   *
+   * If omitted (or `kind === "local"`), the adapter tests on the Paperclip
+   * host. For SSH/sandbox targets the adapter should run command/auth probes
+   * inside the remote environment so the result reflects what an agent run
+   * would actually see at execution time.
+   */
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Friendly name of the environment being tested (when `executionTarget` is set).
+   * Surfaced in check messages so users see which environment the probe ran in.
+   */
+  environmentName?: string | null;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -271,6 +380,8 @@ export interface ProviderQuotaResult {
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */
   ok: boolean;
+  /** machine-readable error family when ok is false */
+  errorFamily?: AdapterExecutionErrorFamily | null;
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];
@@ -304,17 +415,48 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+export interface AdapterRuntimeCommandSpec {
+  /**
+   * The command Paperclip should execute for this adapter in the current config.
+   */
+  command: string;
+  /**
+   * Optional command name/path to probe for availability before launch.
+   * Defaults to `command` when omitted by the consumer.
+   */
+  detectCommand?: string | null;
+  /**
+   * Optional shell snippet that can install or expose the adapter command in a
+   * fresh remote runtime. It should be idempotent.
+   */
+  installCommand?: string | null;
+}
+
+export interface AcpTargetDescriptor {
+  agentId: "claude" | "codex" | "gemini" | "custom" | (string & {});
+  skillsMode: "ephemeral" | "unsupported";
+  prerequisites: {
+    nodeRange?: string;
+    packages?: string[];
+  };
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  acp?: AcpTargetDescriptor;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
+  /** How this adapter receives Paperclip's run-scoped control tools. */
+  runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  modelProfiles?: AdapterModelProfileDefinition[];
+  listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
   /**
    * Optional explicit refresh hook for model discovery.
    * Use this when the adapter caches discovered models and needs a bypass path
@@ -380,6 +522,19 @@ export interface ServerAdapterModule {
    * rather than reading config.paperclipRuntimeSkills.
    */
   requiresMaterializedRuntimeSkills?: boolean;
+  /**
+   * Optional: describe how this adapter's runtime command should be launched
+   * and provisioned in fresh remote environments such as sandboxes.
+   */
+  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+
+  /**
+   * Optional: declare the interactive sandbox login capability. The server uses
+   * it to drive the login flow and to project the safe panel fields to the user
+   * interface. An adapter with no interactive login (for example an
+   * API-key-only vendor) omits it. The capability data holds no secret.
+   */
+  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +545,7 @@ export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
@@ -421,8 +576,34 @@ export interface CreateConfigValues {
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
+  /**
+   * Optional cheap model profile config for new agents on adapters that
+   * support model profiles. Persisted under
+   * `runtimeConfig.modelProfiles.cheap.adapterConfig`, never on the primary
+   * `adapterConfig`.
+   */
+  cheapModel?: string;
+  cheapModelEnabled?: boolean;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
+  claudeEngine?: "auto" | "cli" | "acp";
+  claudeAcpAgentCommand?: string;
+  claudeAcpMode?: "persistent" | "oneshot";
+  claudeAcpNonInteractivePermissions?: "deny" | "fail";
+  claudeAcpStateDir?: string;
+  claudeAcpWarmHandleIdleMs?: number;
+  codexEngine?: "auto" | "cli" | "acp";
+  codexAcpAgentCommand?: string;
+  codexAcpMode?: "persistent" | "oneshot";
+  codexAcpNonInteractivePermissions?: "deny" | "fail";
+  codexAcpStateDir?: string;
+  codexAcpWarmHandleIdleMs?: number;
+  geminiEngine?: "auto" | "cli" | "acp";
+  geminiAcpAgentCommand?: string;
+  geminiAcpMode?: "persistent" | "oneshot";
+  geminiAcpNonInteractivePermissions?: "deny" | "fail";
+  geminiAcpStateDir?: string;
+  geminiAcpWarmHandleIdleMs?: number;
   search: boolean;
   fastMode: boolean;
   dangerouslyBypassSandbox: boolean;
@@ -433,6 +614,21 @@ export interface CreateConfigValues {
   envBindings: Record<string, unknown>;
   url: string;
   bootstrapPrompt: string;
+  /**
+   * The non-secret stored-session claim from a completed Claude subscription
+   * login. The create form holds it after the login reaches the server `stored`
+   * state and sends it in the agent create request. The server consumes the
+   * claim to bind the fixed `CLAUDE_CODE_OAUTH_TOKEN`. It never carries a token.
+   */
+  claudeStoredSessionId?: string | null;
+  /**
+   * True when the create form binds the fixed `CLAUDE_CODE_OAUTH_TOKEN`
+   * reference to an existing stored owner login with no new login round trip.
+   * The form sets it after the owner clicks apply-existing. The server binds the
+   * fixed reference only for a user actor and only when a stored value exists. It
+   * never carries a token.
+   */
+  claudeApplyStoredLogin?: boolean;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
   workspaceBaseRef?: string;
@@ -445,4 +641,19 @@ export interface CreateConfigValues {
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
+  // openclaw_gateway adapter fields
+  authToken?: string;
+  agentId?: string;
+  sessionKeyStrategy?: string;
+  sessionKey?: string;
+  timeoutSec?: number;
+  waitTimeoutMs?: number;
+  disableDeviceAuth?: boolean;
+  autoPairOnFirstConnect?: boolean;
+  devicePrivateKeyPem?: string;
+  role?: string;
+  scopes?: string;
+  paperclipApiUrl?: string;
+  headersJson?: string;
+  password?: string;
 }

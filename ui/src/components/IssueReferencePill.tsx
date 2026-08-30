@@ -20,7 +20,7 @@ export function IssueReferencePill({
   const classNames = cn(
     "paperclip-mention-chip paperclip-mention-chip--issue",
     "inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs no-underline",
-    issue.identifier && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+    issue.identifier && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
     strikethrough && "opacity-60 line-through decoration-muted-foreground",
     className,
   );
@@ -37,7 +37,7 @@ export function IssueReferencePill({
         data-mention-kind="issue"
         className={classNames}
         title={issue.title}
-        aria-label={`Issue: ${issue.title}`}
+        aria-label={`Task: ${issue.title}`}
       >
         {content}
       </span>
@@ -50,7 +50,7 @@ export function IssueReferencePill({
       data-mention-kind="issue"
       className={classNames}
       title={issue.title}
-      aria-label={`Issue ${issueLabel}: ${issue.title}`}
+      aria-label={`Task ${issueLabel}: ${issue.title}`}
     >
       {content}
     </Link>

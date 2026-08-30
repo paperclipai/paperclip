@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, getTableColumns, gte, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -25,6 +25,7 @@ import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  applyOperatorGeneralDefaults,
   instanceGeneralSettingsSchema,
   type FeedbackTargetType,
   type FeedbackTraceBundle,
@@ -46,6 +47,7 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -89,6 +91,9 @@ type FeedbackTargetRecord = {
   createdAt: Date;
   authorAgentId: string | null;
   authorUserId: string | null;
+  authorType?: string | null;
+  presentation?: unknown;
+  metadata?: unknown;
   createdByRunId: string | null;
   documentId: string | null;
   documentKey: string | null;
@@ -154,10 +159,7 @@ function contentTypeForPath(filePath: string) {
 function normalizeInstanceGeneralSettings(raw: unknown) {
   const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
-  return {
-    censorUsernameInLogs: false,
-    feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
-  };
+  return instanceGeneralSettingsSchema.parse({});
 }
 
 function buildIssuePath(identifier: string | null) {
@@ -797,8 +799,12 @@ async function resolveFeedbackTarget(
         companyId: issueComments.companyId,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
         body: issueComments.body,
+        deletedAt: issueComments.deletedAt,
         createdAt: issueComments.createdAt,
       })
       .from(issueComments)
@@ -806,6 +812,9 @@ async function resolveFeedbackTarget(
       .then((rows) => rows[0] ?? null);
 
     if (!targetComment || targetComment.issueId !== issue.id || targetComment.companyId !== issue.companyId) {
+      throw notFound("Feedback target not found");
+    }
+    if (targetComment.deletedAt) {
       throw notFound("Feedback target not found");
     }
     if (!targetComment.authorAgentId) {
@@ -820,6 +829,9 @@ async function resolveFeedbackTarget(
       createdAt: targetComment.createdAt,
       authorAgentId: targetComment.authorAgentId,
       authorUserId: targetComment.authorUserId,
+      authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+      presentation: targetComment.presentation ?? null,
+      metadata: targetComment.metadata ?? null,
       createdByRunId: targetComment.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -833,6 +845,9 @@ async function resolveFeedbackTarget(
         createdAt: targetComment.createdAt.toISOString(),
         authorAgentId: targetComment.authorAgentId,
         authorUserId: targetComment.authorUserId,
+        authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+        presentation: targetComment.presentation ?? null,
+        metadata: targetComment.metadata ?? null,
         createdByRunId: targetComment.createdByRunId ?? null,
         issuePath,
         targetPath: issuePath ? `${issuePath}#comment-${targetComment.id}` : null,
@@ -918,10 +933,18 @@ async function listIssueContextItems(
         createdAt: issueComments.createdAt,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
+        deletedAt: issueComments.deletedAt,
       })
       .from(issueComments)
-      .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id))),
+      .where(and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        isNull(issueComments.deletedAt),
+      )),
     db
       .select({
         targetId: documentRevisions.id,
@@ -952,6 +975,9 @@ async function listIssueContextItems(
       createdAt: row.createdAt,
       authorAgentId: row.authorAgentId,
       authorUserId: row.authorUserId,
+      authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+      presentation: row.presentation ?? null,
+      metadata: row.metadata ?? null,
       createdByRunId: row.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -1023,6 +1049,9 @@ async function buildIssueContext(
       createdAt: item.createdAt.toISOString(),
       authorAgentId: item.authorAgentId,
       authorUserId: item.authorUserId,
+      authorType: item.authorType ?? null,
+      presentation: item.presentation ?? null,
+      metadata: item.metadata ?? null,
       createdByRunId: item.createdByRunId,
       documentKey: item.documentKey,
       documentTitle: item.documentTitle,
@@ -1947,7 +1976,13 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             })
             .then((rows) => rows[0] ?? null));
 
-        const currentGeneral = normalizeInstanceGeneralSettings(currentInstanceSettings?.general);
+        // Operator setting defaults apply to the effective value: when the
+        // operator supplies a feedback-sharing default, the preference is no
+        // longer "prompt", so a stray answer must not persist over it.
+        const currentGeneral = applyOperatorGeneralDefaults(
+          normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
+          getOperatorSettingDefaults(),
+        );
         if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};

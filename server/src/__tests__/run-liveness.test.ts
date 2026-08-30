@@ -195,6 +195,27 @@ describe("run liveness classifier", () => {
     expect(classification.nextAction).toBe("deploy to production and verify live traffic.");
   });
 
+
+  it("uses killed background-task evidence instead of a generic failed-run reason", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "process_lost",
+      resultJson: {
+        stopReason: "unmanaged_background_task_stopped",
+        unmanagedBackgroundTask: {
+          kind: "orphaned_process_group_cleanup",
+          stopped: true,
+          stopReason: "unmanaged_background_task_stopped",
+          reason: "unmanaged background task stopped; no durable live path",
+        },
+      },
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).toBe("unmanaged background task stopped; no durable live path");
+  });
+
   it("marks unclear useful output as unknown actionability", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

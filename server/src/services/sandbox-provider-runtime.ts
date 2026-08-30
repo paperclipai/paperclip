@@ -18,6 +18,16 @@ export interface AcquireSandboxLeaseInput {
   environmentId: string;
   heartbeatRunId: string;
   issueId: string | null;
+  agentId?: string | null;
+  executionWorkspaceId?: string | null;
+  /**
+   * The absolute latest time the acquired lease may stay active, as an ISO 8601
+   * timestamp. A caller with an independent deadline sets it. The provider must
+   * configure a provider-side expiry at or before this time, and return the real
+   * provider expiry in `SandboxLeaseHandle.expiresAt`. When omitted, the provider
+   * keeps its default lifetime.
+   */
+  requestedExpiresAt?: string | null;
 }
 
 export interface ResumeSandboxLeaseInput {
@@ -61,6 +71,12 @@ export interface SandboxExecuteInput {
 export interface SandboxLeaseHandle {
   providerLeaseId: string;
   metadata: Record<string, unknown>;
+  /**
+   * The real provider-side expiry the provider granted, as an ISO 8601 timestamp.
+   * A provider that honors a requested deadline returns the actual expiry it
+   * configured. Absent when the provider granted no bounded lifetime.
+   */
+  expiresAt?: string | null;
 }
 
 export interface PreparedSandboxWorkspace {
@@ -76,6 +92,7 @@ export interface SandboxExecuteResult {
 
 export interface SandboxProvider {
   readonly provider: SandboxEnvironmentProvider;
+  readonly supportsReusableLeases?: boolean;
   validateConfig(config: SandboxEnvironmentConfig): Promise<SandboxProviderValidationResult>;
   probe(config: SandboxEnvironmentConfig): Promise<EnvironmentProbeResult>;
   acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle>;
@@ -115,6 +132,7 @@ function buildFakeSandboxProbe(config: FakeSandboxEnvironmentConfig): Environmen
 
 class FakeSandboxProvider implements SandboxProvider {
   readonly provider = "fake" as const;
+  readonly supportsReusableLeases = false;
 
   async validateConfig(config: SandboxEnvironmentConfig): Promise<SandboxProviderValidationResult> {
     assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, config);
@@ -136,8 +154,8 @@ class FakeSandboxProvider implements SandboxProvider {
 
   async acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
     assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, input.config);
-    const providerLeaseId = input.config.reuseLease
-      ? `sandbox://fake/${input.environmentId}`
+    const providerLeaseId = input.config.reuseLease && this.supportsReusableLeases
+      ? `sandbox://fake/${input.environmentId}/${input.executionWorkspaceId ?? "workspace"}/${input.agentId ?? "agent"}`
       : `sandbox://fake/${input.heartbeatRunId}/${randomUUID()}`;
 
     return {
@@ -329,10 +347,13 @@ export async function acquireSandboxProviderLease(input: {
   environmentId: string;
   heartbeatRunId: string;
   issueId: string | null;
+  agentId?: string | null;
+  executionWorkspaceId?: string | null;
   reusableProviderLeaseId?: string | null;
+  requestedExpiresAt?: string | null;
 }): Promise<SandboxLeaseHandle> {
   const provider = requireSandboxProvider(input.config.provider);
-  if (input.config.reuseLease && input.reusableProviderLeaseId) {
+  if (provider.supportsReusableLeases && input.config.reuseLease && input.reusableProviderLeaseId) {
     const resumedLease = await provider.resumeLease({
       config: input.config,
       providerLeaseId: input.reusableProviderLeaseId,
@@ -347,6 +368,9 @@ export async function acquireSandboxProviderLease(input: {
     environmentId: input.environmentId,
     heartbeatRunId: input.heartbeatRunId,
     issueId: input.issueId,
+    agentId: input.agentId,
+    executionWorkspaceId: input.executionWorkspaceId,
+    requestedExpiresAt: input.requestedExpiresAt,
   });
 }
 

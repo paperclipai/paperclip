@@ -35,6 +35,10 @@ declare module "e2b" {
     setTimeout(timeoutMs: number): Promise<void>;
     kill(): Promise<void>;
     pause(): Promise<void>;
+    files: {
+      write(path: string, data: string | ArrayBuffer): Promise<unknown>;
+      remove(path: string): Promise<void>;
+    };
     commands: {
       run(
         command: string,

@@ -50,6 +50,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+  clearError: vi.fn(),
   terminate: vi.fn(),
   remove: vi.fn(),
   listKeys: vi.fn(),
@@ -60,6 +61,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
@@ -142,6 +144,28 @@ vi.mock("../routes/authz.js", async () => {
     }
   }
 
+  function hasCompanyAccess(req: Express.Request, expectedCompanyId: string): boolean {
+    if (req.actor.type === "none") return false;
+    if (req.actor.type === "agent") return req.actor.companyId === expectedCompanyId;
+    if (req.actor.source === "local_implicit") return true;
+    return (req.actor.companyIds ?? []).includes(expectedCompanyId);
+  }
+
+  async function getAccessibleResource<T extends { companyId: string }>(
+    req: Express.Request,
+    res: { status(code: number): { json(body: unknown): unknown } },
+    resource: T | null | undefined | Promise<T | null | undefined>,
+    notFoundMessage: string,
+  ): Promise<T | null> {
+    const resolved = await resource;
+    if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+      res.status(404).json({ error: notFoundMessage });
+      return null;
+    }
+    assertCompanyAccess(req, resolved.companyId);
+    return resolved;
+  }
+
   function assertInstanceAdmin(req: Express.Request) {
     assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -156,6 +180,7 @@ vi.mock("../routes/authz.js", async () => {
         actorId: req.actor.agentId ?? "unknown-agent",
         agentId: req.actor.agentId ?? null,
         runId: req.actor.runId ?? null,
+        agentApiKeyId: req.actor.keyId ?? null,
       };
     }
     return {
@@ -163,6 +188,7 @@ vi.mock("../routes/authz.js", async () => {
       actorId: req.actor.userId ?? "board",
       agentId: null,
       runId: req.actor.runId ?? null,
+      agentApiKeyId: null,
     };
   }
 
@@ -171,7 +197,9 @@ vi.mock("../routes/authz.js", async () => {
     assertBoard,
     assertCompanyAccess,
     assertInstanceAdmin,
+    getAccessibleResource,
     getActorInfo,
+    hasCompanyAccess,
   };
 });
 
@@ -180,6 +208,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => mockCompanySkillService,
   budgetService: () => mockBudgetService,
   heartbeatService: () => mockHeartbeatService,
@@ -275,6 +304,7 @@ function resetMockDefaults() {
   mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.pause.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.resume.mockImplementation(async () => ({ ...baseAgent }));
+  mockAgentService.clearError.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
   mockAgentService.terminate.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.remove.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.listKeys.mockImplementation(async () => []);
@@ -293,6 +323,17 @@ function resetMockDefaults() {
     revokedAt: new Date("2026-04-11T00:05:00.000Z"),
   }));
   mockAccessService.canUser.mockImplementation(async () => currentAccessCanUser);
+  mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+    const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
+      ? true
+      : currentAccessCanUser;
+    return {
+      allowed,
+      action: input.action,
+      reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+    };
+  });
   mockAccessService.hasPermission.mockImplementation(async () => false);
   mockAccessService.getMembership.mockImplementation(async () => null);
   mockAccessService.listPrincipalGrants.mockImplementation(async () => []);
@@ -323,6 +364,12 @@ describe.sequential("agent cross-tenant route authorization", () => {
         untouched: [mockAgentService.pause, mockHeartbeatService.cancelActiveForAgent],
       },
       {
+        label: "clear error",
+        request: (app: express.Express) =>
+          requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({})),
+        untouched: [mockAgentService.clearError],
+      },
+      {
         label: "list keys",
         request: (app: express.Express) =>
           requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}/keys`)),
@@ -347,8 +394,8 @@ describe.sequential("agent cross-tenant route authorization", () => {
       const app = await createApp(crossTenantActor);
       const res = await deniedCase.request(app);
 
-      expect(res.status, `${deniedCase.label}: ${JSON.stringify(res.body)}`).toBe(403);
-      expect(res.body.error).toContain("User does not have access to this company");
+      expect(res.status, `${deniedCase.label}: ${JSON.stringify(res.body)}`).toBe(404);
+      expect(res.body.error).toBe("Agent not found");
       expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
       for (const mock of deniedCase.untouched) {
         expect(mock).not.toHaveBeenCalled();
@@ -373,5 +420,332 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.body.error).toContain("Key not found");
     expect(mockAgentService.getKeyById).toHaveBeenCalledWith(keyId);
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
+  });
+
+  it("requires board access before clearing an agent error", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+  });
+
+  it("preserves board resume access", async () => {
+    const pausedAgent = { ...baseAgent, status: "paused", pauseReason: "manual", pausedAt: new Date() };
+    mockAgentService.getById.mockResolvedValue(pausedAgent);
+    mockAgentService.resume.mockResolvedValue({
+      ...pausedAgent,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.resume).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      runId: null,
+      agentApiKeyId: null,
+      action: "agent.resumed",
+      entityType: "agent",
+      entityId: agentId,
+    }));
+  });
+
+  it("allows a same-company agent with a direct agents:configure grant to resume", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "agent_config:update",
+      reason: "allow_direct_change",
+      explanation: "Allowed by direct configuration grant.",
+      grant: { permissionKey: "agents:configure" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId,
+      runId: "55555555-5555-4555-8555-555555555555",
+      keyId: "66666666-6666-4666-8666-666666666666",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:update",
+      resource: { type: "agent", companyId, agentId },
+      scope: { requiresChangeGrant: true },
+    }));
+    expect(mockAgentService.resume).toHaveBeenCalledWith(agentId);
+  });
+
+  it.each([
+    ["an ungranted peer", "44444444-4444-4444-8444-444444444444"],
+    ["an ungranted self", agentId],
+  ])("denies resume for %s", async (_label, actorAgentId) => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "agent_config:update",
+      reason: "deny_no_grant",
+      explanation: "No direct agent configuration grant.",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: actorAgentId,
+      companyId,
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: "No direct agent configuration grant.",
+      details: { reason: "deny_no_grant" },
+    });
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies resume when the agent only has agents:suggest-changes", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "agent_config:update",
+      reason: "deny_missing_consent",
+      explanation: "Accepted consent is required for this suggested change.",
+      grant: { permissionKey: "agents:suggest-changes" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId,
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({ reason: "deny_missing_consent" });
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+  });
+
+  it("does not disclose a cross-company resume target", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId: "77777777-7777-4777-8777-777777777777",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+  });
+
+  it("keeps the invalid-org-chain guard for granted agent resume", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      status: "paused",
+      orgChainHealth: {
+        status: "invalid_org_chain",
+        reason: "missing_manager",
+        repairGuidance: "Repair the reporting chain first.",
+      },
+    });
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "agent_config:update",
+      reason: "allow_direct_change",
+      explanation: "Allowed by direct configuration grant.",
+      grant: { permissionKey: "agents:configure" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId,
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Repair the reporting chain first.");
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("attributes agent resume activity to the acting agent, run, and API key", async () => {
+    const actorAgentId = "44444444-4444-4444-8444-444444444444";
+    const runId = "55555555-5555-4555-8555-555555555555";
+    const actorKeyId = "66666666-6666-4666-8666-666666666666";
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "agent_config:update",
+      reason: "allow_direct_change",
+      explanation: "Allowed by direct configuration grant.",
+      grant: { permissionKey: "agents:configure" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: actorAgentId,
+      companyId,
+      runId,
+      keyId: actorKeyId,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), {
+      companyId,
+      actorType: "agent",
+      actorId: actorAgentId,
+      agentId: actorAgentId,
+      runId,
+      agentApiKeyId: actorKeyId,
+      action: "agent.resumed",
+      entityType: "agent",
+      entityId: agentId,
+    });
+  });
+
+  it("clears error agents and records a distinct audit action", async () => {
+    const errorAgent = {
+      ...baseAgent,
+      status: "error",
+      pauseReason: "system",
+      pausedAt: new Date("2026-04-11T00:02:00.000Z"),
+    };
+    mockAgentService.getById.mockImplementation(async () => ({ ...errorAgent }));
+    mockAgentService.clearError.mockImplementation(async () => ({
+      ...errorAgent,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+      updatedAt: new Date("2026-04-11T00:03:00.000Z"),
+    }));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: agentId,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+    });
+    expect(mockAgentService.clearError).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "agent.error_cleared",
+      entityType: "agent",
+      entityId: agentId,
+    }));
+  });
+
+  it("returns 409 and does not mutate when the agent org chain is invalid", async () => {
+    mockAgentService.getById.mockImplementation(async () => ({
+      ...baseAgent,
+      status: "error",
+      orgChainHealth: {
+        status: "invalid_org_chain",
+        reason: "missing_manager",
+        repairGuidance: "Repair the reporting chain first.",
+      },
+    }));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Repair the reporting chain first");
+    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear 409 for non-error agents", async () => {
+    const { conflict } = await import("../errors.js");
+    mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
+    mockAgentService.clearError.mockImplementation(async () => {
+      throw conflict("Only agents in error status can have their error cleared");
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Only agents in error status can have their error cleared");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

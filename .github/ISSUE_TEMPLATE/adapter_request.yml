@@ -1,0 +1,42 @@
+name: New agent adapter
+description: Request or propose support for a new AI agent or model provider
+labels: [adapter]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New agent adapters are welcome without prior discussion. If you plan to implement, prefer extending Paperclip via the [plugin system](https://github.com/paperclipai/paperclip/blob/master/doc/plugins/PLUGIN_SPEC.md) when possible.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or provider
+      description: Name of the agent, model, or CLI tool.
+      placeholder: e.g. Gemini CLI, LM Studio, Mistral
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this adapter is useful
+      description: What use cases does this unlock? Who would benefit?
+    validations:
+      required: true
+  - type: textarea
+    id: how-invoked
+    attributes:
+      label: How the agent is invoked
+      description: CLI command, API endpoint, SDK — whatever is relevant. Link docs if available.
+    validations:
+      required: true
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Are you willing to implement it?
+      options:
+        - label: Yes, I plan to open a PR
+        - label: No, requesting for someone else to pick up
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, examples from existing adapters, configuration quirks, etc.

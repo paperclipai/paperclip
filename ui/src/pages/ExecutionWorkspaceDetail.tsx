@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@paperclipai/shared";
-import { ArrowLeft, Copy, ExternalLink, Loader2 } from "lucide-react";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
+import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,23 +11,48 @@ import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
+import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { agentsApi } from "../api/agents";
+import { ApiError } from "../api/client";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { routinesApi } from "../api/routines";
 import { IssuesList } from "../components/IssuesList";
 import { PageTabBar } from "../components/PageTabBar";
+import { SummarySlotCard } from "../components/SummarySlotCard";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import {
+  RoutineRunVariablesDialog,
+  type RoutineRunDialogSubmitData,
+} from "../components/RoutineRunVariablesDialog";
 import {
   buildWorkspaceRuntimeControlSections,
+  buildWorkspaceServiceControlEntries,
+  resolveWorkspaceServiceControlRequests,
   WorkspaceRuntimeControls,
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
+import { WorkspaceServiceControlBar } from "../components/WorkspaceServiceControlBar";
+import { WorkspaceAccessCard } from "../components/WorkspaceAccessCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
+import { useToastActions } from "../context/ToastContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import {
+  resolveWorkspaceAccessState,
+  type WorkspaceLoginHandoffFailureInfo,
+} from "../lib/workspace-access-state";
+import {
+  getWorkspaceSpecificRoutineVariableNames,
+  routineHasWorkspaceSpecificVariables,
+  sortWorkspaceRoutinesByName,
+} from "../lib/workspace-routines";
 
 type WorkspaceFormState = {
   name: string;
@@ -37,28 +62,76 @@ type WorkspaceFormState = {
   branchName: string;
   providerRef: string;
   provisionCommand: string;
+  runtimeProvisionCommand: string;
   teardownCommand: string;
   cleanupCommand: string;
   inheritRuntime: boolean;
   workspaceRuntime: string;
 };
 
-type ExecutionWorkspaceTab = "configuration" | "runtime_logs" | "issues";
+type ConfiguredRuntimeServicePort = {
+  collection: "commands" | "services";
+  index: number;
+  name: string;
+  port: number | null;
+  invalidPort: boolean;
+};
 
-function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceTab | null {
+type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
+type ExecutionWorkspacePluginTab = `plugin:${string}`;
+type ExecutionWorkspaceTab = ExecutionWorkspaceBaseTab | ExecutionWorkspacePluginTab;
+type OrderedExecutionWorkspaceTabItem = {
+  value: ExecutionWorkspaceTab;
+  label: string;
+  order: number;
+};
+
+const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
+const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
+  { value: "issues", label: "Tasks", order: 10 },
+  { value: "services", label: "Services", order: 20 },
+  { value: "configuration", label: "Configuration", order: 30 },
+  { value: "runtime_logs", label: "Runtime logs", order: 40 },
+  { value: "routines", label: "Routines", order: 60 },
+];
+
+function isExecutionWorkspacePluginTab(value: string | null): value is ExecutionWorkspacePluginTab {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
+
+function orderExecutionWorkspaceTabItems(items: OrderedExecutionWorkspaceTabItem[]) {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => left.item.order - right.item.order || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceBaseTab | null {
   const segments = pathname.split("/").filter(Boolean);
   const executionWorkspacesIndex = segments.indexOf("execution-workspaces");
   if (executionWorkspacesIndex === -1 || segments[executionWorkspacesIndex + 1] !== workspaceId) return null;
   const tab = segments[executionWorkspacesIndex + 2];
+  if (tab === "services") return "services";
   if (tab === "issues") return "issues";
+  if (tab === "routines") return "routines";
   if (tab === "runtime-logs") return "runtime_logs";
   if (tab === "configuration") return "configuration";
   return null;
 }
 
-function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceTab) {
+function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceBaseTab) {
   const segment = tab === "runtime_logs" ? "runtime-logs" : tab;
   return `/execution-workspaces/${workspaceId}/${segment}`;
+}
+
+function LegacyWorkspaceTabRedirect({ workspaceId }: { workspaceId: string }) {
+  useEffect(() => {
+    try {
+      localStorage.removeItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+    } catch {}
+  }, [workspaceId]);
+
+  return <Navigate to={executionWorkspaceTabPath(workspaceId, "issues")} replace />;
 }
 
 function isSafeExternalUrl(value: string | null | undefined) {
@@ -78,6 +151,10 @@ function readText(value: string | null | undefined) {
 function formatJson(value: Record<string, unknown> | null | undefined) {
   if (!value || Object.keys(value).length === 0) return "";
   return JSON.stringify(value, null, 2);
+}
+
+function formatOptionalDateTime(value: Date | string | null | undefined) {
+  return value ? formatDateTime(value) : "Never";
 }
 
 function normalizeText(value: string) {
@@ -106,6 +183,93 @@ function parseWorkspaceRuntimeJson(value: string) {
   }
 }
 
+export function readConfiguredRuntimeServicePorts(runtimeConfig: Record<string, unknown> | null) {
+  if (!runtimeConfig) return [] as ConfiguredRuntimeServicePort[];
+
+  const entries: ConfiguredRuntimeServicePort[] = [];
+  const addServices = (collection: ConfiguredRuntimeServicePort["collection"], services: unknown, commandsRequireServiceKind: boolean) => {
+    if (!Array.isArray(services)) return;
+    services.forEach((service, index) => {
+      if (!service || typeof service !== "object" || Array.isArray(service)) return;
+      const config = service as Record<string, unknown>;
+      if (commandsRequireServiceKind && config.kind !== "service") return;
+      const portConfig = config.port;
+      const hasObjectPortValue = Boolean(
+        portConfig
+        && typeof portConfig === "object"
+        && !Array.isArray(portConfig)
+        && Object.hasOwn(portConfig, "value"),
+      );
+      const portValue =
+        typeof portConfig === "number"
+          ? portConfig
+          : hasObjectPortValue
+            ? (portConfig as Record<string, unknown>).value
+            : null;
+      entries.push({
+        collection,
+        index,
+        name: typeof config.name === "string" && config.name.trim() ? config.name : `Service ${index + 1}`,
+        port: typeof portValue === "number" ? portValue : null,
+        invalidPort: (typeof portConfig === "number" || hasObjectPortValue)
+          && (typeof portValue !== "number" || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535),
+      });
+    });
+  };
+
+  addServices("commands", runtimeConfig.commands, true);
+  addServices("services", runtimeConfig.services, false);
+  return entries;
+}
+
+export function updateConfiguredRuntimeServicePort(input: {
+  runtimeConfig: Record<string, unknown>;
+  service: ConfiguredRuntimeServicePort;
+  port: string;
+}) {
+  const runtimeConfig = structuredClone(input.runtimeConfig);
+  const entries = runtimeConfig[input.service.collection];
+  if (!Array.isArray(entries)) return runtimeConfig;
+  const entry = entries[input.service.index];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return runtimeConfig;
+  const config = entry as Record<string, unknown>;
+  const existingPort = config.port && typeof config.port === "object" && !Array.isArray(config.port)
+    ? config.port as Record<string, unknown>
+    : null;
+
+  const trimmedPort = input.port.trim();
+  if (!trimmedPort) {
+    if (existingPort) {
+      const autoPort: Record<string, unknown> = { ...existingPort, type: "auto" };
+      delete autoPort.value;
+      config.port = autoPort;
+    } else {
+      delete config.port;
+    }
+    return runtimeConfig;
+  }
+  const port = Number(trimmedPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return runtimeConfig;
+  config.port = { ...existingPort, type: "fixed", value: port };
+  return runtimeConfig;
+}
+
+export function getConfiguredRuntimeServicePortWarnings(services: ConfiguredRuntimeServicePort[]) {
+  const servicesByPort = new Map<number, ConfiguredRuntimeServicePort[]>();
+  for (const service of services) {
+    if (service.invalidPort || !service.port) continue;
+    const servicesForPort = servicesByPort.get(service.port) ?? [];
+    servicesForPort.push(service);
+    servicesByPort.set(service.port, servicesForPort);
+  }
+
+  return Array.from(servicesByPort.entries())
+    .filter(([, servicesForPort]) => servicesForPort.length > 1)
+    .map(([port, servicesForPort]) =>
+      `Port ${port} is assigned to multiple services: ${servicesForPort.map((service) => service.name).join(", ")}.`,
+    );
+}
+
 function formStateFromWorkspace(workspace: ExecutionWorkspace): WorkspaceFormState {
   return {
     name: workspace.name,
@@ -115,6 +279,7 @@ function formStateFromWorkspace(workspace: ExecutionWorkspace): WorkspaceFormSta
     branchName: readText(workspace.branchName),
     providerRef: readText(workspace.providerRef),
     provisionCommand: readText(workspace.config?.provisionCommand),
+    runtimeProvisionCommand: readText(workspace.config?.runtimeProvisionCommand),
     teardownCommand: readText(workspace.config?.teardownCommand),
     cleanupCommand: readText(workspace.config?.cleanupCommand),
     inheritRuntime: !workspace.config?.workspaceRuntime,
@@ -140,12 +305,13 @@ function buildWorkspacePatch(initialState: WorkspaceFormState, nextState: Worksp
   maybeAssign("branchName");
   maybeAssign("providerRef");
 
-  const maybeAssignConfigText = (key: keyof Pick<WorkspaceFormState, "provisionCommand" | "teardownCommand" | "cleanupCommand">) => {
+  const maybeAssignConfigText = (key: keyof Pick<WorkspaceFormState, "provisionCommand" | "runtimeProvisionCommand" | "teardownCommand" | "cleanupCommand">) => {
     if (initialState[key] === nextState[key]) return;
     configPatch[key] = normalizeText(nextState[key]);
   };
 
   maybeAssignConfigText("provisionCommand");
+  maybeAssignConfigText("runtimeProvisionCommand");
   maybeAssignConfigText("teardownCommand");
   maybeAssignConfigText("cleanupCommand");
 
@@ -177,6 +343,8 @@ function validateForm(form: WorkspaceFormState) {
     if (!runtimeJson.ok) {
       return runtimeJson.error;
     }
+    const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find((service) => service.invalidPort);
+    if (invalidPort) return `${invalidPort.name} has an invalid fixed port.`;
   }
 
   return null;
@@ -202,6 +370,80 @@ function Field({
   );
 }
 
+function workspaceOperationPhaseLabel(phase: string) {
+  switch (phase) {
+    case "worktree_prepare":
+      return "Worktree setup";
+    case "workspace_config_freshness":
+      return "Config freshness";
+    case "workspace_provision":
+      return "Provision";
+    case "workspace_seed":
+      return "Database seed";
+    case "workspace_runtime_provision":
+      return "Runtime provision";
+    case "workspace_teardown":
+      return "Teardown";
+    case "worktree_cleanup":
+      return "Worktree cleanup";
+    case "workspace_finalize":
+      return "Finalize";
+    default:
+      return phase;
+  }
+}
+
+export type RuntimeProvisionStatus =
+  | { kind: "eager" }
+  | { kind: "deferred" }
+  | { kind: "provisioning"; at: Date | null }
+  | { kind: "provisioned"; at: Date | null }
+  | { kind: "failed"; at: Date | null };
+
+/**
+ * Derives the lazy runtime-provisioning state from the configured command and the
+ * database-seed or runtime-provision operation-log entries (most-recent first). Returns
+ * "eager" when no runtime provision command is configured (the legacy path).
+ */
+export function resolveRuntimeProvisionStatus(input: {
+  runtimeProvisionCommand: string | null | undefined;
+  operations: WorkspaceOperation[] | undefined;
+}): RuntimeProvisionStatus {
+  const latest = (input.operations ?? []).find((operation) => (
+    operation.phase === "workspace_seed" || operation.phase === "workspace_runtime_provision"
+  )) ?? null;
+  if (latest) {
+    const at = latest.finishedAt ?? latest.startedAt ?? null;
+    if (latest.status === "running") return { kind: "provisioning", at };
+    if (latest.status === "succeeded") return { kind: "provisioned", at };
+    if (latest.status === "failed") return { kind: "failed", at };
+    // "skipped" falls through to the config-derived state below.
+  }
+  const configured = Boolean(input.runtimeProvisionCommand && input.runtimeProvisionCommand.trim());
+  return configured ? { kind: "deferred" } : { kind: "eager" };
+}
+
+/**
+ * Read the structured refusal the login-handoff endpoint returns.
+ *
+ * The server keeps a machine `reason` (and, where it probed, the workspace's own
+ * readiness) on the error body so the UI can name the cause instead of showing a
+ * bare HTTP failure. Anything else is a genuine transport error.
+ */
+export function readWorkspaceHandoffFailure(error: unknown): WorkspaceLoginHandoffFailureInfo | null {
+  if (!(error instanceof ApiError)) return null;
+  const body = error.body as
+    | { reason?: unknown; detail?: unknown; readiness?: unknown }
+    | null
+    | undefined;
+  if (!body || typeof body.reason !== "string") return null;
+  return {
+    reason: body.reason,
+    detail: typeof body.detail === "string" ? body.detail : null,
+    readiness: (body.readiness as WorkspaceLoginHandoffFailureInfo["readiness"]) ?? null,
+  };
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 py-1.5 sm:flex-row sm:items-start sm:gap-3">
@@ -215,6 +457,55 @@ function StatusPill({ children, className }: { children: React.ReactNode; classN
   return (
     <div className={cn("inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground", className)}>
       {children}
+    </div>
+  );
+}
+
+export function RuntimeProvisionStatusValue({
+  status,
+  onViewLogs,
+}: {
+  status: RuntimeProvisionStatus;
+  onViewLogs: () => void;
+}) {
+  if (status.kind === "eager") {
+    return (
+      <span className="text-sm text-muted-foreground">Eager · provisioned during workspace setup</span>
+    );
+  }
+  if (status.kind === "deferred") {
+    return (
+      <div className="flex flex-col gap-1">
+        <StatusPill className="border-amber-500/40 text-amber-600 dark:text-amber-400">Deferred</StatusPill>
+        <span className="text-xs text-muted-foreground">
+          Runs once before the first runtime-service start.
+        </span>
+      </div>
+    );
+  }
+  if (status.kind === "provisioning") {
+    return (
+      <StatusPill className="border-border text-muted-foreground">
+        <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+        Provisioning…
+      </StatusPill>
+    );
+  }
+  if (status.kind === "provisioned") {
+    return (
+      <StatusPill className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+        Provisioned{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+      </StatusPill>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <StatusPill className="border-destructive/50 text-destructive">
+        Provisioning failed{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+      </StatusPill>
+      <button type="button" onClick={onViewLogs} className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+        View runtime logs
+      </button>
     </div>
   );
 }
@@ -244,14 +535,14 @@ function WorkspaceLink({
 
 function ExecutionWorkspaceIssuesList({
   companyId,
-  workspaceId,
+  workspace,
   issues,
   isLoading,
   error,
   project,
 }: {
   companyId: string;
-  workspaceId: string;
+  workspace: ExecutionWorkspace;
   issues: Issue[];
   isLoading: boolean;
   error: Error | null;
@@ -265,19 +556,30 @@ function ExecutionWorkspaceIssuesList({
     enabled: !!companyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
   });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspaceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       if (project?.id) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
@@ -288,6 +590,15 @@ function ExecutionWorkspaceIssuesList({
   const projectOptions = useMemo(
     () => (project ? [{ id: project.id, name: project.name, workspaces: project.workspaces ?? [] }] : undefined),
     [project],
+  );
+  const createIssueDefaults = useMemo(
+    () => ({
+      projectId: workspace.projectId,
+      ...(workspace.projectWorkspaceId ? { projectWorkspaceId: workspace.projectWorkspaceId } : {}),
+      executionWorkspaceId: workspace.id,
+      executionWorkspaceMode: "reuse_existing",
+    }),
+    [workspace.id, workspace.projectId, workspace.projectWorkspaceId],
   );
 
   return (
@@ -300,8 +611,191 @@ function ExecutionWorkspaceIssuesList({
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
       viewStateKey="paperclip:execution-workspace-issues-view"
+      baseCreateIssueDefaults={createIssueDefaults}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
+  );
+}
+
+function WorkspaceRoutineRow({
+  routine,
+  variableNames,
+  runningRoutineId,
+  onRunNow,
+}: {
+  routine: RoutineListItem;
+  variableNames: string[];
+  runningRoutineId: string | null;
+  onRunNow: (routine: RoutineListItem) => void;
+}) {
+  const isArchived = routine.status === "archived";
+  const isRunning = runningRoutineId === routine.id;
+
+  return (
+    <div className="flex flex-col gap-3 border-b border-border px-3 py-3 last:border-b-0 sm:flex-row sm:items-center">
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/routines/${routine.id}`} className="truncate text-sm font-medium hover:underline">
+            {routine.title}
+          </Link>
+          {routine.status !== "active" ? (
+            <span className="text-xs text-muted-foreground">{routine.status}</span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>{routine.assigneeAgentId ? "Default agent set" : "Choose agent when running"}</span>
+          <span>Last run {formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span>
+          <span className="flex flex-wrap gap-1">
+            {variableNames.map((name) => (
+              <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
+                {name}
+              </span>
+            ))}
+          </span>
+        </div>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full sm:w-auto"
+        disabled={isArchived || isRunning}
+        onClick={() => onRunNow(routine)}
+      >
+        {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+        {isRunning ? "Running..." : "Run now"}
+      </Button>
+    </div>
+  );
+}
+
+function ExecutionWorkspaceRoutinesList({
+  workspace,
+  project,
+}: {
+  workspace: ExecutionWorkspace;
+  project: Project | null;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
+  const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
+
+  const { data: routines, isLoading, error } = useQuery({
+    queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
+    queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(workspace.companyId),
+    queryFn: () => agentsApi.list(workspace.companyId),
+  });
+
+  const workspaceRoutines = useMemo(
+    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
+    [routines],
+  );
+
+  const runRoutine = useMutation({
+    mutationFn: ({ id, data }: { id: string; data?: RoutineRunDialogSubmitData }) => routinesApi.run(id, {
+      ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
+      ...(data?.assigneeAgentId !== undefined ? { assigneeAgentId: data.assigneeAgentId } : {}),
+      ...(data?.projectId !== undefined ? { projectId: data.projectId } : {}),
+      ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
+      ...(data?.executionWorkspacePreference !== undefined
+        ? { executionWorkspacePreference: data.executionWorkspacePreference }
+        : {}),
+      ...(data?.executionWorkspaceSettings !== undefined
+        ? { executionWorkspaceSettings: data.executionWorkspaceSettings }
+        : {}),
+    }),
+    onMutate: ({ id }) => {
+      setRunningRoutineId(id);
+    },
+    onSuccess: async (_, { id }) => {
+      setRunDialogRoutine(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["routines", workspace.companyId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(workspace.companyId, workspace.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(workspace.companyId) }),
+      ]);
+      pushToast({
+        title: "Routine started",
+        body: "Paperclip created a run using this execution workspace.",
+        tone: "success",
+      });
+    },
+    onSettled: () => {
+      setRunningRoutineId(null);
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Routine run failed",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        tone: "error",
+      });
+    },
+  });
+
+  return (
+    <>
+      <Card className="rounded-none">
+        <CardHeader>
+          <CardTitle>Workspace routines</CardTitle>
+          <CardDescription>
+            Routines that use workspace-specific variables can be run against this execution workspace.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading routines...</p>
+          ) : error ? (
+            <p className="text-sm text-destructive">
+              {error instanceof Error ? error.message : "Failed to load routines."}
+            </p>
+          ) : workspaceRoutines.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <Repeat className="h-5 w-5 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">
+                No routines use workspace-specific variables yet.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border">
+              {workspaceRoutines.map((routine) => (
+                <WorkspaceRoutineRow
+                  key={routine.id}
+                  routine={routine}
+                  variableNames={getWorkspaceSpecificRoutineVariableNames(routine)}
+                  runningRoutineId={runningRoutineId}
+                  onRunNow={setRunDialogRoutine}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <RoutineRunVariablesDialog
+        open={runDialogRoutine !== null}
+        onOpenChange={(next) => {
+          if (!next) setRunDialogRoutine(null);
+        }}
+        companyId={workspace.companyId}
+        routineName={runDialogRoutine?.title ?? null}
+        agents={agents ?? []}
+        projects={project ? [project] : []}
+        defaultProjectId={workspace.projectId}
+        defaultAssigneeAgentId={runDialogRoutine?.assigneeAgentId ?? null}
+        defaultExecutionWorkspace={workspace}
+        variables={runDialogRoutine?.variables ?? []}
+        isPending={runRoutine.isPending}
+        onSubmit={(data) => {
+          if (!runDialogRoutine) return;
+          runRoutine.mutate({ id: runDialogRoutine.id, data });
+        }}
+      />
+    </>
   );
 }
 
@@ -312,12 +806,21 @@ export function ExecutionWorkspaceDetail() {
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
-  const activeTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
+  const [handoffFailure, setHandoffFailure] = useState<WorkspaceLoginHandoffFailureInfo | null>(null);
+  const [handoffErrorMessage, setHandoffErrorMessage] = useState<string | null>(null);
+  const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
+  const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
+  const pluginTabFromSearch = useMemo(() => {
+    const tab = new URLSearchParams(location.search).get("tab");
+    return isExecutionWorkspacePluginTab(tab) ? tab : null;
+  }, [location.search]);
+  const activeTab: ExecutionWorkspaceTab | null = activeRouteTab ?? pluginTabFromSearch;
 
   const workspaceQuery = useQuery({
     queryKey: queryKeys.executionWorkspaces.detail(workspaceId!),
@@ -361,6 +864,30 @@ export function ExecutionWorkspaceDetail() {
     () => project?.workspaces.find((item) => item.id === workspace?.projectWorkspaceId) ?? null,
     [project, workspace?.projectWorkspaceId],
   );
+
+  const {
+    slots: workspacePluginDetailSlots,
+    isLoading: workspacePluginDetailSlotsLoading,
+    errorMessage: workspacePluginDetailSlotsError,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "execution_workspace",
+    companyId: workspace?.companyId ?? null,
+    enabled: !!workspace?.companyId,
+  });
+  const workspacePluginTabItems = useMemo(
+    () => workspacePluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as ExecutionWorkspacePluginTab,
+      label: slot.displayName,
+      order: slot.order ?? DEFAULT_PLUGIN_DETAIL_TAB_ORDER,
+      slot,
+    })),
+    [workspacePluginDetailSlots],
+  );
+  const workspaceTabItems = useMemo(
+    () => orderExecutionWorkspaceTabItems([...EXECUTION_WORKSPACE_BASE_TAB_ITEMS, ...workspacePluginTabItems]),
+    [workspacePluginTabItems],
+  );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
   const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;
   const runtimeConfigSource =
@@ -369,6 +896,20 @@ export function ExecutionWorkspaceDetail() {
       : inheritedRuntimeConfig
         ? "project_workspace"
         : "none";
+
+  const configuredRuntimeConfig = useMemo(() => {
+    if (!form || form.inheritRuntime) return inheritedRuntimeConfig;
+    const parsed = parseWorkspaceRuntimeJson(form.workspaceRuntime);
+    return parsed.ok ? parsed.value : null;
+  }, [form, inheritedRuntimeConfig]);
+  const configuredRuntimeServicePorts = useMemo(
+    () => readConfiguredRuntimeServicePorts(configuredRuntimeConfig),
+    [configuredRuntimeConfig],
+  );
+  const configuredRuntimeServicePortWarnings = useMemo(
+    () => getConfiguredRuntimeServicePortWarnings(configuredRuntimeServicePorts),
+    [configuredRuntimeServicePorts],
+  );
 
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
   const isDirty = Boolean(form && initialState && JSON.stringify(form) !== JSON.stringify(initialState));
@@ -384,6 +925,7 @@ export function ExecutionWorkspaceDetail() {
     setForm(formStateFromWorkspace(workspace));
     setErrorMessage(null);
     setRuntimeActionErrorMessage(null);
+    setPendingRuntimeActions([]);
   }, [workspace]);
 
   useEffect(() => {
@@ -421,11 +963,24 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.listWorkspaceOperations(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  const runtimeProvisionCommand =
+    workspace?.config?.runtimeProvisionCommand
+    ?? project?.executionWorkspacePolicy?.workspaceStrategy?.runtimeProvisionCommand
+    ?? null;
+  const runtimeProvisionStatus = useMemo(
+    () =>
+      resolveRuntimeProvisionStatus({
+        runtimeProvisionCommand,
+        operations: workspaceOperationsQuery.data,
+      }),
+    [runtimeProvisionCommand, workspaceOperationsQuery.data],
+  );
   const controlRuntimeServices = useMutation({
     mutationFn: (request: WorkspaceRuntimeControlRequest) =>
       executionWorkspacesApi.controlRuntimeCommands(workspace!.id, request.action, request),
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
@@ -442,6 +997,70 @@ export function ExecutionWorkspaceDetail() {
     onError: (error) => {
       setRuntimeActionMessage(null);
       setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+    },
+    onSettled: (_result, _error, request) => {
+      setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
+    },
+  });
+
+  /**
+   * Password-independent workspace entry (PAP-17572).
+   *
+   * The server answers with a ticket-bearing URL, and the workspace answers *that*
+   * with a redirect — which is what keeps the ticket out of session history.
+   *
+   * The target tab is opened synchronously on click and only pointed at the URL
+   * once the ticket arrives. Opening it after the request resolves would be a
+   * popup the browser did not attribute to the click, and Safari and Firefox
+   * block exactly that. If the tab could not be opened anyway, fall back to
+   * navigating this one rather than silently doing nothing.
+   */
+  const openWorkspace = useMutation({
+    mutationFn: async () => {
+      const target = window.open("about:blank", "_blank", "noopener,noreferrer");
+      try {
+        return { ticket: await executionWorkspacesApi.requestLoginHandoff(workspace!.id), target };
+      } catch (error) {
+        target?.close();
+        throw error;
+      }
+    },
+    onSuccess: ({ ticket, target }) => {
+      setHandoffFailure(null);
+      setHandoffErrorMessage(null);
+      if (target && !target.closed) target.location.replace(ticket.url);
+      else window.location.assign(ticket.url);
+    },
+    onError: async (error) => {
+      // A structured refusal is rendered as workspace state by the access card,
+      // so only an unrecognized transport error needs its own message line.
+      const failure = readWorkspaceHandoffFailure(error);
+      setHandoffFailure(failure);
+      setHandoffErrorMessage(
+        failure ? null : error instanceof Error ? error.message : "Failed to open the workspace.",
+      );
+      // The refusal reason often comes from an operation that has since advanced,
+      // so refresh the log the access card derives its state from.
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.workspaceOperations(workspace!.id),
+      });
+    },
+  });
+  const repairWorkspace = useMutation({
+    mutationFn: () => executionWorkspacesApi.repair(workspace!.id),
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id),
+      });
+      setHandoffFailure(null);
+      setHandoffErrorMessage(null);
+      setRuntimeActionErrorMessage(null);
+      setRuntimeActionMessage("Workspace database repaired.");
+    },
+    onError: (error) => {
+      setRuntimeActionMessage(null);
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to repair the workspace.");
     },
   });
 
@@ -464,22 +1083,34 @@ export function ExecutionWorkspaceDetail() {
     canRunJobs: canRunWorkspaceCommands,
   });
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
+  const serviceControlEntries = buildWorkspaceServiceControlEntries({
+    sections: runtimeControlSections,
+    runtimeServices: workspace.runtimeServices ?? [],
+    pendingRequests: pendingRuntimeActions,
+  });
+  const workspaceAccess = resolveWorkspaceAccessState({
+    runtimeServices: workspace.runtimeServices ?? [],
+    operations: workspaceOperationsQuery.data,
+    handoffFailure,
+  });
+
+  const pluginSlotContext = {
+    companyId: workspace.companyId,
+    projectId: workspace.projectId,
+    entityId: workspace.id,
+    entityType: "execution_workspace" as const,
+  };
+  const activePluginTab = workspacePluginTabItems.find((item) => item.value === activeTab) ?? null;
 
   if (workspaceId && activeTab === null) {
-    let cachedTab: ExecutionWorkspaceTab = "configuration";
-    try {
-      const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
-      if (storedTab === "issues" || storedTab === "configuration" || storedTab === "runtime_logs") {
-        cachedTab = storedTab;
-      }
-    } catch {}
-    return <Navigate to={executionWorkspaceTabPath(workspaceId, cachedTab)} replace />;
+    return <LegacyWorkspaceTabRedirect workspaceId={workspaceId} />;
   }
 
   const handleTabChange = (tab: ExecutionWorkspaceTab) => {
-    try {
-      localStorage.setItem(`paperclip:execution-workspace-tab:${workspace.id}`, tab);
-    } catch {}
+    if (isExecutionWorkspacePluginTab(tab)) {
+      navigate(`/execution-workspaces/${workspace.id}?tab=${encodeURIComponent(tab)}`);
+      return;
+    }
     navigate(executionWorkspaceTabPath(workspace.id, tab));
   };
 
@@ -502,46 +1133,69 @@ export function ExecutionWorkspaceDetail() {
     updateWorkspace.mutate(patch);
   };
 
+  const runRuntimeControlRequests = (requests: WorkspaceRuntimeControlRequest[]) => {
+    if (requests.length === 0) return;
+    setPendingRuntimeActions((current) => [...current, ...requests]);
+    for (const request of requests) controlRuntimeServices.mutate(request);
+  };
+
   return (
     <>
       <div className="space-y-4 overflow-hidden sm:space-y-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <Button variant="ghost" size="sm" asChild>
-            <Link to={project ? `/projects/${projectRef}/workspaces` : "/projects"}>
-              <ArrowLeft className="mr-1 h-4 w-4" />
-              Back to all workspaces
-            </Link>
-          </Button>
-          <StatusPill>{workspace.mode}</StatusPill>
-          <StatusPill>{workspace.providerType}</StatusPill>
-          <StatusPill className={workspace.status === "active" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : undefined}>
-            {workspace.status}
-          </StatusPill>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            Execution workspace
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-2">
+            <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Execution workspace
+            </div>
+            <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           </div>
-          <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
-            <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
-          </p>
+          <WorkspaceServiceControlBar
+            services={serviceControlEntries}
+            onAction={(action, serviceKey) => {
+              runRuntimeControlRequests(
+                resolveWorkspaceServiceControlRequests(runtimeControlSections, action, serviceKey),
+              );
+            }}
+            onViewLogs={() => handleTabChange("runtime_logs")}
+            onManageServices={() => handleTabChange("services")}
+          />
         </div>
+        {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
+        {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
 
-        <Card className="rounded-none">
-          <CardHeader>
-            <CardTitle>Services and jobs</CardTitle>
-            <CardDescription>
-              Source: {runtimeConfigSource === "execution_workspace"
-                ? "execution workspace override"
-                : runtimeConfigSource === "project_workspace"
-                  ? "project workspace default"
-                  : "none"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        <WorkspaceAccessCard
+          access={workspaceAccess}
+          isBusy={openWorkspace.isPending || repairWorkspace.isPending}
+          onOpen={() => openWorkspace.mutate()}
+          onStart={() => {
+            runRuntimeControlRequests(
+              resolveWorkspaceServiceControlRequests(runtimeControlSections, "start", null),
+            );
+          }}
+          onRepair={() => repairWorkspace.mutate()}
+          onViewLogs={() => handleTabChange("runtime_logs")}
+          errorMessage={handoffErrorMessage}
+        />
+
+        <PluginSlotOutlet
+          slotTypes={["toolbarButton", "contextMenuItem"]}
+          entityType="execution_workspace"
+          context={pluginSlotContext}
+          className="flex flex-wrap gap-2"
+          itemClassName="inline-flex"
+          missingBehavior="placeholder"
+        />
+
+        <Tabs value={activeTab ?? "issues"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
+          <PageTabBar
+            items={workspaceTabItems.map((item) => ({ value: item.value, label: item.label }))}
+            align="start"
+            value={activeTab ?? "issues"}
+            onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}
+          />
+        </Tabs>
+
+        {activeTab === "services" ? (
           <WorkspaceRuntimeControls
             sections={runtimeControlSections}
             isPending={controlRuntimeServices.isPending}
@@ -557,39 +1211,21 @@ export function ExecutionWorkspaceDetail() {
                 ? null
                 : "Execution workspaces need a working directory before local commands can run, and services also need runtime config."
             }
-            onAction={(request) => controlRuntimeServices.mutate(request)}
+            onAction={(request) => runRuntimeControlRequests([request])}
           />
-          {runtimeActionErrorMessage ? <p className="mt-4 text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
-          {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="mt-4 text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
-          </CardContent>
-        </Card>
-
-        <Tabs value={activeTab ?? "configuration"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
-          <PageTabBar
-            items={[
-              { value: "configuration", label: "Configuration" },
-              { value: "runtime_logs", label: "Runtime logs" },
-              { value: "issues", label: "Issues" },
-            ]}
-            align="start"
-            value={activeTab ?? "configuration"}
-            onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}
-          />
-        </Tabs>
-
-        {activeTab === "configuration" ? (
+        ) : activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
             <Card className="rounded-none">
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
                 <CardDescription>
-                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
+                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Paperclip may refresh or replace a reused workspace when config changes.
                 </CardDescription>
                 <CardAction>
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="w-full rounded-none sm:w-auto"
+                    className="w-full sm:w-auto"
                     onClick={() => setCloseDialogOpen(true)}
                     disabled={workspace.status === "archived"}
                   >
@@ -647,60 +1283,94 @@ export function ExecutionWorkspaceDetail() {
 
                 <Separator />
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
-                  <Field label="Working directory">
-                    <Input
-                      className="font-mono"
-                      value={form.cwd}
-                      onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                      placeholder="/absolute/path/to/workspace"
-                    />
-                  </Field>
+                {/*
+                  Both fields name a path on the execution host. Under the
+                  managed-sandbox-only policy every agent runs in the
+                  platform-managed environment, which owns the paths, so the
+                  whole group and its separator disappear, and stay hidden
+                  until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
+                      <Field label="Working directory">
+                        <Input
+                          className="font-mono"
+                          value={form.cwd}
+                          onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
+                          placeholder="/absolute/path/to/workspace"
+                        />
+                      </Field>
 
-                  <Field label="Provider path / ref">
-                    <Input
-                      className="font-mono"
-                      value={form.providerRef}
-                      onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
-                      placeholder="/path/to/worktree or provider ref"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Provider path / ref">
+                        <Input
+                          className="font-mono"
+                          value={form.providerRef}
+                          onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
+                          placeholder="/path/to/worktree or provider ref"
+                        />
+                      </Field>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
-                  <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.provisionCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/provision-worktree.sh"
-                    />
-                  </Field>
+                {/*
+                  Every lifecycle command runs a shell on the execution host and
+                  its placeholder names a host script path. The platform-managed
+                  environment owns that lifecycle, so the managed-sandbox-only
+                  policy hides the group and its separator, and keeps them
+                  hidden until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
+                      <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.provisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree.sh"
+                        />
+                      </Field>
 
-                  <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.teardownCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/teardown-worktree.sh"
-                    />
-                  </Field>
+                      <Field
+                        label="Runtime provision command"
+                        hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
+                      >
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.runtimeProvisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                        />
+                      </Field>
 
-                  <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
-                    <Textarea
-                      className="min-h-16 font-mono"
-                      value={form.cleanupCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
-                      placeholder="pkill -f vite || true"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.teardownCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/teardown-worktree.sh"
+                        />
+                      </Field>
 
-                <Separator />
+                      <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
+                        <Textarea
+                          className="min-h-16 font-mono"
+                          value={form.cleanupCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
+                          placeholder="pkill -f vite || true"
+                        />
+                      </Field>
+                    </div>
+
+                    <Separator />
+                  </>
+                )}
 
                 <div className="space-y-4">
                   <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Runtime config</div>
@@ -772,6 +1442,56 @@ export function ExecutionWorkspaceDetail() {
                       </Field>
                     </div>
                   </details>
+
+                  {configuredRuntimeServicePorts.length > 0 ? (
+                    <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
+                      <div>
+                        <div className="text-sm font-medium">Service ports</div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Set a fixed port for a service or leave it blank to use its configured automatic behavior. Editing an inherited service creates an execution-workspace runtime override.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {configuredRuntimeServicePorts.map((service) => (
+                          <Field key={`${service.collection}-${service.index}`} label={service.name} hint="Fixed port">
+                            <Input
+                              type="number"
+                              min="1"
+                              max="65535"
+                              inputMode="numeric"
+                              value={service.port ?? ""}
+                              onChange={(event) => {
+                                setForm((current) => {
+                                  if (!current) return current;
+                                  const parsed = current.inheritRuntime
+                                    ? { ok: true as const, value: inheritedRuntimeConfig }
+                                    : parseWorkspaceRuntimeJson(current.workspaceRuntime);
+                                  if (!parsed.ok || !parsed.value) return current;
+                                  return {
+                                    ...current,
+                                    inheritRuntime: false,
+                                    workspaceRuntime: formatJson(updateConfiguredRuntimeServicePort({
+                                      runtimeConfig: parsed.value,
+                                      service,
+                                      port: event.target.value,
+                                    })),
+                                  };
+                                });
+                              }}
+                            />
+                          </Field>
+                        ))}
+                      </div>
+                      {configuredRuntimeServicePortWarnings.length > 0 ? (
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {configuredRuntimeServicePortWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+                        </div>
+                      ) : null}
+                      <p className="text-sm text-muted-foreground">
+                        Paperclip checks fixed ports again when a service starts and rejects cross-workspace conflicts.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -817,7 +1537,7 @@ export function ExecutionWorkspaceDetail() {
                   "None"
                 )}
               </DetailRow>
-              <DetailRow label="Source issue">
+              <DetailRow label="Source task">
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -838,6 +1558,12 @@ export function ExecutionWorkspaceDetail() {
                 ) : (
                   "None"
                 )}
+              </DetailRow>
+              <DetailRow label="Runtime provisioning">
+                <RuntimeProvisionStatusValue
+                  status={runtimeProvisionStatus}
+                  onViewLogs={() => handleTabChange("runtime_logs")}
+                />
               </DetailRow>
               <DetailRow label="Workspace ID">
                 <MonoValue value={workspace.id} />
@@ -911,7 +1637,7 @@ export function ExecutionWorkspaceDetail() {
                   <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>
+                        <div className="text-sm font-medium">{operation.command ?? workspaceOperationPhaseLabel(operation.phase)}</div>
                         <div className="text-xs text-muted-foreground">
                           {formatDateTime(operation.startedAt)}
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
@@ -932,15 +1658,50 @@ export function ExecutionWorkspaceDetail() {
             )}
             </CardContent>
           </Card>
-        ) : (
-          <ExecutionWorkspaceIssuesList
-            companyId={workspace.companyId}
-            workspaceId={workspace.id}
-            issues={linkedIssues}
-            isLoading={linkedIssuesQuery.isLoading}
-            error={linkedIssuesQuery.error as Error | null}
+        ) : activeTab === "issues" ? (
+          <div className="space-y-6">
+            <SummarySlotCard
+              companyId={workspace.companyId}
+              scopeKind="execution_workspace"
+              scopeId={workspace.id}
+              title="Workspace summary"
+              description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
+            />
+            <ExecutionWorkspaceIssuesList
+              companyId={workspace.companyId}
+              workspace={workspace}
+              issues={linkedIssues}
+              isLoading={linkedIssuesQuery.isLoading}
+              error={linkedIssuesQuery.error as Error | null}
+              project={project}
+            />
+          </div>
+        ) : activePluginTab ? (
+          <PluginSlotMount
+            slot={activePluginTab.slot}
+            context={pluginSlotContext}
+            missingBehavior="placeholder"
+          />
+        ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsLoading ? (
+          <Card>
+            <CardContent className="py-6 text-sm text-muted-foreground">Loading workspace plugin...</CardContent>
+          </Card>
+        ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsError ? (
+          <Card>
+            <CardContent className="py-6 text-sm text-destructive">{workspacePluginDetailSlotsError}</CardContent>
+          </Card>
+        ) : isExecutionWorkspacePluginTab(activeTab) ? (
+          <MissingPluginTabPlaceholder
+            defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
+            defaultTabLabel="Back to tasks"
+          />
+        ) : activeTab === "routines" ? (
+          <ExecutionWorkspaceRoutinesList
+            workspace={workspace}
             project={project}
           />
+        ) : (
+          <LegacyWorkspaceTabRedirect workspaceId={workspace.id} />
         )}
       </div>
       <ExecutionWorkspaceCloseDialog
@@ -951,6 +1712,7 @@ export function ExecutionWorkspaceDetail() {
         onOpenChange={setCloseDialogOpen}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
+          queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(nextWorkspace.companyId) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(nextWorkspace.id) });
           if (project) {
