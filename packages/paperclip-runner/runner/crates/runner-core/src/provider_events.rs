@@ -394,11 +394,9 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Status => {
             normalize_acpx_status(payload, &item_id, turn_id, provider_requests)
         }
-        AcpxRuntimeEventKind::ToolCall => normalize_acpx_tool_call(
-            payload,
-            &item_id,
-            tool_operation.unwrap_or("unknown"),
-        ),
+        AcpxRuntimeEventKind::ToolCall => {
+            normalize_acpx_tool_call(payload, &item_id, tool_operation.unwrap_or("unknown"))
+        }
         AcpxRuntimeEventKind::ProviderNotice => vec![acpx_notice(
             &item_id,
             string(payload.get("severity")),

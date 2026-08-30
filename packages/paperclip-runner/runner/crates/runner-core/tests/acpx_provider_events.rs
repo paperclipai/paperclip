@@ -16,7 +16,10 @@ fn normalize(
 ) -> Vec<paperclip_runner_core::provider_events::NormalizedProviderEvent> {
     let operation = (kind == AcpxRuntimeEventKind::ToolCall).then(|| {
         classify_generated_acpx_tool_operation(
-            payload.get("kind").and_then(serde_json::Value::as_str).unwrap_or(""),
+            payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
             payload
                 .get("title")
                 .and_then(serde_json::Value::as_str)
@@ -96,14 +99,8 @@ fn preserves_tool_operation_authority_across_payload_sanitization() {
         else {
             panic!("runtime event must decode as runtime payload");
         };
-        let events = normalize_acpx_runtime_event(
-            kind,
-            &payload,
-            tool_operation,
-            "event-7",
-            "turn-1",
-            3,
-        );
+        let events =
+            normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
         assert_eq!(events[0].payload["operation"], "edit");
         assert_eq!(events[0].payload["target"], "src:new.rs");
         assert!(events[0].payload["name"].as_str().unwrap().chars().count() <= 240);
