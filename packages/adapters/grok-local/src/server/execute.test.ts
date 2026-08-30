@@ -30,6 +30,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
 }));
 
 import { execute } from "./execute.js";
+import { resolveManagedGrokHomeDir } from "./grok-home.js";
 
 const tempRoots: string[] = [];
 
@@ -198,6 +199,53 @@ describe("grok_local execute", () => {
         billingType: "api",
         costUsd: 0.013246,
       });
+    } finally {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("sets GROK_HOME to the company home in subscription mode, and leaves it unset when XAI_API_KEY exists", async () => {
+    let seenEnv: Record<string, string> = {};
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      seenEnv = options.env;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+        stderr: "",
+      };
+    });
+
+    const makeCtx = async (runId: string): Promise<AdapterExecutionContext> => ({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: await makeTempRoot() },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    const previousApiKey = process.env.XAI_API_KEY;
+    try {
+      delete process.env.XAI_API_KEY;
+      await execute(await makeCtx("run-subscription-home"));
+      expect(seenEnv.GROK_HOME).toBe(resolveManagedGrokHomeDir(process.env, "company-1"));
+
+      // The XAI_API_KEY path stays unchanged: no GROK_HOME is set when the key
+      // exists, because the CLI authenticates via the environment variable
+      // directly, not from the company Grok home's auth.json.
+      process.env.XAI_API_KEY = "test-key";
+      await execute(await makeCtx("run-api-home"));
+      expect(seenEnv.GROK_HOME).toBeUndefined();
     } finally {
       if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
       else process.env.XAI_API_KEY = previousApiKey;

@@ -217,4 +217,65 @@ describe("grok_local testEnvironment", () => {
       ]),
     );
   });
+
+  it("emits the canonical adapter_auth_missing check for a sandbox target with missing authentication", async () => {
+    // The user interface reads this neutral canonical code to decide login
+    // eligibility for the sandbox; it does not parse the message text.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" },
+      executionTarget: { kind: "remote", transport: "sandbox" } as never,
+    });
+
+    expect(result.checks.some((check: { code: string }) => check.code === "adapter_auth_missing")).toBe(
+      true,
+    );
+  });
+
+  it("emits no adapter_auth_missing check for a local target with missing authentication", async () => {
+    // The canonical check gates sandbox login eligibility only. A local target
+    // has no sandbox login to offer, so the check must not appear.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" },
+    });
+
+    expect(result.checks.some((check: { code: string }) => check.code === "adapter_auth_missing")).toBe(
+      false,
+    );
+  });
 });

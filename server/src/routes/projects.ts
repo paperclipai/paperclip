@@ -579,6 +579,7 @@ export function projectRoutes(db: Db) {
             adapterEnv: {},
             onLog,
             serviceIndex: selectedServiceIndex,
+            runtimeServiceId: selectedRuntimeServiceId,
           });
           runtimeServiceCount = startedServices.length;
         } else {

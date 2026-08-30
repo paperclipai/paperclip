@@ -83,6 +83,8 @@ import {
   syncGrokSkills,
   testEnvironment as grokTestEnvironment,
   sessionCodec as grokSessionCodec,
+  GROK_DEVICE_LOGIN_COMMAND,
+  parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
 import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
@@ -234,8 +236,27 @@ const codexLoginCapability: AdapterLoginCapability = {
   },
 };
 
+// The Grok interactive login capability. Grok runs `grok login --device-auth`
+// on a real pseudo-terminal, the same way Codex does. The flow shows a
+// one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim. `getCommand` is descriptive only: the login path selects
+// the real command from the closed key map in `login-command.ts`, never from
+// this member.
+const grokLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => GROK_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseGrokDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  runtimeToolDelivery: "native_mcp",
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
@@ -268,6 +289,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
+  runtimeToolDelivery: "environment",
   async execute(ctx) {
     await ctx.onLog("stderr", `${retiredAcpxMessage}\n`);
     await ctx.onMeta?.({
@@ -310,6 +332,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  runtimeToolDelivery: "native_mcp",
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {
@@ -341,6 +364,7 @@ const codexLocalAdapter: ServerAdapterModule = {
 
 const paperclipRunnerAdapter: ServerAdapterModule = {
   type: "paperclip_runner",
+  runtimeToolDelivery: "environment",
   async execute(ctx) {
     const message = "paperclip_runner requires the native runner coordinator";
     await ctx.onLog("stderr", `${message}\n`);
@@ -387,6 +411,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  runtimeToolDelivery: "environment",
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -406,6 +431,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const cursorCloudAdapter: ServerAdapterModule = {
   type: "cursor_cloud",
+  runtimeToolDelivery: "invocation_context",
   execute: cursorCloudExecute,
   testEnvironment: cursorCloudTestEnvironment,
   sessionCodec: cursorCloudSessionCodec,
@@ -421,6 +447,7 @@ const cursorCloudAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  runtimeToolDelivery: "environment",
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   acp: {
@@ -449,6 +476,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
+  runtimeToolDelivery: "environment",
   execute: grokExecute,
   testEnvironment: grokTestEnvironment,
   listSkills: listGrokSkills,
@@ -466,10 +494,12 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+  loginCapability: grokLoginCapability,
 };
 
 const kimiLocalAdapter: ServerAdapterModule = {
   type: "kimi_local",
+  runtimeToolDelivery: "environment",
   execute: kimiExecute,
   testEnvironment: kimiTestEnvironment,
   acp: {
@@ -494,12 +524,19 @@ const kimiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: kimiAgentConfigurationDoc,
 };
 
-const hermesGatewayAdapter = createHermesGatewayServerAdapter();
+const hermesGatewayAdapter: ServerAdapterModule = {
+  ...createHermesGatewayServerAdapter(),
+  runtimeToolDelivery: "invocation_context",
+};
 
-const hermesLocalAdapter = createHermesLocalServerAdapter();
+const hermesLocalAdapter: ServerAdapterModule = {
+  ...createHermesLocalServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  runtimeToolDelivery: "invocation_context",
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -511,6 +548,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  runtimeToolDelivery: "environment",
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -530,6 +568,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  runtimeToolDelivery: "environment",
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,

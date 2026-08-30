@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "slug": "jira",
+  "name": "Jira",
+  "description": "Connect Jira's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/jira.svg",
+    "darkLogoUrl": "/brands/apps/jira-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.atlassian.com/*"
+  ],
+  "docsUrl": "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.atlassian.com/v1/mcp/authv2",
+        "scopesHint": [
+          "read:me",
+          "read:account",
+          "offline_access",
+          "email",
+          "read:jira-work",
+          "write:jira-work",
+          "search:confluence",
+          "read:confluence-user",
+          "read:page:confluence",
+          "write:page:confluence",
+          "read:comment:confluence",
+          "write:comment:confluence",
+          "read:space:confluence",
+          "read:hierarchical-content:confluence",
+          "write:component:compass",
+          "read:component:compass",
+          "read:scorecard:compass",
+          "write:scorecard:compass",
+          "read:event:compass",
+          "read:metric:compass",
+          "read:all:twg",
+          "write:all:twg"
+        ]
+      },
+      "guidanceMd": "Connect Jira in the browser. An active Jira or Confluence site; tenant policy may require an administrator to approve the client.",
+      "riskTier": "S3",
+      "label": "Sign in with Jira",
+      "consoleLinks": {
+        "docs": "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"
+      },
+      "warnings": [
+        "An active Jira or Confluence site; tenant policy may require an administrator to approve the client."
+      ]
+    }
+  ]
+}

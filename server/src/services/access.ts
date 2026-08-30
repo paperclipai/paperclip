@@ -1,10 +1,18 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
+  companySecretBindings,
+  companySecrets,
+  connectionGrantDelegations,
+  connectionGrantMembers,
+  connectionGrants,
   instanceUserRoles,
   issues,
   principalPermissionGrants,
+  toolAccessAuditEvents,
+  toolConnections,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
@@ -27,6 +35,318 @@ type MemberArchiveInput = {
 
 export function accessService(db: Db) {
   const authorization = authorizationService(db);
+
+  async function sweepMemberConnectionAccess(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    companyId: string,
+    userId: string,
+    now: Date,
+  ) {
+    const departingAudienceRows = await tx.select({
+      grantId: connectionGrantMembers.grantId,
+    }).from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      eq(connectionGrantMembers.subjectType, "user"),
+      eq(connectionGrantMembers.subjectId, userId),
+    ));
+    const departingAudienceGrantIds = [...new Set(departingAudienceRows.map((row) => row.grantId))];
+    const affectedAudienceRows = departingAudienceGrantIds.length === 0 ? [] : await tx.select({
+      grantId: connectionGrantMembers.grantId,
+      subjectId: connectionGrantMembers.subjectId,
+    }).from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      eq(connectionGrantMembers.subjectType, "user"),
+      inArray(connectionGrantMembers.grantId, departingAudienceGrantIds),
+    ));
+    const activeOrganizationAudienceGrants = departingAudienceGrantIds.length === 0 ? [] : await tx.select({
+      id: connectionGrants.id,
+    }).from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, companyId),
+      eq(connectionGrants.kind, "organization"),
+      eq(connectionGrants.status, "active"),
+      inArray(connectionGrants.id, departingAudienceGrantIds),
+    ));
+    const activeOrganizationAudienceGrantIds = new Set(activeOrganizationAudienceGrants.map((grant) => grant.id));
+    const soleAudienceGrantIds = new Set(departingAudienceGrantIds.filter((grantId) =>
+      activeOrganizationAudienceGrantIds.has(grantId)
+      && affectedAudienceRows.filter((row) => row.grantId === grantId).length === 1,
+    ));
+
+    const ownedGrants = await tx.select({
+      id: connectionGrants.id,
+      connectionId: connectionGrants.connectionId,
+      credentialSecretRefs: connectionGrants.credentialSecretRefs,
+    }).from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, companyId),
+      eq(connectionGrants.kind, "user"),
+      eq(connectionGrants.subjectUserId, userId),
+    ));
+    const grantIds = ownedGrants.map((grant) => grant.id);
+    const ownedGrantIds = new Set(grantIds);
+    const affectedConnectionIds = [...new Set(ownedGrants.map((grant) => grant.connectionId))];
+    const affectedConnections = new Set(affectedConnectionIds);
+    // Membership removal revokes personal connection identities. It must not
+    // erase unrelated user-scoped values used by agent or environment secret
+    // declarations or bindings. Start with only secrets the departing user's
+    // grants explicitly reference, then fail toward retention whenever another
+    // consumer still names the secret or its user-secret definition.
+    const referencedSecretIds = [...new Set(ownedGrants.flatMap((grant) =>
+      grant.credentialSecretRefs.map((ref) => ref.secretId),
+    ))];
+    const ownedSecrets = referencedSecretIds.length === 0 ? [] : await tx.select({
+      id: companySecrets.id,
+      userSecretDefinitionId: companySecrets.userSecretDefinitionId,
+    }).from(companySecrets).where(and(
+      eq(companySecrets.companyId, companyId),
+      eq(companySecrets.scope, "user"),
+      eq(companySecrets.ownerUserId, userId),
+      inArray(companySecrets.id, referencedSecretIds),
+    ));
+    const ownedSecretIds = ownedSecrets.map((secret) => secret.id);
+    const ownedSecretSet = new Set(ownedSecretIds);
+    const retainedSecretIds = new Set<string>();
+    const sharedConnectionSecretIds = new Set<string>();
+    let grantMemberRefs: Array<{ grantId: string; subjectId: string }> = [];
+    let existingMemberUserIds = new Set<string>();
+    let grantRefs: Array<{
+      id: string;
+      connectionId: string;
+      kind: typeof connectionGrants.$inferSelect.kind;
+      status: typeof connectionGrants.$inferSelect.status;
+      credentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs;
+    }> = [];
+    let connectionRefs: Array<{
+      id: string;
+      credentialRefs: typeof toolConnections.$inferSelect.credentialRefs;
+      credentialSecretRefs: typeof toolConnections.$inferSelect.credentialSecretRefs;
+    }> = [];
+    if (ownedSecretIds.length > 0) {
+      const definitionIds = ownedSecrets.flatMap((secret) =>
+        secret.userSecretDefinitionId ? [secret.userSecretDefinitionId] : [],
+      );
+      const [
+        bindingRefs,
+        declarationRefs,
+        allGrantRefs,
+        allConnectionRefs,
+        allGrantMemberRefs,
+        membershipRefs,
+      ] = await Promise.all([
+        tx.select({
+          secretId: companySecretBindings.secretId,
+          targetType: companySecretBindings.targetType,
+          targetId: companySecretBindings.targetId,
+        }).from(companySecretBindings).where(and(
+          eq(companySecretBindings.companyId, companyId),
+          inArray(companySecretBindings.secretId, ownedSecretIds),
+        )),
+        definitionIds.length === 0 ? Promise.resolve([]) : tx.select({
+          userSecretDefinitionId: userSecretDeclarations.userSecretDefinitionId,
+        }).from(userSecretDeclarations).where(and(
+          eq(userSecretDeclarations.companyId, companyId),
+          inArray(userSecretDeclarations.userSecretDefinitionId, definitionIds),
+        )),
+        tx.select({
+          id: connectionGrants.id,
+          connectionId: connectionGrants.connectionId,
+          kind: connectionGrants.kind,
+          status: connectionGrants.status,
+          credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
+        tx.select({
+          id: toolConnections.id,
+          credentialRefs: toolConnections.credentialRefs,
+          credentialSecretRefs: toolConnections.credentialSecretRefs,
+        }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
+        tx.select({
+          grantId: connectionGrantMembers.grantId,
+          subjectId: connectionGrantMembers.subjectId,
+        }).from(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, companyId),
+          eq(connectionGrantMembers.subjectType, "user"),
+        )),
+        tx.select({ userId: companyMemberships.principalId }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          ne(companyMemberships.principalId, userId),
+        )),
+      ]);
+      grantRefs = allGrantRefs;
+      connectionRefs = allConnectionRefs;
+      grantMemberRefs = allGrantMemberRefs;
+      existingMemberUserIds = new Set(membershipRefs.map((row) => row.userId));
+
+      for (const binding of bindingRefs) {
+        if (binding.targetType !== "tool_connection" || !affectedConnections.has(binding.targetId)) {
+          retainedSecretIds.add(binding.secretId);
+        }
+      }
+      const declaredDefinitions = new Set(declarationRefs.map((row) => row.userSecretDefinitionId));
+      for (const secret of ownedSecrets) {
+        if (secret.userSecretDefinitionId && declaredDefinitions.has(secret.userSecretDefinitionId)) {
+          retainedSecretIds.add(secret.id);
+        }
+      }
+      for (const grant of grantRefs) {
+        if (ownedGrantIds.has(grant.id)) continue;
+        const grantAudience = grantMemberRefs.filter((member) => member.grantId === grant.id);
+        const remainingGrantAudience = grantAudience.filter((member) => member.subjectId !== userId);
+        const hasSurvivingOrganizationAudience = grant.kind === "organization"
+          && grant.status === "active"
+          && (
+            soleAudienceGrantIds.has(grant.id)
+              ? true
+              : remainingGrantAudience.length === 0
+              ? existingMemberUserIds.size > 0
+              : remainingGrantAudience.some((member) => existingMemberUserIds.has(member.subjectId))
+          );
+        for (const ref of grant.credentialSecretRefs) {
+          if (!ownedSecretSet.has(ref.secretId)) continue;
+          if (!affectedConnections.has(grant.connectionId)) {
+            retainedSecretIds.add(ref.secretId);
+          } else if (grant.kind === "user" || hasSurvivingOrganizationAudience) {
+            // A connection may temporarily carry separate user grants that
+            // reference the same credential, or an organization grant may
+            // still have another persisted audience member. A sole named
+            // audience row stays persisted instead of being widened to company
+            // scope; both resolvers require current active membership, so the
+            // row remains dormant until company access is restored. Pending,
+            // suspended, and archived memberships are intentionally included
+            // because company access can reactivate each of them later.
+            retainedSecretIds.add(ref.secretId);
+            sharedConnectionSecretIds.add(ref.secretId);
+          }
+        }
+      }
+      for (const connection of connectionRefs) {
+        if (affectedConnections.has(connection.id)) continue;
+        for (const ref of [...connection.credentialRefs, ...connection.credentialSecretRefs]) {
+          if (ownedSecretSet.has(ref.secretId)) retainedSecretIds.add(ref.secretId);
+        }
+      }
+    }
+    const secretIdsToDelete = ownedSecretIds.filter((secretId) => !retainedSecretIds.has(secretId));
+    const connectionSecretIdsToRemove = new Set(
+      ownedSecretIds.filter((secretId) => !sharedConnectionSecretIds.has(secretId)),
+    );
+    const removedDelegations = grantIds.length === 0 ? [] : await tx
+      .delete(connectionGrantDelegations)
+      .where(and(
+        eq(connectionGrantDelegations.companyId, companyId),
+        inArray(connectionGrantDelegations.grantId, grantIds),
+      ))
+      .returning();
+    if (grantIds.length > 0) {
+      await tx.update(connectionGrants).set({
+        status: "revoked",
+        isDefault: false,
+        revokedAt: now,
+        revokedByUserId: null,
+        revokedByAgentId: null,
+        updatedAt: now,
+      }).where(and(
+        eq(connectionGrants.companyId, companyId),
+        inArray(connectionGrants.id, grantIds),
+      ));
+    }
+    if (ownedSecretIds.length > 0) {
+      for (const grant of grantRefs) {
+        if (!ownedGrantIds.has(grant.id) && !affectedConnections.has(grant.connectionId)) continue;
+        const refsToRemove = ownedGrantIds.has(grant.id) ? ownedSecretSet : connectionSecretIdsToRemove;
+        const credentialSecretRefs = grant.credentialSecretRefs.filter(
+          (ref) => !refsToRemove.has(ref.secretId),
+        );
+        if (credentialSecretRefs.length !== grant.credentialSecretRefs.length) {
+          await tx.update(connectionGrants).set({
+            credentialSecretRefs,
+            ...(ownedGrantIds.has(grant.id) || grant.status === "revoked" ? {
+              status: "revoked" as const,
+              isDefault: false,
+            } : {
+              status: "needs_reauthorization" as const,
+              isDefault: false,
+            }),
+            updatedAt: now,
+          })
+            .where(eq(connectionGrants.id, grant.id));
+        }
+      }
+      for (const connection of connectionRefs) {
+        if (!affectedConnections.has(connection.id)) continue;
+        const credentialRefs = connection.credentialRefs.filter(
+          (ref) => !connectionSecretIdsToRemove.has(ref.secretId),
+        );
+        const credentialSecretRefs = connection.credentialSecretRefs.filter(
+          (ref) => !connectionSecretIdsToRemove.has(ref.secretId),
+        );
+        if (
+          credentialRefs.length !== connection.credentialRefs.length ||
+          credentialSecretRefs.length !== connection.credentialSecretRefs.length
+        ) {
+          const hasUnaffectedActiveGrant = grantRefs.some((grant) =>
+            grant.connectionId === connection.id
+            && !ownedGrantIds.has(grant.id)
+            && grant.status === "active"
+            && grant.credentialSecretRefs.length > 0
+            && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
+          );
+          await tx.update(toolConnections).set({
+            credentialRefs,
+            credentialSecretRefs,
+            ...(!hasUnaffectedActiveGrant ? {
+              status: "draft" as const,
+              enabled: false,
+              healthStatus: "missing_secret" as const,
+              healthMessage: "Personal credential owner no longer has company access. Reauthorize this connection.",
+              lastError: "oauth_reauthorization_required",
+            } : {}),
+            updatedAt: now,
+          })
+            .where(eq(toolConnections.id, connection.id));
+        }
+      }
+      if (affectedConnectionIds.length > 0 && connectionSecretIdsToRemove.size > 0) {
+        await tx.delete(companySecretBindings).where(and(
+          eq(companySecretBindings.companyId, companyId),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          inArray(companySecretBindings.targetId, affectedConnectionIds),
+          inArray(companySecretBindings.secretId, [...connectionSecretIdsToRemove]),
+        ));
+      }
+      if (secretIdsToDelete.length > 0) {
+        await tx.delete(companySecrets).where(and(
+          eq(companySecrets.companyId, companyId),
+          inArray(companySecrets.id, secretIdsToDelete),
+        ));
+      }
+    }
+    await tx.delete(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      eq(connectionGrantMembers.subjectType, "user"),
+      eq(connectionGrantMembers.subjectId, userId),
+      soleAudienceGrantIds.size > 0
+        ? notInArray(connectionGrantMembers.grantId, [...soleAudienceGrantIds])
+        : undefined,
+    ));
+    if (removedDelegations.length > 0) {
+      const connectionByGrant = new Map(ownedGrants.map((grant) => [grant.id, grant.connectionId]));
+      await tx.insert(toolAccessAuditEvents).values(removedDelegations.map((delegation) => ({
+        companyId,
+        connectionId: connectionByGrant.get(delegation.grantId) ?? null,
+        actorType: "system",
+        actorId: null,
+        action: "connection_grant.delegation_revoked",
+        outcome: "success",
+        reasonCode: "membership_removed",
+        details: {
+          grantId: delegation.grantId,
+          delegationId: delegation.id,
+          agentId: delegation.agentId,
+          ownerUserId: userId,
+        },
+      })));
+    }
+  }
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
@@ -185,6 +505,7 @@ export function accessService(db: Db) {
         .select()
         .from(companyMemberships)
         .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
@@ -216,6 +537,9 @@ export function accessService(db: Db) {
       }
 
       const now = new Date();
+      if (existing.status === "active" && nextStatus !== "active" && existing.principalType === "user") {
+        await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
+      }
       const updated = await tx
         .update(companyMemberships)
         .set({
@@ -334,6 +658,7 @@ export function accessService(db: Db) {
         .select()
         .from(companyMemberships)
         .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
       if (existing.principalType !== "user") {
@@ -356,6 +681,7 @@ export function accessService(db: Db) {
       await assertAssignableArchiveTarget(companyId, input.reassignment, tx);
 
       const now = new Date();
+      await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
       const assignmentPatch = {
         assigneeAgentId: input.reassignment?.assigneeAgentId ?? null,
         assigneeUserId: input.reassignment?.assigneeUserId ?? null,
@@ -449,11 +775,17 @@ export function accessService(db: Db) {
     companyIds: string[],
     options: { actorUserId?: string | null } = {},
   ) {
-    const existing = await listUserCompanyAccess(userId);
-    const existingByCompany = new Map(existing.map((row) => [row.companyId, row]));
     const target = new Set(companyIds);
 
     await db.transaction(async (tx) => {
+      // Serialize every company-access removal/reactivation with personal OAuth
+      // completion, which locks the same membership row before writing secrets.
+      const existing = await tx
+        .select()
+        .from(companyMemberships)
+        .where(and(eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId)))
+        .for("update");
+      const existingByCompany = new Map(existing.map((row) => [row.companyId, row]));
       const toArchive = existing.filter((row) => !target.has(row.companyId) && row.status !== "archived");
       if (toArchive.length > 0 && options.actorUserId && options.actorUserId === userId) {
         throw conflict("You cannot remove yourself");
@@ -489,9 +821,13 @@ export function accessService(db: Db) {
         }
       }
       if (toArchive.length > 0) {
+        const now = new Date();
+        for (const membership of toArchive) {
+          await sweepMemberConnectionAccess(tx, membership.companyId, membership.principalId, now);
+        }
         await tx
           .update(companyMemberships)
-          .set({ status: "archived", updatedAt: new Date() })
+          .set({ status: "archived", updatedAt: now })
           .where(inArray(companyMemberships.id, toArchive.map((row) => row.id)));
         await tx
           .delete(principalPermissionGrants)
@@ -736,6 +1072,7 @@ export function accessService(db: Db) {
         .select()
         .from(companyMemberships)
         .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
@@ -766,12 +1103,21 @@ export function accessService(db: Db) {
         }
       }
 
+      const now = new Date();
+      if (
+        existing.principalType === "user" &&
+        existing.status !== "suspended" &&
+        nextStatus === "suspended"
+      ) {
+        await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
+      }
+
       return tx
         .update(companyMemberships)
         .set({
           membershipRole: nextMembershipRole,
           status: nextStatus,
-          updatedAt: new Date(),
+          updatedAt: now,
         })
         .where(eq(companyMemberships.id, existing.id))
         .returning()

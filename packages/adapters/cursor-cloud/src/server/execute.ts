@@ -15,6 +15,7 @@ import {
   asBoolean,
   asString,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
@@ -106,6 +107,7 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const env: Record<string, string> = {
     ...configEnv,
     ...buildPaperclipEnv(agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
@@ -337,7 +339,7 @@ async function getAttachedRun(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onDispatch } = ctx;
   const envConfig = asStringEnvMap(config.env);
   const apiKey = asString(envConfig.CURSOR_API_KEY, "").trim();
   if (!apiKey) {
@@ -480,6 +482,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let run: Run | null = null;
   let streamError: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first SDK
+    // request is its dispatch boundary. Report it before any potentially
+    // long-running remote reattach/create/send operation.
+    onDispatch?.();
     const attachedRun = canReuseSession
       ? await getAttachedRun({ apiKey, session })
       : null;

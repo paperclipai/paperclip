@@ -2,27 +2,187 @@
   "schemaVersion": 1,
   "slug": "google-sheets",
   "name": "Google Sheets",
-  "description": "Read and update selected spreadsheets.",
+  "description": "Read and update Google Sheets spreadsheets.",
   "categories": [
-    "data"
+    "data",
+    "productivity"
   ],
-  "featured": false,
+  "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=sheets.google.com&sz=128"
+    "logoUrl": "/brands/apps/google-sheets.svg"
   },
   "urlPatterns": [
+    "https://sheetsmcp.googleapis.com/*",
     "https://docs.google.com/spreadsheets/*",
     "https://sheets.google.com/*"
   ],
+  "docsUrl": "https://developers.google.com/workspace/sheets/api/reference/mcp",
+  "redirectConstraints": "https-or-loopback-http",
   "methods": [
     {
-      "key": "local",
-      "transport": "local_stdio",
-      "auth": "none",
+      "key": "paperclip-read",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_id_connector",
+      "connectorProfile": "sheets.read",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Read spreadsheet values and structure."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed OAuth for read-only Sheets access.",
+      "defaults": {
+        "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/spreadsheets.readonly"
+        ]
+      },
+      "guidanceMd": "Connect Google Sheets to read spreadsheets.",
+      "warnings": [
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
+      "key": "customer-read-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Read spreadsheet values and structure."
+      },
+      "grantKinds": [
+        "user"
+      ],
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use credentials from your provider account.",
+      "whenToUse": "Use a customer-owned OAuth client for read-only Sheets access.",
+      "defaults": {
+        "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/spreadsheets.readonly"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Drive, Sheets, and Sheets MCP APIs, then register Paperclip's callback URI.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+      },
+      "warnings": [
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
+      "key": "paperclip-write",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_id_connector",
+      "connectorProfile": "sheets.write",
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read & edit",
+        "description": "Read and update spreadsheet values, formulas, and dimensions."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed OAuth to read and update Sheets.",
+      "defaults": {
+        "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/spreadsheets"
+        ]
+      },
+      "guidanceMd": "Connect Google Sheets to read and update spreadsheets.",
+      "warnings": [
+        "Spreadsheet updates require approval.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "customer-write-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read & edit",
+        "description": "Read and update spreadsheet values, formulas, and dimensions."
+      },
+      "grantKinds": [
+        "user"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-owned OAuth client to read and update Sheets.",
+      "defaults": {
+        "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/spreadsheets"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Drive, Sheets, and Sheets MCP APIs, then register Paperclip's callback URI.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+      },
+      "warnings": [
+        "Spreadsheet updates require approval.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "local",
+      "label": "Use the Paperclip robot account",
+      "transport": "local_stdio",
+      "auth": "none",
+      "capabilityProfile": {
+        "key": "robot",
+        "label": "Share selected sheets",
+        "description": "Share only named spreadsheets with the Paperclip robot account."
+      },
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Share selected spreadsheets with the Paperclip robot account instead of connecting a Google identity.",
       "defaults": {
         "templateKey": "paperclip.google-sheets"
       },

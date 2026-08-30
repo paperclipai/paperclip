@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "slug": "oreilly",
+  "name": "O'Reilly",
+  "description": "Connect O'Reilly's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/oreilly.svg"
+  },
+  "urlPatterns": [
+    "https://api.oreilly.com/*"
+  ],
+  "docsUrl": "https://learning.oreilly.com/apidocs/mcp/content/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.oreilly.com/api/content-discovery/v1/mcp/"
+      },
+      "guidanceMd": "Connect O'Reilly in the browser. An O'Reilly Learning subscription with MCP or API access.",
+      "riskTier": "S2",
+      "label": "Sign in with O'Reilly",
+      "consoleLinks": {
+        "docs": "https://learning.oreilly.com/apidocs/mcp/content/"
+      },
+      "warnings": [
+        "An O'Reilly Learning subscription with MCP or API access."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api.oreilly.com/api/content-discovery/v1/mcp/"
+      },
+      "guidanceMd": "Use a customer-created O'Reilly key. An O'Reilly Learning subscription with MCP or API access.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "O'Reilly API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your O'Reilly API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://learning.oreilly.com/apidocs/mcp/content/",
+        "docs": "https://learning.oreilly.com/apidocs/mcp/content/"
+      },
+      "warnings": [
+        "An O'Reilly Learning subscription with MCP or API access."
+      ]
+    }
+  ]
+}

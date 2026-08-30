@@ -1,12 +1,10 @@
 import { useEffect } from "react";
-import { Settings2, Wrench } from "lucide-react";
+import { Wrench } from "lucide-react";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
-import { PoliciesTab } from "./PoliciesTab";
-import { RuntimeTab } from "./RuntimeTab";
 import { AuditTab } from "./AuditTab";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
@@ -24,10 +22,6 @@ function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
     case "profiles":
       return <ProfilesIndex companyId={companyId} />;
-    case "policies":
-      return <PoliciesTab companyId={companyId} />;
-    case "runtime":
-      return <RuntimeTab companyId={companyId} />;
     case "audit":
       return <AuditTab companyId={companyId} />;
     case "gateways":
@@ -76,6 +70,14 @@ export function ToolsAccess() {
     params.tab === "examples"
   ) {
     return <Navigate to="/apps/connections" replace />;
+  }
+
+  if (params.tab === "runtime") {
+    return <Navigate to="/apps/connections" replace />;
+  }
+
+  if (params.tab === "policies") {
+    return <Navigate to="/apps/advanced/profiles" replace />;
   }
 
   if (advanced) {
@@ -130,20 +132,5 @@ export function ToolsAccess() {
     );
   }
 
-  return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 sm:p-6">
-      <div>
-        <div className="flex items-center gap-2">
-          <Settings2 className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-xl font-bold text-foreground">Developer tools</h1>
-        </div>
-        <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
-          Apps is the simple way to connect tools. This Developer area is for wiring your own
-          servers, tokens, and rules by hand — most teams never need it.
-        </p>
-      </div>
-
-      <div className="min-h-(--sz-300px)">{renderTab(activeTab, selectedCompanyId)}</div>
-    </div>
-  );
+  return <div className="max-w-5xl">{renderTab(activeTab, selectedCompanyId)}</div>;
 }

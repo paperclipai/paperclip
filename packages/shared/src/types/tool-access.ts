@@ -70,11 +70,14 @@ export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
+export type ToolConnectionCredentialSource = "paperclip_vault" | "vercel_connect";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
-export type ConnectionGrantKind = "workspace" | "user";
+export type ConnectionGrantKind = "organization" | "user";
 export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
-export type ToolCredentialPlacement = "header" | "env";
+export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback";
+export type ConnectionGrantMemberSubjectType = "user";
+export type ToolCredentialPlacement = "header" | "env" | "url";
 
 export interface McpConnectionCredentialRef {
   name: string;
@@ -105,6 +108,39 @@ export interface ToolRedactedValueSummary {
   artifactId?: string | null;
 }
 
+export type VercelConnectPrincipalMode = "app" | "user";
+
+/** Durable, non-secret connector provenance safe to return to the board UI. */
+export interface VercelConnectCredentialSummary {
+  provider: "vercel_connect";
+  connectorId: string;
+  connectorUid: string;
+  service: string;
+  connectorType: string;
+  principalMode: VercelConnectPrincipalMode;
+  headerName: string;
+  headerPrefix?: string | null;
+  scopes: string[];
+}
+
+export type VercelConnectCredentialReference = VercelConnectCredentialSummary;
+
+/** Redacted issuance metadata. Subject ids, bearer values, claims and vendor metadata are omitted. */
+export interface VercelConnectGrantSummary {
+  provider: "vercel_connect";
+  subjectType: "app" | "user";
+  installationId?: string;
+  tenantId?: string;
+  tokenId?: string;
+  expiresAt?: string;
+  lastVerifiedAt?: string;
+}
+
+/** Server-only persisted form; API mappers must remove the pseudonymous subject id. */
+export interface VercelConnectGrantReference extends VercelConnectGrantSummary {
+  subjectId?: string;
+}
+
 export interface ToolApplication {
   id: string;
   companyId: string;
@@ -132,6 +168,9 @@ export interface ToolConnection {
   ownership: ToolConnectionOwnership;
   transport: ToolConnectionTransport;
   authKind: ToolConnectionAuthKind;
+  credentialSource: ToolConnectionCredentialSource;
+  externalCredential?: VercelConnectCredentialSummary | null;
+  credentialPolicy: ToolConnectionCredentialPolicy;
   status?: ToolConnectionStatus;
   transportConfig: Record<string, unknown>;
   config?: Record<string, unknown>;
@@ -160,8 +199,23 @@ export interface ConnectionGrant {
   connectionId: string;
   kind: ConnectionGrantKind;
   subjectUserId: string | null;
-  providerTenant: { name?: string; externalId?: string } | null;
+  providerTenant: {
+    name?: string;
+    externalId?: string;
+    oauth?: {
+      strategy?: string;
+      accessTokenExpiresAt?: string;
+      scopes?: string[];
+      tokenType?: string;
+      refreshedAt?: string;
+      refreshLease?: {
+        id?: string;
+        expiresAt?: string;
+      };
+    };
+  } | null;
   credentialSecretRefs: ToolCredentialSecretRef[];
+  externalCredential?: VercelConnectGrantSummary | null;
   status: ConnectionGrantStatus;
   isDefault: boolean;
   createdByAgentId: string | null;
@@ -172,6 +226,78 @@ export interface ConnectionGrant {
   lastUsedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  members?: ConnectionGrantMember[];
+  delegations?: ConnectionGrantDelegation[];
+  /**
+   * Server-computed authorization for this grant (PAP-17835). The UI renders the
+   * §3 permission matrix from these booleans; it must never rebuild policy from
+   * `membershipRole` strings, because grant authorization also depends on
+   * creator/subject identity that the client cannot evaluate.
+   */
+  capabilities?: ConnectionGrantCapabilities;
+}
+
+export interface ConnectionGrantCapabilities {
+  canRevoke: boolean;
+  canEditAudience: boolean;
+}
+
+/**
+ * Connection-level capabilities for the personal-connections UX. Policy-forbidden
+ * actions are omitted from the UI entirely; `false` here means "do not render",
+ * not "render disabled".
+ */
+export interface ToolConnectionCapabilities {
+  canConfigure: boolean;
+  canCreateOrganizationGrant: boolean;
+  canSetCompanyInstall: boolean;
+  canConnectAsCurrentUser: boolean;
+  canManageAgentInstalls: boolean;
+  canViewOtherPersonalIdentities: boolean;
+  editableAgentIds: string[];
+}
+
+/**
+ * Capabilities needed before a tool connection exists. These are returned by
+ * the company-scoped app gallery read so create flows do not have to infer
+ * authorization from membership roles or wait for a connection id.
+ */
+export interface ToolConnectionCreateCapabilities {
+  canSetCompanyInstall: boolean;
+  companyInstallReason: string | null;
+}
+
+export interface ConnectionGrantsResponse {
+  connection: { id: string; uid: string };
+  grants: ConnectionGrant[];
+  capabilities: ToolConnectionCapabilities;
+  currentUserId: string | null;
+  members: ConnectionAudienceMember[];
+}
+
+/** A company member that can appear in an organization grant's audience. */
+export interface ConnectionAudienceMember {
+  userId: string;
+  name: string | null;
+  email: string | null;
+}
+
+export interface ConnectionGrantDelegation {
+  id: string;
+  companyId: string;
+  grantId: string;
+  agentId: string;
+  createdByUserId: string;
+  createdAt: Date;
+}
+
+export interface ConnectionGrantMember {
+  id: string;
+  companyId: string;
+  grantId: string;
+  subjectType: ConnectionGrantMemberSubjectType;
+  subjectId: string;
+  createdAt: Date;
 }
 
 export interface ToolConnectionInstall {
@@ -190,16 +316,72 @@ export interface ToolConnectionInstallSnapshot {
   installs: ToolConnectionInstall[];
 }
 
+/**
+ * What a connection removal actually tore down (PAP-17119).
+ *
+ * Removing an app is a revocation boundary, not a cosmetic archive, so the
+ * receipt is counts and outcomes only — never a secret name, key, or value,
+ * because this summary is echoed into the activity log the whole company reads.
+ */
+export interface ToolConnectionRemovalSummary {
+  /** Connection-owned secrets revoked at the provider and deleted locally. */
+  secretsRevoked: number;
+  /** Secrets left in place because another consumer still binds them. */
+  secretsRetainedShared: number;
+  /** Credential refs cleared off the connection row. */
+  credentialRefsCleared: number;
+  /** `company_secret_bindings` rows removed for this connection. */
+  secretBindingsRemoved: number;
+  grantsRevoked: number;
+  installsRemoved: number;
+  /**
+   * `deleted` when the app-managed `app:<connectionId>` profile could go away,
+   * `archived` when a gateway still references it (the row survives with no
+   * entries and a non-active status), `absent` when there was never one.
+   */
+  appProfile: "deleted" | "archived" | "absent";
+  appProfileEntriesRemoved: number;
+  appProfileBindingsRemoved: number;
+  catalogEntriesMarkedRemoved: number;
+  oauthStatesDiscarded: number;
+  /** Token hashes wiped from the retained connection-token issuance ledger. */
+  tokenIssuanceHashesCleared: number;
+  /**
+   * Live local runtimes shut down. A running child process holds the injected
+   * credential in memory, so it is an access path of its own.
+   */
+  runtimeSlotsStopped: number;
+  gatewayTokensRevoked: number;
+  gatewaySessionsRevoked: number;
+  applicationArchived: boolean;
+  externalCredentialCleanup?: {
+    provider: "vercel_connect";
+    userSubjectsAttempted: number;
+    userSubjectsRevoked: number;
+    userSubjectFailures: number;
+    appSubjectCleanup: "not_applicable" | "manage_in_vercel";
+    manageUrl: string;
+  } | null;
+}
+
+export interface ToolConnectionRemovalResult {
+  connection: ToolConnection;
+  removal: ToolConnectionRemovalSummary;
+}
+
 export type ConnectionTokenScope = string | string[];
 export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: string };
 
 export const CONNECTION_RECOVERABLE_ERROR_CODES = [
   "user_authorization_required",
+  "organization_authorization_required",
+  "grant_audience_denied",
   "grant_revoked",
   "needs_reauthorization",
   "installation_required",
   "connection_not_installed",
   "subject_not_permitted",
+  "standing_delegation_required",
 ] as const;
 
 export type ConnectionRecoverableErrorCode = typeof CONNECTION_RECOVERABLE_ERROR_CODES[number];
@@ -911,6 +1093,29 @@ export interface ToolAppConnectionActionSummary {
   status: ToolCatalogEntryStatus;
 }
 
+/**
+ * How Paperclip obtained the OAuth client it will use for a connection
+ * (PAP-17087). Ordered by preference: a client the deployment preconfigured for
+ * that issuer, then a Client ID Metadata Document, then dynamic registration,
+ * then client credentials the operator preregistered and pasted in.
+ */
+export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr" | "manual";
+
+/**
+ * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
+ * branch without re-probing. `manualClientRequired` means discovery succeeded but
+ * the authorization server supports neither CIMD nor DCR, so the operator has to
+ * supply a preregistered client under Advanced authentication.
+ */
+export interface ConnectToolAppAuthChallenge {
+  kind: "oauth";
+  startUrl: string | null;
+  issuer?: string | null;
+  resource?: string | null;
+  registrationSource?: ToolOAuthClientRegistrationSource | null;
+  manualClientRequired?: boolean;
+}
+
 export interface ConnectToolAppResult {
   connectionId: string;
   application: ToolApplication;
@@ -921,10 +1126,30 @@ export interface ConnectToolAppResult {
     canMakeChanges: ToolAppConnectionActionSummary[];
   };
   suggestedDefaults: Record<string, unknown>;
-  auth?: {
-    kind: "oauth";
-    startUrl: string | null;
+  auth?: ConnectToolAppAuthChallenge | null;
+}
+
+export interface ToolAppMetadataPreflightAttempt {
+  kind: "endpoint" | "oauth_metadata";
+  url: string;
+  status: number;
+  ok: boolean;
+  contentType: string | null;
+}
+
+/** Credential-free inspection of a curated app's public MCP/OAuth metadata. */
+export interface ToolAppMetadataPreflightResult {
+  galleryKey: string;
+  methodKey: string;
+  serverUrl: string;
+  endpointReachable: boolean;
+  oauth: {
+    metadataFound: boolean;
+    registrationAdvertised: boolean;
+    clientIdMetadataDocumentSupported: boolean;
   } | null;
+  attempts: ToolAppMetadataPreflightAttempt[];
+  checkedAt: string;
 }
 
 export interface ToolOAuthStartResult {
@@ -932,6 +1157,11 @@ export interface ToolOAuthStartResult {
   provider: string;
   authorizationUrl: string;
   expiresAt: string;
+  /** Canonical authorization-server issuer this run is bound to, when discovered. */
+  issuer?: string | null;
+  /** RFC 8707 resource indicator sent with the request. */
+  resource?: string | null;
+  registrationSource?: ToolOAuthClientRegistrationSource | null;
 }
 
 export interface FinishToolAppResult {
@@ -1341,6 +1571,8 @@ export interface ToolConnectionTestAgent {
   role: string;
   title: string | null;
   status: string;
+  /** Zero-based depth in the company reporting tree; roots are highest-ranked. */
+  orgDepth: number;
   effectiveAccess: ToolConnectionAccessSummary;
 }
 

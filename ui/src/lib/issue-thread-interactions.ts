@@ -5,6 +5,9 @@ export type {
   AskUserQuestionsQuestion,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsResult,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
   IssueThreadInteraction,
   IssueThreadInteractionActorFields,
   IssueThreadInteractionBase,
@@ -40,6 +43,7 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
+  ConnectionIntentInteraction,
   IssueThreadInteraction,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
@@ -73,6 +77,7 @@ export function isIssueThreadInteraction(
       || candidate.kind === "request_confirmation"
       || candidate.kind === "request_checkbox_confirmation"
       || candidate.kind === "request_item_verdicts"
+      || candidate.kind === "connection_intent"
     );
 }
 
@@ -237,6 +242,17 @@ export function buildIssueThreadInteractionSummary(
 
   if (interaction.kind === "request_item_verdicts") {
     return buildItemVerdictsSummary(interaction);
+  }
+
+  if (interaction.kind === "connection_intent") {
+    if (interaction.status === "accepted") return `${interaction.payload.serviceName} connected`;
+    if (interaction.status === "rejected") return `${interaction.payload.serviceName} declined`;
+    if (interaction.status === "expired") {
+      return interaction.result?.outcome === "superseded"
+        ? `${interaction.payload.serviceName} request superseded`
+        : `${interaction.payload.serviceName} request expired`;
+    }
+    return `Connect ${interaction.payload.serviceName}`;
   }
 
   const count = interaction.payload.questions.length;

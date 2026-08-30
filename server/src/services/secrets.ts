@@ -918,7 +918,7 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
-export function secretService(db: Db) {
+export function secretService(db: Db | DbTransaction) {
   const authorization = authorizationService(db);
 
   type NormalizeEnvOptions = {
@@ -1629,7 +1629,7 @@ export function secretService(db: Db) {
         accessContext,
       });
       await context.registerForRedaction(resolution.value);
-      await logActivity(db, {
+      await logActivity(db as Db, {
         companyId,
         actorType: "agent",
         actorId: context.agentId,
@@ -1651,7 +1651,7 @@ export function secretService(db: Db) {
       };
     } catch (error) {
       const errorCode = secretResolutionErrorCode(error);
-      await logActivity(db, {
+      await logActivity(db as Db, {
         companyId,
         actorType: "agent",
         actorId: context.agentId,

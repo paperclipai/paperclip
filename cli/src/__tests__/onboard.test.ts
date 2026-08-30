@@ -1,9 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onboard } from "../commands/onboard.js";
 import type { PaperclipConfig } from "../config/schema.js";
+
+const runCommandMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../commands/run.js", () => ({
+  runCommand: runCommandMock,
+}));
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
@@ -102,7 +108,9 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_BIND;
     delete process.env.PAPERCLIP_BIND_HOST;
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
     delete process.env.HOST;
+    runCommandMock.mockReset();
   });
 
   afterEach(() => {
@@ -129,6 +137,24 @@ describe("onboard", () => {
     expect(fs.readFileSync(fixture.configPath, "utf8")).toBe(fixture.configText);
     expect(fs.existsSync(`${fixture.configPath}.backup`)).toBe(false);
     expect(fs.existsSync(path.join(path.dirname(fixture.configPath), ".env"))).toBe(true);
+  });
+
+  it("does not opt into opening a browser when --yes starts an existing setup", async () => {
+    const fixture = createExistingConfigFixture();
+
+    await onboard({ config: fixture.configPath, yes: true });
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: fixture.configPath, repair: true, yes: true });
+    expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
+  });
+
+  it("does not opt into opening a browser when --yes starts a fresh setup", async () => {
+    const configPath = createFreshConfigPath();
+
+    await onboard({ config: configPath, yes: true });
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: configPath, repair: true, yes: true });
+    expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
   });
 
   it("backs up invalid config bytes and refuses --yes replacement", async () => {

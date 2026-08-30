@@ -5,13 +5,44 @@ import type {
   Agent,
   ToolCatalogEntry,
   ToolConnection,
+  ToolConnectionCapabilities,
 } from "@paperclipai/shared";
+import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import {
+  issueThreadInteractionFixtureMeta,
+  pendingConnectionAuthorizationInteraction,
+  resolvedConnectionAuthorizationInteraction,
+} from "@/fixtures/issueThreadInteractionFixtures";
+import type { RequestConfirmationInteraction } from "@/lib/issue-thread-interactions";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { PermissionsPanel } from "@/pages/apps/app-detail/PermissionsPanel";
-import { InstallStep } from "@/pages/apps/AppsConnect";
 import type { AccessDraft } from "@/pages/apps/app-detail/types";
+import { AccessStep } from "@/pages/apps/AppsConnect";
 import type { InstallState } from "@/lib/tool-installs";
+
+const AGENT_IDS = ["a-sage", "a-atlas", "a-orion"];
+
+/** A member who may configure this connection and edit every agent. */
+const FULL_CAPABILITIES: ToolConnectionCapabilities = {
+  canConfigure: true,
+  canCreateOrganizationGrant: true,
+  canSetCompanyInstall: true,
+  canConnectAsCurrentUser: true,
+  canManageAgentInstalls: true,
+  canViewOtherPersonalIdentities: false,
+  editableAgentIds: AGENT_IDS,
+};
+
+const VIEWER_CAPABILITIES: ToolConnectionCapabilities = {
+  canConfigure: false,
+  canCreateOrganizationGrant: false,
+  canSetCompanyInstall: false,
+  canConnectAsCurrentUser: false,
+  canManageAgentInstalls: false,
+  canViewOtherPersonalIdentities: false,
+  editableAgentIds: [],
+};
 
 // ---------------------------------------------------------------------------
 // Phase 3b — Permitted vs Installed UX review harness (PAP-13634).
@@ -99,14 +130,22 @@ type Story = StoryObj;
 
 // --- Surface 1: App detail Permissions tab (PermissionsPanel) --------------
 
-function PanelHarness({ access, install }: { access: AccessDraft; install: InstallState }) {
+function PanelHarness({
+  install,
+  capabilities = FULL_CAPABILITIES,
+}: {
+  install: InstallState;
+  capabilities?: ToolConnectionCapabilities;
+}) {
   const [state, setState] = useState(install);
+  const [access, setAccess] = useState<AccessDraft>({ mode: "all", agentIds: new Set() });
   return (
     <div className="mx-auto max-w-3xl bg-background p-6">
       <PermissionsPanel
+        capabilities={capabilities}
         appName="Gmail"
-        access={access}
         agents={AGENTS}
+        access={access}
         install={state}
         readOnly={GMAIL_TOOLS.filter((t) => t.isReadOnly)}
         canChange={GMAIL_TOOLS.filter((t) => !t.isReadOnly)}
@@ -116,7 +155,7 @@ function PanelHarness({ access, install }: { access: AccessDraft; install: Insta
         pending={false}
         installPending={false}
         refreshPending={false}
-        onSaveAccess={() => {}}
+        onSaveAccess={setAccess}
         onSaveInstall={setState}
         onSetActionPermission={() => {}}
         onReviewQuarantined={() => {}}
@@ -126,32 +165,57 @@ function PanelHarness({ access, install }: { access: AccessDraft; install: Insta
   );
 }
 
-export const AppDetailInstalledMixed: Story = {
-  name: "1 · App detail — mixed install + auto-extend warning",
+export const AppDetailAgentsIPick: Story = {
+  name: "1 · App detail — Agents I pick",
   render: () => (
     <PanelHarness
-      access={{ mode: "specific", agentIds: new Set(["a-sage", "a-atlas"]) }}
       install={{ onAll: false, agentIds: new Set(["a-sage", "a-orion"]) }}
     />
   ),
 };
 
-export const AppDetailInstalledOnAll: Story = {
-  name: "1 · App detail — installed on all agents",
+export const AppDetailAnyAgent: Story = {
+  name: "1 · App detail — Any agent",
   render: () => (
     <PanelHarness
-      access={{ mode: "all", agentIds: new Set() }}
       install={{ onAll: true, agentIds: new Set() }}
     />
   ),
 };
 
-export const AppDetailPermittedOnly: Story = {
-  name: "1 · App detail — permitted only (not installed)",
+export const AppDetailNoAgentsYet: Story = {
+  name: "1 · App detail — no agents yet",
   render: () => (
     <PanelHarness
-      access={{ mode: "all", agentIds: new Set() }}
       install={{ onAll: false, agentIds: new Set() }}
+    />
+  ),
+};
+
+/**
+ * Viewer read-only (PAP-17835). Controls are absent, not disabled: a
+ * policy-forbidden action is never rendered as something to try.
+ */
+export const AppDetailViewerReadOnly: Story = {
+  name: "1 · App detail — viewer read-only",
+  render: () => (
+    <PanelHarness
+      install={{ onAll: false, agentIds: new Set(["a-sage"]) }}
+      capabilities={VIEWER_CAPABILITIES}
+    />
+  ),
+};
+
+/**
+ * A member who may pick agents but may not make the connection company-wide:
+ * "Any agent" is omitted from the choice entirely.
+ */
+export const AppDetailMemberWithoutCompanyInstall: Story = {
+  name: "1 · App detail — member without company-wide install",
+  render: () => (
+    <PanelHarness
+      install={{ onAll: false, agentIds: new Set(["a-sage"]) }}
+      capabilities={{ ...FULL_CAPABILITIES, canSetCompanyInstall: false }}
     />
   ),
 };
@@ -195,18 +259,23 @@ export const AgentToolsInstalledApps: Story = {
   render: () => <SeededAgentTools />,
 };
 
-// --- Surface 3: Connect flow Install step (InstallStep) --------------------
+// --- Surface 3: Connect flow Access step (AccessStep) ---------------------
+//
+// The separate "who can use it" + "install tools" pair is gone: one Access step
+// asks both questions before any credential is entered (PAP-17835).
 
-function SeededInstallStep({
-  access,
-  accessAgentIds,
-  initialMode,
-  initialInstall,
+function SeededAccessStep({
+  authKind,
+  initialGrantKind,
+  initialChoice,
+  initialAgentIds,
+  capabilities = { canSetCompanyInstall: true, editableAgentIds: AGENT_IDS },
 }: {
-  access: "all" | "specific";
-  accessAgentIds: Set<string>;
-  initialMode: "none" | "specific" | "all";
-  initialInstall: Set<string>;
+  authKind: "oauth" | "api_key" | "none";
+  initialGrantKind: "user" | "organization";
+  initialChoice: "specific" | "all";
+  initialAgentIds: Set<string>;
+  capabilities?: { canSetCompanyInstall: boolean; editableAgentIds: string[] };
 }) {
   const client = useMemo(() => {
     const c = new QueryClient({
@@ -215,49 +284,128 @@ function SeededInstallStep({
     c.setQueryData(queryKeys.agents.list(COMPANY), AGENTS);
     return c;
   }, []);
-  const [mode, setMode] = useState(initialMode);
-  const [ids, setIds] = useState(initialInstall);
+  const [grantKind, setGrantKind] = useState(initialGrantKind);
+  const [choice, setChoice] = useState(initialChoice);
+  const [ids, setIds] = useState(initialAgentIds);
   return (
     <QueryClientProvider client={client}>
       <div className="bg-background p-6">
-        <InstallStep
+        <AccessStep
           appName="Gmail"
+          providerName="Gmail"
           companyId={COMPANY}
-          access={access}
-          accessAgentIds={accessAgentIds}
-          installMode={mode}
-          setInstallMode={setMode}
+          authKind={authKind}
+          grantKind={grantKind}
+          setGrantKind={setGrantKind}
+          installChoice={choice}
+          setInstallChoice={setChoice}
           installAgentIds={ids}
           setInstallAgentIds={setIds}
-          submitting={false}
+          capabilities={capabilities}
+          submitLabel={authKind === "oauth" ? "Continue to Gmail" : "Save and continue"}
           onBack={() => {}}
-          onFinish={() => {}}
+          onContinue={() => {}}
         />
       </div>
     </QueryClientProvider>
   );
 }
 
-export const ConnectInstallSpecific: Story = {
-  name: "3 · Connect — Install step (specific + auto-extend)",
+export const ConnectAccessJustMePickedAgents: Story = {
+  name: "3 · Connect Access — Just me + Agents I pick",
   render: () => (
-    <SeededInstallStep
-      access="specific"
-      accessAgentIds={new Set(["a-sage", "a-atlas"])}
-      initialMode="specific"
-      initialInstall={new Set(["a-sage", "a-orion"])}
+    <SeededAccessStep
+      authKind="oauth"
+      initialGrantKind="user"
+      initialChoice="specific"
+      initialAgentIds={new Set(["a-sage", "a-atlas"])}
     />
   ),
 };
 
-export const ConnectInstallAll: Story = {
-  name: "3 · Connect — Install step (all agents)",
+export const ConnectAccessOrganizationAnyAgent: Story = {
+  name: "3 · Connect Access — Whole organization + Any agent",
   render: () => (
-    <SeededInstallStep
-      access="all"
-      accessAgentIds={new Set()}
-      initialMode="all"
-      initialInstall={new Set()}
+    <SeededAccessStep
+      authKind="api_key"
+      initialGrantKind="organization"
+      initialChoice="all"
+      initialAgentIds={new Set()}
+    />
+  ),
+};
+
+/** `authKind: none` has no identity to choose, so the question is not asked. */
+export const ConnectAccessNoIdentityRequired: Story = {
+  name: "3 · Connect Access — no identity required",
+  render: () => (
+    <SeededAccessStep
+      authKind="none"
+      initialGrantKind="organization"
+      initialChoice="specific"
+      initialAgentIds={new Set(["a-sage"])}
+    />
+  ),
+};
+
+// --- Surface 4: the "Connect your Gmail to continue" card -------------------
+//
+// One `request_confirmation`, three readings (PAP-17859). The card no longer
+// falls through to the generic Approve / Revise… / Reject layout: consent is
+// the addressed person's alone, so the affordances change with the reader, and
+// a policy-forbidden action is omitted rather than shown greyed out.
+
+const AUTHORIZATION_USER_LABELS = new Map<string, string>([
+  [issueThreadInteractionFixtureMeta.currentUserId, "Carol"],
+]);
+
+function AuthorizationCardHarness({
+  interaction,
+  currentUserId,
+}: {
+  interaction: RequestConfirmationInteraction;
+  currentUserId: string;
+}) {
+  return (
+    <div className="mx-auto max-w-3xl bg-background p-6">
+      <IssueThreadInteractionCard
+        interaction={interaction}
+        agentMap={new Map()}
+        currentUserId={currentUserId}
+        userLabelMap={AUTHORIZATION_USER_LABELS}
+        onAcceptInteraction={async () => {}}
+        onRejectInteraction={async () => {}}
+      />
+    </div>
+  );
+}
+
+export const AuthorizationAddressed: Story = {
+  name: "4 · Connect Gmail — addressed user",
+  render: () => (
+    <AuthorizationCardHarness
+      interaction={pendingConnectionAuthorizationInteraction}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+    />
+  ),
+};
+
+export const AuthorizationOtherReader: Story = {
+  name: "4 · Connect Gmail — another reader waiting",
+  render: () => (
+    <AuthorizationCardHarness
+      interaction={pendingConnectionAuthorizationInteraction}
+      currentUserId="user-someone-else"
+    />
+  ),
+};
+
+export const AuthorizationResolved: Story = {
+  name: "4 · Connect Gmail — resolved",
+  render: () => (
+    <AuthorizationCardHarness
+      interaction={resolvedConnectionAuthorizationInteraction}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
     />
   ),
 };

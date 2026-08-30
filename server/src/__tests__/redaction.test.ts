@@ -76,6 +76,45 @@ describe("redaction", () => {
     });
   });
 
+  /**
+   * A removal receipt (PAP-17119) has to show what it revoked, so a fixed set of
+   * count keys is exempt from the secret-key guard — but only while the value is
+   * a number. The second half of this test is the point: the same key carrying
+   * anything else is still blanked, so the exemption cannot be used to smuggle
+   * material out under a familiar name.
+   */
+  it("keeps numeric removal-receipt counts but still redacts non-numeric values on the same keys", () => {
+    expect(sanitizeRecord({
+      secretsRevoked: 2,
+      secretsRetainedShared: 0,
+      credentialRefsCleared: 3,
+      secretBindingsRemoved: 3,
+      tokenIssuanceHashesCleared: 1,
+      gatewayTokensRevoked: 0,
+      appProfile: "deleted",
+    })).toEqual({
+      secretsRevoked: 2,
+      secretsRetainedShared: 0,
+      credentialRefsCleared: 3,
+      secretBindingsRemoved: 3,
+      tokenIssuanceHashesCleared: 1,
+      gatewayTokensRevoked: 0,
+      appProfile: "deleted",
+    });
+
+    expect(sanitizeRecord({
+      secretsRevoked: "pasted-api-key-value",
+      secretBindingsRemoved: { name: "tool_app.abc.headers_authorization" },
+      tokenIssuanceHashesCleared: Number.NaN,
+      gatewayTokensRevoked: ["pcgw_live_token"],
+    })).toEqual({
+      secretsRevoked: REDACTED_EVENT_VALUE,
+      secretBindingsRemoved: REDACTED_EVENT_VALUE,
+      tokenIssuanceHashesCleared: REDACTED_EVENT_VALUE,
+      gatewayTokensRevoked: REDACTED_EVENT_VALUE,
+    });
+  });
+
   it("redacts common secret shapes from unstructured text", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";

@@ -7,6 +7,7 @@ import {
   asNumber,
   asString,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
@@ -345,6 +346,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 
@@ -1159,7 +1161,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
   let retryCount = 0;
+  let dispatchReported = false;
   const MAX_RETRIES = 2;
+
+  const reportDispatch = () => {
+    if (dispatchReported) return;
+    dispatchReported = true;
+    ctx.onDispatch?.();
+  };
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
@@ -1288,6 +1297,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
+      // Keep any server-side continuation lock through retryable websocket
+      // setup and backoff. The first agent request is the remote-work boundary:
+      // once it is sent, retrying would be unsafe because the gateway may have
+      // accepted work even if the response is lost.
+      reportDispatch();
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
       });
@@ -1457,7 +1471,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           lower.includes("socket hang up") ||
           (timedOut && !lower.includes("agent.wait")));
 
-      if (isTransient && retryCount < MAX_RETRIES) {
+      if (isTransient && !dispatchReported && retryCount < MAX_RETRIES) {
         retryCount++;
         const backoffMs = retryCount * 2000;
         await ctx.onLog(

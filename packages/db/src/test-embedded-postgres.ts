@@ -9,6 +9,14 @@ import {
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 
+// Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
+// test that starts an embedded Postgres cluster and runs migrations. Measured
+// evidence: this cost class normally finishes in well under 10s. Under a
+// contended CI runner the same test took up to 4.9x longer. This budget
+// gives about 10x headroom over the clean time, so a contended run still
+// passes while a genuine hang still fails fast.
+export const EMBEDDED_POSTGRES_TEST_TIMEOUT_MS = 90_000;
+
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
   start(): Promise<void>;

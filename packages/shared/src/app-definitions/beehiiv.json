@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "beehiiv",
+  "name": "beehiiv",
+  "description": "Connect beehiiv's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/beehiiv.png"
+  },
+  "urlPatterns": [
+    "https://mcp.beehiiv.com/*"
+  ],
+  "docsUrl": "https://www.beehiiv.com/features/mcp/getting-started",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.beehiiv.com/mcp"
+      },
+      "guidanceMd": "Connect beehiiv in the browser. A beehiiv account; the subscription plan controls available write capabilities.",
+      "riskTier": "S3",
+      "label": "Sign in with beehiiv",
+      "consoleLinks": {
+        "docs": "https://www.beehiiv.com/features/mcp/getting-started"
+      },
+      "warnings": [
+        "A beehiiv account; the subscription plan controls available write capabilities."
+      ]
+    }
+  ]
+}

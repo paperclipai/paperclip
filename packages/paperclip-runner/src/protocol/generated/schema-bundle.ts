@@ -1893,6 +1893,9 @@ export const usageSchema = {
     "cumulative": {
       "$ref": "#/$defs/measurement"
     },
+    "runDeltaAvailable": {
+      "type": "boolean"
+    },
     "runDelta": {
       "$ref": "#/$defs/measurement"
     }

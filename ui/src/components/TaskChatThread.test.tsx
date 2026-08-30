@@ -9,10 +9,21 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatThread } from "./TaskChatThread";
 
 const transcriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
+const nativeTranscriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
+const transcriptHookRuns = vi.hoisted(() => ({ legacy: [] as unknown[][], native: [] as unknown[][] }));
 const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
-  useLiveRunTranscripts: () => transcriptState,
+  useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
+    transcriptHookRuns.legacy.push(runs);
+    return transcriptState;
+  },
+}));
+vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
+  useNativeRunTranscripts: (runs: unknown[]) => {
+    transcriptHookRuns.native.push(runs);
+    return nativeTranscriptState;
+  },
 }));
 vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: sidebarState.isMobile }),
@@ -41,6 +52,9 @@ let root: Root | null = null;
 beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
+  nativeTranscriptState.transcriptByRun.clear();
+  transcriptHookRuns.legacy.length = 0;
+  transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -113,6 +127,42 @@ describe("TaskChatThread draft pass-through", () => {
 
     expect(container.querySelector('[data-testid="mock-editor"]')?.textContent)
       .toBe("half-written thought");
+  });
+});
+
+describe("TaskChatThread runtime transcript selection", () => {
+  it("selects persisted runtime facts while leaving direct adapters on the legacy parser", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        linkedRuns={[
+          {
+            runId: "native-run",
+            runtimeMode: "native",
+            status: "succeeded",
+            agentId: "agent-1",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00.000Z",
+            startedAt: "2026-08-25T18:00:00.000Z",
+          },
+          {
+            runId: "legacy-run",
+            runtimeMode: "legacy",
+            status: "succeeded",
+            agentId: "agent-2",
+            adapterType: "codex_local",
+            createdAt: "2026-08-25T18:01:00.000Z",
+            startedAt: "2026-08-25T18:01:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    const legacyRuns = transcriptHookRuns.legacy.at(-1) as Array<{ id: string }>;
+    const nativeRuns = transcriptHookRuns.native.at(-1) as Array<{ id: string }>;
+    expect(legacyRuns.map((run) => run.id)).toEqual(["legacy-run"]);
+    expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 });
 

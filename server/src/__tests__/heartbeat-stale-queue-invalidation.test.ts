@@ -138,6 +138,12 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let beforeContinuationDispatchCheck:
+    | ((input: { runId: string; issueId: string }) => Promise<void>)
+    | null = null;
+  let afterContinuationDispatchCheck:
+    | ((input: { runId: string; issueId: string }) => Promise<void>)
+    | null = null;
 
   const countExecuteCallsForRun = (runId: string) =>
     mockAdapterExecute.mock.calls.filter(([context]) => context?.runId === runId).length;
@@ -145,11 +151,20 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-stale-queue-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db);
+    heartbeat = heartbeatService(db, {
+      beforeResolvedInteractionContinuationDispatchCheck: async (input) => {
+        await beforeContinuationDispatchCheck?.(input);
+      },
+      afterResolvedInteractionContinuationDispatchCheck: async (input) => {
+        await afterContinuationDispatchCheck?.(input);
+      },
+    });
     await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
+    beforeContinuationDispatchCheck = null;
+    afterContinuationDispatchCheck = null;
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -329,6 +344,368 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
     expect(runRows).toHaveLength(0);
+  });
+
+  it("checks guarded issue status and assignee under the enqueue lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const parkedIssueId = randomUUID();
+    const reassignedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parkedIssueId,
+        companyId,
+        title: "Parked connection intent",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        assigneeAgentId: agentId,
+      },
+      {
+        id: reassignedIssueId,
+        companyId,
+        title: "Reassigned connection intent",
+        status: "in_progress" as const,
+        priority: "medium" as const,
+        assigneeAgentId: null,
+      },
+    ]);
+
+    for (const issueId of [parkedIssueId, reassignedIssueId]) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, interactionId: randomUUID() },
+        contextSnapshot: { issueId, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "responsible-user",
+        issueStateGuard: {
+          statuses: ["in_progress"],
+          assigneeAgentId: agentId,
+        },
+      });
+      expect(run).toBeNull();
+    }
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)).toEqual([
+      { status: "skipped", reason: "issue_state_guard_mismatch" },
+      { status: "skipped", reason: "issue_state_guard_mismatch" },
+    ]);
+  });
+
+  it("cancels a resolved connection-intent wake parked before queued-run claim", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Connection intent parked after enqueue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: randomUUID(),
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        source: "connection_intent.resolved",
+      },
+    });
+
+    await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, issueId));
+    await heartbeat.resumeQueuedRuns();
+
+    const [run, wakeup, issue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(wakeup).toMatchObject({ status: "skipped", error: expect.stringContaining("no longer in_progress") });
+    expect(issue?.status).toBe("backlog");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("does not re-open a resolved connection-intent issue parked after claim", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Connection intent parked between claim and checkout",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: randomUUID(),
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        source: "connection_intent.resolved",
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION park_connection_intent_after_claim()
+      RETURNS trigger AS $trigger$
+      BEGIN
+        IF NEW.id = '${runId}'::uuid AND NEW.status = 'running' THEN
+          UPDATE issues SET status = 'backlog' WHERE id = '${issueId}'::uuid;
+        END IF;
+        RETURN NEW;
+      END;
+      $trigger$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER park_connection_intent_after_claim
+      AFTER UPDATE OF status ON heartbeat_runs
+      FOR EACH ROW EXECUTE FUNCTION park_connection_intent_after_claim();
+    `));
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(wakeup).toMatchObject({ status: "skipped", error: expect.stringContaining("no longer in_progress") });
+    expect(issue?.status).toBe("backlog");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it.each([
+    {
+      mutation: "parked",
+      expectedErrorCode: "issue_not_in_progress",
+      expectedError: "no longer in_progress",
+    },
+    {
+      mutation: "reassigned",
+      expectedErrorCode: "issue_assignee_changed",
+      expectedError: "changed assignee",
+    },
+  ])(
+    "cancels a resolved connection-intent wake $mutation after checkout but before adapter dispatch",
+    async ({ mutation, expectedErrorCode, expectedError }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const replacementAgentId = randomUUID();
+      if (mutation === "reassigned") {
+        await db.insert(agents).values({
+          id: replacementAgentId,
+          companyId,
+          name: "ReplacementCoder",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        });
+      }
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: `Connection intent ${mutation} at final dispatch`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      const { runId, wakeupRequestId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_commented",
+        invocationSource: "automation",
+        contextExtras: {
+          interactionId: randomUUID(),
+          interactionKind: "connection_intent",
+          interactionStatus: "accepted",
+          interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+          mutation: "interaction",
+          source: "connection_intent.resolved",
+        },
+      });
+      beforeContinuationDispatchCheck = async ({ runId: guardedRunId, issueId: guardedIssueId }) => {
+        expect(guardedRunId).toBe(runId);
+        expect(guardedIssueId).toBe(issueId);
+        await db
+          .update(issues)
+          .set(mutation === "parked"
+            ? { status: "backlog", updatedAt: new Date() }
+            : { assigneeAgentId: replacementAgentId, updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+      };
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "cancelled";
+      });
+
+      const [run, wakeup, issue] = await Promise.all([
+        db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db.select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+        db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      expect(run).toMatchObject({ status: "cancelled", errorCode: expectedErrorCode });
+      expect(wakeup).toMatchObject({ status: "skipped", error: expect.stringContaining(expectedError) });
+      expect(issue).toMatchObject(mutation === "parked"
+        ? { status: "backlog", assigneeAgentId: agentId }
+        : { status: "in_progress", assigneeAgentId: replacementAgentId });
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    },
+  );
+
+  it("releases the final continuation gate at non-process adapter dispatch", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Connection intent parked at the atomic dispatch gate",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: randomUUID(),
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        source: "connection_intent.resolved",
+      },
+    });
+
+    const ordering: string[] = [];
+    let parkPromise: Promise<unknown> | null = null;
+    afterContinuationDispatchCheck = async ({ runId: guardedRunId, issueId: guardedIssueId }) => {
+      expect(guardedRunId).toBe(runId);
+      expect(guardedIssueId).toBe(issueId);
+      ordering.push("validated");
+      parkPromise = Promise.resolve(
+        db
+          .update(issues)
+          .set({
+            status: "backlog",
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId))
+          .returning({ id: issues.id }),
+      ).then((rows) => {
+        expect(rows).toHaveLength(1);
+        ordering.push("parked");
+      });
+      // Give the concurrent update a chance to reach the row lock. It must
+      // remain blocked until the adapter reports actual remote dispatch.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ordering).toEqual(["validated"]);
+    };
+    mockAdapterExecute.mockImplementation(async (context) => {
+      ordering.push("preparing");
+      // Model asynchronous adapter setup before the child process exists.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ordering).toEqual(["validated", "preparing"]);
+      ordering.push("dispatched");
+      context.onDispatch?.();
+      await waitForCondition(async () => ordering.includes("parked"));
+      expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked"]);
+      ordering.push("settled");
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Atomic continuation dispatch test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    await parkPromise;
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("backlog");
+    expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked", "settled"]);
+    expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
