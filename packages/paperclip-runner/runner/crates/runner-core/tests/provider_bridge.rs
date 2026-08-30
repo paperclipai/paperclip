@@ -230,6 +230,32 @@ fn recovery_preserves_pending_calls_for_the_existing_run() {
 }
 
 #[test]
+fn recovery_preserves_a_pristine_bridge_without_a_catalog() {
+    let bridge = ProviderToolBridge::default();
+    let encoded = serde_json::to_string(&bridge).unwrap();
+    let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
+
+    recovered
+        .attach_existing_run()
+        .expect("a pristine pre-catalog snapshot remains recoverable");
+    assert_eq!(recovered, bridge);
+}
+
+#[test]
+fn recovery_rejects_nonempty_state_without_a_catalog_digest() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    let mut encoded = serde_json::to_value(&bridge).unwrap();
+    encoded["catalogDigest"] = serde_json::Value::Null;
+    let mut recovered: ProviderToolBridge = serde_json::from_value(encoded).unwrap();
+
+    let error = recovered
+        .attach_existing_run()
+        .expect_err("nonempty recovered state must remain bound to a catalog digest");
+    assert!(error.to_string().contains("omit the catalog digest"));
+}
+
+#[test]
 fn recovery_rejects_tampered_authorization_catalog_bindings() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();

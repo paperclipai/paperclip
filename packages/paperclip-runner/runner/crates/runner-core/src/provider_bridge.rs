@@ -134,12 +134,24 @@ impl ProviderToolBridge {
                 "recovered authorized tool identities are inconsistent",
             ));
         }
+        let Some(catalog_digest) = self.catalog_digest.clone() else {
+            if self.authorized.is_empty()
+                && self.pending.is_empty()
+                && self.completed.is_empty()
+                && self.settled_results.is_empty()
+                && self.settled_call_ids.is_empty()
+            {
+                self.retained_result_bytes = 0;
+                return Ok(());
+            }
+            return Err(ProviderBridgeError::invalid(
+                "recovered authorized tools omit the catalog digest",
+            ));
+        };
         let recovered_tool_set = AuthorizedToolSet {
             schema: TOOL_SET_SCHEMA.to_owned(),
             schema_version: 1,
-            catalog_digest: self.catalog_digest.clone().ok_or_else(|| {
-                ProviderBridgeError::invalid("recovered authorized tools omit the catalog digest")
-            })?,
+            catalog_digest,
             operations: self.authorized.values().cloned().collect(),
         };
         validate_authorized_tool_set(&recovered_tool_set).map_err(|error| {
