@@ -847,7 +847,8 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
             linkedTask.assigneeActorId === requester.id &&
             linkedTask.checkoutRunId === null &&
             linkedTask.executionRunId === null &&
-            ["todo", "blocked", "in_review"].includes(linkedTask.status)
+            ["todo", "blocked", "in_review"].includes(linkedTask.status) &&
+            !this.#hasUnresolvedBlockers(linkedTask.id)
           ) {
             requesterTarget ??= {
               actorId: requester.id,
@@ -1174,6 +1175,10 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         createdAt: this.#now(),
       });
     }
+  }
+
+  #hasUnresolvedBlockers(taskId: string): boolean {
+    return this.#state.blockers.some((blocker) => blocker.taskId === taskId);
   }
 
   #dependsOn(taskId: string, candidateAncestorId: string, visited = new Set<string>()): boolean {

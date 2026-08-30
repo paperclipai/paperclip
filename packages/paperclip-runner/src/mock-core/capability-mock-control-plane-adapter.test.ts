@@ -1038,6 +1038,137 @@ describe("CapabilityMockControlPlaneAdapter", () => {
     });
   });
 
+  it("does not resume a requester task before its blockers finish", async () => {
+    const adapter = seeded({
+      actors: [
+        {
+          id: "actor-1",
+          companyId: "company-1",
+          name: "Mock Approver",
+          role: "approver",
+          status: "active",
+          budgetId: "budget-actor-1",
+          capabilityGrants: [],
+        },
+        {
+          id: "actor-2",
+          companyId: "company-1",
+          name: "Blocked Requester",
+          role: "engineer",
+          status: "active",
+          budgetId: "budget-actor-2",
+          capabilityGrants: [],
+        },
+      ],
+      tasks: [
+        {
+          id: "task-1",
+          companyId: "company-1",
+          identifier: "MCK-1",
+          title: "Approval task",
+          description: null,
+          status: "todo",
+          priority: "high",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          id: "task-2",
+          companyId: "company-1",
+          identifier: "MCK-2",
+          title: "Blocked requester task",
+          description: null,
+          status: "blocked",
+          priority: "medium",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-2",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          id: "task-3",
+          companyId: "company-1",
+          identifier: "MCK-3",
+          title: "Unfinished dependency",
+          description: null,
+          status: "todo",
+          priority: "medium",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-2",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      approvals: [{
+        id: "approval-blocked-requester",
+        companyId: "company-1",
+        taskIds: ["task-1", "task-2"],
+        type: "request_board_approval",
+        status: "pending",
+        requestedByActorId: "actor-2",
+        payload: {},
+        decisionNote: null,
+        comments: [],
+        createdAt: "2026-08-09T00:00:00.000Z",
+        decidedAt: null,
+      }],
+      blockers: [{
+        id: "blocker-requester",
+        taskId: "task-2",
+        blockedByTaskId: "task-3",
+        createdAt: "2026-08-09T00:00:00.000Z",
+      }],
+    });
+    await adapter.start();
+    await adapter.openFixtureRun({
+      ...OPEN,
+      capabilities: ["governance:approvals:decide"],
+    });
+
+    await expect(adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "blocked-requester-decision",
+      command: {
+        kind: "decide_approval",
+        approvalId: "approval-blocked-requester",
+        decision: "approved",
+        note: "Record approval without bypassing dependencies.",
+      },
+    })).resolves.toMatchObject({ disposition: "applied" });
+
+    const snapshot = adapter.snapshot();
+    expect(snapshot.tasks.find((task) => task.id === "task-2")).toMatchObject({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(snapshot.blockers).toEqual([
+      expect.objectContaining({
+        taskId: "task-2",
+        blockedByTaskId: "task-3",
+      }),
+    ]);
+    expect(snapshot.wakes).toHaveLength(1);
+    expect(snapshot.wakes[0]?.taskId).not.toBe("task-2");
+    expect(snapshot.tasks.find((task) => task.id === snapshot.wakes[0]?.taskId)).toMatchObject({
+      status: "todo",
+      assigneeActorId: "actor-2",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
   it("does not schedule approval recovery for an inactive requester", async () => {
     const adapter = seeded({
       actors: [
