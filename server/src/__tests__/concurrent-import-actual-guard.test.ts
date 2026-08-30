@@ -61,20 +61,29 @@ function findClosingBracket(source: string, open: number): number {
   return -1;
 }
 
-function findConcurrentImportActual(source: string): number[] {
-  const needle = "Promise.all([";
+// Whitespace-tolerant on purpose. `Promise.all( [` and an array argument on the
+// next line are the same hazard, and the multiline form is common in this repo,
+// so an exact `Promise.all([` needle would wave most of them through.
+// `allSettled` and `race` resolve their arguments concurrently too.
+const CONCURRENT_CALL = /Promise\.(?:all|allSettled|race)\s*\(\s*\[/g;
+
+export function findConcurrentImportActual(source: string): number[] {
   const lines: number[] = [];
-  let cursor = source.indexOf(needle);
-  while (cursor !== -1) {
-    const open = cursor + needle.length - 1;
+  CONCURRENT_CALL.lastIndex = 0;
+  let match = CONCURRENT_CALL.exec(source);
+  while (match !== null) {
+    // The regex ends at the `[`, so its last character is the opening bracket.
+    const open = match.index + match[0].length - 1;
     const close = findClosingBracket(source, open);
     if (close === -1) break;
     const body = source.slice(open + 1, close);
     const importActualCount = body.split("vi.importActual").length - 1;
     if (importActualCount >= 2) {
-      lines.push(source.slice(0, cursor).split("\n").length);
+      lines.push(source.slice(0, match.index).split("\n").length);
     }
-    cursor = source.indexOf(needle, close);
+    // Resume past the closing bracket so nested calls are not double-counted.
+    CONCURRENT_CALL.lastIndex = close;
+    match = CONCURRENT_CALL.exec(source);
   }
   return lines;
 }
@@ -97,5 +106,25 @@ describe("vitest mock safety", () => {
       "Await these vi.importActual() calls one at a time. Concurrent resolution "
         + "can drop a factory mock and load the real module instead.",
     ).toEqual([]);
+  });
+
+  // The detector is what makes the scan above meaningful, so its blind spots are
+  // worth asserting directly. Each of these is a formatting variant that an
+  // exact `Promise.all([` match would silently pass.
+  it.each([
+    ["tight", 'Promise.all([vi.importActual("a"), vi.importActual("b")]);'],
+    ["space before bracket", 'Promise.all( [vi.importActual("a"), vi.importActual("b")]);'],
+    ["array on the next line", 'Promise.all(\n  [vi.importActual("a"), vi.importActual("b")],\n);'],
+    ["allSettled", 'Promise.allSettled([vi.importActual("a"), vi.importActual("b")]);'],
+    ["race", 'Promise.race([vi.importActual("a"), vi.importActual("b")]);'],
+  ])("flags concurrent vi.importActual() written as %s", (_label, source) => {
+    expect(findConcurrentImportActual(source)).toHaveLength(1);
+  });
+
+  it.each([
+    ["a single vi.importActual", 'Promise.all([vi.importActual("a"), other()]);'],
+    ["no vi.importActual at all", "Promise.all([fetchOne(), fetchTwo()]);"],
+  ])("does not flag %s", (_label, source) => {
+    expect(findConcurrentImportActual(source)).toEqual([]);
   });
 });
