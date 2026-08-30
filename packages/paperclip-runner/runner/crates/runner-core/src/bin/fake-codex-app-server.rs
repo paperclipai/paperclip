@@ -288,9 +288,14 @@ fn send_question(state: &FakeState) -> io::Result<()> {
     }))
 }
 
-fn send_runtime_request_flood(state: &FakeState, interrupt_count: u64) -> io::Result<()> {
+fn send_runtime_request_flood(
+    state: &FakeState,
+    interrupt_count: u64,
+    count: u64,
+    question: &str,
+) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..160_u64 {
+    for index in 0..count {
         send(json!({
             "id": format!("runtime-flood-{interrupt_count}-{index}"),
             "method": "item/tool/requestUserInput",
@@ -303,7 +308,7 @@ fn send_runtime_request_flood(state: &FakeState, interrupt_count: u64) -> io::Re
                 "questions": [{
                     "id": "environment",
                     "header": "Environment",
-                    "question": "Where should we deploy?",
+                    "question": question,
                     "options": [{"label": "Staging", "description": "Deploy safely."}],
                 }],
             },
@@ -412,6 +417,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let flood_runtime_requests_on_interrupt = args
         .iter()
         .any(|value| value == "--flood-runtime-requests-on-interrupt");
+    let flood_large_runtime_requests_on_interrupt = args
+        .iter()
+        .any(|value| value == "--flood-large-runtime-requests-on-interrupt");
     let interrupt_terminal_delay_ms = argument(&args, "--interrupt-terminal-delay-ms")
         .map(|value| value.parse::<u64>())
         .transpose()?;
@@ -884,7 +892,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     send(json!({"id": id, "result": {"accepted": true}}))?;
                     if flood_runtime_requests_on_interrupt {
-                        send_runtime_request_flood(&state, interrupt_count)?;
+                        send_runtime_request_flood(
+                            &state,
+                            interrupt_count,
+                            160,
+                            "Where should we deploy?",
+                        )?;
+                    }
+                    if flood_large_runtime_requests_on_interrupt {
+                        let question = "x".repeat(2 * 1024 * 1024);
+                        send_runtime_request_flood(&state, interrupt_count, 3, &question)?;
                     }
                     if !accept_interrupt_without_terminal
                         && !(accept_interrupt_without_terminal_once

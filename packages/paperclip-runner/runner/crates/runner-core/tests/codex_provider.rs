@@ -1963,19 +1963,27 @@ fn accepted_replacement_turn_revokes_prior_authority_before_idle_crash() {
     provider
         .start_turn("Start genuinely new provider work.", &config.cwd)
         .expect("start second provider turn");
-    let second_exit = (0..64).find_map(|_| match provider.poll().expect("poll second turn") {
-        Some(CodexProviderEvent::Exited {
-            success,
-            completed_turn_authoritative,
-            completion_reconciles_exit,
-            ..
-        }) => Some((
-            success,
-            completed_turn_authoritative,
-            completion_reconciles_exit,
-        )),
-        _ => None,
-    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let second_exit = loop {
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        match provider.poll().expect("poll second turn") {
+            Some(CodexProviderEvent::Exited {
+                success,
+                completed_turn_authoritative,
+                completion_reconciles_exit,
+                ..
+            }) => {
+                break Some((
+                    success,
+                    completed_turn_authoritative,
+                    completion_reconciles_exit,
+                ));
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    };
     assert_eq!(second_exit, Some((false, false, false)));
 
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -3681,6 +3689,55 @@ fn receipt_limit_polls_an_authoritative_terminal_with_unacknowledged_events() {
 }
 
 #[test]
+fn pending_runtime_request_count_limit_rejects_the_overflowing_request() {
+    let directory = temporary_directory("runtime-request-count-limit");
+    let config = provider_config(
+        &directory,
+        &[
+            "--hold-turn",
+            "--accept-interrupt-without-terminal",
+            "--flood-runtime-requests-on-interrupt",
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).expect("start Codex provider");
+    provider
+        .start_turn("Bound pending runtime requests by count.", &config.cwd)
+        .expect("start held provider turn");
+    provider
+        .interrupt_turn()
+        .expect("request the runtime-request flood");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut accepted = 0;
+    let mut rejected_at_capacity = false;
+    while !rejected_at_capacity && std::time::Instant::now() < deadline {
+        match provider
+            .poll()
+            .expect("the pending runtime-request count remains pollable")
+        {
+            Some(CodexProviderEvent::RuntimeRequest { .. }) => accepted += 1,
+            Some(CodexProviderEvent::Notification { method, params })
+                if method == "warning"
+                    && params["message"]
+                        == "rejected a Codex runtime request at the bounded pending-input limit" =>
+            {
+                rejected_at_capacity = true;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(1)),
+            _ => {}
+        }
+    }
+    assert_eq!(accepted, 128);
+    assert!(
+        rejected_at_capacity,
+        "production rejects the 129th pending runtime request"
+    );
+
+    provider.shutdown().expect("stop Codex provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
     let directory = temporary_directory("receipt-limit-runtime-request-flood");
     let config = provider_config(
@@ -3690,7 +3747,7 @@ fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
             "--hold-turn",
             "--emit-tool-call-on-resume",
             "--accept-interrupt-without-terminal",
-            "--flood-runtime-requests-on-interrupt",
+            "--flood-large-runtime-requests-on-interrupt",
         ],
     );
     let runner_config = durable_config(&directory);
