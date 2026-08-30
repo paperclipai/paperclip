@@ -103,6 +103,10 @@ then resumes the same verified persistent identity in a fresh generation. This
 prevents a late session-lifetime MCP callback from inheriting the next turn's
 event authority.
 
+The Rust question-response validator checks the versioned response envelope
+against the exact persisted question IDs, answer modes, options, required
+answers, custom-answer policy, and text constraints before provider delivery.
+
 Run the complete contract gate with:
 
 ```sh

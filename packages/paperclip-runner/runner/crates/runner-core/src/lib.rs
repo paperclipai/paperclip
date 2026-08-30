@@ -14,6 +14,7 @@ pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;
 pub mod provider_events;
+pub mod question_response;
 pub mod replay;
 
 use std::error::Error;

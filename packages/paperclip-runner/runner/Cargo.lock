@@ -663,6 +663,8 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac",
  "jsonschema",
+ "num-bigint",
+ "num-traits",
  "serde",
  "serde_json",
  "sha2",

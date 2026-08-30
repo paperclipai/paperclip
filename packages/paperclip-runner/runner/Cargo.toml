@@ -13,6 +13,8 @@ aes-gcm = "0.10"
 getrandom = "0.3"
 hmac = "0.12"
 jsonschema = { version = "0.50", default-features = false }
+num-bigint = "0.4"
+num-traits = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
