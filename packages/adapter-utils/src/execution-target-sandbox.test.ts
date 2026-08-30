@@ -448,6 +448,75 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it.each([
+    { outputMode: "polled", streamOutputViaSession: false },
+    { outputMode: "streamed", streamOutputViaSession: true },
+  ])(
+    "preserves an explicit remote PATH equal to host PATH in $outputMode mode",
+    async ({ outputMode, streamOutputViaSession }) => {
+      const rootDir = await mkdtemp(
+        path.join(os.tmpdir(), `paperclip-process-session-${outputMode}-path-`),
+      );
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "print-path-child.mjs");
+      await writeFile(
+        childPath,
+        'process.stdout.write(process.env.PATH ?? "<missing>");\n',
+        "utf8",
+      );
+
+      const nodeBinDir = path.dirname(process.execPath);
+      const explicitHostPath = `${nodeBinDir}:/explicit-host-bin`;
+      const sandboxNativePath = `/usr/bin:/bin:${nodeBinDir}`;
+      vi.stubEnv("PATH", explicitHostPath);
+
+      const delegate = createLocalSandboxRunner();
+      const runner = {
+        execute: vi.fn(
+          async (input: Parameters<typeof delegate.execute>[0]) =>
+            delegate.execute({
+              ...input,
+              // The local fake otherwise inherits the test host PATH. Give the
+              // wrapper a distinct sandbox-native PATH so the child proves the
+              // explicit equal-to-host value survived payload serialization.
+              env: { ...input.env, PATH: sandboxNativePath },
+            }),
+        ),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: `run-process-session-${outputMode}-path`,
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: { PATH: explicitHostPath },
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const result = await runProxyWithInput(bridge!.agentCommand, "");
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe(explicitHostPath);
+      } finally {
+        await bridge?.stop();
+      }
+    },
+  );
+
   it("test_process_session_poll_exec_parents_to_run_context", async () => {
     // The poll timer runs run-time execs for the whole run. Its `sandbox.exec`
     // span must parent to the live run span, not to the ended startup step. The

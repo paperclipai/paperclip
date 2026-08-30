@@ -1712,7 +1712,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     command: input.command,
     args: input.args,
     cwd: input.cwd || target.remoteCwd,
-    env: sanitizeRemoteExecutionEnv(launchEnv),
+    // The ACP engine has already projected this launch env from explicit
+    // adapter/runtime inputs and registered contributions. Compare against an
+    // empty inherited baseline so an explicit identity value (notably PATH)
+    // is not reclassified as ambient merely because it equals the host value.
+    env: sanitizeRemoteExecutionEnv(launchEnv, {}),
   }), "utf8").toString("base64");
 
   // Legacy poll path: background the wrapper with `nohup` and read its output
@@ -2013,7 +2017,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       command: input.command,
       args: input.args,
       cwd: input.cwd || target.remoteCwd,
-      env: sanitizeRemoteExecutionEnv(launchEnvForStream),
+      // Same provenance-clean contract as the polled payload above. Preserve
+      // every explicit identity override even when it equals the host value.
+      env: sanitizeRemoteExecutionEnv(launchEnvForStream, {}),
     }), "utf8").toString("base64");
     await onLog(
       "stdout",
