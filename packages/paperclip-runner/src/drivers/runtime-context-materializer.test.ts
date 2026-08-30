@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -319,6 +320,61 @@ describe("runtime context materialization", () => {
         entry.startsWith(".paperclip-skills-previous-"),
       ),
     ).toBe(true);
+  });
+
+  it("restores the previous assignment when the rollback rename fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-rollback-"));
+    roots.push(root);
+    const assigned = join(root, "assigned-source");
+    const replacement = join(root, "replacement-source");
+    const instructions = join(root, "instructions-source");
+    const skillsHome = join(root, "codex-home", "skills");
+    await Promise.all([
+      mkdir(assigned),
+      mkdir(replacement),
+      mkdir(instructions),
+    ]);
+    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
+    await writeFile(join(replacement, "SKILL.md"), "# Replacement\n");
+    await writeFile(join(instructions, "AGENTS.md"), "Instructions\n");
+
+    await materializeNativeRuntimeSkills(
+      context(assigned, instructions),
+      skillsHome,
+    );
+    let rejectedStagedSwap = false;
+    let rejectedRollback = false;
+    await expect(
+      materializeNativeRuntimeSkills(
+        context(replacement, instructions, "replacement"),
+        skillsHome,
+        {
+          renameTree: async (source, destination) => {
+            if (source.includes(".paperclip-skills-staging-")) {
+              rejectedStagedSwap = true;
+              throw new Error("simulated staged-tree rename failure");
+            }
+            if (source.includes(".paperclip-skills-previous-")) {
+              rejectedRollback = true;
+              throw new Error("simulated rollback rename failure");
+            }
+            await rename(source, destination);
+          },
+        },
+      ),
+    ).rejects.toThrow("simulated staged-tree rename failure");
+
+    expect(rejectedStagedSwap).toBe(true);
+    expect(rejectedRollback).toBe(true);
+    await expect(
+      readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"),
+    ).resolves.toBe("# Assigned\n");
+    await expect(stat(join(skillsHome, "replacement"))).rejects.toThrow();
+    expect(
+      (await readdir(dirname(skillsHome))).some((entry) =>
+        entry.startsWith(".paperclip-skills-"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects skill names that can escape or alias the skills home", async () => {

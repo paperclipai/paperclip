@@ -141,11 +141,14 @@ export async function materializeNativeRuntimeSkills(
   dependencies: {
     /** Internal test seam for post-swap cleanup failure coverage. */
     removeTree?: (path: string) => Promise<void>;
+    /** Internal test seam for swap and rollback failure coverage. */
+    renameTree?: (source: string, destination: string) => Promise<void>;
   } = {},
 ): Promise<void> {
   const removeTree =
     dependencies.removeTree ??
     ((path: string) => rm(path, { recursive: true, force: true }));
+  const renameTree = dependencies.renameTree ?? rename;
   if (context) {
     const runtimeNames = new Set<string>();
     for (const skill of context.skills) {
@@ -191,15 +194,38 @@ export async function materializeNativeRuntimeSkills(
 
     let movedPrevious = false;
     try {
-      await rename(skillsHome, previousHome);
+      await renameTree(skillsHome, previousHome);
       movedPrevious = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     try {
-      await rename(stagingHome, skillsHome);
+      await renameTree(stagingHome, skillsHome);
     } catch (error) {
-      if (movedPrevious) await rename(previousHome, skillsHome);
+      if (movedPrevious) {
+        try {
+          await renameTree(previousHome, skillsHome);
+        } catch (rollbackError) {
+          try {
+            // Preserve the all-or-nothing result even when the atomic
+            // rename-back is unavailable: restore the previous tree at the
+            // canonical path before rejecting the replacement.
+            await cp(previousHome, skillsHome, {
+              recursive: true,
+              force: false,
+              errorOnExist: true,
+              dereference: false,
+              verbatimSymlinks: true,
+            });
+            await removeTree(previousHome).catch(() => undefined);
+          } catch (copyError) {
+            throw new AggregateError(
+              [error, rollbackError, copyError],
+              "runtime context skill replacement and rollback failed",
+            );
+          }
+        }
+      }
       throw error;
     }
     if (movedPrevious) {
