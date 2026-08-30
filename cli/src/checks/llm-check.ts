@@ -1,4 +1,5 @@
 import type { PaperclipConfig } from "../config/schema.js";
+import { LLM_OPENAI_COMPAT_BASE_URLS, LLM_PROVIDER_KEY_LABELS } from "../config/llm-providers.js";
 import type { CheckResult } from "./index.js";
 
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
@@ -51,21 +52,9 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         message: `Claude API returned status ${res.status}`,
       };
     } else {
-      const baseUrls: Record<string, string> = {
-        openai: "https://api.openai.com/v1",
-        deepseek: "https://api.deepseek.com/v1",
-        glm: "https://open.bigmodel.cn/api/paas/v4",
-        kimi: "https://api.moonshot.cn/v1",
-      };
-      const labels: Record<string, string> = {
-        openai: "OpenAI",
-        deepseek: "DeepSeek",
-        glm: "Zhipu GLM",
-        kimi: "Moonshot Kimi",
-      };
       const provider = config.llm.provider;
-      const baseUrl = baseUrls[provider] ?? "https://api.openai.com/v1";
-      const label = labels[provider] ?? provider;
+      const baseUrl = LLM_OPENAI_COMPAT_BASE_URLS[provider];
+      const label = LLM_PROVIDER_KEY_LABELS[provider];
       const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${config.llm.apiKey}` },
       });

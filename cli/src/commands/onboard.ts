@@ -1,6 +1,7 @@
 import * as p from "@clack/prompts";
 import path from "node:path";
 import pc from "picocolors";
+import { LLM_OPENAI_COMPAT_BASE_URLS } from "../config/llm-providers.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -594,13 +595,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
             s.stop(pc.yellow("Could not validate API key — continuing anyway"));
           }
         } else {
-          const baseUrls: Record<string, string> = {
-            openai: "https://api.openai.com/v1",
-            deepseek: "https://api.deepseek.com/v1",
-            glm: "https://open.bigmodel.cn/api/paas/v4",
-            kimi: "https://api.moonshot.cn/v1",
-          };
-          const baseUrl = baseUrls[llm.provider] ?? "https://api.openai.com/v1";
+          const baseUrl = LLM_OPENAI_COMPAT_BASE_URLS[llm.provider];
           const res = await fetch(`${baseUrl}/models`, {
             headers: { Authorization: `Bearer ${llm.apiKey}` },
           });

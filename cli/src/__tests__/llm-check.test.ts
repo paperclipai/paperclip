@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { LlmConfig, PaperclipConfig } from "../config/schema.js";
 import { llmCheck } from "../checks/llm-check.js";
 
 function createConfig(llm?: PaperclipConfig["llm"]): PaperclipConfig {
@@ -80,18 +80,20 @@ describe("llmCheck", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it.each([
+  const providerCases: Array<[LlmConfig["provider"], string, string]> = [
     ["openai", "https://api.openai.com/v1/models", "OpenAI"],
     ["deepseek", "https://api.deepseek.com/v1/models", "DeepSeek"],
     ["glm", "https://open.bigmodel.cn/api/paas/v4/models", "Zhipu GLM"],
     ["kimi", "https://api.moonshot.cn/v1/models", "Moonshot Kimi"],
-  ])(
+  ];
+
+  it.each(providerCases)(
     "validates %s against %s",
     async (provider, expectedUrl, label) => {
       vi.stubGlobal("fetch", fetchMock);
       fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });
 
-      const result = await llmCheck(createConfig({ provider: provider as "deepseek", apiKey: "sk-test" }));
+      const result = await llmCheck(createConfig({ provider, apiKey: "sk-test" }));
       expect(result.status).toBe("pass");
       expect(result.message).toBe(`${label} API key is valid`);
       expect(fetchMock).toHaveBeenCalledWith(

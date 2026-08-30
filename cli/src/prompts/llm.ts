@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import type { LlmConfig } from "../config/schema.js";
+import { LLM_PROVIDER_KEY_LABELS } from "../config/llm-providers.js";
 
 export async function promptLlm(): Promise<LlmConfig | undefined> {
   const configureLlm = await p.confirm({
@@ -30,16 +31,8 @@ export async function promptLlm(): Promise<LlmConfig | undefined> {
     process.exit(0);
   }
 
-  const providerLabels: Record<string, string> = {
-    claude: "Anthropic",
-    openai: "OpenAI",
-    deepseek: "DeepSeek",
-    glm: "Zhipu GLM",
-    kimi: "Moonshot Kimi",
-  };
-
   const apiKey = await p.password({
-    message: `${providerLabels[provider] ?? provider} API key`,
+    message: `${LLM_PROVIDER_KEY_LABELS[provider]} API key`,
     validate: (val) => {
       if (!val) return "API key is required";
     },
