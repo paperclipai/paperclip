@@ -595,6 +595,59 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it("grants same-assignee resume:true checkout to the actor run so PATCH done and release succeed", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume from done without a competing checkout",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      completedAt: new Date(),
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const resume = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "restart follow-up on the completed issue", resume: true });
+
+    expect(resume.status, JSON.stringify(resume.body)).toBe(201);
+
+    const afterResume = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(afterResume).toEqual({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const done = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.status).toBe("done");
+
+    const release = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+    expect(release.status, JSON.stringify(release.body)).toBe(200);
+  });
+
   it("self-heals a stale checkoutRunId via clearCheckoutRunIfTerminal on checkout (Fix B path)", async () => {
     // Reproduces the recurrence pattern: prior owning run died, executionRunId
     // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed

@@ -1927,6 +1927,22 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
+function shouldClaimResumeCheckoutForActorRun(input: {
+  resumeRequested: boolean;
+  actorType: "agent" | "user";
+  actorAgentId: string | null | undefined;
+  actorRunId: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+}) {
+  if (!input.resumeRequested) return false;
+  if (input.actorType !== "agent") return false;
+  const actorRunId = typeof input.actorRunId === "string" ? input.actorRunId.trim() : "";
+  const actorAgentId = typeof input.actorAgentId === "string" ? input.actorAgentId.trim() : "";
+  const assigneeAgentId = typeof input.assigneeAgentId === "string" ? input.assigneeAgentId.trim() : "";
+  if (!actorRunId || !actorAgentId || !assigneeAgentId) return false;
+  return actorAgentId === assigneeAgentId;
+}
+
 function readToolActionExecutionStatus(value: unknown) {
   return value === "approved"
     || value === "executing"
@@ -2920,6 +2936,29 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+
+  async function claimAssigneeResumeCheckout(input: {
+    resumeRequested: boolean;
+    reopened: boolean;
+    actor: ReturnType<typeof getActorInfo>;
+    issueId: string;
+    assigneeAgentId: string | null | undefined;
+  }) {
+    if (!input.reopened) return null;
+    if (!shouldClaimResumeCheckoutForActorRun({
+      resumeRequested: input.resumeRequested,
+      actorType: input.actor.actorType,
+      actorAgentId: input.actor.agentId,
+      actorRunId: input.actor.runId,
+      assigneeAgentId: input.assigneeAgentId,
+    })) {
+      return null;
+    }
+    const agentId = input.actor.agentId;
+    const runId = input.actor.runId?.trim();
+    if (!agentId || !runId) return null;
+    return svc.checkout(input.issueId, agentId, ["todo", "in_progress"], runId);
+  }
 
   async function queueTaskWatchdogEvaluation(issue: { id: string; companyId: string }, runId?: string | null) {
     await taskWatchdogsSvc
@@ -10209,6 +10248,23 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+    const claimedResumeCheckout = await claimAssigneeResumeCheckout({
+      resumeRequested: resumeRequested === true,
+      reopened,
+      actor,
+      issueId: issue.id,
+      assigneeAgentId: issue.assigneeAgentId,
+    });
+    if (claimedResumeCheckout) {
+      issueResponse = {
+        ...issueResponse,
+        status: claimedResumeCheckout.status,
+        checkoutRunId: claimedResumeCheckout.checkoutRunId,
+        executionRunId: claimedResumeCheckout.executionRunId,
+        executionLockedAt: claimedResumeCheckout.executionLockedAt,
+        startedAt: claimedResumeCheckout.startedAt,
+      };
+    }
     const scheduledRetrySupersededByComment =
       shouldResumeInProgressScheduledRetry &&
       previous.status !== undefined &&
@@ -10710,6 +10766,7 @@ export function issueRoutes(
       }
 
       if (
+        !claimedResumeCheckout &&
         !assigneeChanged &&
         (
           statusChangedFromBacklog ||
@@ -10749,7 +10806,7 @@ export function issueRoutes(
         // stale issue_commented wake for an already-completed issue.
         const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status);
 
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        if (assigneeId && !claimedResumeCheckout && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -12405,6 +12462,7 @@ export function issueRoutes(
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
+    let claimedResumeCheckout = false;
     let currentIssue = issue;
     // Clear the reopen-pending flag if this comment leaves the issue terminal, so
     // the rebuilt worktree does not leak. A comment reopens the workspace but only
@@ -12446,6 +12504,24 @@ export function issueRoutes(
       reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
       reopenFromStatus = reopened ? issue.status : null;
       currentIssue = reopenedIssue;
+      const claimed = await claimAssigneeResumeCheckout({
+        resumeRequested: resumeRequested === true,
+        reopened,
+        actor,
+        issueId: id,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+      });
+      if (claimed) {
+        claimedResumeCheckout = true;
+        currentIssue = {
+          ...currentIssue,
+          status: claimed.status,
+          checkoutRunId: claimed.checkoutRunId,
+          executionRunId: claimed.executionRunId,
+          executionLockedAt: claimed.executionLockedAt,
+          startedAt: claimed.startedAt,
+        };
+      }
 
       await logActivity(db, {
         companyId: currentIssue.companyId,
@@ -12835,7 +12911,7 @@ export function issueRoutes(
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
       const skipWake = selfComment || isClosedIssueStatus(wakeIssueSnapshot.status);
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !claimedResumeCheckout && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",
