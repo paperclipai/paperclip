@@ -348,6 +348,11 @@ impl ProviderToolBridge {
                 "recovered provider tool bridge exceeds its settled call identity limit",
             ));
         }
+        if !self.settled_identity_capacity_allows(0) {
+            return Err(ProviderBridgeError::invalid(
+                "recovered provider tool bridge cannot settle its active call identities",
+            ));
+        }
         for call_id in self.settled_call_ids.iter() {
             validate_stable_id(call_id, "settled tool call id")?;
             if self.pending.contains_key(call_id) || self.completed.contains_key(call_id) {
@@ -456,6 +461,14 @@ impl ProviderToolBridge {
         !self.pending.is_empty() || !self.completed.is_empty()
     }
 
+    fn settled_identity_capacity_allows(&self, additional_calls: usize) -> bool {
+        self.settled_call_ids
+            .len()
+            .checked_add(self.total_call_receipts())
+            .and_then(|total| total.checked_add(additional_calls))
+            .is_some_and(|total| total <= MAX_SETTLED_CALL_IDS)
+    }
+
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
         if !self.pending.is_empty() || !self.completed.is_empty() {
             return Err(ProviderBridgeError::invalid(
@@ -556,6 +569,13 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.durable_run_receipt_limit_reached {
+            return Err(ProviderBridgeError::active_turn_receipt_limit());
+        }
+        // Pending and completed calls become exact settled identities when the
+        // turn terminates. Reserve that identity capacity before dispatch so
+        // every admitted call can be settled without stranding active state.
+        if !self.settled_identity_capacity_allows(1) {
+            self.durable_run_receipt_limit_reached = true;
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.pending.len() >= MAX_PENDING_CALLS {
@@ -1501,6 +1521,125 @@ mod tests {
                 json!({}),
             )
             .expect("a verified new turn rotates the exact receipt scope");
+    }
+
+    #[test]
+    fn admission_reserves_exact_identity_capacity_for_settlement() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the active task context.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        for index in 0..MAX_SETTLED_CALL_IDS - 1 {
+            let call_id = format!("settled-call-{index}");
+            bridge.settled_call_ids.order.push_back(call_id.clone());
+            bridge.settled_call_ids.members.insert(call_id);
+        }
+
+        bridge
+            .begin_call(
+                "final-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("the final exact identity slot remains usable");
+        let mut pending_at_capacity = bridge.clone();
+        let error = pending_at_capacity
+            .begin_call(
+                "rejected-while-pending".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("a pending call must reserve its eventual settled identity");
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(pending_at_capacity.durable_run_receipt_limit_reached);
+        assert_eq!(pending_at_capacity.pending.len(), 1);
+        assert!(pending_at_capacity.pending.contains_key("final-call"));
+        assert!(!pending_at_capacity
+            .pending
+            .contains_key("rejected-while-pending"));
+        pending_at_capacity
+            .begin_call(
+                "final-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect("an idempotent retry remains valid at capacity");
+        let cancelled = pending_at_capacity
+            .settle_turn("semantic_tool_turn_receipt_limit")
+            .unwrap();
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(
+            pending_at_capacity.settled_call_ids.len(),
+            MAX_SETTLED_CALL_IDS
+        );
+
+        bridge
+            .apply_result(ToolResult {
+                call_id: "final-call".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .expect("complete the call admitted into the final identity slot");
+
+        let mut overcommitted = bridge.clone();
+        overcommitted.pending.insert(
+            "unsettleable-call".to_owned(),
+            PendingToolCall {
+                call_id: "unsettleable-call".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                input: json!({}),
+            },
+        );
+        assert_eq!(
+            overcommitted.validate_recovered().unwrap_err().to_string(),
+            "recovered provider tool bridge cannot settle its active call identities"
+        );
+        let overcommitted_snapshot = overcommitted.clone();
+        let error = overcommitted
+            .settle_turn("semantic_tool_turn_receipt_limit")
+            .expect_err("defensive settlement must reject an overcommitted recovered state");
+        assert!(error.is_active_turn_receipt_limit());
+        assert_eq!(overcommitted, overcommitted_snapshot);
+
+        let error = bridge
+            .begin_call(
+                "rejected-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .expect_err("admission must reserve space for every active identity");
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(bridge.durable_run_receipt_limit_reached);
+        assert!(!bridge.pending.contains_key("rejected-call"));
+        assert!(bridge.completed.contains_key("final-call"));
+
+        assert!(bridge
+            .settle_turn("semantic_tool_turn_receipt_limit")
+            .unwrap()
+            .is_empty());
+        assert!(bridge.pending.is_empty());
+        assert!(bridge.completed.is_empty());
+        assert_eq!(bridge.settled_call_ids.len(), MAX_SETTLED_CALL_IDS);
+        assert!(bridge.settled_results.contains_key("final-call"));
+
+        bridge.prepare_turn().unwrap();
+        assert!(bridge.settled_call_ids.is_empty());
+        assert!(bridge.settled_results.is_empty());
+        assert!(!bridge.durable_run_receipt_limit_reached);
     }
 
     #[test]
