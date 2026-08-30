@@ -557,6 +557,12 @@ describe("Codex app-server Codex driver", () => {
       dispositionOnlyRecoveryConsumed: true,
       dispositionOnlyRecoveryTurnId: "turn-2",
     });
+    await expect(recovery!.session!.startTurn({
+      message: {
+        role: "user",
+        text: "Do not duplicate the adopted disposition turn.",
+      },
+    })).rejects.toThrow("session cannot start another turn");
     expect(
       second.calls.filter((call) => call.method === "turn/start"),
     ).toHaveLength(0);
