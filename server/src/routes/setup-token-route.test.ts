@@ -352,15 +352,17 @@ async function createApp(opts: {
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
   const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
-    await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("pino")>("pino"),
-      vi.importActual<typeof import("pino-http")>("pino-http"),
-      vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    [
+      await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      await vi.importActual<typeof import("pino")>("pino"),
+      await vi.importActual<typeof import("pino-http")>("pino-http"),
+      await vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
         "../middleware/redact-sensitive.js",
       ),
-    ]);
+    ];
   const { pino } = pinoModule;
   const { pinoHttp } = pinoHttpModule;
   const { redactSensitive } = redactModule;

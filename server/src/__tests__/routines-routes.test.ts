@@ -166,10 +166,12 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { routineRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-  ]);
+  // Sequential on purpose: concurrent vi.importActual() calls can drop a
+  // factory mock, because Vitest keeps one shared mock-resolution callstack.
+  const [{ errorHandler }, { routineRoutes }] = [
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    await vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

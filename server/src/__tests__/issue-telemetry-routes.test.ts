@@ -130,10 +130,12 @@ function makeIssue(status: "todo" | "done") {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
+  // Sequential on purpose: concurrent vi.importActual() calls can drop a
+  // factory mock, because Vitest keeps one shared mock-resolution callstack.
+  const [{ errorHandler }, { issueRoutes }] = [
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
