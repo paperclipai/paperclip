@@ -81,7 +81,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
     }
     // Resolve once. Every reconnect uses the same validated concrete addresses,
     // so DNS cannot redirect a retry after the trust decision.
-    let target = ResolvedWsTarget::resolve(&config.connect_url)?;
+    let target = ResolvedWsTarget::resolve(
+        &config.connect_url,
+        config.allowed_remote_host.as_deref(),
+    )?;
     let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
@@ -475,6 +478,7 @@ mod tests {
     fn config(directory: PathBuf) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: "ws://127.0.0.1:3000/path".to_owned(),
+            allowed_remote_host: None,
             state_dir: directory,
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),

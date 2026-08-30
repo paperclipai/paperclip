@@ -53,6 +53,15 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     run_durable_runner(
         DurableRunnerConfig {
             connect_url: value(args, "--connect-url")?,
+            allowed_remote_host: args
+                .iter()
+                .position(|argument| argument == "--allow-remote-host")
+                .map(|index| {
+                    args.get(index + 1).cloned().ok_or_else(|| {
+                        LocalRunnerError::invalid("missing value for --allow-remote-host")
+                    })
+                })
+                .transpose()?,
             state_dir: state_dir.clone(),
             runner_instance_id: value(args, "--runner-id")?,
             environment_lease_id: value(args, "--environment-lease-id")?,

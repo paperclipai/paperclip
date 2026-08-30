@@ -7,8 +7,13 @@ only installed provider; other providers remain unavailable.
 
 ## Trust boundary
 
-- The runner accepts only `ws://` destinations whose complete DNS result is
-  loopback. Resolution happens once and reconnects reuse the pinned addresses.
+- The runner accepts only `ws://` destinations. Loopback remains the default.
+  A non-loopback destination is accepted only when the trusted launcher also
+  supplies the exact host through `--allow-remote-host`; the URL host and
+  launch binding must match case-insensitively. Resolution happens once and
+  reconnects reuse the pinned addresses. The private ingress is only a carrier:
+  bootstrap proof and every post-authentication control frame remain protected
+  by the PRP cryptographic channel.
 - A bootstrap ticket is read from `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`, removed
   from the environment immediately, and never sent over the socket. Both peers
   prove possession through HMAC-SHA-256.
@@ -70,6 +75,11 @@ Durable mode is selected only when `paperclip-runnerd` receives
 completion contract through `run.prepare`, owns the provider process group,
 resumes the persisted Codex thread after runner restart, and translates
 provider notifications to PRP events. The server supplies the bootstrap ticket
-only through the child environment, stores the process identity for bounded
-cancellation, and waits for the durable result and terminal pair. The existing
-local fake-runner mode remains unchanged.
+only through the child environment and waits for the durable result and
+terminal pair. A local launch stores local process identity for bounded
+cancellation. The existing local fake-runner mode remains unchanged.
+
+For a remote execution target, the control plane passes the one-use ticket only
+in the target process environment, requires an immutable `sha256:` runner
+digest, and keeps coordinator state on the control-plane side. The remote
+runtime stores runner and Codex state under its own private runtime root.

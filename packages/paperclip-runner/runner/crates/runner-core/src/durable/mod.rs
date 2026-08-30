@@ -94,6 +94,9 @@ pub fn capture_bootstrap_ticket() -> Result<Option<BootstrapTicket>, DurableRunn
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerConfig {
     pub connect_url: String,
+    /// Exact non-loopback URL host authorized by the trusted launcher.
+    /// `None` preserves the local-only default.
+    pub allowed_remote_host: Option<String>,
     pub state_dir: PathBuf,
     pub runner_instance_id: String,
     pub environment_lease_id: String,
@@ -127,6 +130,20 @@ impl DurableRunnerConfig {
                 return Err(DurableRunnerError::invalid(format!(
                     "{name} must be a non-empty bounded string without control characters"
                 )));
+            }
+        }
+        if let Some(host) = self.allowed_remote_host.as_deref() {
+            if host.is_empty()
+                || host.len() > 253
+                || host.chars().any(|character| {
+                    character.is_control()
+                        || character.is_whitespace()
+                        || matches!(character, '/' | '\\' | '@' | ':' | '%' | '?' | '#')
+                })
+            {
+                return Err(DurableRunnerError::invalid(
+                    "allowed remote host must be an exact bounded URL host",
+                ));
             }
         }
         if self.max_outbox_bytes == 0

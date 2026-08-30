@@ -38,8 +38,11 @@ pub(crate) struct ResolvedWsTarget {
 }
 
 impl ResolvedWsTarget {
-    pub(crate) fn resolve(input: &str) -> Result<Self, DurableRunnerError> {
-        resolve_ws_target_with(input, |host, port| {
+    pub(crate) fn resolve(
+        input: &str,
+        allowed_remote_host: Option<&str>,
+    ) -> Result<Self, DurableRunnerError> {
+        resolve_ws_target_with(input, allowed_remote_host, |host, port| {
             (host, port)
                 .to_socket_addrs()
                 .map(|addresses| addresses.collect())
@@ -115,6 +118,7 @@ fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
 
 fn resolve_ws_target_with<F>(
     input: &str,
+    allowed_remote_host: Option<&str>,
     resolver: F,
 ) -> Result<ResolvedWsTarget, DurableRunnerError>
 where
@@ -131,9 +135,11 @@ where
             "WebSocket destination resolved to no addresses",
         ));
     }
-    if addresses.iter().any(|address| !address.ip().is_loopback()) {
+    if addresses.iter().any(|address| !address.ip().is_loopback())
+        && !allowed_remote_host.is_some_and(|allowed| allowed.eq_ignore_ascii_case(&parsed.host))
+    {
         return Err(DurableRunnerError::invalid(
-            "every WebSocket destination must resolve to loopback",
+            "non-loopback WebSocket destination is not bound to the trusted launch host",
         ));
     }
     Ok(ResolvedWsTarget {
@@ -1063,6 +1069,7 @@ mod tests {
     fn config(port: u16) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: format!("ws://127.0.0.1:{port}/api/runner/v1/connect/run_1"),
+            allowed_remote_host: None,
             state_dir: PathBuf::from("unused"),
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
@@ -1254,8 +1261,18 @@ mod tests {
     fn url_resolution_rejects_non_loopback_and_ambiguous_inputs() {
         let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 80);
         assert!(
-            resolve_ws_target_with("ws://example.test:80/path", |_, _| Ok(vec![public])).is_err()
+            resolve_ws_target_with("ws://example.test:80/path", None, |_, _| Ok(vec![public])).is_err()
         );
+        assert!(resolve_ws_target_with(
+            "ws://example.test:80/path",
+            Some("example.test"),
+            |_, _| Ok(vec![public]),
+        ).is_ok());
+        assert!(resolve_ws_target_with(
+            "ws://example.test:80/path",
+            Some("other.test"),
+            |_, _| Ok(vec![public]),
+        ).is_err());
         for input in [
             "wss://127.0.0.1:80/path",
             "ws://user@127.0.0.1:80/path",
@@ -1263,7 +1280,7 @@ mod tests {
             "ws://127.0.0.1:80/path?ticket=secret",
         ] {
             assert!(
-                resolve_ws_target_with(input, |_, _| Ok(vec![])).is_err(),
+                resolve_ws_target_with(input, None, |_, _| Ok(vec![])).is_err(),
                 "{input}"
             );
         }
@@ -1419,7 +1436,10 @@ mod tests {
             send_plain(&mut socket, &encrypted, server_config.max_frame_bytes).unwrap();
         });
 
-        let target = ResolvedWsTarget::resolve(&config.connect_url).unwrap();
+        let target = ResolvedWsTarget::resolve(
+            &config.connect_url,
+            config.allowed_remote_host.as_deref(),
+        ).unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
         let (_, welcome) =
             AuthenticatedTransport::connect(&target, &config, &state, Some(&ticket), None).unwrap();

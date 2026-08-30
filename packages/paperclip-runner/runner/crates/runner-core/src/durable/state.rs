@@ -1179,6 +1179,7 @@ mod tests {
     fn config(state_dir: PathBuf) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: "ws://127.0.0.1:3000/api/runner/v1/connect/run_1".to_owned(),
+            allowed_remote_host: None,
             state_dir,
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
