@@ -1256,7 +1256,7 @@ describe("Capability exposure and authorization", () => {
     expect(resolveExpiredExtensionReceipt).not.toHaveBeenCalled();
   });
 
-  it("fails closed for a legacy export without an exact receipt", async () => {
+  it("terminally marks a legacy export without an exact receipt", async () => {
     let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot = {
       schema: "paperclip.capability.semantic-tool-runtime.v1",
       resultSequence: 0,
@@ -1306,14 +1306,70 @@ describe("Capability exposure and authorization", () => {
       ok: false,
       error: {
         code: "operation_unsupported",
-        reason: "idempotency_recovery_in_flight",
+        reason: "idempotency_receipt_unavailable",
       },
     });
-    expect(durableSnapshot.extensions[0]).toMatchObject({
-      status: "pending",
-      phase: "executing",
+    expect(durableSnapshot.extensions).toEqual([{
+      key: `${OPEN.identity.runId}:export_company:expired-export`,
+      input: "{}",
+      status: "indeterminate",
+      reason: "idempotency_receipt_unavailable",
+    }]);
+    expect(durableSnapshot.operationResults).toEqual({});
+
+    const retriedAdapter = CapabilityMockControlPlaneAdapter.restore(
+      base.adapter.serialize(),
+      { semanticToolRuntimeStore: durableStore },
+    );
+    const retried = new CapabilitySemanticToolRuntime({
+      adapter: retriedAdapter,
+      runId: OPEN.identity.runId,
+      scenarioGrants: ["portability:export"],
+      now: () => 2_001,
+    });
+    await expect(retried.invoke({
+      operationId: "export_company",
+      input: {},
+      idempotencyKey: "expired-export",
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "operation_unsupported",
+        reason: "idempotency_receipt_unavailable",
+      },
     });
     expect(durableSnapshot.operationResults).toEqual({});
+
+    const authoritativeExport = {
+      schema: "paperclip.capability.mock-export.v1",
+      company: { id: "company-1", name: "Originally Exported Company" },
+      taskCount: 1,
+      actorCount: 1,
+    };
+    const resolvingAdapter = CapabilityMockControlPlaneAdapter.restore(
+      base.adapter.serialize(),
+      { semanticToolRuntimeStore: durableStore },
+    );
+    const resolving = new CapabilitySemanticToolRuntime({
+      adapter: resolvingAdapter,
+      runId: OPEN.identity.runId,
+      scenarioGrants: ["portability:export"],
+      resolveExpiredExtensionReceipt: async () => ({ value: authoritativeExport }),
+      now: () => 3_001,
+    });
+    await expect(resolving.invoke({
+      operationId: "export_company",
+      input: {},
+      idempotencyKey: "expired-export",
+    })).resolves.toMatchObject({
+      ok: true,
+      operationResultId: "tool-result-1",
+      value: authoritativeExport,
+    });
+    expect(durableSnapshot.extensions[0]).toMatchObject({
+      status: "completed",
+      resultId: "tool-result-1",
+    });
   });
 
   it("adopts an authoritative completion that wins the recovery publication race", async () => {

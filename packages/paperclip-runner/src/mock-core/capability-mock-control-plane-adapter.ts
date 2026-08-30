@@ -1900,6 +1900,21 @@ function isSemanticToolRuntimeSnapshot(
       keys.add(extension.key);
       return true;
     }
+    if (extension.status === "indeterminate") {
+      if (
+        extension.reason !== "idempotency_receipt_unavailable" ||
+        "resultId" in extension ||
+        "execution" in extension ||
+        "ownerId" in extension ||
+        "leaseExpiresAtMs" in extension ||
+        "phase" in extension ||
+        "preparedExecution" in extension
+      ) {
+        return false;
+      }
+      keys.add(extension.key);
+      return true;
+    }
     if (
       (extension.status !== undefined && extension.status !== "completed") ||
       typeof extension.resultId !== "string" ||
@@ -1939,7 +1954,9 @@ function isSemanticToolRuntimeSnapshot(
   const generatedResultIds = [
     ...Object.keys(operationResults),
     ...snapshot.extensions.flatMap((candidate) =>
-      candidate.status === "pending" ? [] : [candidate.resultId],
+      candidate.status === "pending" || candidate.status === "indeterminate"
+        ? []
+        : [candidate.resultId],
     ),
   ];
   return generatedResultIds.every((resultId) => {

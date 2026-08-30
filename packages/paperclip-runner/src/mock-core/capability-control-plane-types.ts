@@ -282,6 +282,13 @@ export interface CapabilitySemanticToolRuntimeSnapshot {
     | {
         key: string;
         input: string;
+        /** The effect may have run, but no exact receipt is recoverable. */
+        status: "indeterminate";
+        reason: "idempotency_receipt_unavailable";
+      }
+    | {
+        key: string;
+        input: string;
         /** Absent only in snapshots written before pending markers existed. */
         status?: "completed";
         resultId: string;

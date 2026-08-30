@@ -71,6 +71,7 @@ interface ExtensionIdempotencyRecord {
   leaseHeartbeat: ReturnType<typeof setInterval> | null;
   cleanupRetry: ReturnType<typeof setTimeout> | null;
   completed?: { resultId: string; value: ExtensionExecution };
+  recoveryFailure?: "idempotency_receipt_unavailable";
 }
 
 interface CapabilitySemanticRuntimeState {
@@ -181,7 +182,10 @@ export class CapabilitySemanticToolRuntime {
       if (durable === null || extension === undefined || extension.input !== input) {
         throw new Error("expired extension receipt does not match durable execution");
       }
-      if (extension.status !== "pending") {
+      if (
+        extension.status !== "pending" &&
+        extension.status !== "indeterminate"
+      ) {
         const durableResult = durable.operationResults[extension.resultId];
         if (durableResult === undefined) {
           throw new Error("completed extension receipt omitted its operation result");
@@ -208,8 +212,9 @@ export class CapabilitySemanticToolRuntime {
         return { resultId: extension.resultId };
       }
       if (
-        extension.phase !== "executing" ||
-        (extension.leaseExpiresAtMs ?? 0) > this.#now()
+        extension.status === "pending" &&
+        (extension.phase !== "executing" ||
+          (extension.leaseExpiresAtMs ?? 0) > this.#now())
       ) {
         throw new Error("extension execution lease is still live or unproved");
       }
@@ -417,6 +422,30 @@ export class CapabilitySemanticToolRuntime {
               ),
             };
           }
+          if (durableExtension.status === "indeterminate") {
+            const recovered = await this.#resolveExpiredExtension(invocation);
+            if (!recovered) {
+              const denied = this.#authorization.denyInvocation(
+                invocation.operationId,
+                context,
+                durableExtension.reason,
+              );
+              return {
+                observableResult: this.#denial(
+                  invocation.operationId,
+                  denied,
+                  "operation_unsupported",
+                ),
+              };
+            }
+            durableState = this.#adapter.loadSemanticToolRuntime(this.#runId);
+            durableExtension = durableState?.extensions.find(
+              (extension) => extension.key === extensionIdempotencyKey,
+            );
+            if (durableState === null || durableExtension?.status !== "completed") {
+              throw new Error("indeterminate extension recovery did not publish a durable receipt");
+            }
+          }
           if (durableExtension.status === "pending") {
             if ((durableExtension.leaseExpiresAtMs ?? 0) > this.#now()) {
               const denied = this.#authorization.denyInvocation(
@@ -439,6 +468,30 @@ export class CapabilitySemanticToolRuntime {
                 invocation,
               );
               if (!recovered) {
+                this.#markExpiredExtensionIndeterminate(
+                  extensionIdempotencyKey,
+                  idempotencyRecord,
+                );
+              }
+              durableState = this.#adapter.loadSemanticToolRuntime(this.#runId);
+              durableExtension = durableState?.extensions.find(
+                (extension) => extension.key === extensionIdempotencyKey,
+              );
+              if (durableExtension?.status === "indeterminate") {
+                const denied = this.#authorization.denyInvocation(
+                  invocation.operationId,
+                  context,
+                  durableExtension.reason,
+                );
+                return {
+                  observableResult: this.#denial(
+                    invocation.operationId,
+                    denied,
+                    "operation_unsupported",
+                  ),
+                };
+              }
+              if (durableState === null || durableExtension?.status !== "completed") {
                 const denied = this.#authorization.denyInvocation(
                   invocation.operationId,
                   context,
@@ -451,13 +504,6 @@ export class CapabilitySemanticToolRuntime {
                     "operation_unsupported",
                   ),
                 };
-              }
-              durableState = this.#adapter.loadSemanticToolRuntime(this.#runId);
-              durableExtension = durableState?.extensions.find(
-                (extension) => extension.key === extensionIdempotencyKey,
-              );
-              if (durableState === null || durableExtension?.status !== "completed") {
-                throw new Error("expired extension recovery did not publish a durable receipt");
               }
             }
           }
@@ -481,6 +527,19 @@ export class CapabilitySemanticToolRuntime {
                 ),
               };
             }
+          } else if (durableExtension.status === "indeterminate") {
+            const denied = this.#authorization.denyInvocation(
+              invocation.operationId,
+              context,
+              durableExtension.reason,
+            );
+            return {
+              observableResult: this.#denial(
+                invocation.operationId,
+                denied,
+                "operation_unsupported",
+              ),
+            };
           } else {
             if (durableExtension.input !== idempotencyRecord.input) {
               throw new Error("durable extension input changed during recovery");
@@ -726,6 +785,47 @@ export class CapabilitySemanticToolRuntime {
         : { entityRefs: [...observed.entityRefs] }),
     });
     return true;
+  }
+
+  #markExpiredExtensionIndeterminate(
+    key: string,
+    record: ExtensionIdempotencyRecord,
+  ): void {
+    for (let attempt = 0; attempt < RUNTIME_PERSIST_CAS_ATTEMPTS; attempt += 1) {
+      const durable = this.#adapter.loadSemanticToolRuntime(this.#runId);
+      const extension = durable?.extensions.find((candidate) => candidate.key === key);
+      if (
+        durable === null ||
+        extension === undefined ||
+        extension.status !== "pending" ||
+        extension.input !== record.input ||
+        extension.phase !== "executing" ||
+        (extension.leaseExpiresAtMs ?? 0) > this.#now()
+      ) {
+        return;
+      }
+      const replacement = structuredClone(durable);
+      replacement.extensions = replacement.extensions.map((candidate) =>
+        candidate.key === key
+          ? {
+              key,
+              input: record.input,
+              status: "indeterminate" as const,
+              reason: "idempotency_receipt_unavailable" as const,
+            }
+          : candidate,
+      );
+      if (!this.#adapter.compareAndSwapSemanticToolRuntime(
+        this.#runId,
+        durable,
+        replacement,
+      )) continue;
+      this.#stopExtensionExecutionLease(record);
+      record.ownerId = null;
+      record.leaseExpiresAtMs = 0;
+      record.recoveryFailure = "idempotency_receipt_unavailable";
+      return;
+    }
   }
 
   #startExtensionExecution(
@@ -1071,6 +1171,18 @@ export class CapabilitySemanticToolRuntime {
         });
         continue;
       }
+      if (extension.status === "indeterminate") {
+        extensionIdempotency.set(extension.key, {
+          input: extension.input,
+          execution: null,
+          ownerId: null,
+          leaseExpiresAtMs: 0,
+          leaseHeartbeat: null,
+          cleanupRetry: null,
+          recoveryFailure: extension.reason,
+        });
+        continue;
+      }
       const completed = {
         resultId: extension.resultId,
         value: structuredClone(extension.execution),
@@ -1110,13 +1222,20 @@ export class CapabilitySemanticToolRuntime {
       extensions: [...this.#state.extensionIdempotency]
         .map(([key, record]) =>
           record.completed === undefined
-            ? {
-                key,
-                input: record.input,
-                status: "pending" as const,
-                ...(record.ownerId === null ? {} : { ownerId: record.ownerId }),
-                leaseExpiresAtMs: record.leaseExpiresAtMs,
-              }
+            ? record.recoveryFailure === undefined
+              ? {
+                  key,
+                  input: record.input,
+                  status: "pending" as const,
+                  ...(record.ownerId === null ? {} : { ownerId: record.ownerId }),
+                  leaseExpiresAtMs: record.leaseExpiresAtMs,
+                }
+              : {
+                  key,
+                  input: record.input,
+                  status: "indeterminate" as const,
+                  reason: record.recoveryFailure,
+                }
             : {
                 key,
                 input: record.input,
