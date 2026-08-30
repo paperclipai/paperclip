@@ -5,7 +5,9 @@ import {
   boundedSidecarText,
   boundedSidecarValue,
   parseAcpxSidecarRequest,
+  safeSidecarText,
   sanitizeAcpxPlanEntries,
+  stringifyAcpxSidecarFrame,
 } from "./sidecar-protocol.js";
 
 describe("ACPX sidecar request parsing", () => {
@@ -89,6 +91,34 @@ describe("ACPX sidecar request parsing", () => {
       boundedSidecarValue({ type: "tool_call", title }, 128 * 1024),
     ).toEqual({ type: "tool_call", title });
     expect(boundedSidecarText(`safe\ud83d`, 10)).toBe("safe\uFFFD");
+  });
+
+  it("emits only Rust-decodable Unicode scalar values in sidecar frames", () => {
+    const frame = stringifyAcpxSidecarFrame({
+      payload: {
+        toolCallId: `call-\ud800`,
+        kind: `wr\udfffite`,
+        status: `pend\ud800ing`,
+        input: {
+          [`nested-\ud800`]: { [`result-\udfff`]: "retained" },
+        },
+      },
+    });
+
+    expect(frame).not.toMatch(/\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu);
+    expect(JSON.parse(frame)).toEqual({
+      payload: {
+        toolCallId: "call-\uFFFD",
+        kind: "wr\uFFFDite",
+        status: "pend\uFFFDing",
+        input: {
+          "nested-\uFFFD": { "result-\uFFFD": "retained" },
+        },
+      },
+    });
+    expect(safeSidecarText(`read\ud83d🚀\udc00write`)).toBe(
+      "read\uFFFD🚀\uFFFDwrite",
+    );
   });
 });
 

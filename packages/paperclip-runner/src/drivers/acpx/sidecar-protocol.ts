@@ -119,7 +119,7 @@ export function boundedSidecarValue(
     throw new Error("ACPX sidecar value limit must be a positive integer");
   }
   try {
-    const serialized = JSON.stringify(value);
+    const serialized = stringifyAcpxSidecarFrame(value);
     if (!serialized || Buffer.byteLength(serialized) > maxBytes) {
       return { omitted: true, reason: "payload_limit" };
     }
@@ -132,6 +132,48 @@ export function boundedSidecarValue(
   } catch {
     return { omitted: true, reason: "serialization_failed" };
   }
+}
+
+/**
+ * Replaces isolated UTF-16 surrogates with a Unicode scalar value. JavaScript
+ * can retain those code units and JSON.stringify emits them as escapes, while
+ * Rust's serde_json correctly rejects them as invalid JSON strings.
+ */
+export function safeSidecarText(value: string): string {
+  const safe: string[] = [];
+  for (const codePoint of value) safe.push(safeSidecarCodePoint(codePoint));
+  return safe.join("");
+}
+
+/**
+ * Serializes a frame without emitting string values or property names that
+ * Rust cannot decode. The initial round trip preserves JSON.stringify's
+ * ordinary toJSON, omission, and number semantics before keys are rebuilt.
+ */
+export function stringifyAcpxSidecarFrame(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (!serialized) throw new Error("ACPX sidecar frame is not serializable");
+  return JSON.stringify(safeSidecarJsonValue(JSON.parse(serialized)));
+}
+
+function safeSidecarJsonValue(value: unknown): unknown {
+  if (typeof value === "string") return safeSidecarText(value);
+  if (Array.isArray(value)) return value.map(safeSidecarJsonValue);
+  if (value === null || typeof value !== "object") return value;
+
+  const safe = Object.create(null) as Record<string, unknown>;
+  for (const [key, candidate] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    const safeKey = safeSidecarText(key);
+    if (Object.hasOwn(safe, safeKey)) {
+      throw new Error(
+        "ACPX sidecar frame has colliding Unicode property names",
+      );
+    }
+    safe[safeKey] = safeSidecarJsonValue(candidate);
+  }
+  return safe;
 }
 
 /**
@@ -150,14 +192,16 @@ export function boundedSidecarText(
   const bounded: string[] = [];
   for (const codePoint of value) {
     if (bounded.length >= maxCodePoints) break;
-    const codeUnit = codePoint.charCodeAt(0);
-    bounded.push(
-      codePoint.length === 1 && codeUnit >= 0xd800 && codeUnit <= 0xdfff
-        ? "\uFFFD"
-        : codePoint,
-    );
+    bounded.push(safeSidecarCodePoint(codePoint));
   }
   return bounded.join("");
+}
+
+function safeSidecarCodePoint(codePoint: string): string {
+  const codeUnit = codePoint.charCodeAt(0);
+  return codePoint.length === 1 && codeUnit >= 0xd800 && codeUnit <= 0xdfff
+    ? "\uFFFD"
+    : codePoint;
 }
 
 export function sanitizeAcpxPlanEntries(value: unknown): Array<{

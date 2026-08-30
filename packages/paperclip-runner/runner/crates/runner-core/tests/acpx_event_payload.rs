@@ -78,6 +78,38 @@ fn decodes_every_admitted_runtime_event_shape() {
 }
 
 #[test]
+fn admits_sidecar_replacement_scalars_in_tool_fields() {
+    let scope = active_scope();
+    let kind = format!("{}\u{fffd}WRITE", "x".repeat(240));
+    let decoded = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            json!({
+                "type": "tool_call",
+                "toolCallId": "tool-\u{fffd}",
+                "kind": kind.clone(),
+                "status": "pend\u{fffd}ing",
+                "title": "Wri\u{fffd}te",
+                "locations": [],
+            }),
+        ),
+    )
+    .expect("the sidecar's Unicode replacement values must remain admissible");
+
+    assert!(matches!(
+        decoded,
+        AcpxEventPayload::Runtime {
+            kind: AcpxRuntimeEventKind::ToolCall,
+            tool_operation: Some("edit"),
+            payload,
+        } if payload["toolCallId"].as_str() == Some("tool-\u{fffd}")
+            && payload["kind"].as_str() == Some(kind.as_str())
+            && payload["status"].as_str() == Some("pend\u{fffd}ing")
+    ));
+}
+
+#[test]
 fn rejects_unclassified_and_malformed_runtime_payloads() {
     let scope = active_scope();
     for payload in [

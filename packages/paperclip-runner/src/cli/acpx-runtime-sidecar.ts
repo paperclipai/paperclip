@@ -35,7 +35,9 @@ import {
   boundedSidecarValue,
   parseAcpxSidecarRequest,
   record,
+  safeSidecarText,
   sanitizeAcpxPlanEntries,
+  stringifyAcpxSidecarFrame,
   text,
   type AcpxExpectedSessionIdentity,
   type AcpxSidecarEvent,
@@ -667,18 +669,31 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     // particular, a mutation token beyond the transport bound must not grant a
     // create-target attestation that runner-core cannot independently verify.
     const toolTitle =
-      event.title === undefined ? null : boundedSidecarText(event.title, 4_000);
+      typeof event.title === "string"
+        ? boundedSidecarText(event.title, 4_000)
+        : null;
+    // Keep the complete provider kind for operation classification, but make
+    // every tool field a valid Unicode scalar sequence before it crosses the
+    // Rust JSON boundary.
+    const toolKind =
+      typeof event.kind === "string" ? safeSidecarText(event.kind) : null;
     return boundedSidecarValue(
       {
         type: "tool_call",
-        toolCallId: event.toolCallId?.slice(0, 240) ?? null,
-        status: event.status?.slice(0, 100) ?? null,
+        toolCallId:
+          typeof event.toolCallId === "string"
+            ? boundedSidecarText(event.toolCallId, 240)
+            : null,
+        status:
+          typeof event.status === "string"
+            ? boundedSidecarText(event.status, 100)
+            : null,
         title: toolTitle,
-        kind: event.kind ?? null,
+        kind: toolKind,
         locations: safeAcpxLocations(
           event.locations,
           openParams?.workingDirectory,
-          event.kind,
+          toolKind,
           toolTitle,
         ),
         ...safeOutput(event.rawOutput),
@@ -947,7 +962,7 @@ function response(
 }
 
 function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): void {
-  const line = JSON.stringify(value);
+  const line = stringifyAcpxSidecarFrame(value);
   if (Buffer.byteLength(line) > ACPX_SIDECAR_MAX_FRAME_BYTES) {
     process.stderr.write("[paperclip-acpx-sidecar] output_frame_too_large\n");
     return;
