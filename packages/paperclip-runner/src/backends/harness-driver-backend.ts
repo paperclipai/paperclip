@@ -17,6 +17,13 @@ import type {
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
 
+const MAX_RECOVERY_TERMINAL_TURNS = 4_096;
+const MAX_RECOVERY_TERMINAL_BYTES = 8 * 1024 * 1024;
+const MAX_RECOVERY_TERMINAL_FINGERPRINT_BYTES = 256 * 1024;
+const MAX_RECOVERY_SEMANTIC_RESULT_BYTES = 8 * 1024 * 1024;
+const MAX_RECOVERY_SEMANTIC_RESULT_NODES = 65_536;
+const MAX_RECOVERY_SEMANTIC_RESULT_DEPTH = 128;
+
 /**
  * Package-owned adapter from the concrete harness driver contract to the
  * normalized session boundary consumed by Paperclip. Provider mechanics stay
@@ -70,11 +77,34 @@ export class HarnessDriverBackend implements NativeSessionBackend {
     if (this.#driver.recoverSession === undefined) {
       return { recovered: false, reason: "driver does not support recovery" };
     }
+    const prevalidationFailure = recoveryPrevalidationFailure(snapshot);
+    if (prevalidationFailure !== null) {
+      return { recovered: false, reason: prevalidationFailure };
+    }
+    const recoveredSemanticTurn = completedSemanticTurn(snapshot);
+    const semanticTurnId =
+      recoveredSemanticTurn?.turnId ??
+      snapshot.activeTurnId ??
+      snapshot.terminalTurns?.at(-1)?.turnId ??
+      null;
+    const recoveredTerminal =
+      recoveredSemanticTurn && snapshot.semanticResult
+        ? {
+            schema: "paperclip.prp.terminal.v1" as const,
+            turnTerminalState: "completed" as const,
+            runTerminalState: "succeeded" as const,
+            reportedWorkDisposition:
+              snapshot.semanticResult.reportedWorkDisposition,
+          }
+        : snapshot.terminal ?? null;
     // `null` is a durable "no active turn" checkpoint. Only an omitted legacy
     // field may use the compatibility fallback; nullish coalescing here would
-    // otherwise turn the most recent terminal turn back into an active one.
+    // otherwise turn a settled semantic or terminal turn back into an active
+    // one on every subsequent recovery.
     const activeTurnId = snapshot.activeTurnId === undefined
-      ? snapshot.terminalTurns?.at(-1)?.turnId ?? null
+      ? recoveredSemanticTurn?.turnId
+        ?? snapshot.terminalTurns?.at(-1)?.turnId
+        ?? null
       : snapshot.activeTurnId;
     const persisted: PersistedHarnessSession = {
       driverKind: snapshot.driverKind ?? snapshot.backendKind,
@@ -96,7 +126,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
             semanticResult: {
               result: snapshot.semanticResult,
               fingerprint: canonicalJson(snapshot.semanticResult),
-              turnId: activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? "recovered",
+              turnId: semanticTurnId ?? "recovered",
           },
         }),
       terminalTurns: snapshot.terminalTurns ?? [],
@@ -135,10 +165,188 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       session: new HarnessNativeSession(
         { identity: snapshot.identity },
         recovered.session,
-        snapshot.terminal,
+        recoveredTerminal,
       ),
     };
   }
+}
+
+function completedSemanticTurn(
+  snapshot: PersistedNativeSession,
+): { turnId: string; fingerprint: string } | null {
+  if (snapshot.semanticResult === undefined || snapshot.semanticResult === null) {
+    return null;
+  }
+  const semanticFingerprint = canonicalJson(snapshot.semanticResult);
+  const terminalTurns = snapshot.terminalTurns ?? [];
+  for (let index = terminalTurns.length - 1; index >= 0; index -= 1) {
+    const terminal = terminalTurns[index]!;
+    try {
+      const value: unknown = JSON.parse(terminal.fingerprint);
+      const record = plainRecord(value);
+      if (
+        record?.status === "completed" &&
+        record.semanticResult === semanticFingerprint
+      ) {
+        return terminal;
+      }
+    } catch {
+      // Non-canonical or legacy terminal fingerprints cannot prove completion.
+    }
+  }
+  return null;
+}
+
+function recoveryPrevalidationFailure(
+  snapshot: PersistedNativeSession,
+): string | null {
+  if (
+    snapshot.terminalTurns !== undefined &&
+    !Array.isArray(snapshot.terminalTurns)
+  ) {
+    return "persisted harness terminal history is invalid";
+  }
+  const terminalTurns = snapshot.terminalTurns ?? [];
+  if (terminalTurns.length > MAX_RECOVERY_TERMINAL_TURNS) {
+    return "persisted harness terminal history exceeds its recovery limit";
+  }
+  let terminalBytes = 0;
+  for (const terminal of terminalTurns) {
+    if (
+      typeof terminal?.turnId !== "string" ||
+      typeof terminal.fingerprint !== "string"
+    ) {
+      return "persisted harness terminal history is invalid";
+    }
+    if (
+      terminal.turnId.length > MAX_RECOVERY_TERMINAL_BYTES ||
+      terminal.fingerprint.length > MAX_RECOVERY_TERMINAL_FINGERPRINT_BYTES
+    ) {
+      return "persisted harness terminal history exceeds its recovery limit";
+    }
+    const fingerprintBytes = Buffer.byteLength(terminal.fingerprint);
+    terminalBytes += Buffer.byteLength(terminal.turnId) + fingerprintBytes;
+    if (
+      fingerprintBytes > MAX_RECOVERY_TERMINAL_FINGERPRINT_BYTES ||
+      terminalBytes > MAX_RECOVERY_TERMINAL_BYTES
+    ) {
+      return "persisted harness terminal history exceeds its recovery limit";
+    }
+  }
+  if (
+    snapshot.semanticResult !== undefined &&
+    snapshot.semanticResult !== null &&
+    !isBoundedPersistedJson(
+      snapshot.semanticResult,
+      MAX_RECOVERY_SEMANTIC_RESULT_BYTES,
+    )
+  ) {
+    return "persisted harness semantic result exceeds its recovery limit";
+  }
+  return null;
+}
+
+/** Measure persisted JSON without first serializing or cloning the payload. */
+function isBoundedPersistedJson(value: unknown, maxBytes: number): boolean {
+  let bytes = 0;
+  let nodes = 0;
+  const ancestors = new WeakSet<object>();
+  const add = (amount: number): boolean => {
+    bytes += amount;
+    return bytes <= maxBytes;
+  };
+  const visit = (candidate: unknown, depth: number): boolean => {
+    nodes += 1;
+    if (
+      nodes > MAX_RECOVERY_SEMANTIC_RESULT_NODES ||
+      depth > MAX_RECOVERY_SEMANTIC_RESULT_DEPTH
+    ) {
+      return false;
+    }
+    if (candidate === null) return add(4);
+    switch (typeof candidate) {
+      case "string":
+        return candidate.length + 2 <= maxBytes - bytes
+          ? add(jsonStringBytes(candidate, maxBytes - bytes))
+          : false;
+      case "boolean":
+        return add(candidate ? 4 : 5);
+      case "number":
+        return Number.isFinite(candidate)
+          ? add(String(candidate).length)
+          : false;
+      case "object":
+        break;
+      default:
+        return false;
+    }
+    if (ancestors.has(candidate)) return false;
+    ancestors.add(candidate);
+    try {
+      if (Array.isArray(candidate)) {
+        if (!add(2)) return false;
+        for (let index = 0; index < candidate.length; index += 1) {
+          if (index > 0 && !add(1)) return false;
+          if (!visit(candidate[index], depth + 1)) return false;
+        }
+        return true;
+      }
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+      if (!add(2)) return false;
+      let propertyCount = 0;
+      for (const key in candidate as Record<string, unknown>) {
+        if (!Object.prototype.hasOwnProperty.call(candidate, key)) continue;
+        if (propertyCount > 0 && !add(1)) return false;
+        propertyCount += 1;
+        if (
+          key.length + 3 > maxBytes - bytes ||
+          !add(jsonStringBytes(key, maxBytes - bytes) + 1) ||
+          !visit((candidate as Record<string, unknown>)[key], depth + 1)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    } finally {
+      ancestors.delete(candidate);
+    }
+  };
+  try {
+    return visit(value, 0);
+  } catch {
+    return false;
+  }
+}
+
+function jsonStringBytes(value: string, maxBytes: number): number {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 2;
+    } else if (code <= 0x1f) {
+      bytes += [0x08, 0x09, 0x0a, 0x0c, 0x0d].includes(code) ? 2 : 6;
+    } else if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > maxBytes) return maxBytes + 1;
+  }
+  return bytes;
 }
 
 function assertProviderSessionIdentity(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
@@ -445,6 +445,242 @@ describe("HarnessDriverBackend", () => {
     expect(session.identity()).toEqual({ ...originalIdentity, runId: "run-2" });
   });
 
+  it("restores a persisted terminal before the recovered stream is consumed", async () => {
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession() {
+        return { recovered: true, session: new FakeHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const terminal = {
+      schema: "paperclip.prp.terminal.v1" as const,
+      turnTerminalState: "completed" as const,
+      runTerminalState: "succeeded" as const,
+      reportedWorkDisposition: "done" as const,
+    };
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-terminal-recovery",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal,
+      activeTurnId: "turn-1",
+      terminalTurns: [
+        { turnId: "turn-1", fingerprint: "terminal-fingerprint" },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.snapshot()).resolves.toMatchObject({
+      semanticResult: result,
+      terminal,
+    });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal,
+      turnId: "turn-1",
+    });
+  });
+
+  it("reconstructs a missing top-level terminal from a completed semantic turn", async () => {
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession() {
+        return { recovered: true, session: new FakeHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const semanticFingerprint = canonicalTestJson(result);
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-terminal-inference",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal: null,
+      activeTurnId: null,
+      terminalTurns: [
+        {
+          turnId: "turn-1",
+          fingerprint: JSON.stringify({
+            status: "completed",
+            semanticResult: semanticFingerprint,
+          }),
+        },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "done",
+      },
+      turnId: "turn-1",
+    });
+  });
+
+  it("does not pair a recovered semantic result with another turn's terminal", async () => {
+    let recoveredPersisted: PersistedHarnessSession | null = null;
+    class RecoveredHarnessSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        if (recoveredPersisted === null) throw new Error("missing recovered snapshot");
+        return structuredClone(recoveredPersisted);
+      }
+    }
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession(snapshot) {
+        recoveredPersisted = snapshot;
+        return { recovered: true, session: new RecoveredHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const semanticFingerprint = canonicalTestJson(result);
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-cross-turn-terminal",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "cancelled",
+        runTerminalState: "cancelled",
+        reportedWorkDisposition: "yielded",
+      },
+      activeTurnId: null,
+      terminalTurns: [
+        {
+          turnId: "turn-with-result",
+          fingerprint: JSON.stringify({
+            status: "completed",
+            semanticResult: semanticFingerprint,
+          }),
+        },
+        {
+          turnId: "later-cancelled-turn",
+          fingerprint: JSON.stringify({ status: "cancelled" }),
+        },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "done",
+      },
+      turnId: "turn-with-result",
+    });
+  });
+
+  it("rejects oversized terminal history before inspecting the semantic result", async () => {
+    const recoverSession = vi.fn(async () => ({
+      recovered: true,
+      session: new FakeHarnessSession(),
+    }));
+    const backend = new HarnessDriverBackend({ ...driver, recoverSession });
+    const inaccessibleResult = new Proxy(result, {
+      ownKeys() {
+        throw new Error("semantic result must not be inspected");
+      },
+    });
+
+    await expect(backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-oversized-terminals",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: inaccessibleResult,
+      terminalTurns: Array.from({ length: 4_097 }, (_, index) => ({
+        turnId: `turn-${index}`,
+        fingerprint: "terminal",
+      })),
+    }, {
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      recovered: false,
+      reason: "persisted harness terminal history exceeds its recovery limit",
+    });
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized semantic result before canonicalization", async () => {
+    const recoverSession = vi.fn(async () => ({
+      recovered: true,
+      session: new FakeHarnessSession(),
+    }));
+    const backend = new HarnessDriverBackend({ ...driver, recoverSession });
+
+    await expect(backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-oversized-semantic-result",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: {
+        ...result,
+        summary: "x".repeat(8 * 1024 * 1024),
+      },
+      terminalTurns: [],
+    }, {
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      recovered: false,
+      reason: "persisted harness semantic result exceeds its recovery limit",
+    });
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
   it("delegates native runtime-request resolutions to the harness session", async () => {
     runtimeResolutions.length = 0;
     const backend = new HarnessDriverBackend(driver);
@@ -580,3 +816,17 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toThrow("provider stopped after cancellation");
   });
 });
+
+function canonicalTestJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalTestJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}

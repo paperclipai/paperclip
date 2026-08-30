@@ -17,6 +17,7 @@ import type {
   AcpxRuntimeTurn,
   OpenAcpxRuntimeHostOptions,
 } from "./runtime-host.js";
+import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
   it("rejects a pre-aborted open before starting host admission", async () => {
@@ -136,7 +137,7 @@ describe("Codex ACPX harness driver", () => {
       kind: "acpx_runtime",
       displayName: "Codex via ACPX",
       capabilities: {
-        resume: false,
+        resume: true,
         interruption: true,
         dynamicTools: true,
         runtimeRequestResolution: false,
@@ -1296,6 +1297,745 @@ describe("Codex ACPX harness driver", () => {
       ),
     });
   });
+
+  it("recovers a settled session with the exact persisted identity", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    await fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-recovery",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await terminalEvents;
+    const snapshot = await session.snapshot();
+    expect(snapshot.terminalTurns?.at(-1)?.turnId).toBe(
+      snapshot.semanticResult?.turnId,
+    );
+    await session.close({ reason: "simulate restart" });
+
+    const recovery = await fixture.driver.recoverSession!(snapshot);
+
+    expect(recovery).toMatchObject({ recovered: true });
+    expect(fixture.readRecoveryWorkspace).toHaveBeenCalledWith({
+      runtimeDirectory: "/runtime",
+      normalizedSessionId: "session-1",
+      signal: expect.any(AbortSignal),
+    });
+    expect(fixture.hostOptions?.expectedIdentity).toEqual(
+      snapshot.providerIdentity,
+    );
+    const workspaceLease = (await fixture.readRecoveryWorkspace.mock
+      .results[0]!.value) as AcpxRecoveryWorkspaceLease;
+    expect(fixture.hostOptions?.assertWorkspaceHeld).toBe(
+      workspaceLease.assertHeld,
+    );
+    expect(workspaceLease.close).toHaveBeenCalledOnce();
+    await expect(recovery.session!.snapshot()).resolves.toMatchObject({
+      driverSessionId: snapshot.driverSessionId,
+      providerSessionId: snapshot.providerSessionId,
+      providerRecoveryPolicy: "same_session_only",
+      lastSourceSequence: snapshot.lastSourceSequence,
+      semanticResult: snapshot.semanticResult,
+      activeTurnId: null,
+    });
+    await recovery.session!.close({ reason: "recovery verified" });
+  });
+
+  it("rejects a pre-aborted recovery before reading its workspace", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-recovery-pre-abort",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "prepare pre-aborted recovery" });
+    const controller = new AbortController();
+    const cancellation = new Error("recovery cancelled before start");
+    controller.abort(cancellation);
+
+    await expect(fixture.driver.recoverSession!(snapshot, {
+      signal: controller.signal,
+    })).resolves.toEqual({
+      recovered: false,
+      reason: cancellation.message,
+    });
+
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+  });
+
+  it("aborts a blocked recovery workspace read without opening a host", async () => {
+    const workspaceRead = deferred<AcpxRecoveryWorkspaceLease>();
+    const lateWorkspaceLease = recoveryWorkspaceLease();
+    const fixture = driverFixture({}, {
+      readRecoveryWorkspace: () => workspaceRead.promise,
+    });
+    const session = await fixture.driver.openSession({
+      runId: "run-recovery-read-abort",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "prepare blocked workspace recovery" });
+    const controller = new AbortController();
+    const cancellation = new Error("recovery workspace read cancelled");
+    const recovery = fixture.driver.recoverSession!(snapshot, {
+      signal: controller.signal,
+    });
+    await vi.waitFor(() =>
+      expect(fixture.readRecoveryWorkspace).toHaveBeenCalledOnce(),
+    );
+    expect(fixture.readRecoveryWorkspace).toHaveBeenCalledWith({
+      runtimeDirectory: "/runtime",
+      normalizedSessionId: "session-1",
+      signal: controller.signal,
+    });
+
+    controller.abort(cancellation);
+    await expect(recovery).resolves.toEqual({
+      recovered: false,
+      reason: cancellation.message,
+    });
+    workspaceRead.resolve(lateWorkspaceLease);
+    await vi.waitFor(() =>
+      expect(lateWorkspaceLease.close).toHaveBeenCalledOnce(),
+    );
+
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+  });
+
+  it("closes and quarantines a recovered host that resolves after abort", async () => {
+    const fixture = driverFixture({}, { closeSettlementTimeoutMs: 5 });
+    const session = await fixture.driver.openSession({
+      runId: "run-recovery-late-host",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "prepare late recovered host" });
+    fixture.host.close.mockClear();
+    fixture.host.close.mockRejectedValueOnce(
+      new Error("late recovered host close failed once"),
+    );
+    const hostAdmission = deferred<ReturnType<typeof fakeHost>>();
+    let recoveryHostOptions: OpenAcpxRuntimeHostOptions | undefined;
+    fixture.openHost.mockImplementationOnce((options) => {
+      recoveryHostOptions = options;
+      return hostAdmission.promise;
+    });
+    const controller = new AbortController();
+    const cancellation = new Error("recovered host admission cancelled");
+    const recovery = fixture.driver.recoverSession!(snapshot, {
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(fixture.openHost).toHaveBeenCalledTimes(2));
+    expect(recoveryHostOptions?.signal).toBe(controller.signal);
+
+    controller.abort(cancellation);
+    await expect(recovery).resolves.toEqual({
+      recovered: false,
+      reason: cancellation.message,
+    });
+    hostAdmission.resolve(fixture.host);
+
+    await vi.waitFor(() => expect(fixture.host.close).toHaveBeenCalledTimes(2));
+    expect(fixture.host.close).toHaveBeenNthCalledWith(1, {
+      reason: "Codex ACPX host resolved after admission was aborted",
+    });
+    expect(fixture.host.close).toHaveBeenNthCalledWith(2, {
+      reason: expect.stringContaining("quarantined cleanup recovery"),
+    });
+  });
+
+  it.each([
+    [
+      "failed",
+      "turn.failed",
+      {
+        status: "failed",
+        error: {
+          code: "provider_failure",
+          message: "The follow-up failed",
+          retryable: false,
+        },
+      },
+    ],
+    [
+      "cancelled",
+      "turn.interrupted",
+      { status: "cancelled", stopReason: "operator_cancelled" },
+    ],
+  ] as const)(
+    "rejects an earlier semantic settlement after a later %s turn",
+    async (_status, terminalType, terminalResult) => {
+      const fixture = driverFixture();
+      const session = await fixture.driver.openSession({
+        runId: "run-later-unsuccessful-turn",
+        normalizedSessionId: "session-1",
+        workingDirectory: "/workspace",
+      });
+
+      const semanticTerminal = collectUntil(session.events(), "turn.completed");
+      const semanticTurn = await session.startTurn({
+        message: { role: "user", text: "Complete the task." },
+      });
+      await fixture.hostOptions!.semanticTools!.handler({
+        tool: PRP_COMPLETION_TOOL_NAME,
+        callId: "finish-before-follow-up",
+        arguments: completedResult(),
+        signal: new AbortController().signal,
+      });
+      fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+      await semanticTerminal;
+
+      const laterTerminal = collectUntil(session.events(), terminalType);
+      const laterTurn = await session.startTurn({
+        message: { role: "user", text: "Attempt a follow-up." },
+      });
+      fixture.finishTurn(terminalResult);
+      await laterTerminal;
+
+      const snapshot = await session.snapshot();
+      expect(snapshot).toMatchObject({
+        activeTurnId: null,
+        semanticResult: { turnId: semanticTurn.turnId },
+      });
+      expect(snapshot.terminalTurns?.at(-1)?.turnId).toBe(laterTurn.turnId);
+      await session.close({ reason: "simulate unsuccessful follow-up recovery" });
+
+      await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+        recovered: false,
+        reason:
+          "persisted Codex ACPX semantic result is not the latest terminal settlement",
+      });
+      expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it("transfers an identical semantic retry from a failed turn to its successful turn", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-semantic-retry",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+
+    const firstTerminal = collectUntil(session.events(), "turn.failed");
+    const first = await session.startTurn({
+      message: { role: "user", text: "Attempt the task." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-failed-attempt",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({
+      status: "failed",
+      error: { code: "provider_retry", message: "Retry the turn", retryable: true },
+    });
+    await firstTerminal;
+
+    const secondTerminal = collectUntil(session.events(), "turn.completed");
+    const second = await session.startTurn({
+      message: { role: "user", text: "Record the successful retry." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-successful-retry",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await secondTerminal;
+
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "finish-successful-retry",
+      turnId: second.turnId,
+    });
+    expect(snapshot.semanticResult?.turnId).not.toBe(first.turnId);
+    expect(snapshot.terminalTurns?.at(-1)?.turnId).toBe(second.turnId);
+    expect(snapshot.terminalTurns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ turnId: first.turnId }),
+      expect.objectContaining({ turnId: second.turnId }),
+    ]));
+    const successfulTerminal = snapshot.terminalTurns?.find(
+      (terminal) => terminal.turnId === second.turnId,
+    );
+    expect(JSON.parse(successfulTerminal!.fingerprint)).toEqual({
+      status: "completed",
+      semanticResult: snapshot.semanticResult!.fingerprint,
+    });
+    await session.close({ reason: "simulate successful retry recovery" });
+
+    await expect(fixture.driver.recoverSession!({
+      ...snapshot,
+      activeTurnId: first.turnId,
+    })).resolves.toEqual({
+      recovered: false,
+      reason:
+        "persisted Codex ACPX active turn is not the completed semantic settlement",
+    });
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toMatchObject({
+      recovered: true,
+    });
+  });
+
+  it("transfers an identical reaffirmed result to the latest successful turn", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-semantic-reaffirmation",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+
+    const firstTerminal = collectUntil(session.events(), "turn.completed");
+    const first = await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-first-success",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await firstTerminal;
+
+    const secondTerminal = collectUntil(session.events(), "turn.completed");
+    const second = await session.startTurn({
+      message: { role: "user", text: "Reaffirm the same disposition." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-reaffirmed-success",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const reaffirmedEvents = await secondTerminal;
+
+    expect(
+      reaffirmedEvents.filter(
+        (event) => event.eventType === "run.result.proposed",
+      ),
+    ).toHaveLength(1);
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "finish-reaffirmed-success",
+      turnId: second.turnId,
+    });
+    expect(snapshot.semanticResult?.turnId).not.toBe(first.turnId);
+    expect(JSON.parse(snapshot.terminalTurns!.at(-1)!.fingerprint)).toEqual({
+      status: "completed",
+      semanticResult: snapshot.semanticResult!.fingerprint,
+    });
+    await session.close({ reason: "simulate reaffirmed result recovery" });
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toMatchObject({
+      recovered: true,
+    });
+  });
+
+  it("recovers a completed result after an identical retry fails", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-failed-semantic-reaffirmation",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+
+    const firstTerminal = collectUntil(session.events(), "turn.completed");
+    const first = await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-before-failed-reaffirmation",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await firstTerminal;
+
+    const failedTerminal = collectUntil(session.events(), "turn.failed");
+    const second = await session.startTurn({
+      message: { role: "user", text: "Reaffirm before a failed retry." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-failed-reaffirmation",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({
+      status: "failed",
+      error: {
+        code: "provider_retry",
+        message: "Retry failed after reaffirming",
+        retryable: true,
+      },
+    });
+    const failedEvents = await failedTerminal;
+    expect(
+      failedEvents.filter(
+        (event) => event.eventType === "run.result.proposed",
+      ),
+    ).toHaveLength(1);
+
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "finish-before-failed-reaffirmation",
+      turnId: first.turnId,
+    });
+    expect(snapshot.semanticResult?.turnId).not.toBe(second.turnId);
+    expect(JSON.parse(snapshot.terminalTurns!.at(-1)!.fingerprint)).toEqual({
+      status: "failed",
+      reaffirmedSemanticResult: snapshot.semanticResult!.fingerprint,
+    });
+    await session.close({ reason: "simulate failed reaffirmation recovery" });
+
+    const recovery = await fixture.driver.recoverSession!(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    await recovery.session!.close({ reason: "failed retry recovery verified" });
+  });
+
+  it("recovers a completed result after close interrupts an identical retry", async () => {
+    const fixture = driverFixture({}, { closeSettlementTimeoutMs: 1 });
+    const session = await fixture.driver.openSession({
+      runId: "run-close-interrupted-semantic-reaffirmation",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+
+    const firstTerminal = collectUntil(session.events(), "turn.completed");
+    const first = await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-before-close-reaffirmation",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await firstTerminal;
+
+    const interruptedTerminal = collectUntil(
+      session.events(),
+      "turn.interrupted",
+    );
+    const second = await session.startTurn({
+      message: { role: "user", text: "Reaffirm while shutdown begins." },
+    });
+    await bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-close-reaffirmation",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.host.close.mockResolvedValue(undefined);
+    await session.close({ reason: "close before provider result settles" });
+    await interruptedTerminal;
+
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "finish-before-close-reaffirmation",
+      turnId: first.turnId,
+    });
+    expect(snapshot.semanticResult?.turnId).not.toBe(second.turnId);
+    expect(JSON.parse(snapshot.terminalTurns!.at(-1)!.fingerprint)).toEqual({
+      status: "interrupted",
+      reaffirmedSemanticResult: snapshot.semanticResult!.fingerprint,
+    });
+
+    fixture.finishTurn({ status: "cancelled", stopReason: "session_closed" });
+    const recovery = await fixture.driver.recoverSession!(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    await recovery.session!.close({
+      reason: "interrupted retry recovery verified",
+    });
+  });
+
+  it("does not transfer a failed turn's semantic result to an unrelated resultless turn", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-resultless-semantic-retry",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+
+    const firstTerminal = collectUntil(session.events(), "turn.failed");
+    const first = await session.startTurn({
+      message: { role: "user", text: "Attempt the task." },
+    });
+    await fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-before-provider-retry",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({
+      status: "failed",
+      error: {
+        code: "provider_retry",
+        message: "Retry the turn",
+        retryable: true,
+      },
+    });
+    await firstTerminal;
+
+    const secondTerminal = collectUntil(session.events(), "turn.completed");
+    const second = await session.startTurn({
+      message: { role: "user", text: "Confirm the completed work." },
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await secondTerminal;
+
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "finish-before-provider-retry",
+      turnId: first.turnId,
+    });
+    const successfulTerminal = snapshot.terminalTurns?.find(
+      (terminal) => terminal.turnId === second.turnId,
+    );
+    expect(JSON.parse(successfulTerminal!.fingerprint)).toEqual({
+      status: "completed",
+      semanticResult: null,
+    });
+    await session.close({ reason: "simulate resultless retry recovery" });
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason:
+        "persisted Codex ACPX semantic result has no completed terminal turn",
+    });
+  });
+
+  it("clears a checkpoint race when the active turn is already terminal", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-terminal-race",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await terminalEvents;
+    const snapshot = await session.snapshot();
+    snapshot.activeTurnId = turnId;
+    await session.close({ reason: "simulate checkpoint race" });
+
+    const recovery = await fixture.driver.recoverSession!(snapshot);
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.snapshot()).resolves.toMatchObject({
+      activeTurnId: null,
+      terminalTurns: [expect.objectContaining({ turnId })],
+    });
+    await recovery.session!.close({ reason: "checkpoint race verified" });
+  });
+
+  it("fails closed when a checkpoint contains an unproved active turn", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-active-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({
+      message: { role: "user", text: "Continue working." },
+    });
+    const snapshot = await session.snapshot();
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "active Codex ACPX turn continuity is unavailable",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+    await session.close({ reason: "active recovery rejected" });
+  });
+
+  it("rejects a tampered recovery result before reopening the provider", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-tampered-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    snapshot.semanticResult = {
+      result: completedResult(),
+      fingerprint: "tampered",
+      turnId: "turn-settled",
+    };
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "persisted Codex ACPX semantic result is invalid",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+    await session.close({ reason: "tampered recovery rejected" });
+  });
+
+  it("rejects semantic results from failed terminal turns", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-failed-semantic-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+    await fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-before-failure",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await terminalEvents;
+    const snapshot = await session.snapshot();
+    snapshot.terminalTurns = snapshot.terminalTurns?.map((terminal) => ({
+      ...terminal,
+      fingerprint: JSON.stringify({ status: "failed" }),
+    }));
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason:
+        "persisted Codex ACPX semantic result has no completed terminal turn",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    await session.close({ reason: "failed semantic recovery rejected" });
+  });
+
+  it("rejects failed resultless terminals as disposition settlements", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-failed-resultless-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Attempt the task." },
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await terminalEvents;
+    const snapshot = await session.snapshot();
+    snapshot.terminalTurns = snapshot.terminalTurns?.map((terminal) => ({
+      ...terminal,
+      fingerprint: JSON.stringify({ status: "failed" }),
+    }));
+
+    for (const activeTurnId of [turnId, null]) {
+      await expect(fixture.driver.recoverSession!({
+        ...snapshot,
+        activeTurnId,
+      })).resolves.toEqual({
+        recovered: false,
+        reason:
+          "persisted Codex ACPX resultless recovery requires a completed terminal turn",
+      });
+    }
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    await session.close({ reason: "failed resultless recovery rejected" });
+  });
+
+  it("rejects a stale completed active turn before a later resultless failure", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-stale-resultless-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Complete without a semantic result." },
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await terminalEvents;
+    const snapshot = await session.snapshot();
+    snapshot.activeTurnId = turnId;
+    snapshot.terminalTurns?.push({
+      turnId: "turn-later-failed",
+      fingerprint: JSON.stringify({ status: "failed" }),
+    });
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason:
+        "persisted Codex ACPX resultless recovery requires a completed terminal turn",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    await session.close({ reason: "stale resultless recovery rejected" });
+  });
+
+  it("rejects an unimplemented replacement policy before reopening", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-policy-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    snapshot.providerRecoveryPolicy = "allow_replacement_after_resume_failure";
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "persisted Codex ACPX recovery policy is unsupported",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+    await session.close({ reason: "replacement recovery rejected" });
+  });
+
+  it("rejects oversized terminal history before reopening", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-bounded-recovery",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const snapshot = await session.snapshot();
+    snapshot.terminalTurns = Array.from({ length: 4_097 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      fingerprint: "terminal",
+    }));
+
+    await expect(fixture.driver.recoverSession!(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "persisted Codex ACPX terminal history exceeds its limit",
+    });
+    expect(fixture.readRecoveryWorkspace).not.toHaveBeenCalled();
+    expect(fixture.openHost).toHaveBeenCalledOnce();
+    await session.close({ reason: "bounded recovery rejected" });
+  });
 });
 
 function driverFixture(
@@ -1307,47 +2047,55 @@ function driverFixture(
     maxBufferedEvents?: number;
     terminalEventReserve?: number;
     openHost?: NonNullable<CodexAcpxDriverDependencies["openHost"]>;
+    readRecoveryWorkspace?: NonNullable<
+      CodexAcpxDriverDependencies["readRecoveryWorkspace"]
+    >;
   } = {},
 ): {
   driver: CodexAcpxDriver;
   host: ReturnType<typeof fakeHost>;
   openHost: ReturnType<typeof vi.fn>;
+  readRecoveryWorkspace: ReturnType<typeof vi.fn>;
   hostOptions: OpenAcpxRuntimeHostOptions | null;
   finishTurn(result: Awaited<AcpxRuntimeTurn["result"]>): void;
 } {
-  const result = deferred<Awaited<AcpxRuntimeTurn["result"]>>();
-  const turn: AcpxRuntimeTurn = {
-    requestId: "provider-turn-1",
-    promptStarted: Promise.resolve(),
-    events: {
-      async *[Symbol.asyncIterator]() {
-        yield* fixtureOptions.runtimeEvents ?? [
-          {
-            type: "text_delta" as const,
-            text: "Task complete.",
-            stream: "output" as const,
-          },
-          {
-            type: "tool_call" as const,
-            toolCallId: "provider-tool-1",
-            title: "Read",
-            kind: "read" as const,
-            status: "pending",
-            tag: "tool_call",
-            text: "Reading",
-          },
-        ];
-        if (fixtureOptions.runtimeEventFailure) {
-          await fixtureOptions.runtimeEventFailure;
-        }
+  let turnCount = 0;
+  let activeResult: ReturnType<typeof deferred<Awaited<AcpxRuntimeTurn["result"]>>> | null = null;
+  const createTurn = (): AcpxRuntimeTurn => {
+    activeResult = deferred<Awaited<AcpxRuntimeTurn["result"]>>();
+    return {
+      requestId: `provider-turn-${++turnCount}`,
+      promptStarted: Promise.resolve(),
+      events: {
+        async *[Symbol.asyncIterator]() {
+          yield* fixtureOptions.runtimeEvents ?? [
+            {
+              type: "text_delta" as const,
+              text: "Task complete.",
+              stream: "output" as const,
+            },
+            {
+              type: "tool_call" as const,
+              toolCallId: "provider-tool-1",
+              title: "Read",
+              kind: "read" as const,
+              status: "pending",
+              tag: "tool_call",
+              text: "Reading",
+            },
+          ];
+          if (fixtureOptions.runtimeEventFailure) {
+            await fixtureOptions.runtimeEventFailure;
+          }
+        },
       },
-    },
-    result: result.promise,
-    cancel: vi.fn(async () => undefined),
-    closeStream: vi.fn(async () => undefined),
+      result: activeResult.promise,
+      cancel: vi.fn(async () => undefined),
+      closeStream: vi.fn(async () => undefined),
+    };
   };
-  const host = fakeHost(turn, () =>
-    result.resolve({ status: "cancelled", stopReason: "session_closed" }),
+  const host = fakeHost(createTurn, () =>
+    activeResult?.resolve({ status: "cancelled", stopReason: "session_closed" }),
   );
   let hostOptions: OpenAcpxRuntimeHostOptions | null = null;
   const openHost = vi.fn(
@@ -1357,8 +2105,13 @@ function driverFixture(
         return host;
       }),
   );
+  const readRecoveryWorkspace = vi.fn(
+    fixtureOptions.readRecoveryWorkspace ??
+      (async () => recoveryWorkspaceLease()),
+  );
   const dependencies: CodexAcpxDriverDependencies = {
     openHost,
+    readRecoveryWorkspace,
     closeSettlementTimeoutMs: fixtureOptions.closeSettlementTimeoutMs,
     maxBufferedEvents: fixtureOptions.maxBufferedEvents,
     terminalEventReserve: fixtureOptions.terminalEventReserve,
@@ -1383,14 +2136,31 @@ function driverFixture(
     driver,
     host,
     openHost,
+    readRecoveryWorkspace,
     get hostOptions() {
       return hostOptions;
     },
-    finishTurn: result.resolve,
+    finishTurn(result) {
+      if (!activeResult) throw new Error("No active fixture turn");
+      activeResult.resolve(result);
+    },
   };
 }
 
-function fakeHost(turn: AcpxRuntimeTurn, onClose: () => void) {
+function recoveryWorkspaceLease(
+  path = "/workspace",
+): AcpxRecoveryWorkspaceLease & {
+  assertHeld: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+} {
+  return {
+    path,
+    assertHeld: vi.fn(),
+    close: vi.fn(async () => undefined),
+  };
+}
+
+function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
   return {
     identity: () => ({
       schema: "paperclip.runner.acpx-identity.v1" as const,
@@ -1422,7 +2192,7 @@ function fakeHost(turn: AcpxRuntimeTurn, onClose: () => void) {
         availableModelIds: ["gpt-5.6-sol"],
       },
     })),
-    startTurn: vi.fn(() => turn),
+    startTurn: vi.fn(createTurn),
     interruptActiveTurn: vi.fn(async () => undefined),
     close: vi.fn(async () => {
       onClose();

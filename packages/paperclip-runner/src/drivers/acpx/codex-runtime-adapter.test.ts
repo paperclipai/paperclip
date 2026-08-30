@@ -223,6 +223,37 @@ describe("Codex ACPX runtime adapter", () => {
     },
   );
 
+  it("revalidates a recovered workspace immediately before provider spawn", async () => {
+    const runtime = fakeRuntime();
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const command = fakeCommand();
+    const workspaceSubstituted = new Error("recovered workspace substituted");
+    const assertWorkspaceHeld = vi.fn(() => {
+      throw workspaceSubstituted;
+    });
+    await openCodexAcpxRuntime(
+      { ...openOptions(command), assertWorkspaceHeld },
+      {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        createRuntime: (options) => {
+          runtimeOptions = options;
+          return runtime;
+        },
+      },
+    );
+
+    expect(() =>
+      runtimeOptions?.spawnAgent?.({
+        command: "/attacker/replacement",
+        args: ["--stdio"],
+        options: {},
+      }),
+    ).toThrow(workspaceSubstituted);
+    expect(assertWorkspaceHeld).toHaveBeenCalledOnce();
+    expect(command.spawn).not.toHaveBeenCalled();
+  });
+
   it("maps status, model selection, and state-preserving close", async () => {
     const runtime = fakeRuntime();
     vi.mocked(runtime.getStatus!).mockResolvedValue({

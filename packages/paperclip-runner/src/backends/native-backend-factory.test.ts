@@ -134,7 +134,7 @@ describe("native backend factory", () => {
       name: "acpx_runtime",
       version: "0.13.1",
       capabilities: {
-        resume: false,
+        resume: true,
         interruption: true,
         dynamicTools: true,
       },

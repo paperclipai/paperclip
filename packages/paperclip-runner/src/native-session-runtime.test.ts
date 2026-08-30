@@ -151,6 +151,20 @@ function controlEvent(
   };
 }
 
+function canonicalTestJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalTestJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
 function runnerEvent(
   sourceSeq: number,
   eventType: PrpEvent["eventType"],
@@ -4888,7 +4902,8 @@ describe("executeNativeSession recovery", () => {
     expect(completeRun).toHaveBeenCalledOnce();
   });
 
-  it("recovers a completed checkpoint and appends only a missing control terminal fact", async () => {
+  it("keeps a reconstructed semantic result on its matched terminal turn", async () => {
+    const semanticFingerprint = canonicalTestJson(result);
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
       sessionId: "driver-recovery",
@@ -4897,14 +4912,27 @@ describe("executeNativeSession recovery", () => {
       cursor: "4",
       semanticResult: result,
       terminal,
-      activeTurnId: "turn-recovery",
+      activeTurnId: null,
       terminalTurns: [
-        { turnId: "turn-recovery", fingerprint: "terminal-fingerprint" },
+        {
+          turnId: "turn-with-result",
+          fingerprint: JSON.stringify({
+            status: "completed",
+            semanticResult: semanticFingerprint,
+          }),
+        },
+        {
+          turnId: "turn-later-failed",
+          fingerprint: JSON.stringify({ status: "failed" }),
+        },
       ],
       pendingRuntimeRequests: [],
       lineage: [],
     };
-    const events = [controlEvent(1, "run.result.accepted", { result })];
+    const events = [{
+      ...controlEvent(1, "run.result.accepted", { result }),
+      turnId: "turn-with-result",
+    }];
     const checkpoints: PersistedNativeSession[] = [];
     const completeRun = vi.fn(async () => undefined);
     const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));
@@ -4997,7 +5025,15 @@ describe("executeNativeSession recovery", () => {
       "run.terminal",
     ]);
     expect(events.map((event) => event.sourceSeq)).toEqual([1, 2]);
+    expect(events.map((event) => event.turnId)).toEqual([
+      "turn-with-result",
+      "turn-with-result",
+    ]);
     expect(completeRun).toHaveBeenCalledOnce();
+    expect(completeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ turnId: "turn-with-result" }),
+      expect.anything(),
+    );
     expect(completed).toMatchObject({
       nativeEventCount: 1,
       highestContiguousSourceSeq: 2,

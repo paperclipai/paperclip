@@ -1540,7 +1540,9 @@ export async function executeNativeSession(
         ? {
             result: completionSnapshot.semanticResult,
             terminal: completionSnapshot.terminal,
-            turnId: completionSnapshot.activeTurnId ?? null,
+            turnId:
+              completionSnapshot.activeTurnId ??
+              completedSemanticResultTurnId(completionSnapshot),
           }
         : null;
     if (!completed) {
@@ -1946,4 +1948,31 @@ function canonicalJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
+}
+
+function completedSemanticResultTurnId(
+  snapshot: PersistedNativeSession,
+): string | null {
+  if (snapshot.semanticResult === undefined || snapshot.semanticResult === null) {
+    return null;
+  }
+  const semanticFingerprint = canonicalJson(snapshot.semanticResult);
+  for (const terminal of [...(snapshot.terminalTurns ?? [])].reverse()) {
+    try {
+      const value: unknown = JSON.parse(terminal.fingerprint);
+      if (
+        typeof value === "object"
+        && value !== null
+        && !Array.isArray(value)
+        && (value as Record<string, unknown>).status === "completed"
+        && (value as Record<string, unknown>).semanticResult
+          === semanticFingerprint
+      ) {
+        return terminal.turnId;
+      }
+    } catch {
+      // Legacy terminal fingerprints cannot prove semantic-result ownership.
+    }
+  }
+  return null;
 }

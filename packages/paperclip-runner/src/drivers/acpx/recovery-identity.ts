@@ -51,7 +51,7 @@ export async function createAcpxRecoveryBinding(input: {
   }
   const workspacePath = await resolveWorkspace(input.workingDirectory);
   const workspaceDigest = digest(workspacePath);
-  const runtimeRoot = await acpxRuntimeRoot(
+  const runtimeRoot = await resolveAcpxRuntimeRoot(
     input.runtimeDirectory,
     input.normalizedSessionId,
   );
@@ -235,7 +235,7 @@ async function resolveWorkspace(value: string): Promise<string> {
   return workspacePath;
 }
 
-async function acpxRuntimeRoot(
+export async function resolveAcpxRuntimeRoot(
   runtimeDirectory: string,
   sessionId: string,
 ): Promise<string> {

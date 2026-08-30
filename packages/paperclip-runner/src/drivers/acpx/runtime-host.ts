@@ -84,6 +84,8 @@ export interface AcpxRuntimePortOpenOptions {
   permissionPolicy: ReturnType<typeof acpxRuntimePermissionPolicy>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   systemInstructions: string;
+  /** Revalidate a pinned recovery workspace at the provider spawn boundary. */
+  assertWorkspaceHeld?: () => void;
   /** Abort provider admission and clean any runtime that resolves too late. */
   signal?: AbortSignal;
   mcpServers: readonly AcpxMcpServerBinding[];
@@ -134,6 +136,8 @@ export interface OpenAcpxRuntimeHostOptions {
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
   expectedIdentity?: AcpxExpectedSessionIdentity;
+  /** Revalidate a pinned recovery workspace through provider admission. */
+  assertWorkspaceHeld?: () => void;
   /** Abort admission without admitting resources that resolve afterward. */
   signal?: AbortSignal;
   semanticTools?: AcpxSemanticToolSession;
@@ -222,6 +226,7 @@ export class AcpxRuntimeHost {
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
+    options.assertWorkspaceHeld?.();
     if (
       options.agent !== "codex" &&
       options.managedCodexCredentialSourcePath !== undefined
@@ -317,8 +322,9 @@ export class AcpxRuntimeHost {
         : null;
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () =>
-          dependencies.openRuntime({
+        acquire: () => {
+          options.assertWorkspaceHeld?.();
+          return dependencies.openRuntime({
             command: command!,
             profile,
             cwd: binding.workspacePath,
@@ -330,6 +336,9 @@ export class AcpxRuntimeHost {
             ),
             launchEnvironment: sandbox.launchEnvironment,
             systemInstructions: boundedInstructions(options.systemInstructions),
+            ...(options.assertWorkspaceHeld === undefined
+              ? {}
+              : { assertWorkspaceHeld: options.assertWorkspaceHeld }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             mcpServers: toolBridge
               ? [
@@ -342,7 +351,8 @@ export class AcpxRuntimeHost {
                 ]
               : [],
             retainFailedAdmissionCleanup,
-          }),
+          });
+        },
         resource: "runtime",
         releaseLate: (lateRuntime) =>
           lateRuntime.close({

@@ -1,11 +1,20 @@
 import { randomBytes } from "node:crypto";
-import { constants, type Stats } from "node:fs";
+import {
+  constants,
+  fstatSync,
+  lstatSync,
+  realpathSync,
+  type BigIntStats,
+  type Stats,
+} from "node:fs";
 import {
   lstat,
   mkdir,
   open,
+  readFile,
   realpath,
   rename,
+  stat,
   unlink,
   type FileHandle,
 } from "node:fs/promises";
@@ -20,11 +29,15 @@ import {
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
-import type { AcpxRecoveryBinding } from "./recovery-identity.js";
+import {
+  resolveAcpxRuntimeRoot,
+  type AcpxRecoveryBinding,
+} from "./recovery-identity.js";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_SANDBOX_ENVIRONMENT_BYTES = 512 * 1024;
+const MAX_WORKSPACE_RECORD_BYTES = 64 * 1024;
 
 export interface AcpxRuntimeSandbox {
   root: string;
@@ -37,6 +50,273 @@ export interface AcpxRuntimeSandbox {
   workspaceRecordPath: string;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   persistedEnvironment: Readonly<NodeJS.ProcessEnv>;
+}
+
+/** A recovered workspace pinned until the provider process is admitted. */
+export interface AcpxRecoveryWorkspaceLease {
+  readonly path: string;
+  assertHeld(): void;
+  close(): Promise<void>;
+}
+
+export interface AcpxRecoveryWorkspaceReadDependencies {
+  /** Internal seam for racing a parent-directory replacement in tests. */
+  afterRuntimeRootPinned?: () => Promise<void>;
+}
+
+/** Read the private workspace binding used to reopen one exact ACPX session. */
+export async function readAcpxRecoveryWorkspace(
+  input: {
+    runtimeDirectory: string;
+    normalizedSessionId: string;
+  },
+  dependencies: AcpxRecoveryWorkspaceReadDependencies = {},
+): Promise<AcpxRecoveryWorkspaceLease> {
+  const runtimeRoot = await resolveAcpxRuntimeRoot(
+    input.runtimeDirectory,
+    input.normalizedSessionId,
+  );
+  const namespace = dirname(runtimeRoot);
+  let physicalNamespace: string;
+  let physicalRuntimeRoot: string;
+  try {
+    const [namespaceMetadata, rootMetadata] = await Promise.all([
+      lstat(namespace),
+      lstat(runtimeRoot),
+    ]);
+    if (
+      namespaceMetadata.isSymbolicLink() ||
+      !namespaceMetadata.isDirectory() ||
+      rootMetadata.isSymbolicLink() ||
+      !rootMetadata.isDirectory()
+    ) {
+      throw new Error("invalid recovery directory");
+    }
+    [physicalNamespace, physicalRuntimeRoot] = await Promise.all([
+      realpath(namespace),
+      realpath(runtimeRoot),
+    ]);
+  } catch {
+    throw new Error("ACPX recovery runtime directory is unavailable");
+  }
+  if (!isInside(physicalNamespace, physicalRuntimeRoot)) {
+    throw new Error("ACPX recovery runtime directory escaped its namespace");
+  }
+
+  let namespaceHandle: FileHandle | null = null;
+  let rootHandle: FileHandle | null = null;
+  let workspaceHandle: FileHandle | null = null;
+  try {
+    namespaceHandle = await openPinnedDirectory(physicalNamespace);
+    rootHandle = await openPinnedDirectory(physicalRuntimeRoot);
+    assertPinnedDirectory(
+      physicalNamespace,
+      physicalNamespace,
+      namespaceHandle,
+      "ACPX recovery namespace changed during admission",
+    );
+    assertPinnedDirectory(
+      physicalRuntimeRoot,
+      physicalRuntimeRoot,
+      rootHandle,
+      "ACPX recovery runtime directory changed during admission",
+    );
+    await dependencies.afterRuntimeRootPinned?.();
+
+    const recordPath = join(physicalRuntimeRoot, "workspace");
+    let recordHandle: FileHandle;
+    try {
+      assertPinnedDirectory(
+        physicalRuntimeRoot,
+        physicalRuntimeRoot,
+        rootHandle,
+        "ACPX recovery runtime directory changed before record open",
+      );
+      recordHandle = await open(
+        recordPath,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+    } catch {
+      throw new Error("ACPX recovery workspace record is unavailable");
+    }
+    try {
+      assertPinnedDirectory(
+        physicalRuntimeRoot,
+        physicalRuntimeRoot,
+        rootHandle,
+        "ACPX recovery runtime directory changed during record open",
+      );
+      const before = await recordHandle.stat({ bigint: true });
+      if (
+        !before.isFile() ||
+        before.nlink !== 1n ||
+        before.size < 2n ||
+        before.size > BigInt(MAX_WORKSPACE_RECORD_BYTES)
+      ) {
+        throw new Error("ACPX recovery workspace record is invalid");
+      }
+      assertPinnedFile(recordPath, before);
+      const bytes = await readFile(recordHandle);
+      const after = await recordHandle.stat({ bigint: true });
+      if (
+        bytes.length !== Number(before.size) ||
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs ||
+        before.ctimeNs !== after.ctimeNs
+      ) {
+        throw new Error("ACPX recovery workspace record changed while read");
+      }
+      assertPinnedFile(recordPath, after);
+      assertPinnedDirectory(
+        physicalRuntimeRoot,
+        physicalRuntimeRoot,
+        rootHandle,
+        "ACPX recovery runtime directory changed while record was read",
+      );
+
+      const workspace = bytes.toString("utf8").replace(/\n$/, "");
+      if (!workspace || /[\u0000\r\n]/.test(workspace)) {
+        throw new Error("ACPX recovery workspace record is invalid");
+      }
+      let physicalWorkspace: string;
+      try {
+        physicalWorkspace = await realpath(workspace);
+        workspaceHandle = await openPinnedDirectory(physicalWorkspace);
+      } catch {
+        throw new Error("ACPX recovery workspace is unavailable");
+      }
+      if (physicalWorkspace === dirname(physicalWorkspace)) {
+        throw new Error("ACPX recovery workspace is not a non-root directory");
+      }
+      if (!namespaceHandle || !rootHandle || !workspaceHandle) {
+        throw new Error("ACPX recovery workspace handles are unavailable");
+      }
+      const pinnedNamespace = namespaceHandle;
+      const pinnedRoot = rootHandle;
+      const pinnedWorkspace = workspaceHandle;
+      let closed = false;
+      const lease: AcpxRecoveryWorkspaceLease = {
+        path: physicalWorkspace,
+        assertHeld() {
+          if (closed) throw new Error("ACPX recovery workspace lease is closed");
+          assertPinnedDirectory(
+            physicalNamespace,
+            physicalNamespace,
+            pinnedNamespace,
+            "ACPX recovery namespace changed before provider admission",
+          );
+          assertPinnedDirectory(
+            physicalRuntimeRoot,
+            physicalRuntimeRoot,
+            pinnedRoot,
+            "ACPX recovery runtime directory changed before provider admission",
+          );
+          assertPinnedDirectory(
+            physicalWorkspace,
+            physicalWorkspace,
+            pinnedWorkspace,
+            "ACPX recovery workspace changed before provider admission",
+          );
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          await closeRecoveryHandles([
+            pinnedWorkspace,
+            pinnedRoot,
+            pinnedNamespace,
+          ]);
+        },
+      };
+      lease.assertHeld();
+      namespaceHandle = null;
+      rootHandle = null;
+      workspaceHandle = null;
+      return lease;
+    } finally {
+      await recordHandle.close();
+    }
+  } finally {
+    await closeRecoveryHandles([
+      workspaceHandle,
+      rootHandle,
+      namespaceHandle,
+    ]);
+  }
+}
+
+async function openPinnedDirectory(path: string): Promise<FileHandle> {
+  return await open(
+    path,
+    constants.O_RDONLY |
+      (constants.O_DIRECTORY ?? 0) |
+      (constants.O_NOFOLLOW ?? 0),
+  );
+}
+
+function assertPinnedDirectory(
+  path: string,
+  expectedPhysicalPath: string,
+  handle: FileHandle,
+  message: string,
+): void {
+  try {
+    const descriptor = fstatSync(handle.fd, { bigint: true });
+    const entry = lstatSync(path, { bigint: true });
+    if (
+      !descriptor.isDirectory() ||
+      entry.isSymbolicLink() ||
+      !entry.isDirectory() ||
+      !sameBigIntFile(descriptor, entry) ||
+      realpathSync(path) !== expectedPhysicalPath
+    ) {
+      throw new Error(message);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === message) throw error;
+    throw new Error(message);
+  }
+}
+
+function assertPinnedFile(path: string, descriptor: BigIntStats): void {
+  let entry: BigIntStats;
+  try {
+    entry = lstatSync(path, { bigint: true });
+  } catch {
+    throw new Error("ACPX recovery workspace record changed while read");
+  }
+  if (
+    entry.isSymbolicLink() ||
+    !entry.isFile() ||
+    !sameBigIntFile(descriptor, entry)
+  ) {
+    throw new Error("ACPX recovery workspace record changed while read");
+  }
+}
+
+function sameBigIntFile(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function closeRecoveryHandles(
+  handles: readonly (FileHandle | null)[],
+): Promise<void> {
+  const results = await Promise.allSettled(
+    handles
+      .filter((handle): handle is FileHandle => handle !== null)
+      .map((handle) => handle.close()),
+  );
+  const errors = results
+    .filter(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected",
+    )
+    .map((result) => result.reason);
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Failed to close ACPX recovery handles");
+  }
 }
 
 /** Prepare the private filesystem and environment visible to an ACPX agent. */

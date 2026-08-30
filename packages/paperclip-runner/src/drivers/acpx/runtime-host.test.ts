@@ -172,6 +172,34 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
+  it("revalidates a pinned workspace at the runtime-open boundary", async () => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const workspaceSubstituted = new Error("recovered workspace substituted");
+    let assertions = 0;
+    const assertWorkspaceHeld = vi.fn(() => {
+      assertions += 1;
+      if (assertions === 2) throw workspaceSubstituted;
+    });
+
+    await expect(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "approve-reads",
+          assertWorkspaceHeld,
+        },
+        fixture.dependencies({ openRuntime }),
+      ),
+    ).rejects.toBe(workspaceSubstituted);
+
+    expect(assertWorkspaceHeld).toHaveBeenCalledTimes(2);
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+
   it("owns an authenticated semantic bridge without persisting its secret", async () => {
     const fixture = await hostFixture();
     const handler = vi.fn(async ({ tool }) => ({ tool, ok: true }));
