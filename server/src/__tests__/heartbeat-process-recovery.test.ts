@@ -6780,6 +6780,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toEqual([]);
   });
 
+  it("does not repost the self-check deferral comment on a later sweep of the same still-unassigned blocker", async () => {
+    // Regression for a defect a reviewer found in the self-check guard above:
+    // a deferred blocker stays unassigned, so it stays a candidate on every
+    // later sweep, and the guard must not post the same "needs independent
+    // owner" comment again each time — only once, until someone assigns it.
+    const companyId = randomUUID();
+    const creatorAndReviewedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAndReviewedAssigneeAgentId,
+        companyId,
+        name: "AuthorAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Independent check of my own ADR",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAndReviewedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "ADR under review",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: creatorAndReviewedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAndReviewedAssigneeAgentId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Three sweeps in a row over the same still-unassigned blocker, exactly
+    // as a real heartbeat loop would do while nobody has claimed it yet.
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const thirdResult = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(thirdResult.issueIds).not.toContain(blockerIssueId);
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.assigneeAgentId).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockerIssueId));
+    const selfCheckComments = comments.filter((c) => (c.body ?? "").includes("Orphan Blocker Needs Independent Owner"));
+    // Exactly one deferral comment across three sweeps, not three.
+    expect(selfCheckComments).toHaveLength(1);
+  });
+
   it("keeps assigning an unassigned blocker back to its creator when doing so does not create a self-check", async () => {
     const companyId = randomUUID();
     const creatorAgentId = randomUUID();

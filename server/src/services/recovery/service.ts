@@ -1235,18 +1235,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         (blocked) => blocked.assigneeAgentId === creatorAgent.id,
       );
       if (wouldCreateSelfCheck) {
-        await issuesSvc.addComment(
-          candidate.id,
-          [
-            "## Orphan Blocker Needs Independent Owner",
-            "",
-            `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
-            "",
-            `- Did **not** assign it back to the agent that created it (${creatorAgent.id}): that agent is already the assignee of an issue this one blocks, so auto-assigning would turn a required independent check into a self-check.`,
-            "- Next action: a Board member or independent reviewer must assign this to someone other than the creator.",
-          ].join("\n"),
-          {},
-        );
+        // This candidate stays unassigned after this branch runs, so every
+        // later sweep sees it again. Without a dedup check the deferral
+        // comment below would be reposted on every sweep until someone
+        // assigns the issue. Mirror the marker-based dedup already used for
+        // stranded-recovery escalation comments (see
+        // shouldPostEscalationComment above): look for the marker in any
+        // prior system comment on this issue before posting another.
+        const selfCheckCommentMarker = "## Orphan Blocker Needs Independent Owner";
+        const hasSelfCheckComment = await db
+          .select({ id: issueComments.id, body: issueComments.body })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, candidate.id),
+              eq(issueComments.authorType, "system"),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt))
+          .limit(50)
+          .then((rows) => rows.some((row) => (row.body ?? "").includes(selfCheckCommentMarker)));
+
+        if (!hasSelfCheckComment) {
+          await issuesSvc.addComment(
+            candidate.id,
+            [
+              selfCheckCommentMarker,
+              "",
+              `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
+              "",
+              `- Did **not** assign it back to the agent that created it (${creatorAgent.id}): that agent is already the assignee of an issue this one blocks, so auto-assigning would turn a required independent check into a self-check.`,
+              "- Next action: a Board member or independent reviewer must assign this to someone other than the creator.",
+            ].join("\n"),
+            {},
+          );
+        }
         skipped += 1;
         continue;
       }
