@@ -258,11 +258,18 @@ impl AcpxProviderSession {
                 "ACPX provider session already has an active turn",
             ));
         }
-        if let Err(error) = self.state.validate_new_turn_identity(turn_id) {
+        let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
+        let identity_validation = if rotate_turn_identity_ledger {
+            self.state
+                .validate_new_turn_identity_for_provider_restart(turn_id)
+        } else {
+            self.state.validate_new_turn_identity(turn_id)
+        };
+        if let Err(error) = identity_validation {
             // Reusing a settled identity would let a delayed event from the
             // old turn alias the new receipt epoch. A full sidecar restart is
-            // the only safe way to obtain fresh turn authority once the exact
-            // identity ledger is reused or exhausted.
+            // required before an exhausted ledger can rotate, while an exact
+            // identity reuse remains forbidden within the current ledger.
             return Err(self.fail_closed(error));
         }
         // The MCP endpoint is session-lifetime and cannot authenticate which
@@ -272,6 +279,14 @@ impl AcpxProviderSession {
         let provider_restarted = self.state.has_settled_turns();
         if provider_restarted {
             if let Err(error) = self.restart_idle_provider() {
+                return Err(self.fail_closed(error));
+            }
+        }
+        if rotate_turn_identity_ledger {
+            if let Err(error) = self
+                .state
+                .rotate_settled_turn_identities_after_provider_restart()
+            {
                 return Err(self.fail_closed(error));
             }
         }
@@ -616,7 +631,7 @@ fn validate_reserved_terminal_result(
             "ACPX reserved semantic result has no authorized pending invocation",
         )
     })?;
-    if pending.operation_id != result.operation_id || pending.input != result.result {
+    if pending.operation_id != result.operation_id || pending.input_digest != result.result_digest {
         return Err(LocalRunnerError::invalid(
             "ACPX reserved semantic result does not match its authorized invocation",
         ));

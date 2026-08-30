@@ -458,6 +458,65 @@ fn reserved_terminal_results_require_an_authorized_correlated_invocation() {
 }
 
 #[test]
+fn correlates_reserved_results_by_raw_digest_without_exposing_sensitive_values() {
+    let mut session =
+        AcpxProviderSession::start(&config("turns-sensitive-reserved-result-terminal")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap()
+        .unwrap()
+        .is_empty());
+    let result_events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &result_events[0],
+        AcpxProviderStateEvent::SemanticResult(result)
+            if result.result["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("REDACTED")
+                    && !summary.contains("matching-sensitive-value"))
+    ));
+
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1"
+    ));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn rejects_sensitive_reserved_results_that_only_match_after_redaction() {
+    let mut session = AcpxProviderSession::start(&config(
+        "turns-mismatched-sensitive-reserved-result-terminal",
+    ))
+    .unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap()
+        .unwrap()
+        .is_empty());
+
+    let error = session
+        .poll_event(Duration::from_secs(1))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("does not match its authorized invocation"),
+        "{error}"
+    );
+    assert!(!error.contains("matching-sensitive-value"), "{error}");
+    assert!(!error.contains("different-sensitive-value"), "{error}");
+    assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
 fn fails_closed_before_returning_an_uncorrelated_reserved_result() {
     let mut session =
         AcpxProviderSession::start(&config("turns-uncorrelated-reserved-result-terminal")).unwrap();

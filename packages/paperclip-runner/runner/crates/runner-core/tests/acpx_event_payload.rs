@@ -103,6 +103,7 @@ fn admits_sidecar_replacement_scalars_in_tool_fields() {
             kind: AcpxRuntimeEventKind::ToolCall,
             tool_operation: Some("edit"),
             payload,
+            ..
         } if payload["toolCallId"].as_str() == Some("tool-\u{fffd}")
             && payload["kind"].as_str() == Some(kind.as_str())
             && payload["status"].as_str() == Some("pend\u{fffd}ing")
@@ -135,6 +136,7 @@ fn retains_full_kind_classification_from_a_bounded_sidecar_frame() {
             kind: AcpxRuntimeEventKind::ToolCall,
             tool_operation: Some("edit"),
             payload,
+            ..
         } if payload["type"] == "tool_call"
             && payload["kind"].as_str().is_some_and(|value| value.chars().count() == 4_000)
     ));
@@ -186,7 +188,7 @@ fn decodes_tool_and_permission_requests_after_scope_validation() {
     .unwrap();
     assert!(matches!(
         tool,
-        AcpxEventPayload::ToolCalled { call_id, operation_id, input }
+        AcpxEventPayload::ToolCalled { call_id, operation_id, input, .. }
             if call_id == "call-1"
                 && operation_id == "get_issue"
                 && input["apiToken"] == "[REDACTED]"

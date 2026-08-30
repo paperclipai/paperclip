@@ -95,6 +95,7 @@ fn preserves_tool_operation_authority_across_payload_sanitization() {
             kind,
             tool_operation,
             payload,
+            ..
         } = decoded
         else {
             panic!("runtime event must decode as runtime payload");

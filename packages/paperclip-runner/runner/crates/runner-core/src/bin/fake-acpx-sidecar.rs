@@ -97,6 +97,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-reserved-result-terminal"
             | "turns-reserved-yielded-terminal"
             | "turns-reserved-block-terminal"
+            | "turns-sensitive-reserved-result-terminal"
+            | "turns-mismatched-sensitive-reserved-result-terminal"
             | "turns-invalid-reserved-block-terminal"
             | "turns-uncorrelated-reserved-result-terminal"
             | "turns-mismatched-reserved-result-terminal"
@@ -257,6 +259,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "turns-reserved-result-terminal"
                             | "turns-reserved-yielded-terminal"
                             | "turns-reserved-block-terminal"
+                            | "turns-sensitive-reserved-result-terminal"
+                            | "turns-mismatched-sensitive-reserved-result-terminal"
                             | "turns-invalid-reserved-block-terminal"
                             | "turns-uncorrelated-reserved-result-terminal"
                             | "turns-mismatched-reserved-result-terminal"
@@ -327,7 +331,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             json!({
                                 "schema":"paperclip.run_result.v1",
                                 "reportedWorkDisposition":"done",
-                                "summary":"Reserved completion accepted.",
+                                "summary":if matches!(
+                                    mode,
+                                    "turns-sensitive-reserved-result-terminal"
+                                        | "turns-mismatched-sensitive-reserved-result-terminal"
+                                ) {
+                                    "token=matching-sensitive-value"
+                                } else {
+                                    "Reserved completion accepted."
+                                },
                                 "completionClaim":{
                                     "contractRevision":"acpx-provider-turns-v1",
                                     "objectiveSatisfied":true,
@@ -359,6 +371,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let semantic_result = if mode == "turns-mismatched-reserved-result-terminal" {
                         let mut changed = result.clone();
                         changed["summary"] = json!("A different terminal result.");
+                        changed
+                    } else if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
+                        let mut changed = result.clone();
+                        changed["summary"] = json!("token=different-sensitive-value");
                         changed
                     } else {
                         result

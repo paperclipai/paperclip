@@ -9,6 +9,7 @@ use crate::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
 };
 use crate::local_runner::LocalRunnerError;
+use crate::provider_bridge::semantic_value_digest;
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_ID_CHARS: usize = 160;
@@ -41,6 +42,7 @@ pub enum AcpxEventPayload {
         kind: AcpxRuntimeEventKind,
         tool_operation: Option<&'static str>,
         payload: Value,
+        semantic_result_digest: Option<String>,
     },
     PermissionRequested {
         request_id: String,
@@ -57,6 +59,7 @@ pub enum AcpxEventPayload {
         call_id: String,
         operation_id: String,
         input: Value,
+        input_digest: String,
     },
     TurnTerminal {
         status: AcpxTurnStatus,
@@ -123,6 +126,7 @@ pub fn decode_acpx_event(
             Ok(AcpxEventPayload::ToolCalled {
                 call_id: required_id(&event.payload, "callId", "tool call")?,
                 operation_id: required_id(&event.payload, "operationId", "tool operation")?,
+                input_digest: semantic_value_digest(&input),
                 input: sanitize_value(&input),
             })
         }
@@ -217,6 +221,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         .and_then(Value::as_str)
         .ok_or_else(|| LocalRunnerError::invalid("ACPX runtime event omitted its type"))?;
     let mut tool_operation = None;
+    let mut semantic_result_digest = None;
     let kind = match runtime_type {
         "text_delta" => {
             bounded_required_text(payload, "text", MAX_RUNTIME_TEXT_CHARS, "runtime text")?;
@@ -287,6 +292,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     "ACPX semantic result must contain an object result",
                 ));
             }
+            semantic_result_digest = payload.get("result").map(semantic_value_digest);
             AcpxRuntimeEventKind::SemanticResult
         }
         "provider_notice" => {
@@ -313,6 +319,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         kind,
         tool_operation,
         payload: sanitize_value(payload),
+        semantic_result_digest,
     })
 }
 

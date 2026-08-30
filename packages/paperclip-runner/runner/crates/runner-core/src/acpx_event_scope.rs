@@ -59,17 +59,46 @@ impl AcpxEventScope {
     }
 
     pub(crate) fn validate_new_turn_identity(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
+        self.validate_new_turn_identity_for_provider_restart(turn_id)?;
+        if self.settled_turn_ids.len() >= MAX_SETTLED_TURN_IDS {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope exhausted its settled turn identity capacity",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_new_turn_identity_for_provider_restart(
+        &self,
+        turn_id: &str,
+    ) -> Result<(), LocalRunnerError> {
         validate_scope_id(turn_id, "turn")?;
         if self.settled_turn_ids.contains(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX event scope reused a settled turn identity",
             ));
         }
-        if self.settled_turn_ids.len() >= MAX_SETTLED_TURN_IDS {
+        Ok(())
+    }
+
+    pub(crate) fn settled_turn_identity_capacity_reached(&self) -> bool {
+        self.settled_turn_ids.len() >= MAX_SETTLED_TURN_IDS
+    }
+
+    pub(crate) fn rotate_settled_turn_identities_after_provider_restart(
+        &mut self,
+    ) -> Result<(), LocalRunnerError> {
+        if self.active_turn_id.is_some() {
             return Err(LocalRunnerError::invalid(
-                "ACPX event scope exhausted its settled turn identity capacity",
+                "ACPX event scope cannot rotate settled turn identities while a turn is active",
             ));
         }
+        if !self.settled_turn_identity_capacity_reached() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope cannot rotate settled turn identities before capacity",
+            ));
+        }
+        self.settled_turn_ids.clear();
         Ok(())
     }
 
@@ -143,6 +172,34 @@ impl AcpxEventScope {
                 "ACPX sidecar event requires an active turn",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AcpxEventScope, MAX_SETTLED_TURN_IDS};
+
+    #[test]
+    fn rotates_a_full_ledger_only_after_revalidating_the_next_identity() {
+        let mut scope = AcpxEventScope::new("run-1").unwrap();
+        for index in 0..MAX_SETTLED_TURN_IDS {
+            let turn_id = format!("turn-{index}");
+            scope.bind_turn(&turn_id).unwrap();
+            scope.clear_turn(&turn_id).unwrap();
+        }
+
+        assert!(scope.settled_turn_identity_capacity_reached());
+        scope
+            .validate_new_turn_identity_for_provider_restart("turn-next")
+            .unwrap();
+        assert!(scope
+            .validate_new_turn_identity_for_provider_restart("turn-0")
+            .is_err());
+        scope
+            .rotate_settled_turn_identities_after_provider_restart()
+            .unwrap();
+        scope.bind_turn("turn-next").unwrap();
+        scope.clear_turn("turn-next").unwrap();
     }
 }
 
