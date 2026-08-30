@@ -144,6 +144,8 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
       if (!counts) {
         current.valid = false;
         current.inHunk = true;
+        current.oldHunkLinesRemaining = null;
+        current.newHunkLinesRemaining = null;
         continue;
       }
       current.inHunk = true;
@@ -155,6 +157,8 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
       } else if (line.startsWith("+")) {
         if (current.newHunkLinesRemaining === null || current.newHunkLinesRemaining === 0) {
           current.valid = false;
+          current.oldHunkLinesRemaining = null;
+          current.newHunkLinesRemaining = null;
           continue;
         }
         current.additions += 1;
@@ -162,6 +166,8 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
       } else if (line.startsWith("-")) {
         if (current.oldHunkLinesRemaining === null || current.oldHunkLinesRemaining === 0) {
           current.valid = false;
+          current.oldHunkLinesRemaining = null;
+          current.newHunkLinesRemaining = null;
           continue;
         }
         current.deletions += 1;
@@ -172,15 +178,26 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
           current.newHunkLinesRemaining === null || current.newHunkLinesRemaining === 0
         ) {
           current.valid = false;
+          current.oldHunkLinesRemaining = null;
+          current.newHunkLinesRemaining = null;
           continue;
         }
         current.oldHunkLinesRemaining -= 1;
         current.newHunkLinesRemaining -= 1;
       } else if (line.startsWith("@@")) {
         current.valid = false;
+        current.oldHunkLinesRemaining = null;
+        current.newHunkLinesRemaining = null;
+        continue;
+      } else if (!hunkComplete) {
+        current.valid = false;
+        current.oldHunkLinesRemaining = null;
+        current.newHunkLinesRemaining = null;
         continue;
       } else if (hunkComplete && line.startsWith("diff --git ")) {
         current.valid = false;
+        current.oldHunkLinesRemaining = null;
+        current.newHunkLinesRemaining = null;
         continue;
       }
     }
