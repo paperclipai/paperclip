@@ -1216,6 +1216,38 @@ describe("CapabilityMockControlPlaneAdapter", () => {
         },
       }),
     ]);
+
+    await completedBlockerAdapter.openFixtureRun({
+      ...OPEN,
+      identity: {
+        ...OPEN.identity,
+        runId: "run-completed-blocker-requester",
+        sessionId: "session-completed-blocker-requester",
+        agentId: "actor-2",
+        issueId: "task-2",
+      },
+    });
+    await completedBlockerAdapter.appendEvent({
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "fixture-source:terminal:completed-blocker-requester",
+      sourceSeq: 1,
+      sourceInstanceId: "fixture-source",
+      sourceKind: "runner",
+      runId: "run-completed-blocker-requester",
+      normalizedSessionId: "session-completed-blocker-requester",
+      turnId: "turn-completed-blocker-requester",
+      eventType: "run.terminal",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-09T00:02:00.000Z",
+      payload: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL },
+    });
+    await expect(completedBlockerAdapter.completeRun({
+      result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+    })).resolves.toBeUndefined();
+    expect(completedBlockerAdapter.snapshot().tasks.find((task) => task.id === "task-2"))
+      .toMatchObject({ status: "done", checkoutRunId: null, executionRunId: null });
   });
 
   it("does not schedule approval recovery for an inactive requester", async () => {

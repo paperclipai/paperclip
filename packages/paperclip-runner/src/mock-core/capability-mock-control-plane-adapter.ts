@@ -1082,7 +1082,7 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
   ): void {
     if (
       completion.result.reportedWorkDisposition === "done" &&
-      this.#state.blockers.some((blocker) => blocker.taskId === task.id)
+      this.#hasUnresolvedBlockers(task.id)
     ) {
       throw new CapabilityMockControlPlaneError(
         "terminal_reconciliation_failed",
