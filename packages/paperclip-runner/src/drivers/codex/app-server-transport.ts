@@ -427,7 +427,6 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
         detached: this.#processGroup,
       },
     );
-    this.#onProcess?.(this.processInfo());
     this.#stdoutDecoder = new BoundedLineDecoder(
       this.#maxLineBytes,
       (line, bytes) => this.#onLine(line, bytes),
@@ -474,6 +473,7 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
         );
       }
     });
+    this.#onProcess?.(this.processInfo());
   }
 
   request(

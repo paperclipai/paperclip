@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { ChildProcess } from "node:child_process";
+import { describe, expect, it, vi } from "vitest";
 
 import { ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
 
@@ -31,6 +32,54 @@ describe("Codex app-server transport limits", () => {
     expect(new Date(info.startedAt).toISOString()).toBe(info.startedAt);
 
     await transport.close();
+  });
+
+  it("installs cleanup handlers before synchronously reporting process ownership", async () => {
+    const originalSpawn = ChildProcess.prototype.spawn;
+    let spawnedProcess: ChildProcess | undefined;
+    const spawnSpy = vi
+      .spyOn(ChildProcess.prototype, "spawn")
+      .mockImplementation(function (this: ChildProcess, ...args) {
+        spawnedProcess = this;
+        return originalSpawn.apply(this, args);
+      });
+    let transport: ProcessCodexAppServerTransport | undefined;
+    let observedInitialProcess = false;
+
+    try {
+      transport = nodeTransport("process.stdin.resume()", {
+        onProcess: (info) => {
+          if (info.exited) return;
+          observedInitialProcess = true;
+          expect(spawnedProcess?.pid).toBe(info.pid);
+          expect(spawnedProcess?.listenerCount("error")).toBeGreaterThan(0);
+          expect(spawnedProcess?.listenerCount("exit")).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stdout?.listenerCount("data"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stdout?.listenerCount("end"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stderr?.listenerCount("data"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stdin?.listenerCount("error"),
+          ).toBeGreaterThan(0);
+          spawnedProcess?.emit(
+            "error",
+            new Error("synchronous process callback cleanup"),
+          );
+        },
+      });
+      expect(observedInitialProcess).toBe(true);
+      await expect(
+        transport.request("after-callback-cleanup", {}),
+      ).rejects.toThrow("codex app-server transport is closed");
+    } finally {
+      spawnSpy.mockRestore();
+      await transport?.close();
+    }
   });
 
   it("rejects an oversized line before buffering the complete hostile payload", async () => {
