@@ -521,7 +521,7 @@ fn recovery_rejects_nonempty_state_without_a_catalog_digest() {
     let error = recovered
         .attach_existing_run()
         .expect_err("nonempty recovered state must remain bound to a catalog digest");
-    assert!(error.to_string().contains("omit the catalog digest"));
+    assert!(error.to_string().contains("omitted its catalog identity"));
 }
 
 #[test]
@@ -538,8 +538,8 @@ fn recovery_rejects_tampered_authorization_catalog_bindings() {
     let mut recovered: ProviderToolBridge = serde_json::from_value(changed_contract).unwrap();
     let error = recovered
         .attach_existing_run()
-        .expect_err("recovery must recompute the catalog digest");
-    assert!(error.to_string().contains("catalog digest"));
+        .expect_err("recovery must reconstruct the authorized catalog projection");
+    assert!(error.to_string().contains("changed its authorized catalog"));
 
     let mut changed_map_key = encoded;
     let authorized = changed_map_key["authorized"].as_object_mut().unwrap();
@@ -595,18 +595,18 @@ fn recovery_rejects_tampered_retained_result_contracts() {
     let completed = serde_json::to_value(&bridge).unwrap();
 
     let mut unauthorized = completed.clone();
-    unauthorized["completed"]["call-1"]["operationId"] = json!("delete_company");
+    unauthorized["completed"]["call-1"]["result"]["operationId"] = json!("delete_company");
     let mut recovered: ProviderToolBridge = serde_json::from_value(unauthorized).unwrap();
     assert!(recovered.attach_existing_run().is_err());
 
     let mut invalid_output = completed;
-    invalid_output["completed"]["call-1"]["result"] = json!(["not", "an", "object"]);
+    invalid_output["completed"]["call-1"]["result"]["result"] = json!(["not", "an", "object"]);
     let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_output).unwrap();
     assert!(recovered.attach_existing_run().is_err());
 
     bridge.settle_turn("provider_turn_terminated").unwrap();
     let mut invalid_settled_output = serde_json::to_value(&bridge).unwrap();
-    invalid_settled_output["settledResults"]["call-1"]["result"] = json!("invalid");
+    invalid_settled_output["settledResults"]["call-1"]["result"]["result"] = json!("invalid");
     let mut recovered: ProviderToolBridge = serde_json::from_value(invalid_settled_output).unwrap();
     assert!(recovered.attach_existing_run().is_err());
 }
