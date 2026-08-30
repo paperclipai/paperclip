@@ -3,7 +3,6 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::AcpxRuntimeEventKind;
 use crate::durable::{redact_text, EventPriority};
-use crate::generated_acpx_sidecar_contract::classify_generated_acpx_tool_operation;
 
 const MAX_TEXT_CHARS: usize = 4_000;
 
@@ -353,6 +352,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
 pub fn normalize_acpx_runtime_event(
     kind: AcpxRuntimeEventKind,
     payload: &Value,
+    tool_operation: Option<&str>,
     fallback_item_id: &str,
     turn_id: &str,
     provider_requests: u64,
@@ -394,7 +394,11 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Status => {
             normalize_acpx_status(payload, &item_id, turn_id, provider_requests)
         }
-        AcpxRuntimeEventKind::ToolCall => normalize_acpx_tool_call(payload, &item_id),
+        AcpxRuntimeEventKind::ToolCall => normalize_acpx_tool_call(
+            payload,
+            &item_id,
+            tool_operation.unwrap_or("unknown"),
+        ),
         AcpxRuntimeEventKind::ProviderNotice => vec![acpx_notice(
             &item_id,
             string(payload.get("severity")),
@@ -542,7 +546,11 @@ fn normalize_acpx_status(
     )]
 }
 
-fn normalize_acpx_tool_call(payload: &Value, item_id: &str) -> Vec<NormalizedProviderEvent> {
+fn normalize_acpx_tool_call(
+    payload: &Value,
+    item_id: &str,
+    operation: &str,
+) -> Vec<NormalizedProviderEvent> {
     let native_status = string(payload.get("status"));
     let status = provider_status(native_status, native_status == "completed");
     let terminal = status != "running";
@@ -553,7 +561,6 @@ fn normalize_acpx_tool_call(payload: &Value, item_id: &str) -> Vec<NormalizedPro
         Some(value) => serde_json::to_string(value).unwrap_or_default(),
         None => String::new(),
     };
-    let operation = acpx_tool_operation(string(payload.get("kind")), raw_title);
     let mut normalized = json!({
         "schema": "paperclip.tool.execution.v1",
         "executionId": item_id,
@@ -637,10 +644,6 @@ fn acpx_notice(
 
 fn nonnegative_u64(value: Option<&Value>) -> u64 {
     value.and_then(Value::as_u64).unwrap_or(0)
-}
-
-fn acpx_tool_operation(kind: &str, title: &str) -> &'static str {
-    classify_generated_acpx_tool_operation(kind, title)
 }
 
 fn safe_acpx_location(value: Option<&Value>, allow_create_target: bool) -> Value {

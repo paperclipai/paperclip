@@ -5,7 +5,9 @@ use serde_json::Value;
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::durable::{redact_text, sanitize_value};
-use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
+use crate::generated_acpx_sidecar_contract::{
+    classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
+};
 use crate::local_runner::LocalRunnerError;
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
@@ -37,6 +39,7 @@ pub enum AcpxTurnStatus {
 pub enum AcpxEventPayload {
     Runtime {
         kind: AcpxRuntimeEventKind,
+        tool_operation: Option<&'static str>,
         payload: Value,
     },
     PermissionRequested {
@@ -213,6 +216,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| LocalRunnerError::invalid("ACPX runtime event omitted its type"))?;
+    let mut tool_operation = None;
     let kind = match runtime_type {
         "text_delta" => {
             bounded_required_text(payload, "text", MAX_RUNTIME_TEXT_CHARS, "runtime text")?;
@@ -233,7 +237,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         }
         "tool_call" => {
             bounded_optional_text(payload, "toolCallId", 240, "runtime tool call id")?;
-            bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
+            let title = bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
             bounded_optional_text(payload, "status", 100, "runtime tool status")?;
             if let Some(locations) = optional_array(payload, "locations", "runtime tool locations")?
             {
@@ -251,6 +255,10 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     bounded_optional_text(location, "path", 4_000, "runtime tool path")?;
                 }
             }
+            tool_operation = Some(classify_generated_acpx_tool_operation(
+                payload.get("kind").and_then(Value::as_str).unwrap_or(""),
+                title.as_deref().unwrap_or(""),
+            ));
             AcpxRuntimeEventKind::ToolCall
         }
         "semantic_result" => {
@@ -285,6 +293,7 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
     };
     Ok(AcpxEventPayload::Runtime {
         kind,
+        tool_operation,
         payload: sanitize_value(payload),
     })
 }

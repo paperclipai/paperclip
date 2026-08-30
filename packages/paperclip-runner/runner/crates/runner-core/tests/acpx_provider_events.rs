@@ -1,6 +1,12 @@
-use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+use paperclip_runner_core::acpx_event_payload::{
+    decode_acpx_event, AcpxEventPayload, AcpxRuntimeEventKind,
+};
+use paperclip_runner_core::acpx_event_scope::AcpxEventScope;
+use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarEvent;
 use paperclip_runner_core::durable::EventPriority;
-use paperclip_runner_core::generated_acpx_sidecar_contract::classify_generated_acpx_tool_operation;
+use paperclip_runner_core::generated_acpx_sidecar_contract::{
+    classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
+};
 use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
 use serde_json::json;
 
@@ -8,7 +14,16 @@ fn normalize(
     kind: AcpxRuntimeEventKind,
     payload: serde_json::Value,
 ) -> Vec<paperclip_runner_core::provider_events::NormalizedProviderEvent> {
-    normalize_acpx_runtime_event(kind, &payload, "event-7", "turn-1", 3)
+    let operation = (kind == AcpxRuntimeEventKind::ToolCall).then(|| {
+        classify_generated_acpx_tool_operation(
+            payload.get("kind").and_then(serde_json::Value::as_str).unwrap_or(""),
+            payload
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+        )
+    });
+    normalize_acpx_runtime_event(kind, &payload, operation, "event-7", "turn-1", 3)
 }
 
 #[test]
@@ -30,6 +45,69 @@ fn generated_tool_classification_uses_ascii_case_mapping_for_kind_and_title() {
         classify_generated_acpx_tool_operation(&format!("{}WRITE", "x".repeat(240)), ""),
         "edit"
     );
+}
+
+#[test]
+fn preserves_tool_operation_authority_across_payload_sanitization() {
+    for payload in [
+        json!({
+            "type":"tool_call",
+            "toolCallId":"tool-long-kind",
+            "kind":format!("{}write", "x".repeat(4_097)),
+            "title":"Long kind",
+            "status":"pending",
+            "locations":[{
+                "path":"src:new.rs",
+                "pathBoundary":"paperclip.workspace_relative_display.v2",
+                "pathAttestation":"paperclip.workspace_create_target.v1"
+            }]
+        }),
+        json!({
+            "type":"tool_call",
+            "toolCallId":"tool-multibyte-title",
+            "kind":"",
+            "title":format!("{}write", "é".repeat(2_049)),
+            "status":"pending",
+            "locations":[{
+                "path":"src:new.rs",
+                "pathBoundary":"paperclip.workspace_relative_display.v2",
+                "pathAttestation":"paperclip.workspace_create_target.v1"
+            }]
+        }),
+    ] {
+        let mut scope = AcpxEventScope::new("run-1").unwrap();
+        scope.bind_turn("turn-1").unwrap();
+        let decoded = decode_acpx_event(
+            &scope,
+            &AcpxSidecarEvent {
+                sequence: 1,
+                event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+                run_id: Some("run-1".to_owned()),
+                turn_id: Some("turn-1".to_owned()),
+                payload,
+            },
+        )
+        .unwrap();
+        let AcpxEventPayload::Runtime {
+            kind,
+            tool_operation,
+            payload,
+        } = decoded
+        else {
+            panic!("runtime event must decode as runtime payload");
+        };
+        let events = normalize_acpx_runtime_event(
+            kind,
+            &payload,
+            tool_operation,
+            "event-7",
+            "turn-1",
+            3,
+        );
+        assert_eq!(events[0].payload["operation"], "edit");
+        assert_eq!(events[0].payload["target"], "src:new.rs");
+        assert!(events[0].payload["name"].as_str().unwrap().chars().count() <= 240);
+    }
 }
 
 #[test]
