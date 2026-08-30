@@ -777,9 +777,22 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
     // A fresh provider session is part of admission. Prove that it exists
     // before opening durable run state because ControlPlanePort intentionally
     // exposes no rollback for an admitted run.
-    session = await options.backend.openSession({
+    const bootstrapTimeoutMs = options.timeoutMs ?? 900_000;
+    const bootstrapInput = {
       identity,
       workingDirectory: input.workspace.cwd,
+    };
+    session = await runAbortableOperationWithin({
+      timeoutMs: bootstrapTimeoutMs,
+      timeoutMessage: `native session bootstrap timed out after ${bootstrapTimeoutMs}ms`,
+      operation: (signal) => options.backend.openSession({
+        ...bootstrapInput,
+        signal,
+      }),
+      onLateResolution: (lateSession) => disposeUnadmittedSession(
+        lateSession,
+        "native session bootstrap timed out",
+      ),
     });
   }
   try {
@@ -801,13 +814,16 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
     }
     throw error;
   }
-  options.onSession?.(session);
   let sessionClosePromise: Promise<void> | null = null;
   let sessionQuarantined = false;
   const quarantineSession = () => {
     if (sessionQuarantined) return;
     sessionQuarantined = true;
-    options.onSession?.(null);
+    try {
+      options.onSession?.(null);
+    } catch {
+      // Owner notification cannot prevent provider cleanup.
+    }
   };
   const closeSession = () => {
     if (sessionClosePromise === null) {
@@ -820,6 +836,10 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
   };
   let executionSucceeded = false;
   try {
+    // Ownership publication is part of the execution-owned lifetime. If the
+    // callback fails, the finally block below still quarantines and closes the
+    // provider session.
+    options.onSession?.(session);
     const checkpointTimeoutMs = options.checkpointTimeoutMs
       ?? DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS;
     const persistCheckpoint = (

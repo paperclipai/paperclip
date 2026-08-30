@@ -281,11 +281,152 @@ describe("executeNativeSession recovery", () => {
       controlPlaneInstanceId: "control-recovery",
     })).rejects.toBe(providerFailure);
 
-    expect(openSession).toHaveBeenCalledWith({
+    expect(openSession).toHaveBeenCalledWith(expect.objectContaining({
       identity,
       workingDirectory: input.workspace.cwd,
-    });
+      signal: expect.any(AbortSignal),
+    }));
     expect(openRun).not.toHaveBeenCalled();
+  });
+
+  it("bounds fresh session bootstrap and closes a session returned after timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveBootstrap = (_value: NativeSession) => {};
+      const stalledBootstrap = new Promise<NativeSession>((resolve) => {
+        resolveBootstrap = resolve;
+      });
+      let markBootstrapStarted = () => {};
+      const bootstrapStarted = new Promise<void>((resolve) => {
+        markBootstrapStarted = resolve;
+      });
+      let markCloseStarted = () => {};
+      const closeStarted = new Promise<void>((resolve) => {
+        markCloseStarted = resolve;
+      });
+      const close = vi.fn(async () => { markCloseStarted(); });
+      const lateSession: NativeSession = {
+        identity: () => identity,
+        async capabilities() {
+          return { resume: false, typedEvents: true, steering: false, interruption: true };
+        },
+        async *events() {},
+        async startTurn() { throw new Error("late fresh session must not start"); },
+        async result() { return null; },
+        async snapshot() { throw new Error("late fresh session must not snapshot"); },
+        close,
+      };
+      let bootstrapSignal: AbortSignal | undefined;
+      const openSession = vi.fn((bootstrapInput: {
+        identity: NativeRunIdentity;
+        workingDirectory?: string;
+        signal?: AbortSignal;
+      }) => {
+        bootstrapSignal = bootstrapInput.signal;
+        bootstrapInput.signal?.addEventListener(
+          "abort",
+          () => resolveBootstrap(lateSession),
+          { once: true },
+        );
+        markBootstrapStarted();
+        return stalledBootstrap;
+      });
+      const openRun = vi.fn(async () => undefined);
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return {
+            kind: "mock",
+            name: "fresh-stalled-backend",
+            version: "1",
+            capabilities: await lateSession.capabilities(),
+          };
+        },
+        openSession,
+      };
+      const port: ControlPlanePort = {
+        openRun,
+        async appendEvent() { throw new Error("unexpected event"); },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+        async completeRun() {},
+      };
+
+      const execution = executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        timeoutMs: 5,
+      });
+      const rejection = expect(execution).rejects.toThrow(
+        "native session bootstrap timed out after 5ms",
+      );
+
+      await bootstrapStarted;
+      expect(bootstrapSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(5);
+      await rejection;
+      expect(bootstrapSignal?.aborted).toBe(true);
+      expect(openRun).not.toHaveBeenCalled();
+
+      await closeStarted;
+      expect(close).toHaveBeenCalledWith({
+        reason: "native session bootstrap timed out",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the provider when owner quarantine notification throws", async () => {
+    const snapshotFailure = new Error("snapshot failed");
+    const close = vi.fn(async () => undefined);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return { resume: false, typedEvents: true, steering: false, interruption: true };
+      },
+      async *events() {},
+      async startTurn() { throw new Error("unexpected turn"); },
+      async result() { return null; },
+      async snapshot() { throw snapshotFailure; },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "owner-notification-backend",
+          version: "1",
+          capabilities: await session.capabilities(),
+        };
+      },
+      async openSession() { return session; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent() { throw new Error("unexpected event"); },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const retainedSessions: Array<NativeSession | null> = [];
+
+    await expect(executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      keepSessionOpen: true,
+      onSession(current) {
+        retainedSessions.push(current);
+        if (current === null) throw new Error("owner notification failed");
+      },
+    })).rejects.toBe(snapshotFailure);
+
+    expect(retainedSessions).toEqual([session, null]);
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it.each(["control-plane checkpoint", "owner checkpoint"] as const)(
