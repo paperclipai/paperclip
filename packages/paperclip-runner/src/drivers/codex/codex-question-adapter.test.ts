@@ -191,6 +191,56 @@ describe("Codex structured question adapter", () => {
     });
   });
 
+  it("serializes non-string native option values instead of discarding them", () => {
+    const responseContext = createCodexQuestionResponseContext();
+    const input = normalizeCodexQuestionSetWithContext("tool/requestUserInput", {
+      questions: [{
+        id: "settings",
+        question: "Which settings?",
+        multiSelect: true,
+        options: [
+          { id: "retries", label: "Three retries", value: 3 },
+          { id: "enabled", label: "Disabled", value: false },
+          {
+            id: "policy",
+            label: "Strict policy",
+            value: { mode: "strict", retries: 2 },
+          },
+        ],
+      }],
+    }, responseContext)!;
+    const request: HarnessRuntimeRequest = {
+      requestId: "request-non-string-option-values",
+      requestKind: "user_input",
+      method: "tool/requestUserInput",
+      turnId: "turn-1",
+      itemId: "item-1",
+      status: "pending",
+      prompt: "Codex requests user input.",
+      details: {},
+      input,
+      origin: { adapter: "codex", method: "tool/requestUserInput" },
+    };
+
+    expect(runtimeRequestResponseWithContext(request, {
+      action: "submit",
+      response: {
+        schema: "paperclip.question_response.v1",
+        answers: {
+          settings: {
+            selectedOptionIds: ["retries", "enabled", "policy"],
+          },
+        },
+      },
+    }, responseContext)).toEqual({
+      answers: {
+        settings: {
+          answers: ["3", "false", '{"mode":"strict","retries":2}'],
+        },
+      },
+    });
+  });
+
   it("fails closed instead of truncating oversized native forms", () => {
     expect(() => normalizeCodexQuestionSet("tool/requestUserInput", {
       questions: Array.from({ length: 65 }, (_, index) => ({

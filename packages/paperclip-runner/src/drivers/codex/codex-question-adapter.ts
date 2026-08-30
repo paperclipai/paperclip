@@ -474,10 +474,17 @@ function canonicalCodexAnswers(
     const nativeValues = request.input === undefined
       ? undefined
       : NATIVE_OPTION_VALUES.get(responseContext)?.get(question.id);
-    const labels = (answer.selectedOptionIds ?? []).map((optionId) =>
-      nativeValues?.get(optionId) ??
-        question.options?.find((option) => option.id === optionId)?.label,
-    ).filter((label): label is string => typeof label === "string");
+    const labels = (answer.selectedOptionIds ?? []).map((optionId) => {
+      const value = nativeValues?.has(optionId)
+        ? nativeValues.get(optionId)
+        : question.options?.find((option) => option.id === optionId)?.label;
+      if (typeof value === "string") return value;
+      const serialized = JSON.stringify(value);
+      if (serialized === undefined) {
+        throw new Error("Codex native option value must be JSON-serializable");
+      }
+      return serialized;
+    });
     if (answer.text !== undefined) labels.push(answer.text);
     if (answer.customText !== undefined) labels.push(answer.customText);
     result[question.id] = { answers: labels };
