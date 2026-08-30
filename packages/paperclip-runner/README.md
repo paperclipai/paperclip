@@ -114,6 +114,9 @@ closed.
 Safe suspension is available only with no active turn or pending request. The
 sidecar must return the exact persistent session identity before runnerd
 terminates the local process.
+Already validated ACPX reducer events project into provider-neutral durable
+events only with an exact run, session, turn, and item binding. Raw sidecar
+envelopes and permission requests are not admitted at this boundary.
 
 Run the complete contract gate with:
 

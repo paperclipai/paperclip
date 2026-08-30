@@ -2764,12 +2764,12 @@ export const requestSchema = {
         "turnId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         },
         "itemId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         }
       },
       "additionalProperties": false
@@ -3258,12 +3258,12 @@ export const eventSchema = {
     "turnId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "itemId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "eventType": {
       "enum": [
