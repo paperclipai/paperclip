@@ -220,10 +220,8 @@ impl AcpxSidecarTransport {
                     let error = response.error.expect("failed response has validated error");
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
-                            "ACPX sidecar command {} failed with {}: {} (retryable={})",
+                            "ACPX sidecar command {} was rejected (retryable={})",
                             command.as_str(),
-                            error.code,
-                            redact_diagnostic(&error.message),
                             error.retryable,
                         ),
                     )));
@@ -425,16 +423,14 @@ struct EventFrame {
 }
 
 fn parse_frame(line: &str) -> Result<ParsedFrame, LocalRunnerError> {
-    let value: Value = serde_json::from_str(line).map_err(|error| {
-        LocalRunnerError::invalid(format!("ACPX sidecar emitted invalid JSON: {error}"))
-    })?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|_| LocalRunnerError::invalid("ACPX sidecar emitted invalid JSON"))?;
     let object = value
         .as_object()
         .ok_or_else(|| LocalRunnerError::invalid("ACPX sidecar frame must be an object"))?;
     if object.contains_key("eventType") {
-        let frame: EventFrame = serde_json::from_value(value).map_err(|error| {
-            LocalRunnerError::invalid(format!("ACPX sidecar event frame is invalid: {error}"))
-        })?;
+        let frame: EventFrame = serde_json::from_value(value)
+            .map_err(|_| LocalRunnerError::invalid("ACPX sidecar event frame is invalid"))?;
         if frame.protocol_version != GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar event protocol version mismatch",
@@ -473,9 +469,8 @@ fn parse_frame(line: &str) -> Result<ParsedFrame, LocalRunnerError> {
             "ACPX sidecar response error must be an object",
         ));
     }
-    let frame: ResponseFrame = serde_json::from_value(value).map_err(|error| {
-        LocalRunnerError::invalid(format!("ACPX sidecar response frame is invalid: {error}"))
-    })?;
+    let frame: ResponseFrame = serde_json::from_value(value)
+        .map_err(|_| LocalRunnerError::invalid("ACPX sidecar response frame is invalid"))?;
     if frame.protocol_version != GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION {
         return Err(LocalRunnerError::invalid(
             "ACPX sidecar response protocol version mismatch",
@@ -532,20 +527,56 @@ fn nullable_identifier(value: Value, field: &str) -> Result<Option<String>, Loca
 }
 
 fn redact_diagnostic(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    let boundary = [
-        "authorization",
-        "api_key",
-        "apikey",
-        "token",
-        "secret",
-        "password",
-    ]
-    .iter()
-    .filter_map(|marker| lower.find(marker))
-    .min();
-    match boundary {
-        Some(index) => format!("{}[REDACTED]", &value[..index]),
-        None => value.chars().take(2_000).collect(),
+    if value.is_empty() {
+        String::new()
+    } else {
+        "[REDACTED]".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_frame_does_not_echo_untrusted_deserialization_details() {
+        let cases = [
+            (
+                json!({
+                    "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id": 1,
+                    "ok": true,
+                    "result": {},
+                    "opaque_field_canary_Q7Z9": true,
+                })
+                .to_string(),
+                "ACPX sidecar response frame is invalid",
+            ),
+            (
+                json!({
+                    "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence": 1,
+                    "eventType": "opaque_variant_canary_Q7Z9",
+                    "runId": null,
+                    "turnId": null,
+                    "payload": {},
+                })
+                .to_string(),
+                "ACPX sidecar event frame is invalid",
+            ),
+            (
+                r#"{"opaque_json_canary_Q7Z9":"#.to_owned(),
+                "ACPX sidecar emitted invalid JSON",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let message = match parse_frame(&input) {
+                Ok(_) => panic!("untrusted frame must be rejected"),
+                Err(error) => error.to_string(),
+            };
+            assert!(message.contains(expected), "unexpected error: {message}");
+            assert!(!message.contains("Q7Z9"), "error leaked input: {message}");
+        }
     }
 }

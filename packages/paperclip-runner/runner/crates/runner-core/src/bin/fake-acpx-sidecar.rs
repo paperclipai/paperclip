@@ -48,8 +48,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "id": id,
                         "ok": false,
                         "error": {
-                            "code": "fake_rejection",
-                            "message": "The fake sidecar rejected the command.",
+                            "code": "Q7Z9",
+                            "message": "violet-circuit-4821",
                             "retryable": false,
                         },
                     }),
@@ -76,7 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 stdout.flush()?;
             }
             "exit-secret" => {
-                eprintln!("authorization=super-secret-value");
+                eprintln!("amber-signal-7305");
                 std::process::exit(9);
             }
             "happy" => {

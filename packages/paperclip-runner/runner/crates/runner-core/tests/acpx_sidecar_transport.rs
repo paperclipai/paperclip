@@ -159,8 +159,11 @@ fn keeps_valid_command_rejections_separate_from_protocol_failures() {
         let error = transport
             .request(command, json!({}))
             .expect_err("fake command should be rejected");
-        assert!(error.to_string().contains("fake_rejection"));
-        assert!(!error.to_string().contains("unavailable"));
+        let message = error.to_string();
+        assert!(message.contains("was rejected"));
+        assert!(!message.contains("Q7Z9"));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert!(!message.contains("unavailable"));
     }
     transport.shutdown().expect("fake sidecar should stop");
 }
@@ -173,5 +176,5 @@ fn redacts_sidecar_stderr_when_the_process_exits() {
         .expect_err("exited sidecar must fail");
     let message = error.to_string();
     assert!(message.contains("[REDACTED]"));
-    assert!(!message.contains("super-secret-value"));
+    assert!(!message.contains("amber-signal-7305"));
 }
