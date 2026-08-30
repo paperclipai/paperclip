@@ -133,8 +133,9 @@ import {
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
-  ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  buildIssueRewakeStallDisclosure,
+  buildIssueRewakeStallEvidence,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
@@ -287,6 +288,7 @@ import {
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -298,6 +300,8 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
+  MAX_PREPARATION_WARNING_CHARS,
+  selectWakePreparationWarnings,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
@@ -388,6 +392,8 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
+/** HIV-2654: the one disclosed stall message, carried through the rebuild. */
+const PAPERCLIP_STALL_DISCLOSURE_KEY = "paperclipStallDisclosure";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 // The reaper sweeps at most this many pending_cleanup leases per tick.
@@ -2800,15 +2806,24 @@ export type ResolvedWorkspaceForRun = {
   /**
    * Structured record of every referenced project that the run dropped or failed, paired with the
    * layer that dropped it. Run preparation reads this to emit the requested-vs-synced observability
-   * log. The human-readable form of each drop already rides {@link ResolvedWorkspaceForRun.warnings}.
+   * log. The human-readable form of each drop rides {@link ResolvedWorkspaceForRun.referencedProjectWarnings}.
    */
   referencedProjectFailures: ReferencedProjectFailure[];
+  /**
+   * Warnings produced by referenced projects rather than by this run's own
+   * workspace. A separate field rather than a subset of `warnings`, because it
+   * is the one class that can arrive in bulk — one per unavailable or
+   * unauthorized mention, bounded by the 50 candidate evaluations, not by the
+   * 10 sync slots — and is therefore the class a prompt-side cap drops first.
+   * Recovering that distinction from the strings afterwards would be a guess.
+   */
+  referencedProjectWarnings: string[];
 };
 
 /** The anchor workspace shape, before the additional referenced workspaces are attached. */
 type ResolvedAnchorWorkspaceForRun = Omit<
   ResolvedWorkspaceForRun,
-  "additionalWorkspaces" | "referencedProjectFailures"
+  "additionalWorkspaces" | "referencedProjectFailures" | "referencedProjectWarnings"
 >;
 
 /**
@@ -6162,6 +6177,11 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
+    // HIV-2654. Top level, not inside a pre-built `paperclipWake`: this whole
+    // payload is deliberately rebuilt from the snapshot's own fields at
+    // dispatch, so anything written straight onto the enqueued payload is
+    // discarded before the agent ever sees it.
+    stallDisclosure: readNonEmptyString(input.contextSnapshot[PAPERCLIP_STALL_DISCLOSURE_KEY]),
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
       ? {
@@ -9078,7 +9098,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
-      return { ...anchor, additionalWorkspaces: [], referencedProjectFailures: [] };
+      return {
+        ...anchor,
+        additionalWorkspaces: [],
+        referencedProjectFailures: [],
+        referencedProjectWarnings: [],
+      };
     }
 
     // Derive the remote-transport facts from the selected environment driver. `executionTargetIsRemote`
@@ -9117,7 +9142,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...anchor,
       additionalWorkspaces,
       referencedProjectFailures: failures,
-      warnings: warnings.length > 0 ? [...anchor.warnings, ...warnings] : anchor.warnings,
+      referencedProjectWarnings: warnings,
+      warnings: anchor.warnings,
     };
   }
 
@@ -15909,7 +15935,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
     // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
     // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
-    // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
+    // per-drop human warning rides `resolvedWorkspace.referencedProjectWarnings`; this line carries the counts
     // and the per-failure reason for a partial sync.
     const referencedProjectObservability = buildReferencedProjectRunObservability({
       syncedProjectIds: resolvedWorkspace.additionalWorkspaces.map(
@@ -15927,16 +15953,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         "run referenced-project sync",
       );
-    }
-    // The wake payload is built before the execution workspace is resolved, so
-    // attach the branch pin here; the shared wake-prompt renderer surfaces it as
-    // a one-time "stay on this branch" hint on non-resumed sessions.
-    if (executionWorkspace.branchName) {
-      const wakePayloadForWorkspace = parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]);
-      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = {
-        ...wakePayloadForWorkspace,
-        executionWorkspace: { branchName: executionWorkspace.branchName },
-      };
     }
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(hostExecutionWorkspaceConfig.workspaceRuntime);
@@ -16005,6 +16021,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipSessionHandoffMarkdown;
       delete context.paperclipSessionRotationReason;
       delete context.paperclipPreviousSessionId;
+    }
+
+    // The wake payload is built before the execution workspace is resolved, so
+    // attach here what only preparation knows: the branch pin, which the shared
+    // wake-prompt renderer surfaces as a one-time "stay on this branch" hint on
+    // non-resumed sessions, and the preparation warnings. HIV-2654: those
+    // warnings used to reach only `onLog`, so an agent whose workspace failed to
+    // prepare — a base ref that could not be fetched, a session rotation — could
+    // not know, and reported success on a tree that was never what the issue
+    // assumed. The agent decides what a broken workspace means for its task;
+    // this only makes sure it is told.
+    //
+    // Placed after session compaction because that is the last producer to push
+    // onto `runtimeWorkspaceWarnings`; attaching earlier silently dropped the
+    // rotation warning and left the payload aliasing a still-mutating array.
+    // Only ever augments an existing wake payload: a run with no issue and no
+    // comments has none, and creating one from a warning alone would render a
+    // full "reason: unknown / issue: unknown" wake block for a plain timer
+    // heartbeat.
+    if (context[PAPERCLIP_WAKE_PAYLOAD_KEY] !== undefined) {
+      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = {
+        ...parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
+        executionWorkspace: {
+          branchName: executionWorkspace.branchName,
+          // Bounded and redacted here, not only at render: these strings are
+          // git stderr and they are about to be persisted in the run's context
+          // snapshot, which outlives the prompt. The selection is by producer,
+          // not by position — see selectWakePreparationWarnings.
+          preparationWarnings: selectWakePreparationWarnings(
+            runtimeWorkspaceWarnings,
+            resolvedWorkspace.referencedProjectWarnings,
+          ).map((warning) => redactSensitiveText(warning).slice(0, MAX_PREPARATION_WARNING_CHARS)),
+        },
+      };
     }
 
     const runtimeForAdapter = {
@@ -16241,7 +16291,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
         );
       }
-      for (const warning of runtimeWorkspaceWarnings) {
+      // The log is uncapped and gets both classes; only the prompt is bounded.
+      for (const warning of [
+        ...runtimeWorkspaceWarnings,
+        ...resolvedWorkspace.referencedProjectWarnings,
+      ]) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
       }
@@ -19275,10 +19329,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // PAP-13775: no live run holds the lock, so this wake would start a
         // fresh adapter session. If this agent's recent runs on this issue
         // keep succeeding without any issue-visible progress and the wake
-        // carries no new information, hold it back for an escalating cooldown
-        // so external pollers/reconcilers can't storm full-price sessions.
-        // Server-side recovery retries insert runs directly and never reach
-        // this gate.
+        // carries no new information, decide whether it is still worth a
+        // session at all, so external pollers/reconcilers can't storm
+        // full-price sessions. Server-side recovery retries insert runs
+        // directly and never reach this gate.
         if (
           isThrottleCandidateIssueRewake({
             reason,
@@ -19301,7 +19355,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eq(heartbeatRuns.companyId, agent.companyId),
                 eq(heartbeatRuns.agentId, agentId),
                 sql`${heartbeatRuns.finishedAt} is not null`,
-                gte(heartbeatRuns.finishedAt, new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS)),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
@@ -19322,28 +19375,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
                 ),
               );
-            const lastRunFinishedAt = recentTerminalRuns[0]?.finishedAt ?? null;
-            const newInputRows = lastRunFinishedAt
-              ? await tx
-                .select({ id: activityLog.id })
-                .from(activityLog)
-                .where(
-                  and(
-                    eq(activityLog.companyId, agent.companyId),
-                    eq(activityLog.entityType, "issue"),
-                    eq(activityLog.entityId, issue.id),
-                    gt(activityLog.createdAt, lastRunFinishedAt),
-                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
-                    wakeCommentId && opts.requestedByActorType === "agent"
-                      ? ne(activityLog.actorType, "agent")
-                      : undefined,
-                  ),
-                )
-                .limit(1)
-              : [];
+            // The newest new input opens the current stall episode. Asking for
+            // its timestamp rather than "is there any since the last run" is
+            // what lets a reopened episode discard the runs that preceded it,
+            // instead of admitting one wake into a streak already spent.
+            //
+            // Bounded below by the oldest sampled run, which costs nothing in
+            // meaning: input older than every sampled run cannot exclude any of
+            // them, so "no row" and "a very old row" reach the same decision.
+            // The bound is inclusive — an input at exactly the oldest run's
+            // finish time does exclude that run, and dropping it would turn a
+            // `proceed` into a `disclose` on a two-run sample. Without any
+            // bound this walks the issue's whole activity history backwards
+            // while holding its row lock.
+            const oldestSampledRunFinishedAt =
+              recentTerminalRuns[recentTerminalRuns.length - 1]?.finishedAt ?? null;
+            const newInputRows = await tx
+              .select({ createdAt: activityLog.createdAt })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, agent.companyId),
+                  eq(activityLog.entityType, "issue"),
+                  eq(activityLog.entityId, issue.id),
+                  inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  oldestSampledRunFinishedAt
+                    ? gte(activityLog.createdAt, oldestSampledRunFinishedAt)
+                    : undefined,
+                  wakeCommentId && opts.requestedByActorType === "agent"
+                    ? ne(activityLog.actorType, "agent")
+                    : undefined,
+                ),
+              )
+              .orderBy(desc(activityLog.createdAt))
+              .limit(1);
 
             const throttleDecision = evaluateIssueRewakeThrottle({
-              now: throttleNow,
               recentTerminalRuns,
               runIdsWithIssueProgress: new Set(
                 progressRows
@@ -19354,35 +19421,141 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               // activity while preserving genuinely new user/system input.
               // Presentation/author metadata therefore cannot smuggle human
               // wake privilege, nor can it mask an actual human response.
-              hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+              newIssueInputAt: newInputRows[0]?.createdAt ?? null,
             });
 
-            if (throttleDecision.blocked) {
+            if (throttleDecision.action === "stop") {
+              // The streak reached the stop threshold, so no further session
+              // is spent on it — and the issue is handed back to the board
+              // rather than left `in_progress` with nobody waking it.
+              //
+              // The raw update is deliberate. Routing this through
+              // `issuesSvc.update` would log `issue.updated`, which is new
+              // input, which would reopen the episode this write is ending. The
+              // one consequence of that service call worth keeping is
+              // `finalizeStatusCardsForStalledGeneration`, invoked below: a
+              // status-card compile task is a normal issue whose real work is a
+              // `statusCards` write, which is not issue-visible progress, so it
+              // is precisely this mechanism's target — and blocking it without
+              // releasing the card's generation claim leaves the board tile
+              // spinning forever with no "Run now" affordance.
+              const stoppedAt = throttleNow;
+              // Conditional on `in_progress` so a concurrent disposition wins.
+              // If the issue already moved on, the wake is still stopped and
+              // still audited, but nothing is said about a hand-back that did
+              // not happen.
+              const [blockedIssue] = await tx
+                .update(issues)
+                .set({
+                  status: "blocked",
+                  // Without these three the block is not a hand-back at all.
+                  // `reconcileStaleBlockedHold` repairs a descriptor-less block
+                  // straight back to `todo` — inside this very transaction, on
+                  // the next wake — and logs `issue.updated`, which is new
+                  // input, which reopens the episode. The stall would resume at
+                  // three fresh sessions per cycle. A board-owned descriptor
+                  // also stops the stranded-issue reconciler re-polling it, and
+                  // is what puts the issue in a human's attention queue rather
+                  // than only in the blocked column.
+                  unblockDescriptor: {
+                    owner: "board",
+                    action: "Decide what this stalled issue needs: finish it, re-scope it, hand it to another agent, or close it.",
+                  },
+                  blockedTransitionAt: stoppedAt,
+                  blockedOwnerNotifiedAt: null,
+                  checkoutRunId: null,
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: stoppedAt,
+                })
+                .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")))
+                .returning({
+                  id: issues.id,
+                  companyId: issues.companyId,
+                  identifier: issues.identifier,
+                  title: issues.title,
+                  status: issues.status,
+                });
+              if (blockedIssue) {
+                await finalizeStatusCardsForStalledGeneration(tx as unknown as Db, {
+                  ...blockedIssue,
+                  // The update above set it; the column type is a plain string.
+                  status: "blocked",
+                });
+                await tx.insert(issueComments).values({
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  body: [
+                    `Paperclip stopped re-waking ${formatIssueIdentifierLink(issue.identifier, issue.id)} and blocked it.`,
+                    "",
+                    buildIssueRewakeStallEvidence({
+                      noProgressStreak: throttleDecision.noProgressStreak,
+                      lastRunFinishedAt: throttleDecision.lastRunFinishedAt,
+                    }),
+                    "",
+                    "No further state-poll session will be spent on it while nothing changes. A human invoke, a human comment, or new activity on the issue still wakes it. This issue now needs a decision from whoever picks it up.",
+                  ].join("\n"),
+                  createdAt: stoppedAt,
+                  updatedAt: stoppedAt,
+                });
+                await logActivity(tx as unknown as Db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId,
+                  runId: null,
+                  action: "issue.rewake_stopped",
+                  entityType: "issue",
+                  entityId: issue.id,
+                  details: {
+                    reason: "issue_rewake_stopped",
+                    requestedReason: reason,
+                    noProgressStreak: throttleDecision.noProgressStreak,
+                    lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
+                    source,
+                    triggerDetail,
+                  },
+                });
+              }
               await tx.insert(agentWakeupRequests).values({
                 companyId: agent.companyId,
                 agentId,
                 source,
                 triggerDetail,
-                reason: "issue_rewake_throttled",
+                reason: "issue_rewake_stopped",
                 payload: {
                   ...(payload ?? {}),
                   issueId,
                   heartbeatSkip: {
-                    reason: "issue_rewake_throttled",
+                    reason: "issue_rewake_stopped",
                     requestedReason: reason,
                     noProgressStreak: throttleDecision.noProgressStreak,
-                    cooldownMs: throttleDecision.cooldownMs,
                     lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
-                    nextAllowedAt: throttleDecision.nextAllowedAt.toISOString(),
+                    issueBlocked: Boolean(blockedIssue),
                   },
                 },
                 status: "skipped",
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
-                finishedAt: throttleNow,
+                finishedAt: stoppedAt,
               });
               return { kind: "skipped" as const };
+            }
+
+            if (throttleDecision.action === "disclose") {
+              // Exactly one more wake, and it carries why it is the last one.
+              // On its own snapshot field rather than the agent-message
+              // channel: that channel renders as plugin-supplied user content
+              // explicitly framed as "not a Paperclip system instruction", and
+              // is truncated from the front behind any caller text — the wrong
+              // provenance and the wrong durability for the single message this
+              // whole mechanism exists to deliver.
+              enrichedContextSnapshot[PAPERCLIP_STALL_DISCLOSURE_KEY] = buildIssueRewakeStallDisclosure({
+                noProgressStreak: throttleDecision.noProgressStreak,
+                lastRunFinishedAt: throttleDecision.lastRunFinishedAt,
+              });
             }
           }
         }
