@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REDACTED_EVENT_VALUE,
+  createSensitiveTextStreamRedactor,
   redactEventPayload,
   redactSensitiveText,
   redactSensitiveValue,
@@ -164,6 +165,73 @@ describe("redaction", () => {
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
+  });
+
+  it("redacts sensitive log lines across every process chunk boundary", () => {
+    const credential = "split-sensitive-value-0123456789";
+    const fixtures = [
+      { line: `payload {"apiKey":"${credential}"}\n`, secret: credential },
+      { line: `PAPERCLIP_API_KEY=${credential}\n`, secret: credential },
+      { line: `cmd --api-key=${credential}\n`, secret: credential },
+      { line: `Authorization: Bearer ${credential}\n`, secret: credential },
+      { line: `provider sk-${credential}\n`, secret: `sk-${credential}` },
+      {
+        line: "provider ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+        secret: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      },
+      {
+        line: "session abcdefgh.abcdefghijklmnop0123456789.ijklmnop\n",
+        secret: "abcdefgh.abcdefghijklmnop0123456789.ijklmnop",
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      for (let splitAt = 1; splitAt < fixture.line.length; splitAt += 1) {
+        const redactor = createSensitiveTextStreamRedactor({ sanitize: redactSensitiveText });
+        const firstFrames = redactor.push(fixture.line.slice(0, splitAt));
+        const frames = [
+          ...firstFrames,
+          ...redactor.push(fixture.line.slice(splitAt)),
+          ...redactor.flush(),
+        ];
+        const output = frames.join("");
+
+        expect(firstFrames, `fixture=${fixture.line} splitAt=${splitAt}`).toEqual([]);
+        expect(output, `fixture=${fixture.line} splitAt=${splitAt}`).toContain(REDACTED_EVENT_VALUE);
+        expect(output, `fixture=${fixture.line} splitAt=${splitAt}`).not.toContain(fixture.secret);
+        for (const frame of frames) {
+          expect(frame, `fixture=${fixture.line} splitAt=${splitAt}`).not.toContain(fixture.secret.slice(0, 12));
+        }
+      }
+    }
+  });
+
+  it("fails closed for unterminated or oversized sensitive log frames", () => {
+    const credentialPrefix = "split-sensitive-value-";
+    const unterminated = createSensitiveTextStreamRedactor({ sanitize: redactSensitiveText });
+    expect(unterminated.push(`apiKey: \"${credentialPrefix}`)).toEqual([]);
+    const unterminatedOutput = unterminated.flush().join("");
+    expect(unterminatedOutput).toContain("omitted");
+    expect(unterminatedOutput).not.toContain(credentialPrefix);
+
+    const oversized = createSensitiveTextStreamRedactor({
+      sanitize: redactSensitiveText,
+      maxPendingChars: 32,
+    });
+    const oversizedOutput = [
+      ...oversized.push(`apiKey: \"${credentialPrefix.repeat(8)}`),
+      ...oversized.push("still-sensitive\nordinary next line\n"),
+      ...oversized.flush(),
+    ].join("");
+    expect(oversizedOutput).toContain("omitted oversized unterminated run log line");
+    expect(oversizedOutput).toContain("ordinary next line");
+    expect(oversizedOutput).not.toContain(credentialPrefix);
+  });
+
+  it("preserves a safe unterminated final log frame on flush", () => {
+    const redactor = createSensitiveTextStreamRedactor({ sanitize: redactSensitiveText });
+    expect(redactor.push("ordinary final diagnostic")).toEqual([]);
+    expect(redactor.flush()).toEqual(["ordinary final diagnostic"]);
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {

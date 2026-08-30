@@ -22,6 +22,8 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const TEST_ADAPTER_TYPE = "heartbeat_error_redaction_test";
 const CREDENTIAL_VALUE = "hap128-secret-value";
+const CREDENTIAL_PREFIX = "hap128-secret-";
+const CREDENTIAL_SUFFIX = "value";
 const DIAGNOSTIC = "Provider rejected request";
 
 if (!embeddedPostgresSupport.supported) {
@@ -48,6 +50,7 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let throwAfterLog = false;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-error-redaction-");
@@ -56,8 +59,20 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
     registerServerAdapter({
       type: TEST_ADAPTER_TYPE,
       execute: async ({ onLog }) => {
-        await onLog("stdout", `adapter stdout apiKey: \"${CREDENTIAL_VALUE}\"\n`);
-        await onLog("stderr", `adapter stderr apiKey: \"${CREDENTIAL_VALUE}\"\n`);
+        // Adapter process streams have arbitrary chunk boundaries. Split both
+        // the sensitive field name and value so per-chunk redaction cannot see
+        // the credential. Keep stderr unterminated to prove completion flushes
+        // the final buffered line before durable run finalization.
+        await onLog("stdout", "adapter stdout api");
+        await onLog("stdout", `Key: \"${CREDENTIAL_PREFIX}`);
+        await onLog("stdout", `${CREDENTIAL_SUFFIX}\"\n`);
+        // Some adapters fire-and-forget log callbacks. The heartbeat finalizer
+        // must still serialize and drain both fragments before closing the log.
+        void onLog("stderr", `adapter stderr apiKey: \"${CREDENTIAL_PREFIX}`);
+        void onLog("stderr", `${CREDENTIAL_SUFFIX}\"`);
+        if (throwAfterLog) {
+          throw new Error(`${DIAGNOSTIC} apiKey: \"${CREDENTIAL_VALUE}\" (request_id=req-42)`);
+        }
         return {
           exitCode: 1,
           signal: null,
@@ -77,6 +92,7 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
   }, 20_000);
 
   afterEach(async () => {
+    throwAfterLog = false;
     await heartbeat.drainActiveRunExecutions();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -95,7 +111,11 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
     await tempDb?.cleanup();
   });
 
-  it("redacts adapter credential errors from every durable heartbeat status surface", async () => {
+  it.each([
+    { path: "returned adapter failure", throws: false },
+    { path: "thrown adapter failure", throws: true },
+  ])("redacts split adapter credentials on the $path path", async ({ throws }) => {
+    throwAfterLog = throws;
     const companyId = randomUUID();
     const agentId = randomUUID();
     const taskKey = "hap-128-task";
@@ -151,7 +171,11 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
       expect(run?.stderrExcerpt).toContain("adapter stderr");
       expect(agent).toMatchObject({ status: "error" });
       expect(agent?.errorReason).toContain(DIAGNOSTIC);
-      expect(taskSession?.lastError).toContain(DIAGNOSTIC);
+      if (throws) {
+        expect(taskSession).toBeUndefined();
+      } else {
+        expect(taskSession?.lastError).toContain(DIAGNOSTIC);
+      }
       expect(runtimeState?.lastError).toContain(DIAGNOSTIC);
       expect(storedLog.content).toContain("adapter stdout");
       expect(storedLog.content).toContain("adapter stderr");
@@ -179,9 +203,13 @@ describeEmbeddedPostgres("heartbeat error redaction", () => {
       );
 
       for (const durableValue of [run, agent, taskSession, runtimeState, storedLog]) {
-        expect(JSON.stringify(durableValue)).not.toContain(CREDENTIAL_VALUE);
+        const serialized = JSON.stringify(durableValue);
+        expect(serialized ?? "").not.toContain(CREDENTIAL_VALUE);
+        expect(serialized ?? "").not.toContain(CREDENTIAL_PREFIX);
       }
-      expect(JSON.stringify(liveLogEvents)).not.toContain(CREDENTIAL_VALUE);
+      const serializedLiveLogEvents = JSON.stringify(liveLogEvents);
+      expect(serializedLiveLogEvents).not.toContain(CREDENTIAL_VALUE);
+      expect(serializedLiveLogEvents).not.toContain(CREDENTIAL_PREFIX);
     } finally {
       unsubscribe();
     }

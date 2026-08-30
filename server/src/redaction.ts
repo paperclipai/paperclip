@@ -188,3 +188,90 @@ export function redactSensitiveText(input: string): string {
     REDACTED_EVENT_VALUE,
   );
 }
+
+const DEFAULT_STREAM_REDACTION_PENDING_CHARS = 64 * 1024;
+const OVERSIZED_STREAM_FRAME_MARKER =
+  "[paperclip omitted oversized unterminated run log line]\n";
+const SENSITIVE_STREAM_TAIL_MARKER =
+  "[paperclip omitted potentially sensitive unterminated run log line]";
+
+export type SensitiveTextStreamRedactor = {
+  /**
+   * Accept an arbitrary process-output chunk and return only complete,
+   * sanitized logical-line frames that are safe to publish or persist.
+   */
+  push(chunk: string): string[];
+  /** Flush a final unterminated frame without ever returning raw secret material. */
+  flush(): string[];
+};
+
+/**
+ * Frame process output before redaction so a credential split across arbitrary
+ * adapter chunk boundaries cannot cross an irreversible log boundary.
+ *
+ * The current secret grammars are single-line, so LF is the safe commit point.
+ * An oversized unterminated line is omitted and drained through its next LF to
+ * keep retained raw state bounded. A sensitive-looking final tail that the
+ * complete-text sanitizer cannot prove safe is omitted on flush.
+ */
+export function createSensitiveTextStreamRedactor(options: {
+  sanitize: (frame: string) => string;
+  maxPendingChars?: number;
+}): SensitiveTextStreamRedactor {
+  const maxPendingChars = Math.max(
+    1,
+    Math.floor(options.maxPendingChars ?? DEFAULT_STREAM_REDACTION_PENDING_CHARS),
+  );
+  let pending = "";
+  let droppingOversizedLine = false;
+
+  const push = (chunk: string): string[] => {
+    if (chunk.length === 0) return [];
+    const frames: string[] = [];
+    let remaining = chunk;
+
+    if (droppingOversizedLine) {
+      const newlineIndex = remaining.indexOf("\n");
+      if (newlineIndex < 0) return frames;
+      droppingOversizedLine = false;
+      remaining = remaining.slice(newlineIndex + 1);
+      if (remaining.length === 0) return frames;
+    }
+
+    const combined = pending + remaining;
+    const lastNewlineIndex = combined.lastIndexOf("\n");
+    if (lastNewlineIndex >= 0) {
+      const completeLines = combined.slice(0, lastNewlineIndex + 1);
+      pending = combined.slice(lastNewlineIndex + 1);
+      frames.push(options.sanitize(completeLines));
+    } else {
+      pending = combined;
+    }
+
+    if (pending.length > maxPendingChars) {
+      pending = "";
+      droppingOversizedLine = true;
+      frames.push(OVERSIZED_STREAM_FRAME_MARKER);
+    }
+    return frames;
+  };
+
+  const flush = (): string[] => {
+    if (droppingOversizedLine) {
+      droppingOversizedLine = false;
+      pending = "";
+      return [];
+    }
+    if (pending.length === 0) return [];
+
+    const finalFrame = pending;
+    pending = "";
+    const secretSanitized = redactSensitiveText(finalFrame);
+    if (maybeContainsSecretText(finalFrame) && secretSanitized === finalFrame) {
+      return [SENSITIVE_STREAM_TAIL_MARKER];
+    }
+    return [options.sanitize(finalFrame)];
+  };
+
+  return { push, flush };
+}

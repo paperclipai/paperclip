@@ -285,7 +285,12 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText, redactSensitiveValue } from "../redaction.js";
+import {
+  createSensitiveTextStreamRedactor,
+  redactEventPayload,
+  redactSensitiveText,
+  redactSensitiveValue,
+} from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
@@ -16060,6 +16065,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
+    let flushPendingLogChunks: () => Promise<void> = async () => {};
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
       if (!pendingOutputProgress) return;
@@ -16165,10 +16171,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-      const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = compactRunLogChunk(
-          redactSensitiveText(redactCurrentUserText(chunk, currentUserRedactionOptions)),
-        );
+      const sanitizeLogFrame = (frame: string) =>
+        compactRunLogChunk(redactCurrentUserText(frame, currentUserRedactionOptions));
+      const logRedactors = {
+        stdout: createSensitiveTextStreamRedactor({
+          sanitize: sanitizeLogFrame,
+          maxPendingChars: MAX_PERSISTED_LOG_CHUNK_CHARS,
+        }),
+        stderr: createSensitiveTextStreamRedactor({
+          sanitize: sanitizeLogFrame,
+          maxPendingChars: MAX_PERSISTED_LOG_CHUNK_CHARS,
+        }),
+      };
+      let logWriteChain: Promise<void> = Promise.resolve();
+      let hasLogWriteFailure = false;
+      let logWriteFailure: unknown = null;
+
+      const writeSanitizedLogFrame = async (
+        stream: "stdout" | "stderr",
+        sanitizedChunk: string,
+      ) => {
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -16233,6 +16255,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             chunk: payloadChunk,
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
+        });
+      };
+      const enqueueLogWrite = (operation: () => Promise<void>) => {
+        const queued = logWriteChain.then(async () => {
+          if (hasLogWriteFailure) throw logWriteFailure;
+          try {
+            await operation();
+          } catch (error) {
+            hasLogWriteFailure = true;
+            logWriteFailure = error;
+            throw error;
+          }
+        });
+        logWriteChain = queued.catch(() => undefined);
+        return queued;
+      };
+      const onLog = (stream: "stdout" | "stderr", chunk: string) =>
+        enqueueLogWrite(async () => {
+          for (const sanitizedFrame of logRedactors[stream].push(chunk)) {
+            await writeSanitizedLogFrame(stream, sanitizedFrame);
+          }
+        });
+      flushPendingLogChunks = async () => {
+        await logWriteChain;
+        if (hasLogWriteFailure) throw logWriteFailure;
+        await enqueueLogWrite(async () => {
+          for (const stream of ["stdout", "stderr"] as const) {
+            for (const sanitizedFrame of logRedactors[stream].flush()) {
+              await writeSanitizedLogFrame(stream, sanitizedFrame);
+            }
+          }
         });
       };
       if (runScopedMentionedSkillKeys.length > 0) {
@@ -16804,9 +16857,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // state. Best-effort record finalize=failed so the dependent readiness
         // check keeps the gate closed instead of waking on stale local state,
         // and surface the original error to the caller.
+        const sanitizedWorkspaceFinalizeError = redactSensitiveText(
+          redactCurrentUserText(
+            adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            currentUserRedactionOptions,
+          ),
+        );
         try {
           await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            errorMessage: sanitizedWorkspaceFinalizeError,
           });
         } catch (recordErr) {
           logger.warn(
@@ -16817,16 +16876,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         throw adapterErr;
       } finally {
         try {
-          await revokeHeartbeatRunGatewayTokens({
-            db,
-            companyId: agent.companyId,
-            runId: run.id,
-          });
-        } catch (revokeErr) {
-          logger.warn(
-            { err: revokeErr, runId: run.id, companyId: agent.companyId },
-            "failed to revoke heartbeat-run MCP gateway tokens",
-          );
+          await flushPendingLogChunks();
+        } finally {
+          try {
+            await revokeHeartbeatRunGatewayTokens({
+              db,
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+          } catch (revokeErr) {
+            logger.warn(
+              { err: revokeErr, runId: run.id, companyId: agent.companyId },
+              "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
         }
       }
       // Reconcile the referenced-project set against the real remote staging outcome. A referenced
@@ -16965,6 +17028,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      await flushPendingLogChunks();
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
@@ -17278,9 +17342,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ?? nativeRunnerErrorCode(err)
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
-      logger.error({ err, runId }, "heartbeat execution failed");
+      logger.error(
+        { runId, errorCode: failureErrorCode, error: message },
+        "heartbeat execution failed",
+      );
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      await flushPendingLogChunks().catch((flushErr) => {
+        logger.warn({ err: flushErr, runId }, "failed to flush redacted run log frames after error");
+      });
       if (handle) {
         try {
           logSummary = await runLogStore.finalize(handle);
