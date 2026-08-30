@@ -377,7 +377,7 @@ describe("runtime context materialization", () => {
     ).toBe(false);
   });
 
-  it("never publishes a partial assignment when recovery copying fails", async () => {
+  it("restores the previous assignment when recovery copying fails", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-recovery-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
@@ -397,17 +397,21 @@ describe("runtime context materialization", () => {
       context(assigned, instructions),
       skillsHome,
     );
+    let rollbackAttempts = 0;
     await expect(
       materializeNativeRuntimeSkills(
         context(replacement, instructions, "replacement"),
         skillsHome,
         {
           renameTree: async (source, destination) => {
+            if (source.includes(".paperclip-skills-staging-")) {
+              throw new Error("simulated staged-tree rename failure");
+            }
             if (
-              source.includes(".paperclip-skills-staging-") ||
-              source.includes(".paperclip-skills-previous-")
+              source.includes(".paperclip-skills-previous-") &&
+              rollbackAttempts++ === 0
             ) {
-              throw new Error("simulated rename failure");
+              throw new Error("simulated rollback rename failure");
             }
             await rename(source, destination);
           },
@@ -421,25 +425,16 @@ describe("runtime context materialization", () => {
           },
         },
       ),
-    ).rejects.toThrow("runtime context skill replacement and rollback failed");
+    ).rejects.toThrow("simulated staged-tree rename failure");
 
-    await expect(stat(skillsHome)).rejects.toThrow();
-    const parentEntries = await readdir(dirname(skillsHome));
-    const previousEntries = parentEntries.filter((entry) =>
-      entry.startsWith(".paperclip-skills-previous-"),
-    );
-    expect(previousEntries).toHaveLength(1);
     await expect(
-      readFile(
-        join(dirname(skillsHome), previousEntries[0]!, "assigned", "SKILL.md"),
-        "utf8",
-      ),
+      readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"),
     ).resolves.toBe("# Assigned\n");
+    await expect(stat(join(skillsHome, "replacement"))).rejects.toThrow();
+    const parentEntries = await readdir(dirname(skillsHome));
     expect(
-      parentEntries.some(
-        (entry) =>
-          entry.startsWith(".paperclip-skills-staging-") ||
-          entry.startsWith(".paperclip-skills-recovery-"),
+      parentEntries.some((entry) =>
+        entry.startsWith(".paperclip-skills-"),
       ),
     ).toBe(false);
   });

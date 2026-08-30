@@ -230,10 +230,20 @@ export async function materializeNativeRuntimeSkills(
             await removeTree(previousHome).catch(() => undefined);
           } catch (copyError) {
             await removeTree(recoveryHome).catch(() => undefined);
-            throw new AggregateError(
-              [error, rollbackError, copyError],
-              "runtime context skill replacement and rollback failed",
-            );
+            try {
+              // A failed recovery copy can be caused by a separate resource
+              // constraint (for example, insufficient space) while the
+              // metadata-only rename is transiently unavailable. Retry the
+              // atomic rename once after removing the private partial copy so
+              // the complete previous assignment remains at its canonical
+              // path without introducing symlink/junction semantics.
+              await renameTree(previousHome, skillsHome);
+            } catch (finalRollbackError) {
+              throw new AggregateError(
+                [error, rollbackError, copyError, finalRollbackError],
+                "runtime context skill replacement and rollback failed",
+              );
+            }
           }
         }
       }
