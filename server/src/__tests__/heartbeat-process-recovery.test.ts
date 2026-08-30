@@ -106,6 +106,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
 import {
   readHotRestartIntent,
   resolveLegacyHotRestartIntentPath,
@@ -804,13 +805,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
 
     if (input.activePauseHold) {
-      await db.insert(issueTreeHolds).values({
-        companyId,
-        rootIssueId,
+      await issueTreeControlService(db).createHold(companyId, rootIssueId, {
         mode: "pause",
-        status: "active",
         reason: "pause recovery subtree",
         releasePolicy: { strategy: "manual" },
+        actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
       });
     }
 

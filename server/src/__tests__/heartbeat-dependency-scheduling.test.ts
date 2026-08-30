@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -939,17 +940,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         responsibleUserId: "responsible-user",
       })),
     ]);
-    const [hold] = await db
-      .insert(issueTreeHolds)
-      .values({
-        companyId,
-        rootIssueId,
-        mode: "pause",
-        status: "active",
-        reason: "security test hold",
-        releasePolicy: { strategy: "manual" },
-      })
-      .returning();
+    const treeControl = issueTreeControlService(db);
+    const { hold } = await treeControl.createHold(companyId, rootIssueId, {
+      mode: "pause",
+      reason: "security test hold",
+      releasePolicy: { strategy: "manual" },
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
 
     const blockedWake = await heartbeat.wakeup(agentId, {
       source: "automation",
@@ -1022,6 +1019,108 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
   });
 
+  it("creates one run when a historical ancestor hold does not include the issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const historicalRootIssueId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "LivenessEngineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: historicalRootIssueId,
+      companyId,
+      title: "Historical held root",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+    });
+
+    const treeControl = issueTreeControlService(db);
+    const historicalHold = await treeControl.createHold(companyId, historicalRootIssueId, {
+      mode: "pause",
+      reason: "historical pause",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      parentId: historicalRootIssueId,
+      title: "Attached after pause snapshot",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    expect(await treeControl.listHolds(companyId, issueId, { status: "active" })).toEqual([]);
+    expect(await treeControl.getHold(companyId, historicalHold.hold.id)).toMatchObject({
+      id: historicalHold.hold.id,
+      status: "active",
+      members: [expect.objectContaining({ issueId: historicalRootIssueId })],
+    });
+
+    const resume = await treeControl.createHold(companyId, issueId, {
+      mode: "resume",
+      reason: "confirm issue is not held",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    expect(resume.hold).toMatchObject({ status: "released", mode: "resume" });
+    expect(resume.preview.issues).toEqual([
+      expect.objectContaining({ id: issueId, skipped: true, skipReason: "not_held" }),
+    ]);
+    expect(resume.resumedPauseHoldIds).toEqual([]);
+
+    const releasedPause = await treeControl.createHold(companyId, issueId, {
+      mode: "pause",
+      reason: "short-lived target pause",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    await treeControl.releaseHold(companyId, issueId, releasedPause.hold.id, {
+      reason: "target pause released",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    expect(await treeControl.getActivePauseHoldGate(companyId, issueId)).toBeNull();
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "manual" },
+    });
+    expect(wake).not.toBeNull();
+
+    const runCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`)
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(runCount).toBe(1);
+  });
+
   it("allows comment interaction wakes when a legacy hold has a full_pause note", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1059,13 +1158,12 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
     });
-    await db.insert(issueTreeHolds).values({
-      companyId,
-      rootIssueId,
+    const treeControl = issueTreeControlService(db);
+    await treeControl.createHold(companyId, rootIssueId, {
       mode: "pause",
-      status: "active",
       reason: "full pause",
       releasePolicy: { strategy: "manual", note: "full_pause" },
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
     });
 
     const rootCommentId = randomUUID();
