@@ -194,6 +194,22 @@ fn wait_for_provider_exit(provider: &mut CodexProvider) {
     panic!("the provider accepted a reused turn identity but remained live");
 }
 
+fn wait_for_fake_provider_idle(directory: &Path) {
+    let state_path = directory.join("fake-state.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let active_turn_id = fs::read(&state_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|state| state.get("activeTurnId").cloned());
+        if active_turn_id == Some(Value::Null) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("the fake provider did not persist its idle turn state before the deadline");
+}
+
 fn saturate_provider_tool_receipts(directory: &Path) {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(task_context_tool_set()).unwrap();
@@ -735,6 +751,10 @@ fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
             .expect("start provider turn in the rolled identity epoch");
         wait_for_notification(&mut provider, "turn/completed");
     }
+    // The terminal notification is flushed before the fake provider persists
+    // its idle state. Wait for that write so the injected recovery snapshot
+    // cannot be overwritten by the just-completed turn.
+    wait_for_fake_provider_idle(&directory);
     fs::write(
         directory.join("fake-state.json"),
         serde_json::to_vec_pretty(&json!({
@@ -912,7 +932,11 @@ fn rejected_replacement_turn_start_preserves_result_and_exit_authority() {
         .start_turn("Reject replacement work.", &config.cwd)
         .expect_err("the replacement turn/start returns a definite rejection");
     let mut buffered_notification_seen = false;
-    let rejected_start_exit = (0..64).find_map(|_| {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let rejected_start_exit = loop {
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
         match provider
             .poll()
             .expect("poll exit after rejected replacement start")
@@ -923,21 +947,23 @@ fn rejected_replacement_turn_start_preserves_result_and_exit_authority() {
                         == Some("buffered before replacement rejection") =>
             {
                 buffered_notification_seen = true;
-                None
             }
             Some(CodexProviderEvent::Exited {
                 success,
                 completed_turn_authoritative,
                 completion_reconciles_exit,
                 ..
-            }) => Some((
-                success,
-                completed_turn_authoritative,
-                completion_reconciles_exit,
-            )),
-            _ => None,
+            }) => {
+                break Some((
+                    success,
+                    completed_turn_authoritative,
+                    completion_reconciles_exit,
+                ));
+            }
+            _ => {}
         }
-    });
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     assert!(buffered_notification_seen);
     assert_eq!(rejected_start_exit, Some((false, true, false)));
 
