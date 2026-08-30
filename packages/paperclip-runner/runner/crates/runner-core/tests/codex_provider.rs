@@ -3721,25 +3721,28 @@ fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    for _ in 0..4 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut rejected_at_capacity = false;
+    while !rejected_at_capacity && std::time::Instant::now() < deadline {
         let events = recovered
             .poll_events()
             .expect("runtime-request cleanup remains bounded across repeated polls");
         assert!(events.len() <= 128);
-    }
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while call_count(&directory, "runtime-response:rejected") == 0
-        && std::time::Instant::now() < deadline
-    {
+        rejected_at_capacity = events.iter().any(|event| {
+            event.event_type == "provider.notice.recorded"
+                && event.payload["summary"]
+                    == "rejected a Codex runtime request at the bounded pending-input limit"
+        });
         recovered
-            .poll_events()
-            .expect("continue bounded receipt-limit cleanup polling");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+            .acknowledge_events(events.len())
+            .expect("advance the bounded durable event prefix");
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
     assert!(
-        call_count(&directory, "runtime-response:rejected") > 0,
-        "requests above the pending count/byte envelope are rejected instead of retained"
+        rejected_at_capacity,
+        "production records that requests above the pending count/byte envelope were rejected"
     );
 
     recovered.shutdown().expect("stop recovered provider");
