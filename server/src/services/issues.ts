@@ -449,14 +449,16 @@ async function bindHeartbeatRunToCheckedOutIssue(
     : {};
   const currentIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
   const currentTaskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
-  if (currentIssueId === input.issueId && (currentTaskId === input.issueId || currentTaskId === "")) return;
+  if (currentIssueId && currentIssueId !== input.issueId) return;
+  if (currentTaskId && currentTaskId !== input.issueId) return;
+  if (currentIssueId === input.issueId && currentTaskId === input.issueId) return;
   await db
     .update(heartbeatRuns)
     .set({
       contextSnapshot: {
         ...context,
         issueId: input.issueId,
-        ...(currentTaskId ? {} : { taskId: input.issueId }),
+        taskId: input.issueId,
       },
       updatedAt: new Date(),
     })
