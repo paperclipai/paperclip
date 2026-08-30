@@ -1038,8 +1038,8 @@ describe("CapabilityMockControlPlaneAdapter", () => {
     });
   });
 
-  it("does not resume a requester task before its blockers finish", async () => {
-    const adapter = seeded({
+  it("routes approval continuation according to unresolved blocker state", async () => {
+    const seed = {
       actors: [
         {
           id: "actor-1",
@@ -1129,7 +1129,8 @@ describe("CapabilityMockControlPlaneAdapter", () => {
         blockedByTaskId: "task-3",
         createdAt: "2026-08-09T00:00:00.000Z",
       }],
-    });
+    } satisfies CapabilityFixtureSeed;
+    const adapter = seeded(seed);
     await adapter.start();
     await adapter.openFixtureRun({
       ...OPEN,
@@ -1167,6 +1168,54 @@ describe("CapabilityMockControlPlaneAdapter", () => {
       checkoutRunId: null,
       executionRunId: null,
     });
+
+    const completedBlockerAdapter = seeded({
+      ...seed,
+      tasks: seed.tasks.map((task) =>
+        task.id === "task-3"
+          ? {
+              ...task,
+              status: "done" as const,
+              completedAt: "2026-08-09T00:01:00.000Z",
+            }
+          : { ...task },
+      ),
+    });
+    await completedBlockerAdapter.start();
+    await completedBlockerAdapter.openFixtureRun({
+      ...OPEN,
+      capabilities: ["governance:approvals:decide"],
+    });
+    await expect(completedBlockerAdapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "completed-blocker-requester-decision",
+      command: {
+        kind: "decide_approval",
+        approvalId: "approval-blocked-requester",
+        decision: "approved",
+        note: "Continue the linked task after its dependency completed.",
+      },
+    })).resolves.toMatchObject({ disposition: "applied" });
+
+    const completedBlockerSnapshot = completedBlockerAdapter.snapshot();
+    expect(completedBlockerSnapshot.blockers).toEqual([
+      expect.objectContaining({
+        taskId: "task-2",
+        blockedByTaskId: "task-3",
+      }),
+    ]);
+    expect(completedBlockerSnapshot.tasks).toHaveLength(seed.tasks.length);
+    expect(completedBlockerSnapshot.wakes).toEqual([
+      expect.objectContaining({
+        actorId: "actor-2",
+        taskId: "task-2",
+        reason: "approval_resolved",
+        payload: {
+          approvalId: "approval-blocked-requester",
+          decision: "approved",
+        },
+      }),
+    ]);
   });
 
   it("does not schedule approval recovery for an inactive requester", async () => {

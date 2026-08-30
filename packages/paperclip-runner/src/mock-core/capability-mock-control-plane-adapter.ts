@@ -1178,7 +1178,11 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
   }
 
   #hasUnresolvedBlockers(taskId: string): boolean {
-    return this.#state.blockers.some((blocker) => blocker.taskId === taskId);
+    return this.#state.blockers.some(
+      (blocker) =>
+        blocker.taskId === taskId &&
+        this.#task(blocker.blockedByTaskId).status !== "done",
+    );
   }
 
   #dependsOn(taskId: string, candidateAncestorId: string, visited = new Set<string>()): boolean {
