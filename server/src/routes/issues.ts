@@ -2951,17 +2951,35 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
 
+    let target = issue;
+    if (
+      issue.assigneeAgentId === req.actor.agentId &&
+      issue.checkoutRunId &&
+      issue.checkoutRunId !== req.actor.runId
+    ) {
+      const latest = await svc.getById(issue.id);
+      if (latest) {
+        target = {
+          id: latest.id,
+          identifier: latest.identifier ?? issue.identifier,
+          companyId: latest.companyId,
+          assigneeAgentId: latest.assigneeAgentId,
+          checkoutRunId: latest.checkoutRunId,
+        };
+      }
+    }
+
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
     const decision = await observeCrossIssueInfluence(db, {
-      companyId: issue.companyId,
+      companyId: target.companyId,
       runId: req.actor.runId,
       agentId: req.actor.agentId,
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
-      targetIssueId: issue.id,
-      targetIssueIdentifier: issue.identifier ?? null,
-      targetCheckoutRunId: issue.checkoutRunId ?? null,
-      targetAssigneeAgentId: issue.assigneeAgentId ?? null,
+      targetIssueId: target.id,
+      targetIssueIdentifier: target.identifier ?? null,
+      targetCheckoutRunId: target.checkoutRunId ?? null,
+      targetAssigneeAgentId: target.assigneeAgentId ?? null,
       kind,
     });
     if (!decision || decision.allowed) return true;
@@ -4072,7 +4090,7 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: { allowVisibleIssueWrite?: boolean; skipCheckoutOwnership?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -4141,6 +4159,9 @@ export function issueRoutes(
       return true;
     }
     if (issue.status !== "in_progress") {
+      return true;
+    }
+    if (options.skipCheckoutOwnership) {
       return true;
     }
     const runId = requireAgentRunId(req, res);
@@ -11150,7 +11171,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { skipCheckoutOwnership: true }))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
