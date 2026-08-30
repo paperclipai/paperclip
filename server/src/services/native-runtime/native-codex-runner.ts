@@ -1,6 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -192,15 +203,32 @@ function trustedRemotePathScript(): string {
   return "PATH=/usr/bin:/bin; export PATH";
 }
 
+function resolveNativeCodexSeedHome(input: {
+  remote: boolean;
+  runtimeEnvironment: Record<string, string>;
+  hostEnvironment: NodeJS.ProcessEnv;
+}): string | null {
+  if (input.remote) return input.hostEnvironment.CODEX_HOME?.trim() || null;
+  return input.runtimeEnvironment.CODEX_HOME?.trim()
+    || input.hostEnvironment.CODEX_HOME?.trim()
+    || null;
+}
+
 function readNativeCodexSeedPayload(sourceHome: string | null): string {
   return `${NATIVE_CODEX_SEED_FILES.map((fileName) => {
     if (!sourceHome) return "";
+    let descriptor: number | null = null;
     try {
       const source = resolve(sourceHome, fileName);
       if (!lstatSync(source).isFile()) return "";
-      return readFileSync(source).toString("base64");
+      const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+      descriptor = openSync(source, constants.O_RDONLY | noFollow);
+      if (!fstatSync(descriptor).isFile()) return "";
+      return readFileSync(descriptor).toString("base64");
     } catch {
       return "";
+    } finally {
+      if (descriptor !== null) closeSync(descriptor);
     }
   }).join("\n")}\n`;
 }
@@ -234,6 +262,7 @@ function buildRemoteRunnerInstallScript(input: {
     `chmod 500 ${shellQuote(tempVerifiedBinary)}`,
     `rm -rf -- ${shellQuote(input.runRoot)}`,
     `mv -- ${shellQuote(tempRunRoot)} ${shellQuote(input.runRoot)}`,
+    `chmod 700 ${shellQuote(input.runRoot)} ${shellQuote(posix.dirname(input.verifiedBinary))} ${shellQuote(input.stateDirectory)}`,
     buildVerifiedRemoteExecutableScript({
       command: input.verifiedBinary,
       expectedSha256: input.digest,
@@ -261,7 +290,7 @@ function buildPrivateRemoteCodexHomeScript(input: {
     const sourceHome = shellQuote(input.sourceCodexHome);
     const targetHome = shellQuote(temporaryHome);
     commands.push(
-      `for paperclip_codex_seed in auth.json config.toml; do paperclip_codex_source=${sourceHome}/$paperclip_codex_seed; if [ -f "$paperclip_codex_source" ] && [ ! -L "$paperclip_codex_source" ]; then cp -- "$paperclip_codex_source" ${targetHome}/$paperclip_codex_seed; chmod 600 ${targetHome}/$paperclip_codex_seed; fi; done`,
+      `for paperclip_codex_seed in auth.json config.toml; do paperclip_codex_source=${sourceHome}/$paperclip_codex_seed; if [ -f "$paperclip_codex_source" ] && [ ! -L "$paperclip_codex_source" ]; then exec 8<"$paperclip_codex_source"; if [ ! -e /proc/self/fd/8 ]; then echo "paperclip_runner_remote_codex_seed_unsupported" >&2; exit 77; fi; cp -- /proc/self/fd/8 ${targetHome}/$paperclip_codex_seed; exec 8<&-; chmod 600 ${targetHome}/$paperclip_codex_seed; fi; done`,
     );
   } else {
     commands.push(
@@ -275,6 +304,7 @@ function buildPrivateRemoteCodexHomeScript(input: {
   commands.push(
     `rm -rf -- ${shellQuote(input.codexHome)}`,
     `mv -- ${shellQuote(temporaryHome)} ${shellQuote(input.codexHome)}`,
+    `chmod 700 ${shellQuote(input.codexHome)}`,
   );
   return commands.join("\n");
 }
@@ -293,6 +323,7 @@ export const nativeCodexRunnerRemoteInternals = {
   buildRemoteRunnerInstallScript,
   buildRemoteRuntimeCleanupScript,
   readNativeCodexSeedPayload,
+  resolveNativeCodexSeedHome,
 };
 
 function assertRemoteRunnerConnectUrl(connectUrl: string): string {
@@ -447,9 +478,14 @@ export async function executeNativeCodexRunner(input: {
     ?? `sha256:${createHash("sha256").update(readFileSync(binary)).digest("hex")}`;
   const runnerRuntimeRoot = remoteConfig?.runtimeRoot ?? localRuntimeRoot;
   let runnerStateDirectory = resolve(runnerRuntimeRoot, "runner", input.runId);
-  const sourceCodexHome = input.environment.CODEX_HOME?.trim()
-    || process.env.CODEX_HOME?.trim()
-    || null;
+  // Remote staging crosses a trust boundary. Only the control-plane operator's
+  // own CODEX_HOME may seed it; an agent-controlled runtime env must never turn
+  // this path into an arbitrary host-file export primitive.
+  const sourceCodexHome = resolveNativeCodexSeedHome({
+    remote: remoteTarget !== null,
+    runtimeEnvironment: input.environment,
+    hostEnvironment: process.env,
+  });
   let codexHome = remoteConfig ? "" : resolve(runnerRuntimeRoot, "codex", input.runId);
   let cleanupRemoteRuntime: (() => Promise<void>) | null = null;
   privateDirectory(localRuntimeRoot);
@@ -618,7 +654,6 @@ export async function executeNativeCodexRunner(input: {
       }
       throw new Error("paperclip_runner_remote_cancellation_already_registered");
     }
-    input.onDispatch();
     const remoteProcess = runAdapterExecutionTargetProcess(
       input.runId,
       remoteTarget,
@@ -649,6 +684,15 @@ export async function executeNativeCodexRunner(input: {
     };
     activeRemoteNativeRunnerCancellations.set(input.runId, cancelRemoteRunner);
     try {
+      await Promise.race([
+        prepared.waitForConnection(Math.min(Math.max(input.timeoutMs, 1_000), 30_000)),
+        remoteProcess.then((result) => {
+          throw new Error(
+            `paperclip_runner_process_exited_before_connection: code=${result.exitCode ?? "null"} signal=${result.signal ?? "null"}`,
+          );
+        }),
+      ]);
+      input.onDispatch();
       const completed = await Promise.race([
         prepared.waitForTerminal(input.timeoutMs),
         remoteProcess.then(async (result) => {

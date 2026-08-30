@@ -61,6 +61,8 @@ export interface PreparedRunnerPrpSession {
     readonly disposition: "committed" | "duplicate";
     readonly resultId: string;
   }>;
+  /** Wait until a runner has completed PRP authentication for this bound run. */
+  waitForConnection(timeoutMs?: number): Promise<void>;
   waitForTerminal(timeoutMs?: number): Promise<{
     readonly result: PrpStructuredRunResult;
     readonly terminal: PrpTerminalState;
@@ -340,6 +342,18 @@ export function runnerPrpCoordinator(
         completeRun: (completeInput) => {
           if (released) throw new Error("runner_prp_session_released");
           return nativeStore.completeRun(completeInput);
+        },
+        waitForConnection: async (timeoutMs = 30_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
+            throw new Error("runner_prp_connection_timeout_invalid");
+          }
+          const deadline = Date.now() + timeoutMs;
+          while (!released && authority.activeRunnerConnectionCount() === 0) {
+            if (Date.now() >= deadline) throw new Error("runner_prp_connection_timeout");
+            await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+          }
+          if (released) throw new Error("runner_prp_session_released");
         },
         waitForTerminal: async (timeoutMs = 60 * 60 * 1_000) => {
           if (released) throw new Error("runner_prp_session_released");

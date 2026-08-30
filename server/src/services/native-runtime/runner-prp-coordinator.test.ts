@@ -264,6 +264,9 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       `ws://127.0.0.1:3213/api/runner/v1/connect/${seed.runId}`,
     );
     expect(prepared.bootstrapTicket).toMatch(/^bootstrap_/);
+    await expect(prepared.waitForConnection(999)).rejects.toThrow(
+      "runner_prp_connection_timeout_invalid",
+    );
     expect(prepared.semanticTools.map((tool) => tool.name)).toEqual([
       "get_task_context",
       "get_task_history",

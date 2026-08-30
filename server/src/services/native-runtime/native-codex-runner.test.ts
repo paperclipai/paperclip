@@ -120,6 +120,7 @@ describe("remote native runner preparation", () => {
     });
     expect(script).toContain("cp -- /proc/self/fd/9");
     expect(script).toContain("chmod 500");
+    expect(script).toContain("chmod 700 '/runner-runtime/runs/abc'");
     expect(script.match(/paperclip_runner_expected_sha=/g)).toHaveLength(2);
     expect(script).not.toContain("bootstrap");
   });
@@ -135,9 +136,29 @@ describe("remote native runner preparation", () => {
     );
     expect(prepareScript).toContain("IFS= read -r paperclip_codex_auth");
     expect(prepareScript).toContain("chmod 600");
+    expect(prepareScript).toContain("chmod 700 '/runner-runtime/runs/abc/codex-home'");
     expect(prepareScript).toContain("codex-home.prepare");
     expect(prepareScript).not.toContain("auth-secret");
     expect(cleanupScript).toContain("rm -rf -- '/runner-runtime/runs/abc'");
+  });
+
+  it("never exports an agent-selected local Codex home to a remote target", () => {
+    const resolveSeedHome = nativeCodexRunnerRemoteInternals.resolveNativeCodexSeedHome;
+    expect(resolveSeedHome({
+      remote: true,
+      runtimeEnvironment: { CODEX_HOME: "C:/sensitive/agent-selected" },
+      hostEnvironment: { CODEX_HOME: "C:/trusted/operator-home" },
+    })).toBe("C:/trusted/operator-home");
+    expect(resolveSeedHome({
+      remote: true,
+      runtimeEnvironment: { CODEX_HOME: "C:/sensitive/agent-selected" },
+      hostEnvironment: {},
+    })).toBeNull();
+    expect(resolveSeedHome({
+      remote: false,
+      runtimeEnvironment: { CODEX_HOME: "C:/local-agent-home" },
+      hostEnvironment: { CODEX_HOME: "C:/trusted/operator-home" },
+    })).toBe("C:/local-agent-home");
   });
 });
 
