@@ -37,7 +37,7 @@ describe("resolveHeartbeatRuntimeMode", () => {
     }) as NativeRunnerSelectionError);
   });
 
-  it("selects only Codex on a local target", () => {
+  it("selects only Codex on a realized local or remote target", () => {
     expect(resolveHeartbeatRuntimeMode({
       ...base,
       adapterType: "paperclip_runner",
@@ -47,11 +47,16 @@ describe("resolveHeartbeatRuntimeMode", () => {
       adapterType: "paperclip_runner",
       adapterConfig: { provider: "opencode" },
     })).toThrow(/only the Codex provider/);
-    expect(() => resolveHeartbeatRuntimeMode({
+    expect(resolveHeartbeatRuntimeMode({
       ...base,
       adapterType: "paperclip_runner",
       executionTarget: { kind: "remote" },
-    })).toThrow(/local execution environment/);
+    })).toMatchObject({ kind: "native", provider: "codex" });
+    expect(() => resolveHeartbeatRuntimeMode({
+      ...base,
+      adapterType: "paperclip_runner",
+      executionTarget: { kind: "cloud" },
+    })).toThrow(/realized local or remote execution environment/);
   });
 
   it("recovers a persisted native run after the flag changes", () => {

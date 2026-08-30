@@ -970,6 +970,33 @@ broker hostname is resolved once and the request is pinned to the approved
 address; IPv4 and IPv6 link-local destinations remain denied even when their
 host is allowlisted.
 
+### Remote Paperclip Runner targets
+
+The experimental `paperclip_runner` adapter may run in an already-realized
+Paperclip remote execution environment. Local execution remains the default.
+Remote mode requires all of the following server settings:
+
+- `PAPERCLIP_RUNNER_CONNECT_URL`: a runner-reachable private `ws://`
+  origin with no path, query, fragment, or credentials. The server appends the
+  run-bound `/api/runner/v1/connect/{runId}` path.
+- `PAPERCLIP_RUNNER_REMOTE_DIGEST`: the immutable `sha256:` digest of the
+  `paperclip-runnerd` artifact installed in the remote image.
+- `PAPERCLIP_RUNNER_REMOTE_BINARY`: command or absolute path in the remote
+  image; defaults to `paperclip-runnerd`.
+- `PAPERCLIP_RUNNER_REMOTE_RUNTIME_ROOT`: private, ephemeral remote runtime
+  root; defaults to `/runner-runtime`.
+
+The remote image owns its Codex home and runner state beneath that runtime root.
+The control plane does not copy SQLite state, caches, or sockets into the lane.
+It also does not inherit the control-plane process environment into a remote
+lane; only the resolved run environment plus the runner-owned bootstrap and
+Codex-home values cross that boundary.
+Only the one-use bootstrap ticket is passed in the process environment; the
+ticket is removed immediately by runnerd, is never placed in argv or the URL,
+and is exchanged for a short-lived connection lease. The remote PRP host is
+bound explicitly in runnerd's launch arguments and post-authentication PRP
+frames remain AES-256-GCM protected.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:

@@ -49,8 +49,8 @@ paths.
 - Replace existing direct adapters.
 - Move business authorization or issue status policy into Rust.
 - Give runnerd a broad Paperclip API credential.
-- Support OpenCode, ACPX, Claude Managed, AWS AgentCore, or remote sandboxes in
-  the first production slice.
+- Support OpenCode, ACPX, Claude Managed, AWS AgentCore, or a general-purpose
+  remote-sandbox scheduler in the first production slice.
 - Expose browser SDK, React SDK, eval, lab, or scenario-explorer package entry
   points in the initial release.
 - Commit recorded screenshots, stress logs, or construction history as product
@@ -74,6 +74,13 @@ The server opens a native run and launches a verified runnerd artifact in the
 realized execution environment. Runnerd opens the outbound PRP connection. It
 then owns the provider process group and the durable transport state for that
 run.
+
+The realized environment may be local or an existing Paperclip remote execution
+target. Remote selection does not give the control plane a generic shell on a
+new host: the environment driver has already realized and leased that target,
+and the native runner uses the same bounded process interface as other adapters.
+The remote image must contain `paperclip-runnerd`; the control plane requires a
+configured immutable runner digest and a private runner-reachable PRP origin.
 
 The browser does not connect to runnerd. It reads projections from the existing
 Paperclip APIs and task-thread models.
@@ -162,6 +169,13 @@ stored. Runnerd never receives a broad Paperclip API key.
 The server rejects expired, replayed, revoked, cross-company, mismatched,
 malformed, oversized, or protocol-incompatible connections. Cancellation,
 timeout, supersession, and environment-lease loss revoke runner authority.
+
+Loopback transport remains the default. A remote runner accepts a non-loopback
+PRP destination only when its launch arguments bind the exact destination host.
+The bootstrap ticket never appears in the URL or argv. Authentication proves
+ticket possession with HMAC, then all control frames use the existing
+AES-256-GCM channel. Deployments should expose that endpoint only on a private
+runner ingress; it is not a board/API credential surface.
 
 ## Durable delivery and recovery
 

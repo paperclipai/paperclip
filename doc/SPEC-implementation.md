@@ -1198,6 +1198,19 @@ Behavior:
 - non-2xx marks failed invocation
 - optional callback endpoint allows asynchronous completion updates
 
+## 11.3.1 Experimental Paperclip Runner target
+
+The explicit, default-off `paperclip_runner` adapter may launch its verified
+runner artifact in either a local environment or an already-realized remote
+execution target. Paperclip remains authoritative for the run binding,
+completion contract, semantic actions, budget and status finalization.
+
+Remote launch requirements are fail closed: an immutable runner digest, a
+private runner-reachable PRP origin, an exact non-loopback host binding, a
+one-use bootstrap ticket delivered only in the process environment, and a
+private ephemeral runner runtime root. The runner receives no broad Paperclip
+API key. Missing remote configuration must fail before provider dispatch.
+
 ## 11.4 Context Delivery
 
 - `thin`: send IDs and pointers only; agent fetches context via API

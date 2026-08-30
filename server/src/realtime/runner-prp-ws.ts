@@ -20,7 +20,24 @@ interface RunnerPrpUpgradeRequest extends IncomingMessage {
 }
 
 const registrations = new Map<string, RegisteredAuthority>();
-let loopbackOrigin: string | null = null;
+let connectOrigin: string | null = null;
+
+export function resolveRunnerPrpConnectOrigin(input: string): string {
+  const url = new URL(input);
+  if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+    throw new Error("runner_prp_websocket_api_url_invalid");
+  }
+  if (url.username || url.password || (url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
+    throw new Error("runner_prp_websocket_origin_invalid");
+  }
+  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
+  url.username = "";
+  url.password = "";
+  url.pathname = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}
 
 function rejectUpgrade(
   socket: Duplex,
@@ -42,19 +59,16 @@ function rejectUpgrade(
 
 export function setupRunnerPrpWebSocketServer(
   server: Server,
-  options: { readonly apiUrl: string },
+  options: {
+    readonly apiUrl: string;
+    /**
+     * Optional runner-reachable origin. This is intentionally separate from
+     * the board/API URL so a remote execution lane can use a private ingress.
+     */
+    readonly connectUrl?: string;
+  },
 ): void {
-  const apiUrl = new URL(options.apiUrl);
-  if (!["http:", "https:"].includes(apiUrl.protocol)) {
-    throw new Error("runner_prp_websocket_api_url_invalid");
-  }
-  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-  apiUrl.username = "";
-  apiUrl.password = "";
-  apiUrl.pathname = "";
-  apiUrl.search = "";
-  apiUrl.hash = "";
-  loopbackOrigin = apiUrl.toString().replace(/\/$/, "");
+  connectOrigin = resolveRunnerPrpConnectOrigin(options.connectUrl ?? options.apiUrl);
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -91,7 +105,7 @@ export async function registerRunnerPrpAuthority(input: {
   readonly runId: string;
   readonly authority: DurablePrpControlPlane;
 }): Promise<{ readonly connectUrl: string; release(): Promise<void> }> {
-  if (loopbackOrigin === null) {
+  if (connectOrigin === null) {
     throw new Error("runner_prp_websocket_server_not_configured");
   }
   if (!UUID_PATTERN.test(input.runId) || input.companyId.length === 0) {
@@ -107,7 +121,7 @@ export async function registerRunnerPrpAuthority(input: {
     generation,
   });
   return {
-    connectUrl: `${loopbackOrigin}${CONNECT_PATH_PREFIX}${input.runId}`,
+    connectUrl: `${connectOrigin}${CONNECT_PATH_PREFIX}${input.runId}`,
     release: async () => {
       if (registrations.get(input.runId)?.generation === generation) {
         registrations.delete(input.runId);
@@ -126,6 +140,6 @@ export const runnerPrpWebSocketInternals = {
   },
   resetForTests(): void {
     registrations.clear();
-    loopbackOrigin = null;
+    connectOrigin = null;
   },
 };

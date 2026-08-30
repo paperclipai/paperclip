@@ -81,10 +81,10 @@ export function resolveHeartbeatRuntimeMode(input: {
       "Paperclip Runner requires a standard, planning, or ask task.",
     );
   }
-  if (!input.executionTarget || input.executionTarget.kind !== "local") {
+  if (!input.executionTarget || !["local", "remote"].includes(input.executionTarget.kind ?? "")) {
     throw new NativeRunnerSelectionError(
       "paperclip_runner_environment_unsupported",
-      "Paperclip Runner currently requires a local execution environment.",
+      "Paperclip Runner requires a realized local or remote execution environment.",
     );
   }
   if (!["active", "running"].includes(input.agentStatus)) {

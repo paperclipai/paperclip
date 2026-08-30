@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   registerRunnerPrpAuthority,
+  resolveRunnerPrpConnectOrigin,
   runnerPrpWebSocketInternals,
   setupRunnerPrpWebSocketServer,
 } from "./runner-prp-ws.js";
@@ -52,6 +53,40 @@ describe("runner PRP websocket route", () => {
         runId,
       }),
     ).toBe(false);
+    server.close();
+  });
+
+  it("uses an explicit runner-reachable origin without accepting URL credentials or paths", () => {
+    expect(resolveRunnerPrpConnectOrigin("http://paperclip.internal:3100")).toBe(
+      "ws://paperclip.internal:3100",
+    );
+    expect(resolveRunnerPrpConnectOrigin("https://paperclip.example")).toBe(
+      "wss://paperclip.example",
+    );
+    expect(() => resolveRunnerPrpConnectOrigin("https://user@paperclip.example")).toThrow(
+      "runner_prp_websocket_origin_invalid",
+    );
+    expect(() => resolveRunnerPrpConnectOrigin("https://paperclip.example/nested")).toThrow(
+      "runner_prp_websocket_origin_invalid",
+    );
+  });
+
+  it("publishes the configured private runner origin", async () => {
+    const server = createServer();
+    setupRunnerPrpWebSocketServer(server, {
+      apiUrl: "http://127.0.0.1:3214",
+      connectUrl: "http://paperclip.internal:3100",
+    });
+    const runId = "00000000-0000-4000-8000-000000000780";
+    const registration = await registerRunnerPrpAuthority({
+      companyId: "company-1",
+      runId,
+      authority: { handleUpgrade: vi.fn() } as unknown as DurablePrpControlPlane,
+    });
+    expect(registration.connectUrl).toBe(
+      `ws://paperclip.internal:3100/api/runner/v1/connect/${runId}`,
+    );
+    await registration.release();
     server.close();
   });
 

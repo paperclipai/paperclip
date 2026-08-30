@@ -340,7 +340,10 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
-import { executeNativeCodexRunner } from "./native-runtime/native-codex-runner.js";
+import {
+  executeNativeCodexRunner,
+  requestRemoteNativeRunnerCancellation,
+} from "./native-runtime/native-codex-runner.js";
 import { prepareNativeHeartbeatRun } from "./native-runtime/prepare-native-run.js";
 import {
   NativeRunnerSelectionError,
@@ -16699,6 +16702,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             completionContract: native.completionContract,
             timeoutMs,
             environment,
+            executionTarget,
             onLog,
             onSpawn: async (meta) => {
               markDispatchStarted();
@@ -19785,8 +19789,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : options.resultJson;
 
     const running = runningProcesses.get(run.id);
+    const remoteNativeCancellationRequested = run.runtimeMode === "native"
+      && requestRemoteNativeRunnerCancellation(run.id, reason);
     try {
-      if (running) {
+      if (remoteNativeCancellationRequested) {
+        // The run-bound PRP shutdown command owns remote cancellation. Never
+        // interpret a remote runner PID as a local operating-system process.
+      } else if (running) {
         await terminateHeartbeatRunProcess({
           pid: running.child.pid ?? run.processPid,
           processGroupId: running.processGroupId ?? run.processGroupId,
@@ -19860,7 +19869,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const running = runningProcesses.get(run.id);
-      if (running) {
+      const remoteNativeCancellationRequested = run.runtimeMode === "native"
+        && requestRemoteNativeRunnerCancellation(run.id, reason);
+      if (remoteNativeCancellationRequested) {
+        // Remote cancellation is delivered through the authenticated PRP
+        // authority; there is no local process handle to terminate.
+      } else if (running) {
         await terminateHeartbeatRunProcess({
           pid: running.child.pid ?? run.processPid,
           processGroupId: running.processGroupId ?? run.processGroupId,

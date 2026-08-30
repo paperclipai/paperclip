@@ -862,7 +862,10 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
-  setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
+  setupRunnerPrpWebSocketServer(server, {
+    apiUrl: configuredApiUrl,
+    connectUrl: process.env.PAPERCLIP_RUNNER_CONNECT_URL?.trim() || undefined,
+  });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
