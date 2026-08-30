@@ -181,7 +181,7 @@ describe("Codex ACPX runtime adapter", () => {
         });
       vi.useFakeTimers();
       try {
-        const opening = openCodexAcpxRuntime(openOptions(command), {
+        const openingError = openCodexAcpxRuntime(openOptions(command), {
           createRegistry: () => registry(),
           createStore: () => store(),
           createRuntime: (runtimeOptions) => {
@@ -195,12 +195,15 @@ describe("Codex ACPX runtime adapter", () => {
             });
             return runtime;
           },
-        });
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
         for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
         expect(command.spawn).toHaveBeenCalledOnce();
 
         await vi.advanceTimersByTimeAsync(2_001);
-        await expect(opening).rejects.toBe(handshakeFailure);
+        await expect(openingError).resolves.toBe(handshakeFailure);
         expect(processKill).toHaveBeenCalledWith(-54_321, "SIGTERM");
         expect(processKill).toHaveBeenCalledWith(-54_321, "SIGKILL");
         expect(child.kill).not.toHaveBeenCalled();
@@ -1077,6 +1080,10 @@ describe("Codex ACPX runtime adapter", () => {
     });
 
     child.emit("error", providerError);
+    // A real ChildProcess has committed its terminal status before `close`.
+    // Model that ordering so the process tracker can prove this child no
+    // longer needs a cleanup signal while retaining its earlier error.
+    child.exitCode = 1;
     child.emit("close", 1, null);
 
     await expect(port.close({ reason: "test complete" })).rejects.toMatchObject(
