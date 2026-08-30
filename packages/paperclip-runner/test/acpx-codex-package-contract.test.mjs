@@ -67,6 +67,27 @@ test("the ACPX patch preserves launch-only state and verified spawning", () => {
   }
 });
 
+test("the ACPX patch fails closed on an invalid spawn environment", () => {
+  for (const token of [
+    "isPlainStringEnvironment",
+    "Object.getPrototypeOf(value)",
+    'Object.values(value).every((entry) => typeof entry === "string")',
+    "spawnEnvironment !== void 0",
+    "sourceEnvironment = spawnEnvironment()",
+    "ACPX spawn environment must be a plain record of string values",
+  ]) {
+    assert.match(
+      acpxPatch,
+      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+  assert.doesNotMatch(acpxPatch, /spawnEnvironment\?\.\(\)/);
+  assert.doesNotMatch(
+    acpxPatch,
+    /spawnEnvironment \? \{ \.\.\.spawnEnvironment \} : \{ \.\.\.process\.env \}/,
+  );
+});
+
 test("the Codex patch enforces isolated instructions, tools, and skills", () => {
   for (const token of [
     "PAPERCLIP_ACPX_ISOLATED_CONTEXT",
@@ -75,6 +96,9 @@ test("the Codex patch enforces isolated instructions, tools, and skills", () => 
     '"features.apps": false',
     "process.env.CODEX_HOME",
   ]) {
-    assert.match(codexPatch, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(
+      codexPatch,
+      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
   }
 });

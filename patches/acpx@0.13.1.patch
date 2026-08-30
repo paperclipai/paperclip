@@ -2,14 +2,24 @@ diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
 index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..2ed4b0ba1bd6d3abf8bbafe0a3cd5ea1f093f90b 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
-@@ -3135,8 +3135,8 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3135,8 +3135,18 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
 -function buildAgentEnvironment(authCredentials, sessionEnv) {
 -	const env = { ...process.env };
++function isPlainStringEnvironment(value) {
++	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
++	const prototype = Object.getPrototypeOf(value);
++	return (prototype === Object.prototype || prototype === null) && Object.values(value).every((entry) => typeof entry === "string");
++}
 +function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
-+	const env = spawnEnvironment ? { ...spawnEnvironment } : { ...process.env };
++	let sourceEnvironment = process.env;
++	if (spawnEnvironment !== void 0) {
++		sourceEnvironment = spawnEnvironment();
++		if (!isPlainStringEnvironment(sourceEnvironment)) throw new TypeError("ACPX spawn environment must be a plain record of string values");
++	}
++	const env = { ...sourceEnvironment };
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
@@ -35,7 +45,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..2ed4b0ba1bd6d3abf8bbafe0a3cd5ea1
 +				this.options.spawnCwd ?? this.options.cwd,
 +				this.options.authCredentials,
 +				this.options.sessionOptions?.env,
-+				this.options.spawnEnvironment?.()
++				this.options.spawnEnvironment
 +			)
  		};
  	}
