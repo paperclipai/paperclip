@@ -542,11 +542,15 @@ function safeError(error: unknown): string {
 }
 
 function safeJson(value: unknown): string {
-  const serialized = JSON.stringify(value) ?? "null";
-  if (Buffer.byteLength(serialized) > MAX_RESULT_TEXT_BYTES) {
-    throw new Error("Runner tool result exceeded the retained payload limit");
+  try {
+    const serialized = JSON.stringify(value) ?? "null";
+    if (Buffer.byteLength(serialized) > MAX_RESULT_TEXT_BYTES) {
+      return '{"omitted":true,"reason":"payload_limit"}';
+    }
+    return serialized;
+  } catch {
+    return '{"omitted":true,"reason":"serialization_failed"}';
   }
-  return serialized;
 }
 
 function canonicalJson(value: unknown): string {

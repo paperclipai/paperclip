@@ -234,28 +234,54 @@ describe("runner semantic MCP bridge", () => {
     });
   });
 
-  it("returns an explicit tool error instead of truncating oversized JSON", async () => {
+  it("preserves successful mutation identity when the result is oversized", async () => {
+    const handler = vi.fn(async () => ({ text: "x".repeat(65 * 1024) }));
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
-      handler: async () => ({ text: "x".repeat(65 * 1024) }),
+      handler,
+    });
+    bridges.push(bridge);
+    const request = {
+      id: "large-result",
+      method: "tools/call",
+      params: { name: "documents.read", arguments: {} },
+    };
+
+    for (const response of [await rpc(bridge, request), await rpc(bridge, request)]) {
+      const body = (await response.json()) as {
+        result: { content: Array<{ text: string }>; isError?: boolean };
+      };
+      expect(body.result).not.toHaveProperty("isError");
+      expect(JSON.parse(body.result.content[0]!.text)).toEqual({
+        omitted: true,
+        reason: "payload_limit",
+      });
+    }
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves success when a result cannot be serialized", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const bridge = await startRunnerToolBridge({
+      tools: [tool("documents.read")],
+      handler: async () => cyclic,
     });
     bridges.push(bridge);
 
-    expect(
-      await (
-        await rpc(bridge, {
-          id: "large-result",
-          method: "tools/call",
-          params: { name: "documents.read", arguments: {} },
-        })
-      ).json(),
-    ).toMatchObject({
-      result: {
-        isError: true,
-        content: [
-          { text: "Runner tool result exceeded the retained payload limit" },
-        ],
-      },
+    const body = (await (
+      await rpc(bridge, {
+        id: "cyclic-result",
+        method: "tools/call",
+        params: { name: "documents.read", arguments: {} },
+      })
+    ).json()) as {
+      result: { content: Array<{ text: string }>; isError?: boolean };
+    };
+    expect(body.result).not.toHaveProperty("isError");
+    expect(JSON.parse(body.result.content[0]!.text)).toEqual({
+      omitted: true,
+      reason: "serialization_failed",
     });
   });
 
