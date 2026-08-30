@@ -1322,7 +1322,7 @@ describe("CapabilityMockControlPlaneAdapter", () => {
     await adapter.start();
     await adapter.openFixtureRun({
       ...OPEN,
-      capabilities: ["task:write"],
+      capabilities: ["dependencies:write"],
     });
 
     await expect(adapter.applyCommand({
