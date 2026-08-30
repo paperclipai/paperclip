@@ -549,7 +549,7 @@ fn recovery_rejects_tampered_authorization_catalog_bindings() {
     let error = recovered
         .attach_existing_run()
         .expect_err("recovery must bind map keys to declared operation identities");
-    assert!(error.to_string().contains("identities are inconsistent"));
+    assert!(error.to_string().contains("changed its authorized catalog"));
 }
 
 #[test]
@@ -596,8 +596,11 @@ fn recovery_rejects_tampered_retained_result_contracts() {
 
     let mut unauthorized = completed.clone();
     unauthorized["completed"]["call-1"]["result"]["operationId"] = json!("delete_company");
-    let mut recovered: ProviderToolBridge = serde_json::from_value(unauthorized).unwrap();
-    assert!(recovered.attach_existing_run().is_err());
+    let error = serde_json::from_value::<ProviderToolBridge>(unauthorized)
+        .expect_err("durable decoding must reject mismatched call and result identities");
+    assert!(error
+        .to_string()
+        .contains("retained provider tool receipt identity is inconsistent"));
 
     let mut invalid_output = completed;
     invalid_output["completed"]["call-1"]["result"]["result"] = json!(["not", "an", "object"]);
