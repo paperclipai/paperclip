@@ -35,13 +35,16 @@ function mockDbWithAgent(agent: {
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
 }, options: {
-  wakeupRequests?: Array<{ id: string }>;
+  wakeupRequests?: Array<{ id: string; status?: string }>;
 } = {}): Db {
   return {
     select: (selection?: unknown) => ({
       from: () => ({
         where: () => {
           if (selection && typeof selection === "object" && "id" in selection) {
+            if ("status" in selection) {
+              return Promise.resolve(options.wakeupRequests ?? []);
+            }
             return {
               limit: () => Promise.resolve(options.wakeupRequests ?? []),
             };
@@ -199,6 +202,7 @@ describe("notifyHireApproved", () => {
         priority: "high",
         originKind: "hire_kickoff",
         originId: "a1",
+        idempotencyKey: "hire-kickoff:a1",
       }),
     );
     expect(wakeup).toHaveBeenCalledWith(
@@ -206,6 +210,11 @@ describe("notifyHireApproved", () => {
       expect.objectContaining({
         reason: "hire_kickoff",
         payload: { issueId: "kickoff-1", mutation: "hire_approved" },
+        idempotencyKey: "hire-kickoff:a1:kickoff-1",
+        issueStateGuard: {
+          statuses: ["todo", "in_progress", "in_review", "blocked"],
+          assigneeAgentId: "a1",
+        },
       }),
     );
     expect(findActiveServerAdapter).toHaveBeenCalledWith("process");
@@ -228,7 +237,7 @@ describe("notifyHireApproved", () => {
       name: "Agent",
       adapterType: "process",
     }, {
-      wakeupRequests: [{ id: "wake-existing" }],
+      wakeupRequests: [{ id: "wake-existing", status: "queued" }],
     });
 
     await notifyHireApproved(db, {
@@ -266,8 +275,106 @@ describe("notifyHireApproved", () => {
       expect.objectContaining({
         reason: "hire_kickoff",
         payload: { issueId: "existing-kickoff", mutation: "hire_approved" },
+        idempotencyKey: "hire-kickoff:a1:existing-kickoff",
       }),
     );
+  });
+
+  it("retries kickoff wakeup when prior hire-hook wakeups only ended in terminal statuses", async () => {
+    mockKickoffServices({ existingIssue: { id: "existing-kickoff", assigneeAgentId: "a1", status: "todo" } });
+    vi.mocked(findActiveServerAdapter).mockReturnValue({ type: "process" } as any);
+
+    const db = mockDbWithAgent({
+      id: "a1",
+      companyId: "c1",
+      name: "Agent",
+      adapterType: "process",
+    }, {
+      wakeupRequests: [
+        { id: "wake-failed", status: "failed" },
+        { id: "wake-skipped", status: "skipped" },
+      ],
+    });
+
+    await notifyHireApproved(db, {
+      companyId: "c1",
+      agentId: "a1",
+      source: "approval",
+      sourceId: "ap1",
+    });
+
+    expect(createIssue).not.toHaveBeenCalled();
+    expect(wakeup).toHaveBeenCalledWith(
+      "a1",
+      expect.objectContaining({
+        reason: "hire_kickoff",
+        payload: { issueId: "existing-kickoff", mutation: "hire_approved" },
+      }),
+    );
+  });
+
+  it("treats idempotent kickoff creation deduplication as an existing issue", async () => {
+    vi.mocked(findActiveServerAdapter).mockReturnValue({ type: "process" } as any);
+    createIssue.mockImplementation(async (_companyId, input) => {
+      input.onDeduplicated?.("idempotency_key");
+      return { id: "kickoff-1", assigneeAgentId: "a1", status: "todo" };
+    });
+
+    const db = mockDbWithAgent({
+      id: "a1",
+      companyId: "c1",
+      name: "Agent",
+      adapterType: "process",
+    });
+
+    await notifyHireApproved(db, {
+      companyId: "c1",
+      agentId: "a1",
+      source: "approval",
+      sourceId: "ap1",
+    });
+
+    expect(createIssue).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({
+        idempotencyKey: "hire-kickoff:a1",
+      }),
+    );
+    expect(logActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "hire_kickoff.created",
+        entityId: "kickoff-1",
+      }),
+    );
+    expect(wakeup).toHaveBeenCalledWith(
+      "a1",
+      expect.objectContaining({
+        payload: { issueId: "kickoff-1", mutation: "hire_approved" },
+      }),
+    );
+  });
+
+  it("does not wake a reassigned kickoff issue for a different agent", async () => {
+    mockKickoffServices({ existingIssue: { id: "existing-kickoff", assigneeAgentId: "a2", status: "todo" } });
+    vi.mocked(findActiveServerAdapter).mockReturnValue({ type: "process" } as any);
+
+    const db = mockDbWithAgent({
+      id: "a1",
+      companyId: "c1",
+      name: "Agent",
+      adapterType: "process",
+    });
+
+    await notifyHireApproved(db, {
+      companyId: "c1",
+      agentId: "a1",
+      source: "approval",
+      sourceId: "ap1",
+    });
+
+    expect(createIssue).not.toHaveBeenCalled();
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it("logs kickoff creation even when queuing the kickoff wakeup fails", async () => {

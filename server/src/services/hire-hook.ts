@@ -14,7 +14,17 @@ const HIRE_APPROVED_MESSAGE =
 
 const HIRE_KICKOFF_ORIGIN_KIND = "hire_kickoff";
 const HIRE_KICKOFF_TITLE = "Onboarding: introduce yourself and share your first 30/60/90 plan";
+const HIRE_KICKOFF_WAKEABLE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
+const HIRE_KICKOFF_RETRYABLE_WAKE_TERMINAL_STATUSES = new Set(["skipped", "failed", "cancelled"]);
 type HireKickoffIssue = { id: string; assigneeAgentId: string | null; status: string };
+
+function buildHireKickoffIssueIdempotencyKey(agentId: string) {
+  return `hire-kickoff:${agentId}`;
+}
+
+function buildHireKickoffWakeIdempotencyKey(agentId: string, issueId: string) {
+  return `hire-kickoff:${agentId}:${issueId}`;
+}
 
 function buildHireKickoffBody(agentName: string) {
   return [
@@ -61,6 +71,7 @@ async function ensureHireKickoffIssue(
     return { issue: existingIssue, created: false };
   }
 
+  let deduplicated = false;
   const issue = await issuesSvc.create(input.companyId, {
     title: HIRE_KICKOFF_TITLE,
     description: buildHireKickoffBody(input.agentName),
@@ -72,13 +83,17 @@ async function ensureHireKickoffIssue(
     originKind: HIRE_KICKOFF_ORIGIN_KIND,
     originId: input.agentId,
     originFingerprint: `${input.source}:${input.sourceId}`,
+    idempotencyKey: buildHireKickoffIssueIdempotencyKey(input.agentId),
+    onDeduplicated: () => {
+      deduplicated = true;
+    },
   });
 
-  return { issue, created: true };
+  return { issue, created: !deduplicated };
 }
 
-function isWakeableKickoffIssue(issue: HireKickoffIssue) {
-  return Boolean(issue.assigneeAgentId) && !["backlog", "done", "cancelled"].includes(issue.status);
+function isWakeableKickoffIssue(issue: HireKickoffIssue, agentId: string) {
+  return issue.assigneeAgentId === agentId && HIRE_KICKOFF_WAKEABLE_STATUSES.includes(issue.status as typeof HIRE_KICKOFF_WAKEABLE_STATUSES[number]);
 }
 
 async function hasHireKickoffWakeupRequest(
@@ -90,7 +105,10 @@ async function hasHireKickoffWakeupRequest(
   },
 ) {
   const existing = await db
-    .select({ id: agentWakeupRequests.id })
+    .select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+    })
     .from(agentWakeupRequests)
     .where(
       and(
@@ -101,9 +119,8 @@ async function hasHireKickoffWakeupRequest(
         eq(agentWakeupRequests.requestedByActorId, "hire_hook"),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
       ),
-    )
-    .limit(1);
-  return existing.length > 0;
+    );
+  return existing.some((row) => !HIRE_KICKOFF_RETRYABLE_WAKE_TERMINAL_STATUSES.has(row.status));
 }
 
 async function shouldQueueHireKickoffWakeup(
@@ -115,7 +132,7 @@ async function shouldQueueHireKickoffWakeup(
     created: boolean;
   },
 ) {
-  if (!isWakeableKickoffIssue(input.issue)) return false;
+  if (!isWakeableKickoffIssue(input.issue, input.agentId)) return false;
   if (input.created) return true;
   try {
     return !(await hasHireKickoffWakeupRequest(db, {
@@ -149,8 +166,13 @@ async function queueHireKickoffWakeupSafely(
       reason: "hire_kickoff",
       mutation: "hire_approved",
       contextSource: "hire_hook",
+      idempotencyKey: buildHireKickoffWakeIdempotencyKey(input.agentId, input.issue.id),
       requestedByActorType: "system",
       requestedByActorId: "hire_hook",
+      issueStateGuard: {
+        statuses: [...HIRE_KICKOFF_WAKEABLE_STATUSES],
+        assigneeAgentId: input.agentId,
+      },
       rethrowOnError: true,
     });
   } catch (err) {
