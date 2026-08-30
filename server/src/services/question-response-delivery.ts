@@ -73,6 +73,11 @@ export interface QuestionResponseDeliveryOutcome {
   duplicate: boolean;
 }
 
+type AnsweredQuestionInteraction = Pick<
+  AskUserQuestionsInteraction,
+  "id" | "sourceRunId" | "title" | "payload" | "status" | "result"
+>;
+
 export interface QuestionResponseDeliveryServiceOptions {
   heartbeat: Heartbeat;
   /** Optional native steering seam. Direct adapters use the durable wake fallback. */
@@ -143,7 +148,7 @@ function canonicalQuestionSet(interaction: Pick<AskUserQuestionsInteraction, "ti
 }
 
 export function buildQuestionResponseDeliveryEnvelope(
-  interaction: AskUserQuestionsInteraction,
+  interaction: AnsweredQuestionInteraction,
 ): QuestionResponseDeliveryEnvelope {
   if (interaction.status !== "answered" || !interaction.result || interaction.result.cancelled === true) {
     throw new Error("question_response_interaction_not_answered");
@@ -199,7 +204,7 @@ export function formatQuestionResponseSummary(envelope: QuestionResponseDelivery
     : "Resolved questions and answers.";
 }
 
-export function formatDurableQuestionResponseSummary(interaction: AskUserQuestionsInteraction): string {
+export function formatDurableQuestionResponseSummary(interaction: AnsweredQuestionInteraction): string {
   const existing = compactLine(interaction.result?.summaryMarkdown);
   return existing ?? formatQuestionResponseSummary(buildQuestionResponseDeliveryEnvelope(interaction));
 }

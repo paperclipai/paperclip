@@ -92,6 +92,7 @@ describe("paperclip skill utils", () => {
 
   it("requires issue-update writes to be verified, not inferred", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const helperPath = path.resolve("skills/paperclip/scripts/paperclip-issue-update.sh");
 
     expect(skillBody).toContain("Verify writes — never infer them");
     expect(skillBody).toContain("An empty response body means the write FAILED");
@@ -99,6 +100,10 @@ describe("paperclip skill utils", () => {
     // The helper's verification behavior (HTTP status parsing, retry
     // classification, attempt bound, exit codes) is exercised end-to-end in
     // paperclip-issue-update-helper.test.ts against a live local server.
+    expect(skillBody).toContain("--review-for-responsible-user");
+    await expect(fs.access(helperPath)).resolves.toBeUndefined();
+    const helperStat = await fs.stat(helperPath);
+    expect(helperStat.mode & 0o111).not.toBe(0);
   });
 
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
