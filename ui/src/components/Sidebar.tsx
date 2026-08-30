@@ -136,6 +136,9 @@ export function Sidebar() {
               <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New task</span>
             </button>
             <SidebarNavItem to="/today" label="Today" icon={CalendarCheck2} />
+            {conferenceRoomChatEnabled ? (
+              <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            ) : null}
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
             <SidebarNavItem to="/history" label="History" icon={History} />
           </div>

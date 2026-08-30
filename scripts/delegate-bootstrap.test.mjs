@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  buildAgentPayload,
+  buildChiefOfStaffPayload,
+  buildGeneralistPayload,
   collectDesiredProfile,
   ensureInstanceFiles,
   provisionDelegateProfile,
@@ -51,7 +52,8 @@ test("collectDesiredProfile uses deterministic non-interactive selections", asyn
     workspaceName: "Nate's Workspace",
     workspaceCwd: "/tmp/paperclip-instance/delegate-workspace",
     companyId: null,
-    agentId: null,
+    chiefOfStaffAgentId: null,
+    generalistAgentId: null,
   });
 });
 
@@ -74,23 +76,38 @@ test("collectDesiredProfile reuses a complete profile without prompting", async 
   });
 
   assert.equal(desired.companyId, "company-1");
-  assert.equal(desired.agentId, "agent-1");
+  assert.equal(desired.chiefOfStaffAgentId, null);
+  assert.equal(desired.generalistAgentId, "agent-1");
   assert.equal(desired.harness, "claude");
 });
 
-test("buildAgentPayload applies the selected adapter and low-resource runtime", () => {
-  const payload = buildAgentPayload({
+test("agent payloads apply the selected adapter, hierarchy, and human-facing boundary", () => {
+  const desired = {
     adapterType: "codex_local",
     model: "gpt-test",
     workspaceName: "Nate's Workspace",
     workspaceCwd: "/tmp/nate",
-  });
+  };
+  const chief = buildChiefOfStaffPayload(desired);
+  const generalist = buildGeneralistPayload(desired, "chief-1");
 
-  assert.deepEqual(payload.adapterConfig, { cwd: "/tmp/nate", model: "gpt-test" });
-  assert.equal(payload.runtimeConfig.heartbeat.enabled, false);
-  assert.equal(payload.runtimeConfig.heartbeat.maxConcurrentRuns, 1);
-  assert.match(payload.instructionsBundle.files["AGENTS.md"], /never accept your own work/i);
-  assert.equal(payload.metadata.delegateManaged, true);
+  assert.deepEqual(chief.adapterConfig, { cwd: "/tmp/nate", engine: "cli", model: "gpt-test" });
+  assert.equal(chief.role, "ceo");
+  assert.equal(chief.reportsTo, null);
+  assert.equal(chief.metadata.delegateRole, "chief_of_staff");
+  assert.equal(chief.metadata.delegateHumanFacing, true);
+  assert.match(chief.instructionsBundle.files["AGENTS.md"], /sole point of contact/i);
+  assert.match(chief.instructionsBundle.files["AGENTS.md"], /child task/i);
+  assert.match(chief.instructionsBundle.files["AGENTS.md"], /--review-for-responsible-user/);
+
+  assert.deepEqual(generalist.adapterConfig, chief.adapterConfig);
+  assert.equal(generalist.reportsTo, "chief-1");
+  assert.equal(generalist.metadata.delegateRole, "generalist");
+  assert.equal(generalist.metadata.delegateHumanFacing, false);
+  assert.equal(generalist.runtimeConfig.heartbeat.enabled, false);
+  assert.equal(generalist.runtimeConfig.heartbeat.maxConcurrentRuns, 1);
+  assert.match(generalist.instructionsBundle.files["AGENTS.md"], /report to the Chief of Staff/i);
+  assert.match(generalist.instructionsBundle.files["AGENTS.md"], /Never ask the user/i);
 });
 
 test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) => {
@@ -104,9 +121,22 @@ test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) 
     workspaceName: "Nate's Workspace",
     workspaceCwd: join(directory, "workspace"),
     companyId: null,
-    agentId: null,
+    chiefOfStaffAgentId: null,
+    generalistAgentId: null,
   };
-  const state = { companies: [], agents: [], companyPosts: 0, agentPosts: 0 };
+  const state = {
+    companies: [],
+    agents: [{
+      id: "legacy-generalist",
+      companyId: "company-1",
+      status: "idle",
+      name: "Generalist",
+      metadata: { delegateManaged: true, delegateProfileVersion: 1 },
+    }],
+    companyPosts: 0,
+    agentPosts: 0,
+    experimentalPatches: [],
+  };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const path = new URL(String(url)).pathname;
@@ -116,6 +146,10 @@ test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) 
     let status = 200;
 
     if (path === "/api/health") responseBody = { status: "ok" };
+    else if (path === "/api/instance/settings/experimental" && method === "PATCH") {
+      state.experimentalPatches.push(body);
+      responseBody = body;
+    }
     else if (path === "/api/companies" && method === "GET") responseBody = state.companies;
     else if (path === "/api/companies" && method === "POST") {
       state.companyPosts += 1;
@@ -131,14 +165,28 @@ test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) 
       responseBody = state.agents;
     } else if (path === "/api/companies/company-1/agents" && method === "POST") {
       state.agentPosts += 1;
-      responseBody = { id: "agent-1", companyId: "company-1", status: "idle", ...body };
+      responseBody = {
+        id: `agent-${state.agentPosts}`,
+        companyId: "company-1",
+        status: "idle",
+        ...body,
+      };
       state.agents.push(responseBody);
       status = 201;
-    } else if (path === "/api/agents/agent-1" && method === "GET") {
-      responseBody = state.agents[0];
-    } else if (path === "/api/agents/agent-1" && method === "PATCH") {
-      Object.assign(state.agents[0], body);
-      responseBody = state.agents[0];
+    } else if (path.startsWith("/api/agents/") && method === "GET") {
+      responseBody = state.agents.find((agent) => `/api/agents/${agent.id}` === path);
+      if (!responseBody) {
+        status = 404;
+        responseBody = { error: "Agent not found" };
+      }
+    } else if (path.startsWith("/api/agents/") && method === "PATCH") {
+      responseBody = state.agents.find((agent) => `/api/agents/${agent.id}` === path);
+      if (!responseBody) {
+        status = 404;
+        responseBody = { error: "Agent not found" };
+      } else {
+        Object.assign(responseBody, body);
+      }
     } else {
       status = 404;
       responseBody = { error: `Unhandled ${method} ${path}` };
@@ -160,13 +208,25 @@ test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) 
   });
   assert.equal(first.profile.companyId, "company-1");
   assert.equal(first.profile.agentId, "agent-1");
+  assert.equal(first.profile.chiefOfStaffAgentId, "agent-1");
+  assert.equal(first.profile.generalistAgentId, "legacy-generalist");
   assert.equal(state.companyPosts, 1);
   assert.equal(state.agentPosts, 1);
+  assert.deepEqual(state.experimentalPatches, [{ enableConferenceRoomChat: true }]);
+  assert.equal(state.agents[0].name, "Generalist");
+  assert.equal(state.agents[0].reportsTo, "agent-1");
+  assert.equal(state.agents[0].metadata.delegateRole, "generalist");
+  assert.equal(state.agents[1].name, "Chief of Staff");
 
   const stored = JSON.parse(readFileSync(profilePath, "utf8"));
   const second = await provisionDelegateProfile({
     apiUrl: "http://127.0.0.1:3999",
-    desired: { ...desired, companyId: stored.companyId, agentId: stored.agentId },
+    desired: {
+      ...desired,
+      companyId: stored.companyId,
+      chiefOfStaffAgentId: stored.chiefOfStaffAgentId,
+      generalistAgentId: stored.generalistAgentId,
+    },
     existingProfile: stored,
     profilePath,
   });
@@ -174,4 +234,5 @@ test("provisionDelegateProfile creates once and reuses ids on rerun", async (t) 
   assert.equal(second.profile.agentId, "agent-1");
   assert.equal(state.companyPosts, 1);
   assert.equal(state.agentPosts, 1);
+  assert.equal(state.experimentalPatches.length, 2);
 });

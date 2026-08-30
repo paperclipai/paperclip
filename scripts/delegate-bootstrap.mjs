@@ -17,7 +17,7 @@ import { createInterface } from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import { stdin as input, stdout as output } from "node:process";
 
-export const DELEGATE_PROFILE_VERSION = 1;
+export const DELEGATE_PROFILE_VERSION = 2;
 export const DELEGATE_COMPANY_DESCRIPTION =
   "Personal Plan My Day workspace managed by setup-delegate.";
 
@@ -227,7 +227,7 @@ export async function collectDesiredProfile({
   readline,
 }) {
   const reconfigure = env.PAPERCLIP_DELEGATE_RECONFIGURE === "true";
-  if (existingProfile && existingProfile.version === DELEGATE_PROFILE_VERSION && !reconfigure) {
+  if (existingProfile && [1, DELEGATE_PROFILE_VERSION].includes(existingProfile.version) && !reconfigure) {
     const existingHarness = harnesses.find((row) => row.id === existingProfile.harness);
     if (!existingHarness?.authenticated) {
       throw new Error(
@@ -241,7 +241,9 @@ export async function collectDesiredProfile({
       workspaceName: existingProfile.workspaceName,
       workspaceCwd: existingProfile.workspaceCwd,
       companyId: existingProfile.companyId ?? null,
-      agentId: existingProfile.agentId ?? null,
+      chiefOfStaffAgentId: existingProfile.chiefOfStaffAgentId ?? null,
+      generalistAgentId: existingProfile.generalistAgentId
+        ?? (existingProfile.version === 1 ? existingProfile.agentId ?? null : null),
     };
   }
 
@@ -316,8 +318,52 @@ export async function collectDesiredProfile({
     workspaceName: cleanWorkspaceName,
     workspaceCwd,
     companyId: existingProfile?.companyId ?? null,
-    agentId: existingProfile?.agentId ?? null,
+    chiefOfStaffAgentId: existingProfile?.chiefOfStaffAgentId ?? null,
+    generalistAgentId: existingProfile?.generalistAgentId
+      ?? (existingProfile?.version === 1 ? existingProfile.agentId ?? null : null),
   };
+}
+
+function chiefOfStaffInstructions(companyName) {
+  return `You are Chief of Staff, the user's sole point of contact in ${companyName}.
+
+When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
+
+You own every human-facing conversation, top-level task, decision, clarification, and review. The user should never need to coordinate with the Generalist directly.
+
+## Role
+
+Turn the user's approved outcomes into clear delegated work. Create focused child tasks for the Generalist, review the returned evidence and artifacts, request revisions when needed, and present one concise answer back to the user.
+
+Do not forward raw worker chatter. Do not ask the user to manage the Generalist. Preserve context and accountability at the parent task.
+
+## Delegation contract
+
+- Read the top-level task, timing, source material, and prior conversation before delegating.
+- Delegate concrete execution to the Generalist as a child task. Include the required artifact, acceptance criteria, source context, review time, and any approval boundaries.
+- Keep the parent task assigned to yourself. Use a child task hold instead of polling the Generalist or its run.
+- When the child completes, inspect the artifact and evidence yourself. Request a focused revision if it is not ready.
+- Only you hand work to the user. Submit the reviewed parent result with --review-for-responsible-user and clearly state what the user should decide or check.
+
+## Human interaction
+
+- The Conference Room is your conversation with the user.
+- Ask only questions that materially change the outcome. Use a human-only interaction and name the exact missing input.
+- Translate internal execution state into Needs you, Ready to review, Working, Up next, or Done.
+- Never expose model, heartbeat, run, workspace, or delegation internals unless the user asks.
+
+## Working rules
+
+Start actionable work in the same heartbeat. Leave durable progress with the next action. Use child issues for delegated work instead of polling agents, sessions, or processes. Mark blocked work with the unblock owner and action. Respect budget, pause/cancel, approval gates, company boundaries, and the user's explicit scope.
+
+## Safety
+
+- Never post externally, contact people, spend money, deploy, or delete data without explicit user approval.
+- Never expose credentials or copy secrets into comments or artifacts.
+- Timer heartbeats remain disabled; work only when assigned, commented to, or explicitly woken.
+
+You must always update your top-level task with a comment before exiting a heartbeat.
+`;
 }
 
 function generalistInstructions(companyName) {
@@ -325,13 +371,13 @@ function generalistInstructions(companyName) {
 
 When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
 
-You report to the user through the Paperclip board. Work only on tasks assigned to you.
+You report to the Chief of Staff. Work only on delegated tasks assigned to you. Never ask the user to manage or coordinate your work directly.
 
 ## Role
 
 Own concrete delegated knowledge-work deliverables end to end: research, synthesis, drafting, analysis, and preparation for the user's meetings and decisions.
 
-Do not plan the user's day, create companies or agents, or decide what work should start. The user and their planning conversation own those decisions.
+Do not plan the user's day, create companies or agents, or decide what work should start. The Chief of Staff owns those decisions and the human relationship.
 
 ## Working rules
 
@@ -340,8 +386,8 @@ Start actionable work in the same heartbeat; do not stop at a plan unless planni
 - Read the assigned task, its timing, and prior comments before acting.
 - Produce the smallest complete deliverable that satisfies the task.
 - Add a progress comment whenever you materially advance or block the work.
-- If input is missing, mark the task blocked and state exactly what the user must provide.
-- Submit completed work for review by moving the task to in_review; never accept your own work.
+- If input is missing, mark the task blocked and state exactly what the Chief of Staff must resolve.
+- When the deliverable is complete, attach it, leave a concise evidence-backed handoff comment, and mark the delegated child task done. The Chief of Staff reviews your result and owns the parent task's human-facing review.
 
 ## Decision lenses
 
@@ -366,42 +412,81 @@ A status update without the requested artifact is not a completed task.
 
 ## Done
 
-Before requesting review, verify the artifact opens, the requested scope is covered, and the final comment explains what changed, what was checked, and what the user should review.
+Before completing the child task, verify the artifact opens, the requested scope is covered, and the final comment explains what changed, what was checked, and what the Chief of Staff should review.
 
 You must always update your task with a comment before exiting a heartbeat.
 `;
 }
 
-export function buildAgentPayload(desired) {
-  const adapterConfig = { cwd: desired.workspaceCwd };
+function delegateAdapterConfig(desired) {
+  // Delegate workers must call the local Paperclip control plane during every
+  // task. Pin the CLI lane so localhost and the injected run JWT are available
+  // to their shell tools instead of being trapped behind an ACP sandbox.
+  const adapterConfig = { cwd: desired.workspaceCwd, engine: "cli" };
   if (desired.model) adapterConfig.model = desired.model;
+  return adapterConfig;
+}
+
+function delegateRuntimeConfig() {
+  return {
+    heartbeat: {
+      enabled: false,
+      wakeOnDemand: true,
+      skipTimerWhenNoActionableWork: true,
+      cooldownSec: 10,
+      maxConcurrentRuns: 1,
+    },
+  };
+}
+
+export function buildChiefOfStaffPayload(desired) {
+  return {
+    name: "Chief of Staff",
+    role: "ceo",
+    title: "Chief of Staff",
+    icon: "crown",
+    reportsTo: null,
+    capabilities: "Owns the human relationship, delegates approved outcomes, reviews worker results, and presents final decisions and deliverables.",
+    adapterType: desired.adapterType,
+    adapterConfig: delegateAdapterConfig(desired),
+    instructionsBundle: {
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": chiefOfStaffInstructions(desired.workspaceName) },
+    },
+    runtimeConfig: delegateRuntimeConfig(),
+    budgetMonthlyCents: 0,
+    metadata: {
+      delegateManaged: true,
+      delegateRole: "chief_of_staff",
+      delegateHumanFacing: true,
+      delegateProfileVersion: DELEGATE_PROFILE_VERSION,
+      instructionSource: "delegate_chief_of_staff",
+    },
+  };
+}
+
+export function buildGeneralistPayload(desired, chiefOfStaffAgentId) {
   return {
     name: "Generalist",
     role: "general",
     title: "Personal Generalist",
     icon: "sparkles",
-    reportsTo: null,
-    capabilities: "Completes assigned research, synthesis, drafting, analysis, and meeting-preparation deliverables for the user.",
+    reportsTo: chiefOfStaffAgentId,
+    capabilities: "Completes research, synthesis, drafting, analysis, and meeting-preparation child tasks delegated by the Chief of Staff.",
     adapterType: desired.adapterType,
-    adapterConfig,
+    adapterConfig: delegateAdapterConfig(desired),
     instructionsBundle: {
       entryFile: "AGENTS.md",
       files: { "AGENTS.md": generalistInstructions(desired.workspaceName) },
     },
-    runtimeConfig: {
-      heartbeat: {
-        enabled: false,
-        wakeOnDemand: true,
-        skipTimerWhenNoActionableWork: true,
-        cooldownSec: 10,
-        maxConcurrentRuns: 1,
-      },
-    },
+    runtimeConfig: delegateRuntimeConfig(),
     budgetMonthlyCents: 0,
     metadata: {
       delegateManaged: true,
+      delegateRole: "generalist",
+      delegateHumanFacing: false,
       delegateProfileVersion: DELEGATE_PROFILE_VERSION,
-      instructionSource: "generic_fallback",
+      instructionSource: "delegate_generalist",
     },
   };
 }
@@ -427,7 +512,7 @@ async function requestJson(apiUrl, path, options = {}) {
     const detail = body && typeof body === "object" && typeof body.error === "string"
       ? body.error
       : String(body ?? response.statusText);
-    const error = new Error(`${response.status} ${detail}`);
+    const error = new Error(`${options.method ?? "GET"} ${path}: ${response.status} ${detail}`);
     error.status = response.status;
     throw error;
   }
@@ -463,6 +548,10 @@ export async function provisionDelegateProfile({
   profilePath,
 }) {
   await waitForPaperclip(apiUrl);
+  await requestJson(apiUrl, "/instance/settings/experimental", {
+    method: "PATCH",
+    body: { enableConferenceRoomChat: true },
+  });
   mkdirSync(desired.workspaceCwd, { recursive: true });
 
   let company = desired.companyId
@@ -501,51 +590,112 @@ export async function provisionDelegateProfile({
     ...desired,
     apiUrl: normalizeApiUrl(apiUrl),
     companyId: company.id,
-    agentId: null,
+    agentId: desired.chiefOfStaffAgentId ?? existingProfile?.chiefOfStaffAgentId ?? null,
+    chiefOfStaffAgentId: desired.chiefOfStaffAgentId ?? existingProfile?.chiefOfStaffAgentId ?? null,
+    generalistAgentId: desired.generalistAgentId
+      ?? existingProfile?.generalistAgentId
+      ?? (existingProfile?.version === 1 ? existingProfile.agentId ?? null : null),
     updatedAt: new Date().toISOString(),
     createdAt: existingProfile?.createdAt ?? new Date().toISOString(),
   };
   writeJsonAtomic(profilePath, partialProfile);
 
-  let agent = desired.agentId
-    ? await getIfPresent(apiUrl, `/agents/${encodeURIComponent(desired.agentId)}`)
+  let chiefOfStaffAgent = desired.chiefOfStaffAgentId
+    ? await getIfPresent(apiUrl, `/agents/${encodeURIComponent(desired.chiefOfStaffAgentId)}`)
     : null;
-  if (!agent && existingProfile?.agentId) {
-    agent = await getIfPresent(apiUrl, `/agents/${encodeURIComponent(existingProfile.agentId)}`);
+  if (!chiefOfStaffAgent && existingProfile?.chiefOfStaffAgentId) {
+    chiefOfStaffAgent = await getIfPresent(
+      apiUrl,
+      `/agents/${encodeURIComponent(existingProfile.chiefOfStaffAgentId)}`,
+    );
   }
-  if (agent && agent.companyId !== company.id) agent = null;
+  if (chiefOfStaffAgent && chiefOfStaffAgent.companyId !== company.id) chiefOfStaffAgent = null;
 
-  const agentPayload = buildAgentPayload(desired);
-  if (!agent) {
+  const chiefOfStaffPayload = buildChiefOfStaffPayload(desired);
+  if (!chiefOfStaffAgent) {
     const agents = await requestJson(apiUrl, `/companies/${encodeURIComponent(company.id)}/agents`);
     const managedMatches = agents.filter((row) => (
       row.status !== "terminated"
       && row.metadata?.delegateManaged === true
+      && row.metadata?.delegateRole === "chief_of_staff"
       && row.metadata?.delegateProfileVersion === DELEGATE_PROFILE_VERSION
+    ));
+    if (managedMatches.length > 1) {
+      throw new Error(`Multiple managed Chief of Staff agents exist in ${company.name}`);
+    }
+    chiefOfStaffAgent = managedMatches[0] ?? null;
+  }
+  if (!chiefOfStaffAgent) {
+    chiefOfStaffAgent = await requestJson(
+      apiUrl,
+      `/companies/${encodeURIComponent(company.id)}/agents`,
+      { method: "POST", body: chiefOfStaffPayload },
+    );
+  } else {
+    chiefOfStaffAgent = await requestJson(apiUrl, `/agents/${encodeURIComponent(chiefOfStaffAgent.id)}`, {
+      method: "PATCH",
+      body: { ...chiefOfStaffPayload, replaceAdapterConfig: true },
+    });
+  }
+
+  const legacyGeneralistAgentId = existingProfile?.version === 1
+    ? existingProfile.agentId ?? null
+    : null;
+  let generalistAgentId = desired.generalistAgentId
+    ?? existingProfile?.generalistAgentId
+    ?? legacyGeneralistAgentId;
+  let generalistAgent = generalistAgentId
+    ? await getIfPresent(apiUrl, `/agents/${encodeURIComponent(generalistAgentId)}`)
+    : null;
+  if (generalistAgent && generalistAgent.companyId !== company.id) generalistAgent = null;
+
+  const generalistPayload = buildGeneralistPayload(desired, chiefOfStaffAgent.id);
+  if (!generalistAgent) {
+    const agents = await requestJson(apiUrl, `/companies/${encodeURIComponent(company.id)}/agents`);
+    const managedMatches = agents.filter((row) => (
+      row.status !== "terminated"
+      && row.metadata?.delegateManaged === true
+      && (
+        row.metadata?.delegateRole === "generalist"
+        || (!row.metadata?.delegateRole && row.name === "Generalist")
+      )
     ));
     if (managedMatches.length > 1) {
       throw new Error(`Multiple managed Generalist agents exist in ${company.name}`);
     }
-    agent = managedMatches[0] ?? await requestJson(
+    generalistAgent = managedMatches[0] ?? null;
+  }
+  if (!generalistAgent) {
+    generalistAgent = await requestJson(
       apiUrl,
       `/companies/${encodeURIComponent(company.id)}/agents`,
-      { method: "POST", body: agentPayload },
+      { method: "POST", body: generalistPayload },
     );
   } else {
-    agent = await requestJson(apiUrl, `/agents/${encodeURIComponent(agent.id)}`, {
+    generalistAgent = await requestJson(apiUrl, `/agents/${encodeURIComponent(generalistAgent.id)}`, {
       method: "PATCH",
-      body: { ...agentPayload, replaceAdapterConfig: true },
+      body: { ...generalistPayload, replaceAdapterConfig: true },
     });
   }
 
   const profile = {
     ...partialProfile,
     companyId: company.id,
-    agentId: agent.id,
+    // `agentId` remains the compatibility pin consumed by setup-delegate's MCP
+    // configuration. It now points at the sole human-facing Chief of Staff.
+    agentId: chiefOfStaffAgent.id,
+    chiefOfStaffAgentId: chiefOfStaffAgent.id,
+    generalistAgentId: generalistAgent.id,
     updatedAt: new Date().toISOString(),
   };
   writeJsonAtomic(profilePath, profile);
-  return { profile, company, agent };
+  return {
+    profile,
+    company,
+    agent: chiefOfStaffAgent,
+    chiefOfStaffAgent,
+    generalistAgent,
+  };
 }
 
 async function prepareCommand() {
@@ -578,12 +728,21 @@ async function provisionCommand() {
   const existingProfile = readJsonIfPresent(profilePath);
   const desired = readJson(desiredPath);
   const result = await provisionDelegateProfile({ apiUrl, desired, existingProfile, profilePath });
-  output.write(`Provisioned ${result.company.name} with ${result.agent.name}.\n`);
+  output.write(
+    `Provisioned ${result.company.name} with ${result.chiefOfStaffAgent.name} and ${result.generalistAgent.name}.\n`,
+  );
 }
 
 function profileIdsCommand() {
   const profile = readJson(requiredEnv("PAPERCLIP_DELEGATE_PROFILE_PATH"));
-  if (!profile.companyId || !profile.agentId) throw new Error("Delegate profile is incomplete");
+  if (
+    !profile.companyId
+    || !profile.agentId
+    || !profile.chiefOfStaffAgentId
+    || !profile.generalistAgentId
+  ) {
+    throw new Error("Delegate profile is incomplete");
+  }
   output.write(`${profile.companyId}\t${profile.agentId}\n`);
 }
 
