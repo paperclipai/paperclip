@@ -58,6 +58,18 @@ export async function openCodexAcpxRuntime(
     );
   }
   options.signal?.throwIfAborted();
+  // The verified-command boundary already refuses to mint a Windows command
+  // lease, because Node cannot pin its executable there. Repeat the platform
+  // gate at this lower boundary so alternate host wiring cannot launch a
+  // credential-bearing provider without a killable tree. `child.kill()` only
+  // terminates the direct Windows process, and taskkill cannot reliably find
+  // descendants after their original parent has exited; Windows support must
+  // therefore wait for an owned Job Object or equivalent containment.
+  if (process.platform === "win32") {
+    throw new Error(
+      "The production ACPX runtime requires provider process-tree containment unavailable on Windows",
+    );
+  }
 
   const createRegistry = dependencies.createRegistry ?? createAgentRegistry;
   const createStore = dependencies.createStore ?? createRuntimeStore;
@@ -157,13 +169,12 @@ export async function openCodexAcpxRuntime(
       // A verified provider can create descendants that inherit its launch
       // credential. Give the provider a dedicated POSIX process group so
       // cleanup authority covers that complete credential-bearing tree.
-      const processGroup = process.platform !== "win32";
       return children.add(
         options.command.spawn(input.args, {
           ...input.options,
-          detached: processGroup,
+          detached: true,
         }) as ChildProcess,
-        processGroup,
+        true,
       );
     },
   });

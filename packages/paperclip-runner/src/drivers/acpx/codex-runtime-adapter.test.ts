@@ -44,6 +44,34 @@ describe("Codex ACPX runtime adapter", () => {
     expect(command.spawn).not.toHaveBeenCalled();
   });
 
+  it("rejects Windows before constructing or spawning ACPX", async () => {
+    const command = fakeCommand();
+    const createRuntime = vi.fn();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor === undefined) {
+      throw new Error("Node process.platform descriptor is unavailable");
+    }
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "win32",
+    });
+    try {
+      await expect(
+        openCodexAcpxRuntime(openOptions(command), { createRuntime }),
+      ).rejects.toThrow(
+        "provider process-tree containment unavailable on Windows",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+
+    expect(createRuntime).not.toHaveBeenCalled();
+    expect(command.spawn).not.toHaveBeenCalled();
+  });
+
   it("opens a persistent Codex session without persisting launch secrets", async () => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
@@ -115,7 +143,7 @@ describe("Codex ACPX runtime adapter", () => {
     ).toBe(child);
     expect(command.spawn).toHaveBeenCalledWith(["--stdio"], {
       ...spawnOptions,
-      detached: process.platform !== "win32",
+      detached: true,
     });
   });
 
