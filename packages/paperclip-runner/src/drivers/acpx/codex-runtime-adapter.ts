@@ -21,23 +21,14 @@ import type {
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
-const MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS = 3;
-const MAX_ADMISSION_CLEANUP_ATTEMPTS = 1 + MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS;
 const RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS = 10;
-const RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS = 100;
+const RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS = 30_000;
 const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 
 class AcpxRuntimeCloseTimeoutError extends Error {
   constructor() {
     super("ACPX runtime close timed out");
     this.name = "AcpxRuntimeCloseTimeoutError";
-  }
-}
-
-class AcpxRuntimeCloseFinalTimeoutError extends Error {
-  constructor() {
-    super("ACPX runtime close remained pending after its final cleanup watch");
-    this.name = "AcpxRuntimeCloseFinalTimeoutError";
   }
 }
 
@@ -163,8 +154,16 @@ export async function openCodexAcpxRuntime(
       // been cancelled. Check at the last host-owned boundary so a late
       // handshake cannot create a provider process after authority is gone.
       options.signal?.throwIfAborted();
+      // A verified provider can create descendants that inherit its launch
+      // credential. Give the provider a dedicated POSIX process group so
+      // cleanup authority covers that complete credential-bearing tree.
+      const processGroup = process.platform !== "win32";
       return children.add(
-        options.command.spawn(input.args, input.options) as ChildProcess,
+        options.command.spawn(input.args, {
+          ...input.options,
+          detached: processGroup,
+        }) as ChildProcess,
+        processGroup,
       );
     },
   });
@@ -172,6 +171,7 @@ export async function openCodexAcpxRuntime(
     runtime,
     children,
     runtimeCloseTimeoutMs,
+    retainCleanup,
   );
 
   let handle: AcpRuntimeHandle | null = null;
@@ -238,8 +238,7 @@ export async function openCodexAcpxRuntime(
       runtime,
       handle,
       requireIdentity(handle),
-      children,
-      runtimeCloseTimeoutMs,
+      admissionCleanup,
     );
   } catch (error) {
     const cleanupErrors = await admissionCleanup.run(
@@ -290,7 +289,7 @@ function retainCodexRuntimeCleanup(cleanup: Promise<unknown>): void {
 }
 
 type RuntimeAdmissionCleanupTarget = {
-  handle: AcpRuntimeHandle;
+  handle: AcpRuntimeHandle | null;
   reason: string;
   cleanup: Promise<void> | null;
 };
@@ -301,7 +300,6 @@ class RuntimeAdmissionCleanup {
     string,
     Promise<unknown | undefined>
   >();
-  readonly #handleAttemptCounts = new Map<string, number>();
   readonly #registeredTargets = new Map<
     string,
     RuntimeAdmissionCleanupTarget
@@ -313,6 +311,7 @@ class RuntimeAdmissionCleanup {
     private readonly runtime: AcpRuntime,
     private readonly children: SpawnedChildSet,
     private readonly runtimeCloseTimeoutMs: number,
+    private readonly retainCleanup: (cleanup: Promise<void>) => void,
   ) {}
 
   run(handle: AcpRuntimeHandle | null, reason: string): Promise<unknown[]> {
@@ -320,20 +319,25 @@ class RuntimeAdmissionCleanup {
       runtimeAdmissionCleanupTargetKey(handle),
       handle,
     );
-    return this.#runAttempt(targetKey, handle, reason).then(
-      ({ errors }) => errors,
-    );
+    return this.#runAttempt(targetKey, handle, reason).then(({ errors }) => {
+      if (errors.length > 0) {
+        this.retainCleanup(this.runRetained(handle, reason));
+      }
+      return errors;
+    });
   }
 
-  runRetained(handle: AcpRuntimeHandle, reason: string): Promise<void> {
+  runRetained(handle: AcpRuntimeHandle | null, reason: string): Promise<void> {
     const rawTargetKey = runtimeAdmissionCleanupTargetKey(handle);
     const targetKey = this.#resolveTargetKey(rawTargetKey, handle);
     const existing = this.#registeredTargets.get(targetKey);
     if (existing !== undefined) {
-      existing.handle = preferRuntimeAdmissionCleanupHandle(
-        existing.handle,
-        handle,
-      );
+      if (handle !== null) {
+        existing.handle =
+          existing.handle === null
+            ? handle
+            : preferRuntimeAdmissionCleanupHandle(existing.handle, handle);
+      }
       this.#targetAliases.set(rawTargetKey, targetKey);
       return existing.cleanup!;
     }
@@ -365,6 +369,7 @@ class RuntimeAdmissionCleanup {
         this.#registeredTargets.get(fallbackTargetKey)?.handle;
       if (
         fallbackHandle !== undefined &&
+        fallbackHandle !== null &&
         nonEmptyRuntimeIdentity(fallbackHandle.acpxRecordId) === undefined &&
         sameRuntimeAdmissionCleanupOwner(fallbackHandle, handle)
       ) {
@@ -377,6 +382,7 @@ class RuntimeAdmissionCleanup {
       ...this.#registeredTargets.entries(),
     ].filter(
       ([, target]) =>
+        target.handle !== null &&
         nonEmptyRuntimeIdentity(target.handle.acpxRecordId) !== undefined &&
         sameRuntimeAdmissionCleanupOwner(target.handle, handle),
     );
@@ -389,70 +395,30 @@ class RuntimeAdmissionCleanup {
     targetKey: string,
     target: RuntimeAdmissionCleanupTarget,
   ): Promise<void> {
-    let runtimeTerminalError: unknown | null = null;
-    let processErrors: unknown[] = [];
-    let processAttemptNumber = 0;
     let retryDelayMs = RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS;
-    while (processAttemptNumber < MAX_ADMISSION_CLEANUP_ATTEMPTS) {
-      processAttemptNumber += 1;
+    // Retained cleanup is the continuing owner. Keep one runtime-close attempt
+    // in flight at a time and retry process-tree termination until both are
+    // confirmed complete; a finite budget would recreate an orphan boundary.
+    for (;;) {
       const attempt = await this.#runAttempt(
         targetKey,
-        runtimeTerminalError === null ? target.handle : null,
+        target.handle,
         target.reason,
       );
-      let runtimeError = attempt.runtimeError;
-      processErrors = attempt.processErrors;
-      if (attempt.pendingRuntimeClose !== undefined) {
-        // The configured timeout bounds the caller-facing pass, not the exact
-        // close promise. Give that exact promise one final bounded watch. A
-        // late rejection can then admit the next actual close attempt, while
-        // a second timeout terminalizes protocol cleanup without overlap.
-        const lateOutcome = await closeOutcomeWithin(
-          attempt.pendingRuntimeClose,
-          this.runtimeCloseTimeoutMs,
-        );
-        if (lateOutcome instanceof AcpxRuntimeCloseTimeoutError) {
-          runtimeTerminalError = new AcpxRuntimeCloseFinalTimeoutError();
-          runtimeError = runtimeTerminalError;
-        } else {
-          runtimeError = lateOutcome;
-        }
-      }
-      if (
-        runtimeTerminalError === null &&
-        runtimeError !== undefined &&
-        (this.#handleAttemptCounts.get(targetKey) ?? 0) >=
-          MAX_ADMISSION_CLEANUP_ATTEMPTS
-      ) {
-        runtimeTerminalError = new AggregateError(
-          [runtimeError],
-          `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
-        );
-      }
       const runtimeNeedsRetry =
-        runtimeTerminalError === null &&
-        runtimeError !== undefined &&
+        target.handle !== null &&
+        attempt.runtimeError !== undefined &&
         !this.#closedHandles.has(targetKey);
-      const processNeedsRetry = processErrors.length > 0;
+      const processNeedsRetry = attempt.processErrors.length > 0;
       if (!runtimeNeedsRetry && !processNeedsRetry) {
-        if (runtimeTerminalError === null) return;
-        throw runtimeTerminalError;
+        return;
       }
-      if (processAttemptNumber >= MAX_ADMISSION_CLEANUP_ATTEMPTS) break;
       await delay(retryDelayMs);
       retryDelayMs = Math.min(
         retryDelayMs * 2,
         RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS,
       );
     }
-    const errors = [
-      ...(runtimeTerminalError === null ? [] : [runtimeTerminalError]),
-      ...processErrors,
-    ];
-    throw new AggregateError(
-      errors,
-      `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
-    );
   }
 
   #runAttempt(
@@ -463,21 +429,13 @@ class RuntimeAdmissionCleanup {
     errors: unknown[];
     runtimeError: unknown | undefined;
     processErrors: unknown[];
-    pendingRuntimeClose?: Promise<unknown | undefined>;
   }> {
     const cleanup = this.#tail.then(async () => {
       const errors: unknown[] = [];
       let runtimeError: unknown | undefined;
-      let pendingRuntimeClose: Promise<unknown | undefined> | undefined;
       if (handle !== null && !this.#closedHandles.has(targetKey)) {
-        const runtimeOutcome = await this.#closeHandleWithin(
-          targetKey,
-          handle,
-          reason,
-        );
-        runtimeError = runtimeOutcome.error;
+        runtimeError = await this.#closeHandleWithin(targetKey, handle, reason);
         if (runtimeError !== undefined) errors.push(runtimeError);
-        pendingRuntimeClose = runtimeOutcome.pendingAttempt;
       }
       const processErrors = await this.children.terminate();
       errors.push(...processErrors);
@@ -485,7 +443,6 @@ class RuntimeAdmissionCleanup {
         errors,
         runtimeError,
         processErrors,
-        ...(pendingRuntimeClose === undefined ? {} : { pendingRuntimeClose }),
       };
     });
     this.#tail = cleanup.then(
@@ -499,21 +456,9 @@ class RuntimeAdmissionCleanup {
     targetKey: string,
     handle: AcpRuntimeHandle,
     reason: string,
-  ): Promise<{
-    error: unknown | undefined;
-    pendingAttempt?: Promise<unknown | undefined>;
-  }> {
+  ): Promise<unknown | undefined> {
     let attempt = this.#activeHandleAttempts.get(targetKey);
     if (attempt === undefined) {
-      const attemptCount = this.#handleAttemptCounts.get(targetKey) ?? 0;
-      if (attemptCount >= MAX_ADMISSION_CLEANUP_ATTEMPTS) {
-        return {
-          error: new Error(
-            `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
-          ),
-        };
-      }
-      this.#handleAttemptCounts.set(targetKey, attemptCount + 1);
       attempt = runtimeCloseOutcome(this.runtime, {
         handle,
         reason,
@@ -527,10 +472,7 @@ class RuntimeAdmissionCleanup {
         if (error === undefined) this.#closedHandles.add(targetKey);
       });
     }
-    const error = await closeOutcomeWithin(attempt, this.runtimeCloseTimeoutMs);
-    return error instanceof AcpxRuntimeCloseTimeoutError
-      ? { error, pendingAttempt: attempt }
-      : { error };
+    return await closeOutcomeWithin(attempt, this.runtimeCloseTimeoutMs);
   }
 }
 
@@ -609,8 +551,7 @@ function runtimePort(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
   identity: AcpxRuntimePortIdentity,
-  children: SpawnedChildSet,
-  runtimeCloseTimeoutMs: number,
+  admissionCleanup: RuntimeAdmissionCleanup,
 ): AcpxRuntimePort {
   return {
     async identity() {
@@ -634,18 +575,8 @@ function runtimePort(
         }
       : {}),
     async close(input) {
-      const closeError = await closeRuntimeWithin(runtime, {
-        input: {
-          handle,
-          reason: input.reason,
-          discardPersistentState: false,
-        },
-        timeoutMs: runtimeCloseTimeoutMs,
-      });
-      const processErrors = await children.terminate();
-      if (closeError !== undefined || processErrors.length > 0) {
-        const errors = [...processErrors];
-        if (closeError !== undefined) errors.unshift(closeError);
+      const errors = await admissionCleanup.run(handle, input.reason);
+      if (errors.length > 0) {
         throw new AggregateError(
           errors,
           "ACPX runtime and provider cleanup failed",
@@ -653,19 +584,6 @@ function runtimePort(
       }
     },
   };
-}
-
-async function closeRuntimeWithin(
-  runtime: AcpRuntime,
-  options: {
-    input: Parameters<AcpRuntime["close"]>[0];
-    timeoutMs: number;
-  },
-): Promise<unknown | undefined> {
-  return await closeOutcomeWithin(
-    runtimeCloseOutcome(runtime, options.input),
-    options.timeoutMs,
-  );
 }
 
 function runtimeCloseOutcome(
@@ -698,60 +616,67 @@ async function closeOutcomeWithin(
 }
 
 function delay(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+  });
 }
 
 class SpawnedChildSet {
-  readonly #children = new Set<ChildProcess>();
+  readonly #children = new Map<ChildProcess, SpawnedProviderProcess>();
   readonly #errors = new Set<unknown>();
 
-  add(child: ChildProcess): ChildProcess {
-    this.#children.add(child);
+  add(child: ChildProcess, processGroup: boolean): ChildProcess {
     const onError = (error: unknown) => this.#errors.add(error);
-    const forget = () => this.#children.delete(child);
-    const forgetAndDetach = () => {
-      forget();
-      child.off("error", onError);
+    const tracked: SpawnedProviderProcess = {
+      child,
+      processGroupId: processGroup ? (child.pid ?? null) : null,
+      onError,
+    };
+    this.#children.set(child, tracked);
+    const forgetExitedTree = () => {
+      if (!providerTreeRunning(tracked)) this.#forget(tracked);
     };
     // ChildProcess reports some spawn and signal-delivery failures through an
     // asynchronous `error` event. Observe those for the child's whole tracked
     // lifetime so cleanup can report them instead of crashing runnerd.
     child.on("error", onError);
-    child.once("exit", forget);
-    child.once("close", forgetAndDetach);
+    child.once("exit", forgetExitedTree);
+    child.once("close", forgetExitedTree);
     return child;
   }
 
   async terminate(): Promise<unknown[]> {
     const errors: unknown[] = [];
-    const children = [...this.#children];
+    const children = [...this.#children.values()];
     await Promise.all(
-      children.map(async (child) => {
-        if (running(child)) {
+      children.map(async (tracked) => {
+        if (providerTreeRunning(tracked)) {
           const terminateOutcome = await signalAndWaitForExit(
-            child,
+            tracked,
             "SIGTERM",
             2_000,
           );
           if (terminateOutcome.error !== undefined) {
             pushUnique(errors, terminateOutcome.error);
           }
-          if (!terminateOutcome.exited && running(child)) {
+          if (!terminateOutcome.exited && providerTreeRunning(tracked)) {
             const killOutcome = await signalAndWaitForExit(
-              child,
+              tracked,
               "SIGKILL",
               2_000,
             );
             if (killOutcome.error !== undefined) {
               pushUnique(errors, killOutcome.error);
             }
-            if (!killOutcome.exited && running(child)) {
+            if (!killOutcome.exited && providerTreeRunning(tracked)) {
               errors.push(
                 new Error("ACPX provider did not exit after SIGKILL"),
               );
             }
           }
         }
+        if (!providerTreeRunning(tracked)) this.#forget(tracked);
       }),
     );
     // A failed spawn or signal can emit `error` and then `close` before this
@@ -762,47 +687,104 @@ class SpawnedChildSet {
     this.#errors.clear();
     return errors;
   }
+
+  #forget(tracked: SpawnedProviderProcess): void {
+    if (this.#children.get(tracked.child) !== tracked) return;
+    this.#children.delete(tracked.child);
+    tracked.child.off("error", tracked.onError);
+  }
+}
+
+interface SpawnedProviderProcess {
+  child: ChildProcess;
+  processGroupId: number | null;
+  onError: (error: unknown) => void;
 }
 
 function running(child: ChildProcess): boolean {
   return child.exitCode === null && child.signalCode === null;
 }
 
+function providerTreeRunning(tracked: SpawnedProviderProcess): boolean {
+  if (tracked.processGroupId === null) return running(tracked.child);
+  try {
+    process.kill(-tracked.processGroupId, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) !== "ESRCH";
+  }
+}
+
 async function signalAndWaitForExit(
-  child: ChildProcess,
+  tracked: SpawnedProviderProcess,
   signal: NodeJS.Signals,
   timeoutMs: number,
 ): Promise<{ exited: boolean; error?: unknown }> {
-  if (!running(child)) return { exited: true };
+  if (!providerTreeRunning(tracked)) return { exited: true };
+  const { child } = tracked;
   return await new Promise<{ exited: boolean; error?: unknown }>((resolve) => {
     let settled = false;
     const finish = (outcome: { exited: boolean; error?: unknown }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (poll !== undefined) clearInterval(poll);
       child.off("exit", onExit);
       child.off("close", onExit);
       child.off("error", onError);
       resolve(outcome);
     };
-    const onExit = () => finish({ exited: true });
+    const onExit = () => {
+      if (!providerTreeRunning(tracked)) finish({ exited: true });
+    };
     const onError = (error: unknown) => finish({ exited: false, error });
-    const timer = setTimeout(() => finish({ exited: false }), timeoutMs);
+    const timer = setTimeout(
+      () => finish({ exited: !providerTreeRunning(tracked) }),
+      timeoutMs,
+    );
     timer.unref();
+    const poll =
+      tracked.processGroupId === null
+        ? undefined
+        : setInterval(() => {
+            if (!providerTreeRunning(tracked)) finish({ exited: true });
+          }, 25);
+    poll?.unref();
     child.once("exit", onExit);
     child.once("close", onExit);
     child.once("error", onError);
-    if (!running(child)) {
+    if (!providerTreeRunning(tracked)) {
       finish({ exited: true });
       return;
     }
     try {
-      child.kill(signal);
-      if (!running(child)) finish({ exited: true });
+      if (tracked.processGroupId === null) {
+        if (!child.kill(signal) && providerTreeRunning(tracked)) {
+          finish({
+            exited: false,
+            error: new Error(`ACPX provider rejected ${signal}`),
+          });
+          return;
+        }
+      } else {
+        process.kill(-tracked.processGroupId, signal);
+      }
+      if (!providerTreeRunning(tracked)) finish({ exited: true });
     } catch (error) {
-      finish({ exited: false, error });
+      if (errorCode(error) === "ESRCH" && !providerTreeRunning(tracked)) {
+        finish({ exited: true });
+      } else {
+        finish({ exited: false, error });
+      }
     }
   });
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  return typeof error.code === "string" ? error.code : undefined;
 }
 
 function pushUnique(errors: unknown[], error: unknown): void {
