@@ -527,19 +527,6 @@ export class CapabilitySemanticToolRuntime {
                 ),
               };
             }
-          } else if (durableExtension.status === "indeterminate") {
-            const denied = this.#authorization.denyInvocation(
-              invocation.operationId,
-              context,
-              durableExtension.reason,
-            );
-            return {
-              observableResult: this.#denial(
-                invocation.operationId,
-                denied,
-                "operation_unsupported",
-              ),
-            };
           } else {
             if (durableExtension.input !== idempotencyRecord.input) {
               throw new Error("durable extension input changed during recovery");
