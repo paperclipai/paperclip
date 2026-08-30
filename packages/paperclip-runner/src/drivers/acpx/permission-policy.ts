@@ -1,13 +1,6 @@
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
-const READ_ONLY_PERMISSION_KINDS = new Set(["read", "search", "list"]);
-const DEFAULT_RUNNER_OWNED_MCP_SERVERS = new Set(["paperclip"]);
-const RUNNER_SEMANTIC_TOOL_PREFIXES = [
-  "mcp__paperclip__",
-  "mcp.paperclip.",
-] as const;
-
 export interface AcpxPermissionRequestLike {
   inferredKind?: unknown;
   raw?: unknown;
@@ -17,7 +10,9 @@ export type AcpxPermissionDisposition =
   "allow_once" | "reject_once" | "delegate";
 
 export interface AcpxPermissionPolicyOptions {
+  /** Descriptive configuration only; never proof that a request is authorized. */
   runnerOwnedMcpServerNames?: ReadonlySet<string>;
+  /** Descriptive configuration only; never proof that a request is authorized. */
   allConfiguredMcpServersAreRunnerOwned?: boolean;
 }
 
@@ -32,11 +27,11 @@ export function acpxRuntimePermissionPolicy(
 ): AcpxRuntimePermissionPolicy {
   if (mode === "approve-all") return { defaultAction: "approve" };
   if (mode === "deny-all") return { defaultAction: "deny" };
-  return {
-    autoApprove: ["read", "search", "list"],
-    escalate: ["execute", "write", "edit", "delete", "move"],
-    defaultAction: "escalate",
-  };
+  // ACPX derives permission kinds from provider-originated requests. Until the
+  // host can bind a request to independent authority, no kind is safe to
+  // auto-approve. Escalation delegates to the coordinator and otherwise fails
+  // closed through the non-interactive permission policy.
+  return { defaultAction: "escalate" };
 }
 
 /**
@@ -46,64 +41,14 @@ export function acpxRuntimePermissionPolicy(
 export function decideAcpxPermission(
   _agent: QualifiedAcpxAgent,
   mode: NativeAcpxPermissionMode,
-  request: AcpxPermissionRequestLike,
+  _request: AcpxPermissionRequestLike,
   _options: AcpxPermissionPolicyOptions = {},
 ): AcpxPermissionDisposition {
   if (mode === "deny-all") return "reject_once";
   if (mode === "approve-all") return "allow_once";
-  // Provider-supplied metadata can describe a semantic operation, but cannot
-  // prove that the run-scoped catalog authorized it. Only the classified
-  // read-only kind may be approved locally in this mode.
-  const kind = text(request.inferredKind).toLowerCase();
-  return READ_ONLY_PERMISSION_KINDS.has(kind) ? "allow_once" : "delegate";
-}
-
-/**
- * Runner-owned semantic operations were already authorized by the run-scoped
- * catalog. This predicate recognizes transport metadata for those operations;
- * display titles never grant authority.
- */
-export function shouldAutoApproveRunnerOwnedSemanticPermission(
-  agent: QualifiedAcpxAgent,
-  request: AcpxPermissionRequestLike,
-  options: AcpxPermissionPolicyOptions = {},
-): boolean {
-  if (agent === "pi") return false;
-  const raw = record(request.raw);
-  const requestMeta = record(raw._meta);
-  const isMcpToolApproval = requestMeta.is_mcp_tool_approval === true;
-  if (
-    agent === "codex" &&
-    isMcpToolApproval &&
-    options.allConfiguredMcpServersAreRunnerOwned === true
-  ) {
-    return true;
-  }
-
-  const toolCall = record(raw.toolCall);
-  const rawInput = record(toolCall.rawInput);
-  const serverName = text(rawInput.serverName);
-  const runnerOwnedMcpServers =
-    options.runnerOwnedMcpServerNames ?? DEFAULT_RUNNER_OWNED_MCP_SERVERS;
-  if (serverName && runnerOwnedMcpServers.has(serverName)) return true;
-
-  const claudeCode = record(record(toolCall._meta).claudeCode);
-  return [toolCall.name, claudeCode.toolName].some(isRunnerSemanticToolName);
-}
-
-function isRunnerSemanticToolName(value: unknown): boolean {
-  const name = text(value);
-  return RUNNER_SEMANTIC_TOOL_PREFIXES.some((prefix) =>
-    name.startsWith(prefix),
-  );
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value : "";
+  // inferredKind and raw semantic/MCP metadata both originate outside the
+  // runner trust boundary. Neither can grant local read or semantic authority.
+  // A future verified decision must carry runner-issued call identity bound to
+  // the run-scoped catalog; absent that proof, the coordinator decides.
+  return "delegate";
 }
