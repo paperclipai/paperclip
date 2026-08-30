@@ -230,6 +230,34 @@ fn recovery_preserves_pending_calls_for_the_existing_run() {
 }
 
 #[test]
+fn recovery_rejects_tampered_authorization_catalog_bindings() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    let encoded = serde_json::to_value(&bridge).unwrap();
+
+    let mut changed_contract = encoded.clone();
+    changed_contract["authorized"]["get_task_context"]["inputSchema"] = json!({
+        "type": "object",
+        "properties": { "includeSecrets": { "type": "boolean" } }
+    });
+    let mut recovered: ProviderToolBridge = serde_json::from_value(changed_contract).unwrap();
+    let error = recovered
+        .attach_existing_run()
+        .expect_err("recovery must recompute the catalog digest");
+    assert!(error.to_string().contains("catalog digest"));
+
+    let mut changed_map_key = encoded;
+    let authorized = changed_map_key["authorized"].as_object_mut().unwrap();
+    let tool = authorized.remove("get_task_context").unwrap();
+    authorized.insert("delete_company".to_owned(), tool);
+    let mut recovered: ProviderToolBridge = serde_json::from_value(changed_map_key).unwrap();
+    let error = recovered
+        .attach_existing_run()
+        .expect_err("recovery must bind map keys to declared operation identities");
+    assert!(error.to_string().contains("identities are inconsistent"));
+}
+
+#[test]
 fn settles_completed_receipts_before_the_next_turn() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();

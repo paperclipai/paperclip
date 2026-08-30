@@ -126,6 +126,28 @@ impl ProviderToolBridge {
         // authoritative result. `attach_run` remains the boundary that rejects
         // carrying pending calls into a different run.
         if self
+            .authorized
+            .iter()
+            .any(|(operation_id, tool)| operation_id != &tool.operation_id)
+        {
+            return Err(ProviderBridgeError::invalid(
+                "recovered authorized tool identities are inconsistent",
+            ));
+        }
+        let recovered_tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: self.catalog_digest.clone().ok_or_else(|| {
+                ProviderBridgeError::invalid("recovered authorized tools omit the catalog digest")
+            })?,
+            operations: self.authorized.values().cloned().collect(),
+        };
+        validate_authorized_tool_set(&recovered_tool_set).map_err(|error| {
+            ProviderBridgeError::invalid(format!(
+                "recovered authorized tool catalog is invalid: {error}"
+            ))
+        })?;
+        if self
             .settled_call_ids
             .len()
             .checked_add(self.settled_results.len())
@@ -187,76 +209,7 @@ impl ProviderToolBridge {
                 "cannot change authorized tools while provider calls are pending",
             ));
         }
-        if tool_set.schema != TOOL_SET_SCHEMA || tool_set.schema_version != 1 {
-            return Err(ProviderBridgeError::invalid(
-                "unsupported authorized tool-set contract",
-            ));
-        }
-        if !is_sha256_digest(&tool_set.catalog_digest) {
-            return Err(ProviderBridgeError::invalid(
-                "authorized tool set requires a canonical sha256 catalog digest",
-            ));
-        }
-        if tool_set.operations.len() > MAX_AUTHORIZED_TOOLS {
-            return Err(ProviderBridgeError::invalid(
-                "authorized tool set exceeds the operation limit",
-            ));
-        }
-        bounded_json(&tool_set, MAX_TOOL_SET_BYTES, "authorized tool set")?;
-        let mut names = BTreeSet::new();
-        for tool in &tool_set.operations {
-            validate_operation_id(&tool.operation_id)?;
-            if tool.version != 1 {
-                return Err(ProviderBridgeError::invalid(format!(
-                    "unsupported tool version for {}",
-                    tool.operation_id
-                )));
-            }
-            if tool.description.trim().is_empty()
-                || tool.description.len() > MAX_DESCRIPTION_BYTES
-                || tool.description.contains('\0')
-                || !tool.input_schema.is_object()
-                || !tool.response_schema.is_object()
-            {
-                return Err(ProviderBridgeError::invalid(format!(
-                    "tool {} has an incomplete provider contract",
-                    tool.operation_id
-                )));
-            }
-            bounded_json(
-                &tool.input_schema,
-                MAX_SCHEMA_BYTES,
-                "tool input JSON Schema",
-            )?;
-            bounded_json(
-                &tool.response_schema,
-                MAX_SCHEMA_BYTES,
-                "tool response JSON Schema",
-            )?;
-            jsonschema::validator_for(&tool.input_schema).map_err(|_| {
-                ProviderBridgeError::invalid(format!(
-                    "tool {} has an invalid input JSON Schema",
-                    tool.operation_id
-                ))
-            })?;
-            jsonschema::validator_for(&tool.response_schema).map_err(|_| {
-                ProviderBridgeError::invalid(format!(
-                    "tool {} has an invalid response JSON Schema",
-                    tool.operation_id
-                ))
-            })?;
-            if !names.insert(tool.operation_id.clone()) {
-                return Err(ProviderBridgeError::invalid(
-                    "authorized tool names must be unique",
-                ));
-            }
-        }
-        let computed_digest = authorized_tool_catalog_digest(&tool_set.operations)?;
-        if tool_set.catalog_digest != computed_digest {
-            return Err(ProviderBridgeError::invalid(
-                "authorized tool catalog digest does not match its operations",
-            ));
-        }
+        validate_authorized_tool_set(&tool_set)?;
         if !allow_catalog_change {
             if let Some(existing) = &self.catalog_digest {
                 if existing != &tool_set.catalog_digest {
@@ -507,6 +460,80 @@ fn validate_retained_result(result: &ToolResult) -> Result<(), ProviderBridgeErr
         MAX_TOOL_VALUE_BYTES,
         "retained provider tool result",
     )
+}
+
+fn validate_authorized_tool_set(tool_set: &AuthorizedToolSet) -> Result<(), ProviderBridgeError> {
+    if tool_set.schema != TOOL_SET_SCHEMA || tool_set.schema_version != 1 {
+        return Err(ProviderBridgeError::invalid(
+            "unsupported authorized tool-set contract",
+        ));
+    }
+    if !is_sha256_digest(&tool_set.catalog_digest) {
+        return Err(ProviderBridgeError::invalid(
+            "authorized tool set requires a canonical sha256 catalog digest",
+        ));
+    }
+    if tool_set.operations.len() > MAX_AUTHORIZED_TOOLS {
+        return Err(ProviderBridgeError::invalid(
+            "authorized tool set exceeds the operation limit",
+        ));
+    }
+    bounded_json(tool_set, MAX_TOOL_SET_BYTES, "authorized tool set")?;
+    let mut names = BTreeSet::new();
+    for tool in &tool_set.operations {
+        validate_operation_id(&tool.operation_id)?;
+        if tool.version != 1 {
+            return Err(ProviderBridgeError::invalid(format!(
+                "unsupported tool version for {}",
+                tool.operation_id
+            )));
+        }
+        if tool.description.trim().is_empty()
+            || tool.description.len() > MAX_DESCRIPTION_BYTES
+            || tool.description.contains('\0')
+            || !tool.input_schema.is_object()
+            || !tool.response_schema.is_object()
+        {
+            return Err(ProviderBridgeError::invalid(format!(
+                "tool {} has an incomplete provider contract",
+                tool.operation_id
+            )));
+        }
+        bounded_json(
+            &tool.input_schema,
+            MAX_SCHEMA_BYTES,
+            "tool input JSON Schema",
+        )?;
+        bounded_json(
+            &tool.response_schema,
+            MAX_SCHEMA_BYTES,
+            "tool response JSON Schema",
+        )?;
+        jsonschema::validator_for(&tool.input_schema).map_err(|_| {
+            ProviderBridgeError::invalid(format!(
+                "tool {} has an invalid input JSON Schema",
+                tool.operation_id
+            ))
+        })?;
+        jsonschema::validator_for(&tool.response_schema).map_err(|_| {
+            ProviderBridgeError::invalid(format!(
+                "tool {} has an invalid response JSON Schema",
+                tool.operation_id
+            ))
+        })?;
+        if !names.insert(tool.operation_id.clone()) {
+            return Err(ProviderBridgeError::invalid(
+                "authorized tool names must be unique",
+            ));
+        }
+    }
+    let computed_digest = authorized_tool_catalog_digest(&tool_set.operations)?;
+    if tool_set.catalog_digest != computed_digest {
+        return Err(ProviderBridgeError::invalid(
+            "authorized tool catalog digest does not match its operations",
+        ));
+    }
+    Ok(())
 }
 
 fn retained_result_entry_bytes(
