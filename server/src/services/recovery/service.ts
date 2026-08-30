@@ -1224,6 +1224,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const relations = await issuesSvc.getRelationSummaries(candidate.id);
       const blockingLinks = formatIssueLinksForComment(relations.blocks);
+
+      // An unassigned blocker whose creator is already the assignee of
+      // something it blocks is exactly the shape of an independent-check
+      // issue (e.g. "review my own work") that was deliberately left
+      // unassigned so an independent owner could claim it. Assigning it
+      // back to its creator would silently manufacture a self-check where
+      // an independent one was required. Flag instead of auto-assigning.
+      const wouldCreateSelfCheck = relations.blocks.some(
+        (blocked) => blocked.assigneeAgentId === creatorAgent.id,
+      );
+      if (wouldCreateSelfCheck) {
+        await issuesSvc.addComment(
+          candidate.id,
+          [
+            "## Orphan Blocker Needs Independent Owner",
+            "",
+            `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
+            "",
+            `- Did **not** assign it back to the agent that created it (${creatorAgent.id}): that agent is already the assignee of an issue this one blocks, so auto-assigning would turn a required independent check into a self-check.`,
+            "- Next action: a Board member or independent reviewer must assign this to someone other than the creator.",
+          ].join("\n"),
+          {},
+        );
+        skipped += 1;
+        continue;
+      }
+
       const updated = await issuesSvc.update(candidate.id, {
         assigneeAgentId: creatorAgent.id,
         assigneeUserId: null,

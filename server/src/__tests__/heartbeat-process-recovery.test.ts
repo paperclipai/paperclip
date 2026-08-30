@@ -6691,6 +6691,188 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not assign an unassigned blocker back to its creator when that would create a self-check", async () => {
+    const companyId = randomUUID();
+    // The creator of the blocker (independent-check issue) is ALSO the
+    // assignee of the issue it blocks — i.e. the work under review. This is
+    // the exact shape that must never be auto-resolved: reassigning the
+    // check back to this agent would make it review its own work.
+    const creatorAndReviewedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAndReviewedAssigneeAgentId,
+        companyId,
+        name: "AuthorAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Independent check of my own ADR",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAndReviewedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "ADR under review",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: creatorAndReviewedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAndReviewedAssigneeAgentId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must not count as a successful auto-assignment.
+    expect(result.issueIds).not.toContain(blockerIssueId);
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    // The independent-check issue must remain unassigned rather than being
+    // silently handed back to the agent whose own work it exists to check.
+    expect(blocker?.assigneeAgentId).toBeNull();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockerIssueId));
+    expect(comments[0]?.body).toContain("Orphan Blocker Needs Independent Owner");
+    expect(comments[0]?.body).toContain("self-check");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, creatorAndReviewedAssigneeAgentId));
+    // No wakeup should be queued for the creator — nothing was assigned to them.
+    expect(wakeups).toEqual([]);
+  });
+
+  it("keeps assigning an unassigned blocker back to its creator when doing so does not create a self-check", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const blockedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "SecurityEngineer2",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAssigneeAgentId,
+        companyId,
+        name: "CodexCoder2",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Fix blocker",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: blockedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAgentId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.orphanBlockersAssigned).toBe(1);
+    expect(result.issueIds).toContain(blockerIssueId);
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.assigneeAgentId).toBe(creatorAgentId);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockerIssueId));
+    expect(comments[0]?.body).toContain("Assigned Orphan Blocker");
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, creatorAgentId));
+    const runId = wakeups[0]?.runId;
+    if (runId) {
+      await waitForRunToSettle(heartbeat, runId);
+    }
+  });
+
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
