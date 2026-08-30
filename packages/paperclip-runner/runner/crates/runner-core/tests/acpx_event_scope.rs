@@ -131,6 +131,43 @@ fn binds_and_clears_one_turn_idempotently() {
     scope.clear_turn("turn-1").unwrap();
     assert_eq!(scope.active_turn_id(), None);
     assert!(scope.clear_turn("turn-1").is_err());
+    let reused = scope.bind_turn("turn-1").unwrap_err();
+    assert!(reused.to_string().contains("reused a settled turn"));
+}
+
+#[test]
+fn rejects_late_events_after_rotating_to_a_distinct_turn_identity() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    scope.clear_turn("turn-1").unwrap();
+    scope.bind_turn("turn-2").unwrap();
+
+    let late = scope
+        .validate_event(&event(
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            Some("run-1"),
+            Some("turn-1"),
+        ))
+        .unwrap_err();
+    assert!(late.to_string().contains("stale turn"), "{late}");
+}
+
+#[test]
+fn bounds_settled_turn_identity_retention() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    for index in 0..4_096 {
+        let turn_id = format!("turn-{index}");
+        scope.bind_turn(&turn_id).unwrap();
+        scope.clear_turn(&turn_id).unwrap();
+    }
+
+    let exhausted = scope.bind_turn("turn-overflow").unwrap_err();
+    assert!(
+        exhausted
+            .to_string()
+            .contains("exhausted its settled turn identity capacity"),
+        "{exhausted}"
+    );
 }
 
 #[test]

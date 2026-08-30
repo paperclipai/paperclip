@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Write};
+use std::time::Duration;
 
 use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
 use serde_json::{json, Value};
@@ -89,6 +90,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-tool"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
+            | "turns-late-tool-after-suspend"
             | "turns-tool-result-terminal"
             | "turns-tool-error-result-terminal"
             | "turns-multiple-tool-results-terminal"
@@ -105,7 +107,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .get("turnId")
                     .and_then(Value::as_str)
                     .unwrap_or("missing");
-                let tool_call_id = if mode == "turns-reused-tool-id-terminal" {
+                let tool_call_id = if matches!(
+                    mode,
+                    "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend"
+                ) {
                     "call-reused".to_owned()
                 } else {
                     turn_id
@@ -134,6 +139,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "turns-tool"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
+                            | "turns-late-tool-after-suspend"
                             | "turns-tool-result-terminal"
                             | "turns-tool-error-result-terminal"
                             | "turns-unauthorized-tool"
@@ -147,7 +153,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;
@@ -187,7 +193,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if command == "turn.start"
                     && matches!(
                         mode,
-                        "turns-tool-terminal" | "turns-reused-tool-id-terminal"
+                        "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
+                            | "turns-late-tool-after-suspend"
                     )
                 {
                     write_turn_event(
@@ -380,6 +388,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
+                if command == "session.suspend" && mode == "turns-late-tool-after-suspend" {
+                    // Simulate a session-lifetime callback that wakes after
+                    // suspension and reads the next mutable turn binding.
+                    // runner-core must reap this process before starting that
+                    // turn, so the relabeled event can never cross authority.
+                    std::thread::sleep(Duration::from_millis(50));
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.tool_called",
+                        "run-1",
+                        "turn-2",
+                        json!({
+                            "callId":"call-reused",
+                            "operationId":"issues.delete",
+                            "input":{"source":"late-old-turn"},
+                        }),
+                    )?;
+                    next_sequence += 1;
+                }
                 if command == "turn.cancel" && mode == "turns" {
                     write_turn_event(
                         &mut stdout,
@@ -448,6 +476,21 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
             "turnId": if mode == "turns-wrong-turn" { "wrong-turn" } else { params.get("turnId").and_then(Value::as_str).unwrap_or("missing") },
         }),
         "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
+        "session.suspend" => json!({
+            "suspended":true,
+            "identity": {
+                "kind": "acpx",
+                "normalizedSessionId": "session-1",
+                "acpxRecordId": "record-1",
+                "backendSessionId": "backend-1",
+                "agentSessionId": "agent-1",
+                "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
+                "requestedModel": "gpt-5.6-sol",
+                "effectiveModel": "gpt-5.6-sol",
+                "permissionMode": "approve-reads",
+            },
+        }),
         "session.close" => json!({"closed":true}),
         _ => json!({"command":command,"params":params}),
     };

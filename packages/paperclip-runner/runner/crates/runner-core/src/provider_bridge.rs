@@ -520,6 +520,20 @@ impl ProviderToolBridge {
         Ok(())
     }
 
+    /// Start a receipt epoch after the process that owned the previous epoch
+    /// has been reaped and a replacement provider generation is established.
+    /// Providers that continue in the same process must retain their durable
+    /// call-ID tombstones through ordinary `prepare_turn` transitions.
+    pub(crate) fn prepare_turn_after_provider_restart(
+        &mut self,
+    ) -> Result<(), ProviderBridgeError> {
+        self.prepare_turn()?;
+        self.settled_call_ids.clear();
+        self.settled_call_filter = DurableReplayFilter::default();
+        self.durable_run_receipt_limit_reached = false;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_result_bytes_for_test(&self) -> usize {
         self.retained_result_bytes

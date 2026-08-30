@@ -120,6 +120,14 @@ impl AcpxProviderState {
         self.scope.active_turn_id()
     }
 
+    pub(crate) fn has_settled_turns(&self) -> bool {
+        self.scope.has_settled_turns()
+    }
+
+    pub(crate) fn validate_new_turn_identity(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
+        self.scope.validate_new_turn_identity(turn_id)
+    }
+
     pub fn begin_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         if self.scope.active_turn_id().is_some()
             || !self.pending_tools.is_empty()

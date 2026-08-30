@@ -97,7 +97,11 @@ The session can then start one immutable-workspace turn, request interruption,
 and reduce polled events through the scope-first state boundary. A mismatched
 command acknowledgement or invalid event terminates the session fail closed.
 Polled semantic calls pass through the run-scoped authorized tool bridge before
-they can be returned to a caller.
+they can be returned to a caller. Before a follow-up turn releases settled tool
+receipts, runner-core suspends and reaps the idle sidecar/provider generation,
+then resumes the same verified persistent identity in a fresh generation. This
+prevents a late session-lifetime MCP callback from inheriting the next turn's
+event authority.
 
 Run the complete contract gate with:
 

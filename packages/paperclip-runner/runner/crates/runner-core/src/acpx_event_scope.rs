@@ -1,8 +1,11 @@
+use std::collections::BTreeSet;
+
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
 use crate::local_runner::LocalRunnerError;
 
 const MAX_SCOPE_ID_CHARS: usize = 160;
+const MAX_SETTLED_TURN_IDS: usize = 4_096;
 
 /// Holds the run and turn authority used to admit ACPX sidecar events.
 ///
@@ -13,6 +16,7 @@ const MAX_SCOPE_ID_CHARS: usize = 160;
 pub struct AcpxEventScope {
     run_id: String,
     active_turn_id: Option<String>,
+    settled_turn_ids: BTreeSet<String>,
 }
 
 impl AcpxEventScope {
@@ -22,6 +26,7 @@ impl AcpxEventScope {
         Ok(Self {
             run_id,
             active_turn_id: None,
+            settled_turn_ids: BTreeSet::new(),
         })
     }
 
@@ -33,6 +38,10 @@ impl AcpxEventScope {
         self.active_turn_id.as_deref()
     }
 
+    pub(crate) fn has_settled_turns(&self) -> bool {
+        !self.settled_turn_ids.is_empty()
+    }
+
     pub fn bind_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         let turn_id = turn_id.into();
         validate_scope_id(&turn_id, "turn")?;
@@ -42,10 +51,26 @@ impl AcpxEventScope {
                 "ACPX event scope already has a different active turn",
             )),
             None => {
+                self.validate_new_turn_identity(&turn_id)?;
                 self.active_turn_id = Some(turn_id);
                 Ok(())
             }
         }
+    }
+
+    pub(crate) fn validate_new_turn_identity(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
+        validate_scope_id(turn_id, "turn")?;
+        if self.settled_turn_ids.contains(turn_id) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope reused a settled turn identity",
+            ));
+        }
+        if self.settled_turn_ids.len() >= MAX_SETTLED_TURN_IDS {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope exhausted its settled turn identity capacity",
+            ));
+        }
+        Ok(())
     }
 
     pub fn clear_turn(&mut self, turn_id: &str) -> Result<(), LocalRunnerError> {
@@ -53,6 +78,16 @@ impl AcpxEventScope {
         if self.active_turn_id.as_deref() != Some(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX event scope cannot clear a stale turn",
+            ));
+        }
+        if self.settled_turn_ids.len() >= MAX_SETTLED_TURN_IDS {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope exhausted its settled turn identity capacity",
+            ));
+        }
+        if !self.settled_turn_ids.insert(turn_id.to_owned()) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX event scope reused a settled turn identity",
             ));
         }
         self.active_turn_id = None;

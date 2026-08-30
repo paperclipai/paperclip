@@ -451,25 +451,25 @@ async function pumpTurn(
   currentTurnId: string,
   runtimeTurn: AcpxRuntimeTurn,
 ): Promise<void> {
+  let terminal: Record<string, unknown>;
   try {
     for await (const event of runtimeTurn.events) {
       emit("runtime.event", sanitizeRuntimeEvent(event), currentTurnId);
     }
     const result = await runtimeTurn.result;
-    emit("runtime.turn_terminal", boundedSidecarValue(result), currentTurnId);
+    terminal = boundedSidecarValue(result);
   } catch (error) {
-    emit(
-      "runtime.turn_terminal",
-      {
-        status: "failed",
-        error: { message: safeMessage(error), retryable: false },
-      },
-      currentTurnId,
-    );
+    terminal = {
+      status: "failed",
+      error: { message: safeMessage(error), retryable: false },
+    };
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
     if (turnId === currentTurnId) turnId = null;
   }
+  // A terminal frame is also runnerd's permission to recycle this provider.
+  // Publish it only after no callback can inherit this turn's mutable binding.
+  emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 
 async function waitForTool(call: RunnerToolCall): Promise<unknown> {
@@ -500,28 +500,40 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     // The authenticated runner bridge admitted this built-in invocation. Send
     // that fact across the sidecar boundary before its locally produced result
     // so runnerd can authorize and correlate the terminal claim.
-    emit("runtime.tool_called", {
-      callId,
-      operationId,
-      input: validation.result,
-    });
-    emit("runtime.event", {
-      type: "semantic_result",
-      callId,
-      operationId,
-      ok: true,
-      result: validation.result,
-    });
+    emit(
+      "runtime.tool_called",
+      {
+        callId,
+        operationId,
+        input: validation.result,
+      },
+      activeTurnId,
+    );
+    emit(
+      "runtime.event",
+      {
+        type: "semantic_result",
+        callId,
+        operationId,
+        ok: true,
+        result: validation.result,
+      },
+      activeTurnId,
+    );
     return { accepted: true };
   }
   if (tools.size >= MAX_PENDING_TOOLS) {
     throw new Error("ACPX pending tool limit reached");
   }
-  emit("runtime.tool_called", {
-    callId,
-    operationId,
-    input: boundedSidecarValue(record(call.arguments)),
-  });
+  emit(
+    "runtime.tool_called",
+    {
+      callId,
+      operationId,
+      input: boundedSidecarValue(record(call.arguments)),
+    },
+    activeTurnId,
+  );
   return await new Promise((settle, reject) => {
     const abort = () => {
       const pending = tools.get(callId);

@@ -230,7 +230,6 @@ fn rotates_settled_tool_receipts_between_reusable_turns() {
                 if settled == turn_id
         ));
     }
-
     session.shutdown("test complete").unwrap();
 
     let mut reserved_session =
@@ -265,6 +264,53 @@ fn rotates_settled_tool_receipts_between_reusable_turns() {
         ));
     }
     reserved_session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn reaps_the_old_provider_before_admitting_a_late_tool_callback() {
+    let mut session = AcpxProviderSession::start(&config("turns-late-tool-after-suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please continue", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+
+    session
+        .start_turn("turn-2", "Use a fresh provider", &std::env::temp_dir())
+        .unwrap();
+    let fresh = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &fresh[0],
+        AcpxProviderStateEvent::ToolCall { call_id, operation_id, input }
+            if call_id == "call-reused"
+                && operation_id == "issues.read"
+                && input["id"] == "issue-1"
+    ));
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-2"
+    ));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn fails_closed_before_reusing_a_settled_turn_identity() {
+    let mut session = AcpxProviderSession::start(&config("turns-reused-tool-id-terminal")).unwrap();
+    session
+        .start_turn("turn-1", "Please continue", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+
+    let reused = session
+        .start_turn("turn-1", "Do not alias old events", &std::env::temp_dir())
+        .unwrap_err();
+    assert!(
+        reused.to_string().contains("reused a settled turn"),
+        "{reused}"
+    );
+    assert!(session.shutdown("already closed").is_ok());
 }
 
 #[test]

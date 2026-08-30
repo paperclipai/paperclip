@@ -179,6 +179,7 @@ impl AcpxProviderSessionIdentity {
 
 pub struct AcpxProviderSession {
     transport: AcpxSidecarTransport,
+    config: AcpxProviderSessionConfig,
     state: AcpxProviderState,
     tool_bridge: ProviderToolBridge,
     reserved_tool_bridge: ProviderToolBridge,
@@ -210,6 +211,7 @@ impl AcpxProviderSession {
         };
         Ok(Self {
             transport,
+            config: config.clone(),
             state,
             tool_bridge,
             reserved_tool_bridge,
@@ -256,18 +258,44 @@ impl AcpxProviderSession {
                 "ACPX provider session already has an active turn",
             ));
         }
-        // A provider session may be reused across turns, but tool-call replay
-        // protection is scoped to one accepted turn. Prepare cloned receipt
-        // epochs before asking the sidecar to start work, then publish them
-        // only after both the provider and reducer accept the new turn.
+        if let Err(error) = self.state.validate_new_turn_identity(turn_id) {
+            // Reusing a settled identity would let a delayed event from the
+            // old turn alias the new receipt epoch. A full sidecar restart is
+            // the only safe way to obtain fresh turn authority once the exact
+            // identity ledger is reused or exhausted.
+            return Err(self.fail_closed(error));
+        }
+        // The MCP endpoint is session-lifetime and cannot authenticate which
+        // provider turn originated a late HTTP callback. Reap the old sidecar
+        // and provider before releasing its call-ID tombstones, then resume
+        // the same verified persistent session in a fresh process generation.
+        let provider_restarted = self.state.has_settled_turns();
+        if provider_restarted {
+            if let Err(error) = self.restart_idle_provider() {
+                return Err(self.fail_closed(error));
+            }
+        }
+        // Prepare cloned receipt epochs before asking the replacement sidecar
+        // to start work, then publish them only after both the provider and
+        // reducer accept the new turn.
         let mut next_tool_bridge = self.tool_bridge.clone();
-        if let Err(error) = next_tool_bridge.prepare_turn() {
+        let dynamic_preparation = if provider_restarted {
+            next_tool_bridge.prepare_turn_after_provider_restart()
+        } else {
+            next_tool_bridge.prepare_turn()
+        };
+        if let Err(error) = dynamic_preparation {
             return Err(self.fail_closed(LocalRunnerError::invalid(format!(
                 "ACPX dynamic tool receipt rotation failed: {error}"
             ))));
         }
         let mut next_reserved_tool_bridge = self.reserved_tool_bridge.clone();
-        if let Err(error) = next_reserved_tool_bridge.prepare_turn() {
+        let reserved_preparation = if provider_restarted {
+            next_reserved_tool_bridge.prepare_turn_after_provider_restart()
+        } else {
+            next_reserved_tool_bridge.prepare_turn()
+        };
+        if let Err(error) = reserved_preparation {
             return Err(self.fail_closed(LocalRunnerError::invalid(format!(
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
@@ -513,6 +541,53 @@ impl AcpxProviderSession {
         Ok(())
     }
 
+    fn restart_idle_provider(&mut self) -> Result<(), LocalRunnerError> {
+        let suspended = self.transport.request(
+            GeneratedAcpxSidecarCommand::SessionSuspend,
+            json!({"reason":"ACPX turn receipt epoch rotation"}),
+        )?;
+        verify_suspend_response(&suspended, &self.identity)?;
+        self.transport.shutdown()?;
+        self.transport_terminated = true;
+
+        let mut restart_config = self.config.clone();
+        restart_config.expected_identity = Some(self.identity.clone());
+        let mut replacement = AcpxSidecarTransport::start(&restart_config.transport)?;
+        let (replacement_identity, _) = match bootstrap(&mut replacement, &restart_config) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(self.reject_replacement(replacement, error));
+            }
+        };
+        if replacement_identity != self.identity {
+            return Err(self.reject_replacement(
+                replacement,
+                LocalRunnerError::invalid(
+                    "ACPX replacement provider changed its persistent session identity",
+                ),
+            ));
+        }
+        self.transport = replacement;
+        self.transport_terminated = false;
+        Ok(())
+    }
+
+    fn reject_replacement(
+        &mut self,
+        mut replacement: AcpxSidecarTransport,
+        error: LocalRunnerError,
+    ) -> LocalRunnerError {
+        let cleanup = replacement.shutdown();
+        if cleanup.is_err() {
+            // Keep the exact failed generation reachable so fail_closed can
+            // retry its process-group termination instead of dropping the
+            // only remaining cleanup authority.
+            self.transport = replacement;
+            self.transport_terminated = false;
+        }
+        with_cleanup_error(error, cleanup)
+    }
+
     fn fail_closed(&mut self, error: LocalRunnerError) -> LocalRunnerError {
         self.closed = true;
         with_cleanup_error(error, self.terminate_transport())
@@ -748,6 +823,33 @@ fn verify_open_response(
         ));
     }
     Ok(identity)
+}
+
+fn verify_suspend_response(
+    value: &Value,
+    expected_identity: &AcpxProviderSessionIdentity,
+) -> Result<(), LocalRunnerError> {
+    if value.get("suspended").and_then(Value::as_bool) != Some(true) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX sidecar did not confirm provider suspension",
+        ));
+    }
+    let identity: AcpxProviderSessionIdentity = serde_json::from_value(
+        value
+            .get("identity")
+            .cloned()
+            .ok_or_else(|| LocalRunnerError::invalid("ACPX suspension omitted its identity"))?,
+    )
+    .map_err(|error| {
+        LocalRunnerError::invalid(format!("ACPX suspension identity is invalid: {error}"))
+    })?;
+    identity.validate()?;
+    if &identity != expected_identity {
+        return Err(LocalRunnerError::invalid(
+            "ACPX suspension changed its persistent session identity",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
