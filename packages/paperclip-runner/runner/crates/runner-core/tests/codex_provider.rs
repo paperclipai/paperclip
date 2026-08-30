@@ -907,11 +907,14 @@ fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
     assert_ne!(provider.process_id(), initial_process_id);
     assert_eq!(call_count(&directory, "thread/resume"), 1);
     wait_for_notification(&mut provider, "turn/completed");
+    let rolled_process_id = provider.process_id();
 
     // Fill the next process epoch and force its resume probe to observe an
     // active turn. Rollover must retain that work instead of dispatching a
-    // concurrent replacement after forgetting the old exact identities.
-    for index in 1..4_096 {
+    // concurrent replacement after forgetting the old exact identities. The
+    // prior generation's authoritative completion remains as one tombstone in
+    // this epoch, so 4,094 additional completions fill the remaining slots.
+    for index in 1..4_095 {
         provider
             .start_turn(
                 &format!("Complete rolled provider turn {index}."),
@@ -920,6 +923,7 @@ fn direct_provider_reaps_before_rotating_a_full_turn_identity_epoch() {
             .expect("start provider turn in the rolled identity epoch");
         wait_for_notification(&mut provider, "turn/completed");
     }
+    assert_eq!(provider.process_id(), rolled_process_id);
     // The terminal notification is flushed before the fake provider persists
     // its idle state. Wait for that write, then arm a one-shot resume race so
     // only the replacement generation reports unowned active work.
