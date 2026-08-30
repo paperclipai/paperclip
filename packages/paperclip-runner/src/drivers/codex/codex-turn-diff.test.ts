@@ -129,6 +129,94 @@ describe("Codex turn diff parser", () => {
     ]);
   });
 
+  it("fails closed for malformed, overflowing, and incomplete hunks", () => {
+    const completeFile = [
+      "diff --git a/src/complete.ts b/src/complete.ts",
+      "--- a/src/complete.ts",
+      "+++ b/src/complete.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ];
+
+    expect(parseCodexTurnDiff([
+      ...completeFile,
+      "diff --git a/src/malformed.ts b/src/malformed.ts",
+      "--- a/src/malformed.ts",
+      "+++ b/src/malformed.ts",
+      "@@ -1 +not-a-count @@",
+      "diff --git a/src/fabricated.ts b/src/fabricated.ts",
+    ].join("\n"))).toEqual([
+      expect.objectContaining({ path: "src/complete.ts" }),
+    ]);
+
+    expect(parseCodexTurnDiff([
+      ...completeFile,
+      "diff --git a/src/overflow.ts b/src/overflow.ts",
+      "--- a/src/overflow.ts",
+      "+++ b/src/overflow.ts",
+      "@@ -9007199254740992 +1 @@",
+    ].join("\n"))).toEqual([
+      expect.objectContaining({ path: "src/complete.ts" }),
+    ]);
+
+    expect(parseCodexTurnDiff([
+      "diff --git a/src/incomplete.ts b/src/incomplete.ts",
+      "--- a/src/incomplete.ts",
+      "+++ b/src/incomplete.ts",
+      "@@ -1,2 +1,2 @@",
+      "-old",
+      "+new",
+    ].join("\n"))).toEqual([]);
+  });
+
+  it.each([
+    { label: "an added-line overrun", header: "@@ -1 +1,0 @@", lines: ["+unexpected", "-old"] },
+    { label: "a deleted-line overrun", header: "@@ -1,0 +1 @@", lines: ["-unexpected", "+new"] },
+    { label: "a context-line side overrun", header: "@@ -1,0 +1 @@", lines: [" unchanged", "+new"] },
+    { label: "content after both sides are complete", header: "@@ -1 +1 @@", lines: ["-old", "+new", "+extra"] },
+  ])("rejects $label", ({ header, lines }) => {
+    expect(parseCodexTurnDiff([
+      "diff --git a/src/overrun.ts b/src/overrun.ts",
+      "--- a/src/overrun.ts",
+      "+++ b/src/overrun.ts",
+      header,
+      ...lines,
+    ].join("\n"))).toEqual([]);
+  });
+
+  it("supports multiple hunks, zero-count sides, and no-newline markers", () => {
+    const patch = [
+      "diff --git a/src/multiple.ts b/src/multiple.ts",
+      "--- a/src/multiple.ts",
+      "+++ b/src/multiple.ts",
+      "@@ -0,0 +1 @@",
+      "+added",
+      "\\ No newline at end of file",
+      "@@ -2 +2,0 @@",
+      "-removed",
+      "\\ No newline at end of file",
+      "diff --git a/src/next.ts b/src/next.ts",
+      "--- a/src/next.ts",
+      "+++ b/src/next.ts",
+      "@@ -0,0 +1 @@",
+      "+next",
+    ].join("\n");
+
+    expect(parseCodexTurnDiff(patch)).toEqual([
+      expect.objectContaining({
+        path: "src/multiple.ts",
+        additions: 1,
+        deletions: 1,
+      }),
+      expect.objectContaining({
+        path: "src/next.ts",
+        additions: 1,
+        deletions: 0,
+      }),
+    ]);
+  });
+
   it("does not interpret rename or mode metadata after a hunk begins", () => {
     expect(parseCodexTurnDiff([
       "diff --git a/src/markers.ts b/src/markers.ts",

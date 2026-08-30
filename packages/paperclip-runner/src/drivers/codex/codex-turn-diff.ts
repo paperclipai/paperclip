@@ -12,11 +12,16 @@ const MAX_TURN_DIFF_FILES = 2_000;
 const MAX_TURN_DIFF_CHARS_PER_FILE = 256 * 1024;
 
 function gitDiffHunkCounts(line: string): { old: number; new: number } | null {
-  const match = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?$/);
+  const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/);
   if (!match) return null;
-  const oldCount = match[1] === undefined ? 1 : Number(match[1]);
-  const newCount = match[2] === undefined ? 1 : Number(match[2]);
-  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(newCount)) return null;
+  const oldStart = Number(match[1]);
+  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+  const newStart = Number(match[3]);
+  const newCount = match[4] === undefined ? 1 : Number(match[4]);
+  if (
+    !Number.isSafeInteger(oldStart) || !Number.isSafeInteger(oldCount) ||
+    !Number.isSafeInteger(newStart) || !Number.isSafeInteger(newCount)
+  ) return null;
   return { old: oldCount, new: newCount };
 }
 
@@ -65,10 +70,14 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
     inHunk: boolean;
     oldHunkLinesRemaining: number | null;
     newHunkLinesRemaining: number | null;
+    valid: boolean;
   } | null = null;
 
   const finish = () => {
-    if (!current || files.length >= MAX_TURN_DIFF_FILES) return;
+    const incompleteHunk = current !== null && current.inHunk && (
+      current.oldHunkLinesRemaining !== 0 || current.newHunkLinesRemaining !== 0
+    );
+    if (!current || !current.valid || incompleteHunk || files.length >= MAX_TURN_DIFF_FILES) return;
     const path = current.renameTo ?? current.newPath ?? current.oldPath;
     if (!path) return;
     const previousPath = current.renameFrom ?? (current.renameTo ? current.oldPath : null);
@@ -94,10 +103,12 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
   };
 
   for (const line of patch.split("\n")) {
+    const hunkComplete = current !== null && current.inHunk &&
+      current.oldHunkLinesRemaining === 0 && current.newHunkLinesRemaining === 0;
     const header = line.startsWith("diff --git ")
       ? line.match(/^diff --git ("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/)
       : null;
-    if ((!current || !current.inHunk) && header) {
+    if ((!current || !current.inHunk || hunkComplete) && header) {
       finish();
       current = {
         lines: [line],
@@ -112,46 +123,65 @@ export function parseCodexTurnDiff(value: unknown): ParsedCodexTurnDiffFile[] {
         inHunk: false,
         oldHunkLinesRemaining: null,
         newHunkLinesRemaining: null,
+        valid: true,
       };
       continue;
     }
     if (!current) continue;
     current.lines.push(line);
+    if (!current.inHunk && line.startsWith("diff --git ") && !header) {
+      current.valid = false;
+      continue;
+    }
     if (!current.inHunk && line.startsWith("--- ")) current.oldPath = gitDiffPath(line.slice(4));
     else if (!current.inHunk && line.startsWith("+++ ")) current.newPath = gitDiffPath(line.slice(4));
     else if (!current.inHunk && line.startsWith("rename from ")) current.renameFrom = gitDiffPath(line.slice(12));
     else if (!current.inHunk && line.startsWith("rename to ")) current.renameTo = gitDiffPath(line.slice(10));
     else if (!current.inHunk && (line.startsWith("old mode ") || line.startsWith("new mode "))) current.modeChange = true;
     else if (!current.inHunk && (line.startsWith("Binary files ") || line === "GIT binary patch")) current.binary = true;
-    else if (!current.inHunk && line.startsWith("@@")) {
+    else if ((!current.inHunk || hunkComplete) && line.startsWith("@@")) {
       const counts = gitDiffHunkCounts(line);
+      if (!counts) {
+        current.valid = false;
+        current.inHunk = true;
+        continue;
+      }
       current.inHunk = true;
-      current.oldHunkLinesRemaining = counts?.old ?? null;
-      current.newHunkLinesRemaining = counts?.new ?? null;
-      if (current.oldHunkLinesRemaining === 0 && current.newHunkLinesRemaining === 0) {
-        current.inHunk = false;
-      }
+      current.oldHunkLinesRemaining = counts.old;
+      current.newHunkLinesRemaining = counts.new;
     } else if (current.inHunk) {
-      if (line.startsWith("+")) {
+      if (!current.valid || line === "\\ No newline at end of file") {
+        continue;
+      } else if (line.startsWith("+")) {
+        if (current.newHunkLinesRemaining === null || current.newHunkLinesRemaining === 0) {
+          current.valid = false;
+          continue;
+        }
         current.additions += 1;
-        if (current.newHunkLinesRemaining !== null && current.newHunkLinesRemaining > 0) {
-          current.newHunkLinesRemaining -= 1;
-        }
+        current.newHunkLinesRemaining -= 1;
       } else if (line.startsWith("-")) {
+        if (current.oldHunkLinesRemaining === null || current.oldHunkLinesRemaining === 0) {
+          current.valid = false;
+          continue;
+        }
         current.deletions += 1;
-        if (current.oldHunkLinesRemaining !== null && current.oldHunkLinesRemaining > 0) {
-          current.oldHunkLinesRemaining -= 1;
-        }
+        current.oldHunkLinesRemaining -= 1;
       } else if (line.startsWith(" ")) {
-        if (current.oldHunkLinesRemaining !== null && current.oldHunkLinesRemaining > 0) {
-          current.oldHunkLinesRemaining -= 1;
+        if (
+          current.oldHunkLinesRemaining === null || current.oldHunkLinesRemaining === 0 ||
+          current.newHunkLinesRemaining === null || current.newHunkLinesRemaining === 0
+        ) {
+          current.valid = false;
+          continue;
         }
-        if (current.newHunkLinesRemaining !== null && current.newHunkLinesRemaining > 0) {
-          current.newHunkLinesRemaining -= 1;
-        }
-      }
-      if (current.oldHunkLinesRemaining === 0 && current.newHunkLinesRemaining === 0) {
-        current.inHunk = false;
+        current.oldHunkLinesRemaining -= 1;
+        current.newHunkLinesRemaining -= 1;
+      } else if (line.startsWith("@@")) {
+        current.valid = false;
+        continue;
+      } else if (hunkComplete && line.startsWith("diff --git ")) {
+        current.valid = false;
+        continue;
       }
     }
   }
