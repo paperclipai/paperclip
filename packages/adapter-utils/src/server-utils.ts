@@ -3132,14 +3132,31 @@ async function hashSkillDirectory(root: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
+async function readMaterializedSkillSentinel(targetRoot: string): Promise<Record<string, unknown> | null> {
   try {
     const raw = JSON.parse(await fs.readFile(path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL), "utf8")) as unknown;
     const parsed = parseObject(raw);
-    return parsed.version === 1 && parsed.sourceFingerprint === sourceFingerprint;
+    return parsed.version === 1 ? parsed : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
+  const sentinel = await readMaterializedSkillSentinel(targetRoot);
+  return sentinel?.sourceFingerprint === sourceFingerprint;
+}
+
+// Guards against clobbering a directory Paperclip didn't create. Skill
+// targets used to live under a Paperclip-owned state dir where nothing else
+// could collide; now Claude skills materialize straight into the project's
+// own `cwd/.claude/skills`, which can also hold project-authored skills the
+// project owner hand-wrote. Only a directory carrying our own sentinel file
+// is safe to overwrite/delete on the next reconcile.
+export async function isForeignSkillTarget(targetRoot: string): Promise<boolean> {
+  const existing = await fs.lstat(targetRoot).catch(() => null);
+  if (!existing) return false;
+  return (await readMaterializedSkillSentinel(targetRoot)) === null;
 }
 
 async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<void>> {
@@ -3261,6 +3278,12 @@ export async function materializePaperclipSkillCopy(
   }
 
   try {
+    if (await isForeignSkillTarget(targetRoot)) {
+      throw new Error(
+        `Refusing to overwrite "${targetRoot}": it already exists and was not created by Paperclip. ` +
+          "Rename or remove the existing directory, or rename the Paperclip skill, to avoid the collision.",
+      );
+    }
     const sourceFingerprint = await hashSkillDirectory(sourceRoot);
     if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
     await copyEntry(sourceRoot, tempRoot, "");

@@ -53,6 +53,7 @@ import {
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
+  isForeignSkillTarget,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
@@ -1050,6 +1051,27 @@ async function removeSkillTarget(target: string): Promise<boolean> {
   return true;
 }
 
+// Like `removeSkillTarget`, but for entries the manifest remembers as
+// Paperclip-managed *copies* (materialized via `materializePaperclipSkillCopy`).
+// The manifest only records a name, not an ownership proof, so if a project
+// owner deletes the Paperclip selection and then hand-authors their own
+// `.claude/skills/<same-name>` directory, a stale manifest entry must not be
+// allowed to delete it. Skip (and log) instead of removing when the target no
+// longer carries Paperclip's own materialization sentinel.
+async function removeManagedSkillCopyTarget(
+  target: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<boolean> {
+  if (await isForeignSkillTarget(target)) {
+    await onLog(
+      "stdout",
+      `[paperclip] Skipped revoking "${target}": it is no longer a Paperclip-managed skill directory.\n`,
+    );
+    return false;
+  }
+  return removeSkillTarget(target);
+}
+
 async function reconcileManagedSkills(input: {
   skillsHome: string;
   allSkills: PaperclipSkillEntry[];
@@ -1063,7 +1085,7 @@ async function reconcileManagedSkills(input: {
 
   for (const name of managed) {
     if (desired.has(name)) continue;
-    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
+    if (await removeManagedSkillCopyTarget(path.join(input.skillsHome, name), input.onLog)) {
       await input.onLog("stdout", `[paperclip] Revoked ACPX ${input.agentLabel} skill "${name}" from ${input.skillsHome}\n`);
     }
   }
@@ -1084,7 +1106,7 @@ async function reconcileManagedSkills(input: {
 
   for (const name of managed) {
     if (desired.has(name) || availableByRuntimeName.has(name)) continue;
-    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
+    if (await removeManagedSkillCopyTarget(path.join(input.skillsHome, name), input.onLog)) {
       await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX ${input.agentLabel} skill "${name}" from ${input.skillsHome}\n`);
     }
   }
