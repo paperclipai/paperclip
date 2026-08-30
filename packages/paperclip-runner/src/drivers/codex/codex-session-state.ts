@@ -195,21 +195,19 @@ export class CodexSessionState {
       && this.result !== null
       && this.resultTurnId !== null
       && this.terminalTurns.has(this.resultTurnId);
-    const completedResultlessRecovery =
+    const consumedResultlessRecovery =
       input.resumed
       && this.conversationMode === "task"
       && this.result === null
       && this.activeTurnId === null
-      && dispositionOnlyRecoveryTurnId !== null
-      && this.terminalTurns.has(dispositionOnlyRecoveryTurnId)
       && dispositionOnlyRecoveryPreviouslyConsumed;
-    // A bound terminal fingerprint plus the consumed marker proves that the
-    // one-shot disposition turn completed at the provider. Its normalized
-    // event may still be absent after a checkpoint/append crash, but recovery
-    // must not convert that durability gap into authority for another provider
-    // submission. The native runtime replays first, then uses the exact bound
-    // fingerprint only as a non-provider policy fallback.
-    this.terminal = settledSemanticResult || completedResultlessRecovery;
+    // Once the one-shot disposition allowance was consumed, only affirmative
+    // provider history can release it or recover its active turn. Missing or
+    // malformed history is ambiguous, so a reconstructed session with no
+    // active turn must remain closed to further provider submissions. A bound
+    // terminal fingerprint is stronger completion evidence, but it is not
+    // required to preserve ownership across an ambiguous crash boundary.
+    this.terminal = settledSemanticResult || consumedResultlessRecovery;
     this.dispositionOnlyRecoveryAvailable =
       input.resumed &&
       this.conversationMode === "task" &&
