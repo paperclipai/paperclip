@@ -51,17 +51,32 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         message: `Claude API returned status ${res.status}`,
       };
     } else {
-      const res = await fetch("https://api.openai.com/v1/models", {
+      const baseUrls: Record<string, string> = {
+        openai: "https://api.openai.com/v1",
+        deepseek: "https://api.deepseek.com/v1",
+        glm: "https://open.bigmodel.cn/api/paas/v4",
+        kimi: "https://api.moonshot.cn/v1",
+      };
+      const labels: Record<string, string> = {
+        openai: "OpenAI",
+        deepseek: "DeepSeek",
+        glm: "Zhipu GLM",
+        kimi: "Moonshot Kimi",
+      };
+      const provider = config.llm.provider;
+      const baseUrl = baseUrls[provider] ?? "https://api.openai.com/v1";
+      const label = labels[provider] ?? provider;
+      const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${config.llm.apiKey}` },
       });
       if (res.ok) {
-        return { name: "LLM provider", status: "pass", message: "OpenAI API key is valid" };
+        return { name: "LLM provider", status: "pass", message: `${label} API key is valid` };
       }
       if (res.status === 401) {
         return {
           name: "LLM provider",
           status: "fail",
-          message: "OpenAI API key is invalid (401)",
+          message: `${label} API key is invalid (401)`,
           canRepair: false,
           repairHint: "Run `paperclipai configure --section llm`",
         };
@@ -69,7 +84,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
       return {
         name: "LLM provider",
         status: "warn",
-        message: `OpenAI API returned status ${res.status}`,
+        message: `${label} API returned status ${res.status}`,
       };
     }
   } catch {

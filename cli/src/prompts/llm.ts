@@ -19,6 +19,9 @@ export async function promptLlm(): Promise<LlmConfig | undefined> {
     options: [
       { value: "claude" as const, label: "Claude (Anthropic)" },
       { value: "openai" as const, label: "OpenAI" },
+      { value: "deepseek" as const, label: "DeepSeek" },
+      { value: "glm" as const, label: "Zhipu GLM" },
+      { value: "kimi" as const, label: "Moonshot Kimi" },
     ],
   });
 
@@ -27,8 +30,16 @@ export async function promptLlm(): Promise<LlmConfig | undefined> {
     process.exit(0);
   }
 
+  const providerLabels: Record<string, string> = {
+    claude: "Anthropic",
+    openai: "OpenAI",
+    deepseek: "DeepSeek",
+    glm: "Zhipu GLM",
+    kimi: "Moonshot Kimi",
+  };
+
   const apiKey = await p.password({
-    message: `${provider === "claude" ? "Anthropic" : "OpenAI"} API key`,
+    message: `${providerLabels[provider] ?? provider} API key`,
     validate: (val) => {
       if (!val) return "API key is required";
     },

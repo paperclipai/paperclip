@@ -594,7 +594,14 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
             s.stop(pc.yellow("Could not validate API key — continuing anyway"));
           }
         } else {
-          const res = await fetch("https://api.openai.com/v1/models", {
+          const baseUrls: Record<string, string> = {
+            openai: "https://api.openai.com/v1",
+            deepseek: "https://api.deepseek.com/v1",
+            glm: "https://open.bigmodel.cn/api/paas/v4",
+            kimi: "https://api.moonshot.cn/v1",
+          };
+          const baseUrl = baseUrls[llm.provider] ?? "https://api.openai.com/v1";
+          const res = await fetch(`${baseUrl}/models`, {
             headers: { Authorization: `Bearer ${llm.apiKey}` },
           });
           if (res.ok) {
