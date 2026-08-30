@@ -347,16 +347,24 @@ export class AcpxRuntimeHost {
   }
 
   async #close(reason: string): Promise<void> {
-    const errors: unknown[] = [];
     const activeTurn = this.#activeTurn;
     if (activeTurn) {
+      let cancellationError: unknown | null = null;
       try {
-        const cancellationError = await boundedCancellation(
+        cancellationError = await boundedCancellation(
           activeTurn.cancel({ reason }),
         );
-        if (cancellationError) errors.push(cancellationError);
       } catch (error) {
-        errors.push(error);
+        cancellationError = error;
+      }
+      if (cancellationError !== null) {
+        // The provider may still be using its command and staged credentials.
+        // Keep ownership of every runtime resource so a later close can retry
+        // cancellation before releasing any of them.
+        throw new AggregateError(
+          [cancellationError],
+          "ACPX runtime cleanup failed",
+        );
       }
     }
     const cleanupError = await cleanupRuntimeResources(
@@ -365,18 +373,11 @@ export class AcpxRuntimeHost {
       this.#command,
       reason,
     );
-    if (cleanupError) errors.push(...cleanupError.errors);
     if (!cleanupError) {
-      // Runtime, credential, and command ownership has been relinquished even
-      // when the provider never acknowledged turn cancellation. Preserve that
-      // cancellation error for this caller, but make later close calls
-      // idempotently observe the successfully closed host.
       if (this.#activeTurn === activeTurn) this.#activeTurn = null;
       this.#closed = true;
     }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "ACPX runtime cleanup failed");
-    }
+    if (cleanupError) throw cleanupError;
   }
 }
 
@@ -510,7 +511,6 @@ async function boundedCancellation(
           }),
         TURN_CANCELLATION_TIMEOUT_MS,
       );
-      timer.unref();
     }),
   ]);
   if (timer) clearTimeout(timer);

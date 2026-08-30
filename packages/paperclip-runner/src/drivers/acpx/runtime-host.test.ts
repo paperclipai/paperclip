@@ -389,12 +389,14 @@ describe("ACPX runtime host", () => {
     await host.close({ reason: "complete" });
   });
 
-  it("continues resource cleanup when turn cancellation never settles", async () => {
+  it("retains resources until turn cancellation retry succeeds", async () => {
     vi.useFakeTimers();
     try {
       const fixture = await hostFixture();
       const turn = runtimeTurn();
-      turn.cancel.mockImplementation(() => new Promise(() => undefined));
+      turn.cancel
+        .mockImplementationOnce(() => new Promise(() => undefined))
+        .mockResolvedValue(undefined);
       const runtime = runtimePort({ startTurn: () => turn });
       const host = await AcpxRuntimeHost.open(
         {
@@ -411,12 +413,12 @@ describe("ACPX runtime host", () => {
       const closing = host.close({ reason: "shutdown" });
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(closing).rejects.toThrow(/cleanup failed/);
-      expect(runtime.close).toHaveBeenCalledOnce();
-      expect(fixture.commandClose).toHaveBeenCalledOnce();
+      expect(runtime.close).not.toHaveBeenCalled();
+      expect(fixture.commandClose).not.toHaveBeenCalled();
       await expect(
         host.close({ reason: "retry after cancellation timeout" }),
       ).resolves.toBeUndefined();
-      expect(turn.cancel).toHaveBeenCalledOnce();
+      expect(turn.cancel).toHaveBeenCalledTimes(2);
       expect(runtime.close).toHaveBeenCalledOnce();
       expect(fixture.commandClose).toHaveBeenCalledOnce();
     } finally {
@@ -425,64 +427,50 @@ describe("ACPX runtime host", () => {
   });
 
   it("retains the cancellation handle while runtime cleanup remains retryable", async () => {
-    vi.useFakeTimers();
-    try {
-      const fixture = await hostFixture();
-      const turn = runtimeTurn();
-      turn.cancel.mockImplementation(() => new Promise(() => undefined));
-      let failRuntimeClose = true;
-      const runtime = runtimePort({
-        startTurn: () => turn,
-        onClose: async () => {
-          if (failRuntimeClose) throw new Error("runtime cleanup failed");
-        },
-      });
-      const host = await AcpxRuntimeHost.open(
-        {
-          ...fixture.options,
-          agent: "codex",
-          model: "gpt-5.6-sol",
-          permissionMode: "approve-reads",
-          environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
-        },
-        fixture.dependencies({ openRuntime: async () => runtime }),
-      );
-      host.startTurn({ text: "Complete the task.", requestId: "turn-1" });
-      const credentialHome = join(host.runtimeRoot(), "codex-home");
-      const authPath = join(credentialHome, "auth.json");
+    const fixture = await hostFixture();
+    const turn = runtimeTurn();
+    let failRuntimeClose = true;
+    const runtime = runtimePort({
+      startTurn: () => turn,
+      onClose: async () => {
+        if (failRuntimeClose) throw new Error("runtime cleanup failed");
+      },
+    });
+    const host = await AcpxRuntimeHost.open(
+      {
+        ...fixture.options,
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "approve-reads",
+        environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      },
+      fixture.dependencies({ openRuntime: async () => runtime }),
+    );
+    host.startTurn({ text: "Complete the task.", requestId: "turn-1" });
+    const credentialHome = join(host.runtimeRoot(), "codex-home");
+    const authPath = join(credentialHome, "auth.json");
 
-      const firstClose = host.close({ reason: "first shutdown" });
-      const firstRejected =
-        expect(firstClose).rejects.toThrow(/cleanup failed/);
-      await vi.advanceTimersByTimeAsync(2_000);
-      await firstRejected;
-      expect(turn.cancel).toHaveBeenCalledOnce();
-      await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
-      await expect(
-        stageManagedCodexCredential({
-          agentHomeDirectory: credentialHome,
-          environment: {
-            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-          },
-        }),
-      ).rejects.toThrow("already has an active lease");
+    await expect(host.close({ reason: "first shutdown" })).rejects.toThrow(
+      /cleanup failed/,
+    );
+    expect(turn.cancel).toHaveBeenCalledOnce();
+    await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
+    await expect(
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    ).rejects.toThrow("already has an active lease");
 
-      failRuntimeClose = false;
-      const retry = host.close({ reason: "retry shutdown" });
-      const retryRejected = expect(retry).rejects.toThrow(/cleanup failed/);
-      await vi.advanceTimersByTimeAsync(2_000);
-      await retryRejected;
-      expect(turn.cancel).toHaveBeenCalledTimes(2);
-      expect(runtime.close).toHaveBeenCalledTimes(2);
-      await expect(readFile(authPath)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-      await expect(
-        host.close({ reason: "cleanup complete" }),
-      ).resolves.toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
+    failRuntimeClose = false;
+    await expect(
+      host.close({ reason: "retry shutdown" }),
+    ).resolves.toBeUndefined();
+    expect(turn.cancel).toHaveBeenCalledTimes(2);
+    expect(runtime.close).toHaveBeenCalledTimes(2);
+    await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("retains a settled turn when shutdown cleanup must be retried", async () => {
