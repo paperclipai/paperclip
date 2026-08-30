@@ -610,6 +610,14 @@ impl CodexProviderState {
     }
 
     fn mark_receipt_limit_interrupt_accepted(&mut self, accepted_deadline_unix_ms: u64) {
+        // Provider restoration can reconcile the active turn as already
+        // settled while an interruption command is in flight. In that case
+        // `interrupt_turn` returns `already_settled` and recovery has already
+        // cleared the durable retry marker. Do not recreate an accepted state
+        // without a pending interruption or active turn.
+        if !self.receipt_limit_interrupt_pending || self.active_provider_turn_id.is_none() {
+            return;
+        }
         if !self.receipt_limit_interrupt_accepted {
             self.receipt_limit_interrupt_deadline_unix_ms = Some(
                 self.receipt_limit_interrupt_deadline_unix_ms
@@ -2634,6 +2642,53 @@ mod tests {
             )
             .unwrap());
         assert_eq!(recovered.pending_events.len(), 1);
+    }
+
+    #[test]
+    fn settled_receipt_limit_interrupt_cannot_be_marked_accepted() {
+        let mut state = CodexProviderState::new(
+            CodexProviderConfig {
+                provider: "codex".to_owned(),
+                driver: "codex_app_server".to_owned(),
+                provider_version: "test".to_owned(),
+                command: PathBuf::from("codex"),
+                args: vec!["app-server".to_owned()],
+                cwd: std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                model: None,
+                provider_session_id: None,
+                instructions: String::new(),
+                approval_policy: "never".to_owned(),
+            },
+            None,
+            ProviderToolBridge::default(),
+        );
+        state.thread_id = Some("thread-1".to_owned());
+        state.active_provider_turn_id = Some("turn-1".to_owned());
+        state.lifecycle = "turn_active".to_owned();
+        state
+            .begin_receipt_limit_stop("call-1".to_owned(), "tool.one".to_owned(), 10_000)
+            .unwrap();
+        state.record_receipt_limit_interrupt_attempt().unwrap();
+
+        // Recovery observed that the turn ended before the interrupt RPC was
+        // issued and cleared the receipt-limit interruption state.
+        state.settle_active_provider_turn_identity().unwrap();
+        state.active_provider_turn_id = None;
+        state.lifecycle = "session_open".to_owned();
+        state.receipt_limit_diagnostic_emitted = false;
+        state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_interrupt_accepted = false;
+        state.receipt_limit_interrupt_attempts = 0;
+        state.receipt_limit_interrupt_deadline_unix_ms = None;
+
+        state.mark_receipt_limit_interrupt_accepted(50_000);
+
+        assert!(!state.receipt_limit_interrupt_accepted);
+        assert!(state.receipt_limit_interrupt_deadline_unix_ms.is_none());
+        state.validate().unwrap();
     }
 
     #[test]
