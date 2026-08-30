@@ -142,6 +142,46 @@ fn treats_ecmascript_bom_whitespace_as_an_empty_required_answer() {
 }
 
 #[test]
+fn rejects_present_empty_optional_answers() {
+    let mut optional_text_set = question_set();
+    optional_text_set["questions"][2]["required"] = json!(false);
+    optional_text_set["questions"][2]
+        .as_object_mut()
+        .unwrap()
+        .remove("textValidation");
+    let mut empty_text = valid_response();
+    empty_text["answers"]["notes"] = json!({"text":"\u{feff}\u{2009}"});
+    assert!(validate_question_response(&optional_text_set, &empty_text).is_err());
+
+    let mut optional_custom_set = question_set();
+    optional_custom_set["questions"][0]["required"] = json!(false);
+    let mut empty_custom = valid_response();
+    empty_custom["answers"]["target"] = json!({"customText":"\u{feff}\u{2009}"});
+    assert!(validate_question_response(&optional_custom_set, &empty_custom).is_err());
+}
+
+#[test]
+fn rejects_malformed_persisted_text_constraints() {
+    let malformed_constraints = [
+        json!("not-an-object"),
+        json!({"minLength":"2"}),
+        json!({"maxLength":2.5}),
+        json!({"pattern":false}),
+        json!({"inputType":false}),
+        json!({"minimum":"1"}),
+        json!({"maximum":{}}),
+    ];
+    for constraint in malformed_constraints {
+        let mut malformed_set = question_set();
+        malformed_set["questions"][2]["textValidation"] = constraint.clone();
+        assert!(
+            validate_question_response(&malformed_set, &valid_response()).is_err(),
+            "malformed text constraint unexpectedly passed: {constraint}"
+        );
+    }
+}
+
+#[test]
 fn rejects_cross_document_and_answer_mode_mismatches() {
     let cases = [
         ("missing required", {

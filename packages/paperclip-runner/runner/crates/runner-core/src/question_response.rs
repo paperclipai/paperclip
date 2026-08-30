@@ -23,6 +23,17 @@ pub fn validate_question_response(
             "question response exceeds its bounded transport contract",
         ));
     }
+    let question_set_schema: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/question-set.schema.json"
+    ))
+    .map_err(|_| LocalRunnerError::invalid("embedded question-set schema is invalid"))?;
+    let question_set_validator = jsonschema::validator_for(&question_set_schema)
+        .map_err(|_| LocalRunnerError::invalid("embedded question-set schema cannot compile"))?;
+    if !question_set_validator.is_valid(question_set) {
+        return Err(LocalRunnerError::invalid(
+            "persisted question set failed the Paperclip question-set schema",
+        ));
+    }
     let schema: Value = serde_json::from_str(include_str!(
         "../../../../protocol/schemas/question-response.schema.json"
     ))
@@ -109,9 +120,10 @@ fn validate_answer(question: &Value, answer: Option<&Value>) -> Result<(), Local
     let has_value = selected.as_ref().is_some_and(|values| !values.is_empty())
         || text.is_some_and(|value| !value.trim_matches(is_ecmascript_whitespace).is_empty())
         || custom.is_some_and(|value| !value.trim_matches(is_ecmascript_whitespace).is_empty());
-    if required && !has_value {
+    if !has_value {
         return Err(LocalRunnerError::invalid(format!(
-            "question response answer {question_id} is required"
+            "question response answer {question_id} is {}",
+            if required { "required" } else { "empty" }
         )));
     }
 
