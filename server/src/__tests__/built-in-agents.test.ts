@@ -8,6 +8,8 @@ import {
   activityLog,
   agentConfigRevisions,
   agents,
+  agentRuntimeState,
+  agentWakeupRequests,
   approvals,
   budgetPolicies,
   builtInManagedResources,
@@ -16,7 +18,10 @@ import {
   companySkillVersions,
   companySkills,
   createDb,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issueThreadInteractions,
+  issueComments,
   issues,
   principalPermissionGrants,
   routines,
@@ -27,6 +32,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { runningProcesses } from "../adapters/index.ts";
 import { agentInstructionsService } from "../services/agent-instructions.ts";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
@@ -39,7 +46,31 @@ import {
   validateBuiltInAgentDefinitions,
 } from "../services/built-in-agents.ts";
 import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { heartbeatService } from "../services/heartbeat.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Built-in agent test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -123,21 +154,18 @@ describeEmbeddedPostgres("built-in agents", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(routineTriggers);
-    await db.delete(routines);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issues);
-    await db.delete(builtInManagedResources);
-    await db.delete(companySkillVersions);
-    await db.delete(companySkills);
-    await db.delete(principalPermissionGrants);
-    await db.delete(companyMemberships);
-    await db.delete(agentConfigRevisions);
-    await db.delete(activityLog);
-    await db.delete(approvals);
-    await db.delete(agents);
-    await db.delete(budgetPolicies);
-    await db.delete(companies);
+    mockAdapterExecute.mockClear();
+    runningProcesses.clear();
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await cleanupBuiltInFixtureOnce();
+        break;
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     // Some tests drop the built-in marker unique index to simulate legacy
     // (pre-migration 0192) duplicates; restore it now that all rows are gone.
     await db.execute(sql.raw(BUILT_IN_MARKER_UNIQUE_INDEX_DDL));
@@ -165,6 +193,36 @@ describeEmbeddedPostgres("built-in agents", () => {
       requireBoardApprovalForNewAgents: options.requireApproval ?? true,
     });
     return companyId;
+  }
+
+  async function cleanupBuiltInHeartbeatDependents() {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+  }
+
+  async function cleanupBuiltInFixtureOnce() {
+    await db.delete(routineTriggers);
+    await db.delete(routines);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
+    await cleanupBuiltInHeartbeatDependents();
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
+    await db.delete(issues);
+    await db.delete(builtInManagedResources);
+    await db.delete(companySkillVersions);
+    await db.delete(companySkills);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
+    await db.delete(agentConfigRevisions);
+    await db.delete(approvals);
+    await db.delete(agents);
+    await db.delete(budgetPolicies);
+    await db.delete(companies);
   }
 
   it("validates the static registry and rejects invalid definitions", () => {
