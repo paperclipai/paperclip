@@ -47,4 +47,18 @@ describe("agent permissions service", () => {
       canAssignTasks: false,
     }).canCreateSkills).toBe(false);
   });
+
+  it("defaults canReassignOwnedCards to true on both schemas and preserves explicit overrides", () => {
+    expect(agentPermissionsSchema.parse({}).canReassignOwnedCards).toBe(true);
+    expect(agentPermissionsSchema.parse({ canReassignOwnedCards: false }).canReassignOwnedCards).toBe(false);
+    expect(updateAgentPermissionsSchema.parse({
+      canCreateAgents: false,
+      canAssignTasks: false,
+    }).canReassignOwnedCards).toBeUndefined();
+    expect(updateAgentPermissionsSchema.parse({
+      canCreateAgents: false,
+      canAssignTasks: false,
+      canReassignOwnedCards: false,
+    }).canReassignOwnedCards).toBe(false);
+  });
 });
