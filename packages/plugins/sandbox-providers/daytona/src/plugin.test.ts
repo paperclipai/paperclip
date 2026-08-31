@@ -2721,7 +2721,9 @@ describe("Daytona sandbox provider plugin", () => {
         ],
       });
       // Let syncIn register on the activity gate and reach the hung upload.
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.waitFor(() => {
+        expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
+      });
 
       const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
         driverKey: "daytona",
