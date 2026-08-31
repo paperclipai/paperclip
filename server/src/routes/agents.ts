@@ -5595,14 +5595,17 @@ export function agentRoutes(
         run = candidateRun;
       }
     }
+    // "No active run" is carried by the status code, not by a `null` body: a 200 that
+    // may or may not hold an object forces every client to special-case a bare null on
+    // the happy path. 404 already means "no such issue", so 204 stays distinct from it.
     if (!run) {
-      res.json(null);
+      res.status(204).end();
       return;
     }
 
     const agent = await svc.getById(run.agentId);
     if (!agent) {
-      res.json(null);
+      res.status(204).end();
       return;
     }
 

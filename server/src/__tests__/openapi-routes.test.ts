@@ -368,6 +368,21 @@ describe("openapi routes", () => {
     ]);
   });
 
+  it("declares the active-run no-active-run 204 alongside the 200 run object", () => {
+    const { spec } = loadSpecRoutes();
+    const activeRun = spec.paths["/api/issues/{issueId}/active-run"].get;
+
+    // The whole point of the route contract is that "no active run" is carried by the
+    // status code rather than a `null` 200 body, so the document has to declare 204 —
+    // a client generated from a spec that only lists 200 still special-cases a bare null.
+    // 403 is injected for every company-scoped route by the spec builder, not by this
+    // registration; it is listed here because the assertion pins the exact code set.
+    expect(Object.keys(activeRun.responses).sort()).toEqual(["200", "204", "401", "403", "404"]);
+    // 204 means empty: a declared body would contradict the handler's `.end()`.
+    expect(activeRun.responses["204"].content).toBeUndefined();
+    expect(activeRun.responses["200"].content).toBeDefined();
+  });
+
   it("documents the 404 non-member gate on the Claude setup-token cancel route", () => {
     const { spec } = loadSpecRoutes();
     const cancel =

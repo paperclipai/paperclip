@@ -119,8 +119,12 @@ export const heartbeatsApi = {
     }),
   liveRunsForIssue: (issueId: string) =>
     api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
-  activeRunForIssue: (issueId: string) =>
-    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
+  // "No active run" comes back as 204, which the client resolves as `undefined`. React
+  // Query rejects a queryFn that resolves `undefined`, so collapse it to an explicit null.
+  activeRunForIssue: (issueId: string): Promise<ActiveRunForIssue | null> =>
+    api
+      .get<ActiveRunForIssue | null | undefined>(`/issues/${issueId}/active-run`)
+      .then((run) => run ?? null),
   liveRunsForCompany: (
     companyId: string,
     options?: number | { minCount?: number; limit?: number },
