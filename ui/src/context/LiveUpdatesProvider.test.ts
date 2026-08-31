@@ -1106,11 +1106,22 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
 });
 
 describe("applyRunLifecycleToCompanyLiveRuns", () => {
+  // The dashboard "Active / recent" panel keys its list under the base live-runs
+  // key plus a scope + params suffix, so it is a separate cache entry that
+  // exact-key setQueryData never reaches.
+  const scopedLiveRunsKey = [...queryKeys.liveRuns("company-1"), "dashboard", { minRunCount: 4 }];
+
   function makeClient(initial: Array<{ id: string; status: string }>) {
     const initialDetail = initial.find((run) => run.id === "run-1");
     const cache = new Map<string, unknown>([
       [JSON.stringify(queryKeys.liveRuns("company-1")), initial],
+      [JSON.stringify(scopedLiveRunsKey), initial.map((run) => ({ ...run }))],
       [JSON.stringify(queryKeys.runDetail("run-1")), initialDetail],
+    ]);
+    const keys = new Map<string, readonly unknown[]>([
+      [JSON.stringify(queryKeys.liveRuns("company-1")), queryKeys.liveRuns("company-1")],
+      [JSON.stringify(scopedLiveRunsKey), scopedLiveRunsKey],
+      [JSON.stringify(queryKeys.runDetail("run-1")), queryKeys.runDetail("run-1")],
     ]);
     const client = {
       getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
@@ -1119,10 +1130,28 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
         const current = cache.get(cacheKey);
         cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
       },
+      // Minimal stand-in for React Query's filter semantics: prefix-match on
+      // queryKey, then the optional predicate.
+      setQueriesData: (
+        filters: { queryKey: readonly unknown[]; predicate?: (query: { queryKey: readonly unknown[] }) => boolean },
+        updater: unknown,
+      ) => {
+        for (const [cacheKey, queryKey] of keys) {
+          const prefix = filters.queryKey;
+          const matchesPrefix =
+            queryKey.length >= prefix.length &&
+            prefix.every((part, i) => JSON.stringify(part) === JSON.stringify(queryKey[i]));
+          if (!matchesPrefix) continue;
+          if (filters.predicate && !filters.predicate({ queryKey })) continue;
+          const current = cache.get(cacheKey);
+          cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
+        }
+      },
     };
     const read = () => cache.get(JSON.stringify(queryKeys.liveRuns("company-1")));
+    const readScoped = () => cache.get(JSON.stringify(scopedLiveRunsKey));
     const readDetail = () => cache.get(JSON.stringify(queryKeys.runDetail("run-1")));
-    return { client, read, readDetail };
+    return { client, read, readScoped, readDetail };
   }
 
   it("removes a run on a terminal status (patched, no refetch needed)", () => {
@@ -1181,6 +1210,40 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
       error: null,
       errorCode: null,
     }));
+  });
+
+  it("marks the run terminal in scoped lists instead of dropping it", () => {
+    // Regression: the dashboard panel's scoped list is never written by the
+    // exact-key setQueryData, and no longer polls, so it kept rendering a
+    // finished run as "Live now" indefinitely.
+    const { client, read, readScoped } = makeClient([
+      { id: "run-1", status: "running" },
+      { id: "run-2", status: "running" },
+    ]);
+    __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(client as never, "company-1", {
+      runId: "run-1",
+      status: "succeeded",
+      finishedAt: "2026-07-24T10:00:00.000Z",
+      error: null,
+      errorCode: null,
+    });
+    // Base list holds live runs only: the run is dropped.
+    expect(read()).toEqual([{ id: "run-2", status: "running" }]);
+    // Scoped list pads with recent runs: the run stays, marked terminal, so the
+    // card flips from "Live now" to "Finished ...".
+    expect(readScoped()).toEqual([
+      { id: "run-1", status: "succeeded", finishedAt: "2026-07-24T10:00:00.000Z" },
+      { id: "run-2", status: "running" },
+    ]);
+  });
+
+  it("patches a non-terminal status into scoped lists too", () => {
+    const { client, readScoped } = makeClient([{ id: "run-1", status: "queued" }]);
+    __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(client as never, "company-1", {
+      runId: "run-1",
+      status: "running",
+    });
+    expect(readScoped()).toEqual([{ id: "run-1", status: "running" }]);
   });
 
   it("reports not-patched for a genuinely new run so the caller refetches", () => {

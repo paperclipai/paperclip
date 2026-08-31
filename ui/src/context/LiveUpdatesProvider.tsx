@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
-import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
+import { markRunTerminalInList, patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
 import type { Agent, HeartbeatRun, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -888,10 +888,30 @@ function applyRunLifecycleToCompanyLiveRuns(
     },
   );
 
+  // Scoped live-run lists — e.g. the dashboard "Active / recent" panel, whose key
+  // is [...liveRuns(companyId), scope, params] — are prefixed by the base key but
+  // are a different cache entry, so the exact-key setQueryData calls below never
+  // reach them. They also no longer poll (#9701), so anything missed here stays
+  // stale until a remount or window-focus refetch. Patch them alongside the base
+  // list on the same filter.
+  const baseKey = queryKeys.liveRuns(companyId);
+  const scopedLists = {
+    queryKey: baseKey,
+    predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey.length > baseKey.length,
+  };
+
   if (TERMINAL_RUN_STATUSES.has(status)) {
     queryClient.setQueryData(
-      queryKeys.liveRuns(companyId),
+      baseKey,
       (current: LiveRunForIssue[] | undefined) => removeRunFromList(current, runId),
+    );
+    // Scoped lists pad themselves with recently finished runs, so the run belongs
+    // there — mark it terminal in place rather than dropping it, which flips the
+    // card from "Live now" to "Finished <n> ago".
+    queryClient.setQueriesData(
+      scopedLists,
+      (current: LiveRunForIssue[] | undefined) =>
+        markRunTerminalInList(current, runId, status, readString(payload.finishedAt) ?? null),
     );
     // Always "handled": a terminal run must never be in the live list, so if it
     // wasn't present there is deliberately nothing to refetch (removeRunFromList
@@ -901,12 +921,16 @@ function applyRunLifecycleToCompanyLiveRuns(
 
   let present = false;
   queryClient.setQueryData(
-    queryKeys.liveRuns(companyId),
+    baseKey,
     (current: LiveRunForIssue[] | undefined) => {
       const result = patchRunStatusInList(current, runId, status);
       present = result.present;
       return result.next;
     },
+  );
+  queryClient.setQueriesData(
+    scopedLists,
+    (current: LiveRunForIssue[] | undefined) => patchRunStatusInList(current, runId, status).next,
   );
   return present;
 }
