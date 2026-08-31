@@ -1310,7 +1310,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }}
           className={cn(
-            "min-h-(--sz-12rem) w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            "w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            !contentClassName?.includes("min-h-") && "min-h-(--sz-12rem)",
             contentClassName,
           )}
         />
