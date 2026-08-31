@@ -204,7 +204,9 @@ import {
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
+  applyLowTrustWorkspaceIsolation,
   buildExecutionWorkspaceAdapterConfig,
+  describeSuppressedProjectExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   isUnrunnableWorktreeCombo,
@@ -14744,10 +14746,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
-    const requestedExecutionWorkspaceMode =
-      trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
-        ? "isolated_workspace"
-        : resolvedExecutionWorkspaceMode;
+    const lowTrustReview = trustPreset.kind === "low_trust_review";
+    const requestedExecutionWorkspaceMode = applyLowTrustWorkspaceIsolation(
+      resolvedExecutionWorkspaceMode,
+      lowTrustReview,
+    );
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -15308,6 +15311,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         ),
     });
+    // The gate returns null for a discarded policy exactly as it does for a project that never
+    // configured one, so without this the run is indistinguishable from an unconfigured project
+    // while the project API keeps echoing the policy back. Name the discard on the run instead.
+    // Resolved here, after `resolvedWorkspace`, so the warning names the workspace this run
+    // actually landed in — a requested `shared_workspace` can still fall back to agent home.
+    const suppressedProjectExecutionWorkspacePolicyWarning =
+      describeSuppressedProjectExecutionWorkspacePolicy({
+        projectPolicy: parsedProjectExecutionWorkspacePolicy,
+        // The ungated settings on purpose: the comparison runs in the flag-on world, where the gate
+        // would have restored these alongside the policy.
+        issueSettings: parsedIssueExecutionWorkspaceSettings,
+        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentConfig: config,
+        lowTrustReview,
+        isolatedWorkspacesEnabled,
+        resolvedWorkspace: {
+          mode: requestedExecutionWorkspaceMode,
+          source: resolvedWorkspace.source,
+          baseCwdFallback: resolvedWorkspace.baseCwdFallback,
+          // `shouldRestoreExistingWorkspace` is `requestedShouldReuseExisting` verbatim, so the
+          // restore decision is already final here even though provisioning runs below.
+          restoredWorkspaceMode: reusableExistingExecutionWorkspace
+            ? issueExecutionWorkspaceModeForPersistedWorkspace(reusableExistingExecutionWorkspace.mode)
+            : null,
+        },
+      });
+    if (suppressedProjectExecutionWorkspacePolicyWarning) {
+      logger.warn(
+        {
+          event: "project_execution_workspace_policy_suppressed",
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId,
+          projectId: projectContext?.id ?? null,
+          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
+          projectWorkspaceStrategyType:
+            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
+          requestedExecutionWorkspaceMode,
+          issueExecutionWorkspaceMode: parsedIssueExecutionWorkspaceSettings?.mode ?? null,
+          resolvedWorkspaceSource: resolvedWorkspace.source,
+          resolvedWorkspaceBaseCwdFallback: resolvedWorkspace.baseCwdFallback,
+          restoredExecutionWorkspaceId: reusableExistingExecutionWorkspace?.id ?? null,
+          restoredExecutionWorkspaceMode: reusableExistingExecutionWorkspace?.mode ?? null,
+        },
+        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
+      );
+    }
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: mergedConfig,
       trustPreset,
@@ -15872,6 +15923,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
+      ...(suppressedProjectExecutionWorkspacePolicyWarning
+        ? [suppressedProjectExecutionWorkspacePolicyWarning]
+        : []),
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),

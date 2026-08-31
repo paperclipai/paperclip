@@ -164,6 +164,217 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
+/**
+ * A low-trust review run is isolated regardless of what anything else asked for. Shared by the
+ * dispatch path and by the suppressed-policy diagnosis below so the two never drift.
+ */
+export function applyLowTrustWorkspaceIsolation(
+  mode: ParsedExecutionWorkspaceMode,
+  lowTrustReview: boolean,
+): ParsedExecutionWorkspaceMode {
+  return lowTrustReview && mode === "shared_workspace" ? "isolated_workspace" : mode;
+}
+
+/**
+ * Key-order-independent structural comparison, so an equal value written differently stays equal.
+ * An empty record collapses to null: it carries no fields, so setting a config key to `{}` and
+ * leaving that key unset configure the same thing.
+ */
+function stableJson(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key, nested: unknown) => {
+      if (!nested || typeof nested !== "object" || Array.isArray(nested)) return nested;
+      const entries = Object.entries(nested as Record<string, unknown>).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      );
+      return entries.length > 0 ? Object.fromEntries(entries) : null;
+    }) ?? "null"
+  );
+}
+
+type ExecutionWorkspaceControlInput = {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+  legacyUseProjectWorkspace: boolean | null;
+  agentConfig: Record<string, unknown>;
+  lowTrustReview: boolean;
+};
+
+/**
+ * Everything the isolated-workspaces gate can change about a run's workspace: the mode, the
+ * shared-workspace concurrency, and the two adapter-config keys workspace control rewrites.
+ */
+function resolveExecutionWorkspaceControl(input: ExecutionWorkspaceControlInput) {
+  const mode = applyLowTrustWorkspaceIsolation(
+    resolveExecutionWorkspaceMode({
+      projectPolicy: input.projectPolicy,
+      issueSettings: input.issueSettings,
+      legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+    }),
+    input.lowTrustReview,
+  );
+  const adapterConfig = buildExecutionWorkspaceAdapterConfig({
+    agentConfig: input.agentConfig,
+    projectPolicy: input.projectPolicy,
+    issueSettings: input.issueSettings,
+    mode,
+    legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+  });
+  return {
+    mode,
+    sharedWorkspaceConcurrency: resolveSharedWorkspaceConcurrency({
+      projectPolicy: input.projectPolicy,
+      issueSettings: input.issueSettings,
+    }),
+    // Fingerprint the *effective* strategy, not the raw config key: an absent key and an explicit
+    // `project_primary` resolve to the same strategy, so they must not read as a difference.
+    adapterConfigFingerprint: stableJson([
+      {
+        ...(parseExecutionWorkspaceStrategy(adapterConfig.workspaceStrategy) ?? {}),
+        type: resolveEffectiveWorkspaceStrategyType(mode, adapterConfig),
+      },
+      adapterConfig.workspaceRuntime ?? null,
+    ]),
+  };
+}
+
+/** Where a run landed, as resolved rather than as requested. */
+export type ResolvedRunWorkspaceDescriptor = {
+  mode: ParsedExecutionWorkspaceMode;
+  /** `resolvedWorkspace.source` from run workspace resolution. */
+  source: "project_primary" | "task_session" | "agent_home";
+  /** `resolvedWorkspace.baseCwdFallback`: project workspaces existed but none could be used. */
+  baseCwdFallback: boolean;
+  /**
+   * Mode of a persisted execution workspace this run actually restored, or null when it provisioned
+   * against the resolved anchor instead.
+   *
+   * Reuse is bound by issue columns (`executionWorkspaceId` plus a `reuse_existing` preference) that
+   * this gate never reads, so disabling the instance flag does not unbind a run from a workspace an
+   * earlier run created. Restoring replaces the adapter's cwd wholesale, which makes every other
+   * field here describe an anchor the run stopped using.
+   */
+  restoredWorkspaceMode: ParsedExecutionWorkspaceMode | null;
+};
+
+/**
+ * Wording for a workspace this run restored, one entry per mode a persisted workspace can carry.
+ *
+ * Typed as a total `Record` on purpose: `executionWorkspacesSvc.create` persists a row for whichever
+ * mode a run landed in, so restore is not limited to the isolating modes, and a mode without its own
+ * wording would silently fall through to the anchor — naming the shared checkout for a run that
+ * reopened the agent's own directory, and the reverse. A new mode fails to compile until it is
+ * answered here.
+ */
+const RESTORED_RUN_WORKSPACE_DESCRIPTIONS: Record<ParsedExecutionWorkspaceMode, string> = {
+  isolated_workspace: "an isolated workspace restored from an earlier run",
+  operator_branch: "an operator branch workspace restored from an earlier run",
+  agent_default: "the agent's own workspace, restored from an earlier run",
+  shared_workspace: "the shared project workspace, restored from an earlier run",
+};
+
+/**
+ * Describe where the run actually landed, for an operator diagnosing where their work went.
+ *
+ * Driven by resolution rather than by the requested mode, because the two disagree often enough to
+ * matter: a `shared_workspace` run whose project workspace cannot be used falls back to agent home,
+ * and a run that opted out of the project workspace never went near the shared checkout.
+ */
+function describeResolvedRunWorkspace(workspace: ResolvedRunWorkspaceDescriptor): string {
+  // A restored workspace outranks every anchor signal below, including the fallback: the anchor is
+  // what this run *would* have used, and restoring moved the adapter somewhere else entirely.
+  if (workspace.restoredWorkspaceMode !== null) {
+    return RESTORED_RUN_WORKSPACE_DESCRIPTIONS[workspace.restoredWorkspaceMode];
+  }
+  // `source` stays "project_primary" for a fallback anchor, so this flag has to be read first.
+  if (workspace.baseCwdFallback) {
+    return "the agent home fallback directory, because no project workspace could be used";
+  }
+  if (workspace.source === "agent_home") return "the agent's own workspace";
+  if (workspace.source === "task_session") return "a workspace carried over from an earlier session";
+  if (workspace.mode === "isolated_workspace") return "an isolated workspace";
+  if (workspace.mode === "operator_branch") return "an operator branch workspace";
+  return "the shared project workspace";
+}
+
+/**
+ * Describe a project execution workspace policy that is configured but not applied.
+ *
+ * {@link gateProjectExecutionWorkspacePolicy} drops the whole policy when the isolated-workspaces
+ * instance feature is off, and downstream resolution then cannot tell "this project has no policy"
+ * apart from "this project's policy was discarded": the run silently falls back while the project
+ * API keeps echoing the policy back exactly as configured. Callers use this to name the discard on
+ * the run instead of leaving the operator to infer it from a checkout that never got its worktrees.
+ *
+ * The warning fires only when *the project policy itself* changes the run, established by resolving
+ * workspace control with and without it rather than by inspecting which fields it happens to carry.
+ * Two consequences:
+ *
+ * - A policy persisting accepted defaults (`defaultMode: "shared_workspace"`,
+ *   `sharedWorkspaceConcurrency: "auto"`, empty sub-objects) resolves identically either way and
+ *   stays silent.
+ * - Issue-level settings are held equal on *both* sides, at their ungated value. Varying them too
+ *   would let an isolation request that came from the issue be reported as though the project
+ *   policy caused it. They are held *ungated* because the comparison asks what enabling the flag
+ *   would change, and enabling it restores the issue settings alongside the policy: an issue that
+ *   overrides the policy back to the shared workspace neutralizes it, and an issue that asks for
+ *   isolation can still be relying on the policy for the strategy that isolation runs under.
+ *
+ * The workspace it names comes from resolution, not from the requested mode, so it survives an
+ * `agent_default` override, a low-trust review run, and a shared-workspace run that fell back to
+ * agent home because no project workspace could be used.
+ *
+ * Returns null whenever there is nothing to warn about — the policy is applied, absent, disabled,
+ * or changes nothing.
+ */
+export function describeSuppressedProjectExecutionWorkspacePolicy(input: {
+  /** The parsed, *ungated* project policy — the one the gate is about to discard. */
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  /** The parsed, *ungated* issue settings — held equal on both sides of the comparison. */
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+  legacyUseProjectWorkspace: boolean | null;
+  agentConfig: Record<string, unknown>;
+  lowTrustReview: boolean;
+  isolatedWorkspacesEnabled: boolean;
+  /** Where this run actually landed, after workspace resolution. */
+  resolvedWorkspace: ResolvedRunWorkspaceDescriptor;
+}): string | null {
+  if (input.isolatedWorkspacesEnabled) return null;
+  if (!input.projectPolicy?.enabled) return null;
+
+  const shared = {
+    legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+    agentConfig: input.agentConfig,
+    lowTrustReview: input.lowTrustReview,
+    issueSettings: input.issueSettings,
+  };
+  // Both sides sit in the flag-on world, varying only the project policy, so a difference is
+  // attributable to the policy alone rather than to everything else the gate drops with it.
+  const applied = resolveExecutionWorkspaceControl({ ...shared, projectPolicy: input.projectPolicy });
+  const suppressed = resolveExecutionWorkspaceControl({ ...shared, projectPolicy: null });
+  if (
+    applied.mode === suppressed.mode &&
+    applied.sharedWorkspaceConcurrency === suppressed.sharedWorkspaceConcurrency &&
+    applied.adapterConfigFingerprint === suppressed.adapterConfigFingerprint
+  ) {
+    return null;
+  }
+
+  const details = [
+    ...(input.projectPolicy.defaultMode ? [`default mode "${input.projectPolicy.defaultMode}"`] : []),
+    ...(input.projectPolicy.workspaceStrategy?.type
+      ? [`workspace strategy "${input.projectPolicy.workspaceStrategy.type}"`]
+      : []),
+  ];
+  const detailSuffix = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return (
+    `This project configures an execution workspace policy${detailSuffix}, but the "Isolated Workspaces" ` +
+    `instance feature is disabled, so the policy is not applied and this run uses ` +
+    `${describeResolvedRunWorkspace(input.resolvedWorkspace)} instead. Enable "Isolated Workspaces" ` +
+    "in instance settings for the project policy to take effect."
+  );
+}
+
 type ParseIssueExecutionWorkspaceSettingsOptions = {
   includeEnvironmentId?: boolean;
 };
@@ -312,9 +523,12 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
   };
 }
 
+// Returns a *parsed* mode rather than the raw settings union: every branch below resolves to a
+// concrete workspace, so "inherit" and "reuse_existing" are unreachable and callers should not have
+// to re-narrow them.
 export function issueExecutionWorkspaceModeForPersistedWorkspace(
   mode: string | null | undefined,
-): IssueExecutionWorkspaceSettings["mode"] {
+): ParsedExecutionWorkspaceMode {
   if (mode === null || mode === undefined) {
     return "agent_default";
   }

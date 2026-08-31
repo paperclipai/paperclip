@@ -6,6 +6,7 @@ import {
 import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
+  describeSuppressedProjectExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -530,5 +531,315 @@ describe("execution workspace policy helpers", () => {
         true,
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+
+  describe("describeSuppressedProjectExecutionWorkspacePolicy", () => {
+    function describeSuppressed(
+      overrides: Partial<Parameters<typeof describeSuppressedProjectExecutionWorkspacePolicy>[0]>,
+    ) {
+      return describeSuppressedProjectExecutionWorkspacePolicy({
+        projectPolicy: null,
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+        agentConfig: {},
+        lowTrustReview: false,
+        isolatedWorkspacesEnabled: false,
+        ...overrides,
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: null,
+          ...overrides.resolvedWorkspace,
+        },
+      });
+    }
+
+    it("names the discarded mode and strategy when the instance flag is off", () => {
+      const warning = describeSuppressed({
+        projectPolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+        },
+      });
+      expect(warning).toContain("isolated_workspace");
+      expect(warning).toContain("git_worktree");
+      expect(warning).toContain("Isolated Workspaces");
+      expect(warning).toContain("shared project workspace");
+    });
+
+    it("names the discarded mode when the policy sets no explicit strategy", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "operator_branch" },
+      });
+      expect(warning).toContain("operator_branch");
+      expect(warning).not.toContain("git_worktree");
+    });
+
+    it("stays silent when the policy is actually applied", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            workspaceStrategy: { type: "git_worktree" },
+          },
+          isolatedWorkspacesEnabled: true,
+        }),
+      ).toBeNull();
+    });
+
+    it("stays silent when the project configured no active policy", () => {
+      expect(describeSuppressed({})).toBeNull();
+      expect(describeSuppressed({ projectPolicy: { enabled: false } })).toBeNull();
+    });
+
+    // A policy row can be persisted with `enabled: true` and nothing else. It resolves to the same
+    // workspace with and without the gate, so naming it would be noise rather than a signal.
+    it("stays silent when an enabled policy requests no workspace behaviour", () => {
+      expect(describeSuppressed({ projectPolicy: { enabled: true } })).toBeNull();
+    });
+
+    // The API accepts and persists the resolution defaults verbatim, so plenty of rows carry them.
+    // Suppressing such a policy resolves to exactly the same workspace it would with the flag on,
+    // and warning every run about a difference that does not exist is pure noise.
+    it("stays silent for a policy that only restates the resolution defaults", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "shared_workspace",
+            allowIssueOverride: true,
+            sharedWorkspaceConcurrency: "auto",
+            workspaceStrategy: { type: "project_primary" },
+            workspaceRuntime: {},
+          },
+        }),
+      ).toBeNull();
+    });
+
+    // ...but the same default-looking policy is not inert once the agent carries its own workspace
+    // strategy: applying the policy strips it, suppressing the policy leaves it in place.
+    it("warns when suppressing a default-looking policy leaves the agent's own strategy standing", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+          agentConfig: { workspaceStrategy: { type: "git_worktree" } },
+        }),
+      ).toContain("shared project workspace");
+    });
+
+    it("warns when suppression only changes the shared-workspace concurrency", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        }),
+      ).toContain("Isolated Workspaces");
+    });
+
+    // The report's fear is that the run lands on the shared checkout, but a run whose assignee
+    // override opts out of the project workspace lands on the agent's own cwd instead. Naming the
+    // shared checkout there would point the operator at the wrong directory entirely.
+    it("names the agent's own workspace when the run opted out of the project workspace", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        legacyUseProjectWorkspace: false,
+        resolvedWorkspace: { mode: "agent_default", source: "agent_home", baseCwdFallback: false },
+      });
+      expect(warning).toContain("the agent's own workspace");
+      expect(warning).not.toContain("shared project workspace");
+    });
+
+    // A run can request the shared project workspace and still not get it: when project workspaces
+    // exist but none can be materialized, the anchor falls back to agent home while `source` stays
+    // "project_primary". Naming the shared checkout there sends the operator to a directory the
+    // adapter never opened.
+    it("names the fallback directory when no project workspace could be used", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: { mode: "shared_workspace", source: "project_primary", baseCwdFallback: true },
+      });
+      expect(warning).toContain("the agent home fallback directory");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
+    it("names the carried-over workspace when the run resumed an earlier session's directory", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: { mode: "shared_workspace", source: "task_session", baseCwdFallback: false },
+      });
+      expect(warning).toContain("a workspace carried over from an earlier session");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
+    // A low-trust review run is isolated whatever the flag says, so calling this run's workspace
+    // the shared project checkout would be plainly wrong. The isolation the policy asked for is
+    // already in force; only the git_worktree strategy is still suppressed.
+    it("names an isolated workspace when a low-trust review run isolates the run anyway", () => {
+      const warning = describeSuppressed({
+        projectPolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree" },
+        },
+        lowTrustReview: true,
+        // The anchor it isolates from is still the project workspace, so `source` stays
+        // "project_primary" and only the mode distinguishes it.
+        resolvedWorkspace: {
+          mode: "isolated_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+        },
+      });
+      expect(warning).toContain("an isolated workspace");
+      expect(warning).not.toContain("shared project workspace");
+    });
+
+    // ...and once the strategy matches too, low-trust isolation leaves nothing suppressed at all.
+    it("stays silent when low-trust isolation already matches the policy in full", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            workspaceStrategy: { type: "project_primary" },
+          },
+          lowTrustReview: true,
+        }),
+      ).toBeNull();
+    });
+
+    // Issue-level settings ride the same gate as the project policy, but this warning speaks for
+    // the project policy alone. A default-looking policy paired with an issue that asked for
+    // isolation must not report the project policy as the cause: the isolation request came from
+    // the issue, and blaming the project would send the operator to edit the wrong configuration.
+    // Holding the issue settings equal on both sides of the comparison is what keeps that honest.
+    it("does not blame the project policy for an isolation request that came from the issue", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: { enabled: true, defaultMode: "shared_workspace", allowIssueOverride: true },
+          issueSettings: { mode: "isolated_workspace" },
+        }),
+      ).toBeNull();
+    });
+
+    // The other half of that attribution: the comparison runs in the flag-*on* world, where the
+    // issue settings this gate drops would still be in force. An issue that overrides the policy
+    // back to the shared workspace neutralizes it, so enabling the flag would not move this run at
+    // all — and a warning telling the operator their policy is being discarded would send them to
+    // change a project setting that is not what is deciding this run.
+    it("stays silent when an issue override neutralizes the project policy", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            allowIssueOverride: true,
+          },
+          issueSettings: { mode: "shared_workspace" },
+        }),
+      ).toBeNull();
+    });
+
+    // ...and the converse, which silence would hide: the issue asks for isolation and the *project*
+    // policy is what supplies the git_worktree strategy that isolation would run under. The policy
+    // is a but-for cause of the difference here — dropping it leaves the run on the default
+    // project_primary strategy — so it is named, even though it never requested isolation itself.
+    it("warns when the policy supplies the strategy for an issue-requested isolation", () => {
+      const warning = describeSuppressed({
+        projectPolicy: {
+          enabled: true,
+          workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+        },
+        issueSettings: { mode: "isolated_workspace" },
+      });
+      expect(warning).toContain("git_worktree");
+      expect(warning).toContain("Isolated Workspaces");
+    });
+
+    // A run can be bound to a persisted execution workspace by issue columns the gate never
+    // touches (`executionWorkspaceId` + a `reuse_existing` preference), so turning the flag off
+    // does not unbind it: the run restores that isolated checkout and the adapter opens its cwd.
+    // The anchor resolved before provisioning still reads as the shared project workspace, and
+    // naming it would point the operator at a directory this run never opened.
+    it("names the restored workspace when the run reused a persisted isolated checkout", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: "isolated_workspace",
+        },
+      });
+      expect(warning).toContain("an isolated workspace restored from an earlier run");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
+    // The restored workspace outranks even the anchor fallback: the fallback describes an anchor
+    // this run stopped using the moment the persisted workspace was restored.
+    it("names the restored workspace even when the anchor fell back to agent home", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: true,
+          restoredWorkspaceMode: "operator_branch",
+        },
+      });
+      expect(warning).toContain("an operator branch workspace restored from an earlier run");
+      expect(warning).not.toContain("agent home fallback");
+    });
+
+    // Restore is not limited to the two isolating modes. `executionWorkspacesSvc.create` persists a
+    // row for every mode a run lands in — `shared_workspace` and `adapter_managed` included — so a
+    // reuse binding can restore one of those just as readily. Here the run restored a persisted
+    // shared checkout while this run's own anchor resolved to the agent's home directory: naming
+    // the anchor would send the operator to a directory the adapter never opened.
+    it("names the restored workspace when the run reused a persisted shared checkout", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "agent_default",
+          source: "agent_home",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: "shared_workspace",
+        },
+      });
+      expect(warning).toContain("the shared project workspace, restored from an earlier run");
+      expect(warning).not.toContain("the agent's own workspace");
+    });
+
+    // The mirror image, and the one the anchor gets backwards most confidently: an
+    // `adapter_managed` (or `cloud_sandbox`) row maps to `agent_default`, so the run reopened the
+    // agent's own directory while the anchor still reads as the project's shared checkout.
+    it("names the restored workspace when the run reused a persisted agent-default checkout", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: "agent_default",
+        },
+      });
+      expect(warning).toContain("the agent's own workspace, restored from an earlier run");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
+    // The suppressed warning has to survive the exact round trip the dispatch path takes:
+    // the persisted JSON is parsed first, and only the parsed policy reaches the gate.
+    it("describes a policy parsed straight from the persisted project column", () => {
+      const parsed = parseProjectExecutionWorkspacePolicy({
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        allowIssueOverride: true,
+        workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+      });
+      expect(gateProjectExecutionWorkspacePolicy(parsed, false)).toBeNull();
+      expect(describeSuppressed({ projectPolicy: parsed })).toContain("isolated_workspace");
+    });
   });
 });
