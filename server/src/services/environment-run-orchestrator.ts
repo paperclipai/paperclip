@@ -593,6 +593,11 @@ export function environmentRunOrchestrator(
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
+        // Persist the reason on the lease row, not just in the activity log
+        // below. The heartbeat already derived it from the run's own error, and
+        // a lease that ends `failed` with no recorded reason is undiagnosable
+        // once the run's own log has rotated away.
+        input.failureReason,
       );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });

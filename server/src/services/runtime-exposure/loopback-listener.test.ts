@@ -1,14 +1,13 @@
 import net from "node:net";
 import { describe, expect, it } from "vitest";
 
-import { RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort } from "@paperclipai/shared";
-
 import {
   diagnoseRuntimeListenerBinds,
   formatProcAddressHex,
   listenerBindFactsForPort,
   parseProcNetListeners,
 } from "./loopback-listener.js";
+import { allocateExposurePortPair, type ExposurePortPair } from "./port-pair.js";
 
 // Real header and row shape, copied from a live /proc/net/tcp{,6} on the host
 // that produced the PAP-17256 failures. Port 42003 is A40B; 52003 is CB23.
@@ -129,8 +128,77 @@ describe("listenerBindFactsForPort", () => {
 });
 
 describe("diagnoseRuntimeListenerBinds against live listeners", () => {
-  const appPort = RUNTIME_EXPOSURE_APP_PORT_MIN + 900;
-  const hmrPort = deriveViteHmrPort(appPort);
+  /**
+   * These tests bind real sockets, so they need real free ports -- and a fixed
+   * pair cannot be assumed free. The suite previously pinned
+   * `RUNTIME_EXPOSURE_APP_PORT_MIN + 900`, whose HMR companion is 52900. Both
+   * that port and the whole 42000-42999 app range sit inside Linux's default
+   * ephemeral range (32768-60999), so any outbound connection on a shared CI
+   * runner can transiently own them. The suite then failed EADDRINUSE on a port
+   * it never chose, on a run whose diff touched no networking.
+   *
+   * Ask the production allocator for a pair that probes free instead. That
+   * shrinks the race from the whole suite duration to the gap between probe and
+   * bind, and keeps the test on the same port policy the runtime uses. The gap
+   * is not zero -- an ephemeral port can still be taken inside it -- so a lost
+   * race retries on a different pair rather than failing the run.
+   */
+  const PORT_PAIR_ATTEMPTS = 5;
+
+  function isAddressInUse(error: unknown): boolean {
+    return (error as NodeJS.ErrnoException | null)?.code === "EADDRINUSE";
+  }
+
+  async function bindsOn(port: number, host: string | undefined): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      const probe = net.createServer();
+      probe.once("error", () => resolve(false));
+      if (host === undefined) probe.listen(port, () => probe.close(() => resolve(true)));
+      else probe.listen(port, host, () => probe.close(() => resolve(true)));
+    });
+  }
+
+  /**
+   * True only when the port is free on BOTH the wildcard and IPv4 loopback.
+   * Neither probe alone is sufficient: these tests bind the app port on
+   * 127.0.0.1 and the HMR companion on the wildcard, and the two binds fail on
+   * different holders. A hostless listen is dual-stack IPv6, so it can succeed
+   * while a v4-loopback-only holder still owns 127.0.0.1 -- checking only the
+   * wildcard would hand out a port the app-port bind then rejects.
+   */
+  async function isPortBindable(port: number): Promise<boolean> {
+    return (await bindsOn(port, undefined)) && (await bindsOn(port, "127.0.0.1"));
+  }
+
+  /**
+   * Run `body` against an app/HMR port pair that probed free. A pair lost to an
+   * ephemeral bind between probe and listen is retired for this call, so a retry
+   * moves to a different pair rather than re-picking the one that just lost.
+   */
+  async function withFreePortPair(
+    body: (pair: ExposurePortPair) => Promise<void>,
+  ): Promise<void> {
+    const retired = new Set<number>();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < PORT_PAIR_ATTEMPTS; attempt += 1) {
+      const pair = await allocateExposurePortPair({
+        isPortAvailable: isPortBindable,
+        reserved: retired,
+      });
+      try {
+        await body(pair);
+        return;
+      } catch (error) {
+        // Only a lost port race retries. An assertion failure is the real
+        // verdict and must surface on the first attempt.
+        if (!isAddressInUse(error)) throw error;
+        lastError = error;
+        retired.add(pair.appPort);
+        retired.add(pair.hmrPort);
+      }
+    }
+    throw lastError;
+  }
 
   async function withListener<T>(
     port: number,
@@ -151,32 +219,40 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
   }
 
   it("stays silent for a real loopback listener", async () => {
-    await withListener(appPort, "127.0.0.1", async () => {
-      expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
+    await withFreePortPair(async ({ appPort }) => {
+      await withListener(appPort, "127.0.0.1", async () => {
+        expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
+      });
     });
   });
 
   it("names the port and the wildcard address for a real 0.0.0.0 listener", async () => {
-    await withListener(appPort, undefined, async () => {
-      const diagnosis = await diagnoseRuntimeListenerBinds([appPort]);
-      expect(diagnosis).toContain(`port ${appPort}`);
-      // Node's hostless listen is dual-stack, so /proc shows :: and/or 0.0.0.0.
-      expect(diagnosis).toMatch(/0\.0\.0\.0|::/);
-      expect(diagnosis).toContain("--bind loopback");
+    await withFreePortPair(async ({ appPort }) => {
+      await withListener(appPort, undefined, async () => {
+        const diagnosis = await diagnoseRuntimeListenerBinds([appPort]);
+        expect(diagnosis).toContain(`port ${appPort}`);
+        // Node's hostless listen is dual-stack, so /proc shows :: and/or 0.0.0.0.
+        expect(diagnosis).toMatch(/0\.0\.0\.0|::/);
+        expect(diagnosis).toContain("--bind loopback");
+      });
     });
   });
 
   it("catches the HMR companion port too, not just the app port", async () => {
-    await withListener(appPort, "127.0.0.1", async () => {
-      await withListener(hmrPort, undefined, async () => {
-        const diagnosis = await diagnoseRuntimeListenerBinds([appPort, hmrPort]);
-        expect(diagnosis).toContain(`port ${hmrPort}`);
-        expect(diagnosis).not.toContain(`port ${appPort} is bound`);
+    await withFreePortPair(async ({ appPort, hmrPort }) => {
+      await withListener(appPort, "127.0.0.1", async () => {
+        await withListener(hmrPort, undefined, async () => {
+          const diagnosis = await diagnoseRuntimeListenerBinds([appPort, hmrPort]);
+          expect(diagnosis).toContain(`port ${hmrPort}`);
+          expect(diagnosis).not.toContain(`port ${appPort} is bound`);
+        });
       });
     });
   });
 
   it("stays silent for a port with no listener, leaving the verdict to the broker", async () => {
-    expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
+    await withFreePortPair(async ({ appPort }) => {
+      expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
+    });
   });
 });

@@ -380,6 +380,12 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+/**
+ * Wakeup request statuses that are still awaiting an outcome. Every other
+ * status is terminal, so a row in one of these has not yet recorded how it
+ * left the waiting state.
+ */
+const OPEN_WAKEUP_REQUEST_STATUSES = ["queued", "deferred_issue_execution", "claimed"] as const;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -9338,6 +9344,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return write.run ?? run;
     }
 
+    // The run row is terminal now, so its wakeup must be too. This teardown is
+    // the one terminal path that never went through an explicit
+    // success/failure branch, so without this the wakeup row is stranded at
+    // "claimed" forever -- a waiting state with no recorded exit. Mirror the
+    // mapping the explicit branches use: a succeeded run completes its wakeup,
+    // and anything cut short cancels it.
+    await closeWakeupOnTerminalRun(
+      run.wakeupRequestId,
+      terminalStatus === "succeeded" ? "completed" : "cancelled",
+      terminalStatus === "succeeded" ? null : message,
+    ).catch((wakeupErr) => {
+      logger.warn(
+        { err: wakeupErr, runId: run.id, wakeupRequestId: run.wakeupRequestId },
+        "failed to close wakeup request on lease-release terminalization",
+      );
+    });
+
     const terminalRun = write.run;
     if (terminalRun) {
       await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
@@ -9409,6 +9432,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  /**
+   * Close a wakeup that is still open, without disturbing one that another path
+   * already finished. Used by the teardown safety net, which can run after an
+   * explicit branch has already recorded the real outcome -- the status
+   * predicate makes it a no-op in that case rather than overwriting a precise
+   * status with a generic one.
+   */
+  async function closeWakeupOnTerminalRun(
+    wakeupRequestId: string | null | undefined,
+    status: "completed" | "cancelled",
+    error: string | null,
+  ) {
+    if (!wakeupRequestId) return;
+    await db
+      .update(agentWakeupRequests)
+      .set({ status, finishedAt: new Date(), ...(error ? { error } : {}), updatedAt: new Date() })
+      .where(
+        and(
+          eq(agentWakeupRequests.id, wakeupRequestId),
+          inArray(agentWakeupRequests.status, [...OPEN_WAKEUP_REQUEST_STATUSES]),
+        ),
+      );
   }
 
   async function addContinuationExhaustedCommentOnce(input: {
@@ -9727,7 +9774,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             and(
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.agentId, run.agentId),
-              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+              inArray(agentWakeupRequests.status, [...OPEN_WAKEUP_REQUEST_STATUSES]),
               sql`(
                 ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
                 or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}

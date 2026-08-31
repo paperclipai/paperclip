@@ -466,6 +466,60 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(rows[0]?.status).toBe("released");
   });
 
+  it("persists the run's failure reason on a failed local lease release", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const released = await runtime.releaseRunLeases(
+      runId,
+      "failed",
+      undefined,
+      "adapter exited with code 137",
+    );
+
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.failureReason).toBe("adapter exited with code 137");
+
+    // The row itself must carry the reason. A value that lives only in the
+    // activity log is exactly the leak this guards against.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("failed");
+    expect(rows[0]?.failureReason).toBe("adapter exited with code 137");
+    expect(rows[0]?.cleanupStatus).toBe("success");
+  });
+
+  it("invents no failure reason when a local lease is released cleanly", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    await runtime.releaseRunLeases(runId);
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("released");
+    expect(rows[0]?.failureReason).toBeNull();
+    expect(rows[0]?.cleanupStatus).toBe("success");
+  });
+
   it("allows projectless runs through the runtime seam", async () => {
     const { companyId, environment, runId } = await seedEnvironment();
 
@@ -6381,6 +6435,103 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       }),
     });
     expect(released[0]?.lease.status).toBe("released");
+
+    // A clean release invents no reason, but cleanup is still recorded: the
+    // teardown RPC above returned, so the provider resource is genuinely gone.
+    // Leaving `cleanup_status` null would read as cleanup that never ran.
+    const cleanRows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(cleanRows[0]?.failureReason).toBeNull();
+    expect(cleanRows[0]?.cleanupStatus).toBe("success");
+  });
+
+  it("persists the run's failure reason on a failed plugin environment lease release", async () => {
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "plugin-lease-failed", metadata: {} };
+        }
+        return undefined;
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin Fake plugin",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: {
+          template: "base",
+        },
+      },
+    });
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            displayName: "Fake plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "failed",
+      undefined,
+      "adapter exited with code 137",
+    );
+
+    expect(released).toHaveLength(1);
+
+    // The row must carry the reason the run computed. The plugin driver used to
+    // call `releaseLease(id, status)` with no options, so a plugin-backed run
+    // failure was undiagnosable the moment its log rotated away -- the same leak
+    // already closed for the local, ssh, and sandbox drivers.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("failed");
+    expect(rows[0]?.failureReason).toBe("adapter exited with code 137");
+    expect(rows[0]?.cleanupStatus).toBe("success");
   });
 
   async function seedPluginDriverEnvironment(pluginId: string) {
