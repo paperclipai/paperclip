@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdForUpdate: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
+  recordAssignmentFenceReceipt: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
@@ -250,6 +251,38 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+  });
+
+  it("passes a board-issued native receipt run id to the assignment-fence service", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Native Spark receipt",
+      executionPolicy: {
+        assignmentFence: {
+          kind: "native_spark_only",
+          allowedAgentId: "44444444-4444-4444-8444-444444444444",
+        },
+      },
+      executionState: null,
+    };
+    const runId = "55555555-5555-4555-8555-555555555555";
+    const updated = { ...issue, executionState: { assignmentFenceReceipt: { runId } } };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.recordAssignmentFenceReceipt.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issue.id}/assignment-fence/receipt`)
+      .send({ runId });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(updated);
+    expect(mockIssueService.recordAssignmentFenceReceipt).toHaveBeenCalledWith(issue.id, runId);
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
