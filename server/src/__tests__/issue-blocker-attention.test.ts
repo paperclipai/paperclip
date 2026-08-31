@@ -179,6 +179,32 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not project a human-owned aggregate child as active execution", async () => {
+    const { companyId } = await createCompany("PBH");
+    const parentId = await insertIssue({ companyId, identifier: "PBH-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBH-2",
+      title: "Human-owned child",
+      status: "todo",
+      parentId,
+      assigneeUserId: "board-user-1",
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "human_owned_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBH-2",
+      blockingTreeLive: false,
+    });
+  });
+
   it("does not let active aggregate child work hide an unattended direct blocker", async () => {
     const { companyId, agentId } = await createCompany("PBA");
     const parentId = await insertIssue({ companyId, identifier: "PBA-1", title: "Parent", status: "blocked" });

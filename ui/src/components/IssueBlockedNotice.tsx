@@ -612,6 +612,35 @@ export function IssueBlockedNotice({
     );
   }
 
+  const aggregateChildIsHumanOwned =
+    !showSuccessfulRunHandoff
+    && issueStatus === "blocked"
+    && blockerAttention?.reason === "human_owned_child";
+
+  if (aggregateChildIsHumanOwned) {
+    return (
+      <div
+        data-blocker-attention-state={blockerAttention?.state}
+        data-testid="issue-blocked-notice-human-owned-child"
+        className="mb-3 rounded-md border border-border bg-card px-3 py-2.5 text-sm text-foreground shadow-sm"
+      >
+        <div className="flex items-start gap-2">
+          <span className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+          </span>
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium leading-5">Waiting on a human-owned sub-task</p>
+            <p className="leading-5">
+              {blockers.length === 0
+                ? "This aggregate task has no direct blocker. It remains blocked until the assigned person updates or completes the sub-task."
+                : `This aggregate task also has ${blockers.length === 1 ? "a direct blocker" : `${blockers.length} direct blockers`}.`}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (waitingOnLiveWork) {
     return (
       <WaitingOnLiveWorkNotice

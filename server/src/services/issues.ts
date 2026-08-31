@@ -2813,8 +2813,7 @@ async function listIssueBlockerAttentionMap(
     if (
       node.status === "in_progress" ||
       activeIssueIds.has(node.id) ||
-      explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
+      explicitWaitingIssueIds.has(node.id)
     ) return true;
 
     const nextSeen = new Set(seen);
@@ -2911,9 +2910,17 @@ async function listIssueBlockerAttentionMap(
       reason = "stalled_review";
     } else {
       state = "covered";
-      reason = topLevelEdges.every((edge) => nodesById.get(edge.blockerIssueId)?.parentId === root.id)
+      const directChildrenOnly = topLevelEdges.every(
+        (edge) => nodesById.get(edge.blockerIssueId)?.parentId === root.id,
+      );
+      const allDirectChildrenHumanOwned = directChildrenOnly && topLevelEdges.every(
+        (edge) => Boolean(nodesById.get(edge.blockerIssueId)?.assigneeUserId),
+      );
+      reason = activeChildren.length > 0
         ? "active_child"
-        : "active_dependency";
+        : allDirectChildrenHumanOwned
+          ? "human_owned_child"
+          : "active_dependency";
     }
 
     attentionMap.set(root.id, createIssueBlockerAttention({
