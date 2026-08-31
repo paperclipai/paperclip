@@ -60,7 +60,20 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
   };
 }
 
-export function buildConfigurationIncompleteRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+export function buildConfigurationIncompleteRecoveryNoticeSeed(input?: {
+  reason?: string | null;
+}): StrandedRecoveryNoticeSeed {
+  if (input?.reason === "adapter_fingerprint_continuity_unresolvable") {
+    return {
+      body:
+        "Paperclip stopped dispatching this adapter because its run configuration fingerprint metadata kept " +
+        "resetting for the same reason on every attempt instead of becoming durable. Dispatching again would " +
+        "only produce another zero-token run. Moving it to `blocked` so an operator can repair the adapter's " +
+        "session/config continuity (or clear the task session) before resuming.",
+      title: "Configuration incomplete",
+      tone: "danger",
+    };
+  }
   return {
     body:
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
