@@ -2,6 +2,28 @@
 
 Run Paperclip in Docker without installing Node or pnpm locally.
 
+All commands below assume you are in the **project root** (the directory containing `package.json`), not inside `docker/`.
+
+## Building the image
+
+```sh
+docker build -t paperclip-local .
+```
+
+The Dockerfile installs common agent tools (`git`, `gh`, `curl`, `wget`, `ripgrep`, `python3`) and the Claude, Codex, and OpenCode CLIs.
+
+Build arguments:
+
+| Arg | Default | Purpose |
+|-----|---------|---------|
+| `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
+| `USER_GID` | `1000` | GID for the container `node` group |
+
+```sh
+docker build -t paperclip-local \
+  --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
+```
+
 ## One-liner (build + run)
 
 ```sh
@@ -10,6 +32,8 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+  -e PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
@@ -25,10 +49,16 @@ Data persistence:
 
 All persisted under your bind mount (`./data/docker-paperclip` in the example above).
 
-## Compose Quickstart
+## Docker Compose
+
+### Quickstart (embedded SQLite)
+
+Single container, no external database. Data persists via a bind mount.
 
 ```sh
-docker compose -f docker-compose.quickstart.yml up --build
+BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
+  docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
@@ -39,10 +69,35 @@ Defaults:
 Optional overrides:
 
 ```sh
-PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=./data/pc docker compose -f docker-compose.quickstart.yml up --build
+PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
+  docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
+**Note:** `PAPERCLIP_DATA_DIR` is resolved relative to the compose file (`docker/`), so `../data/pc` maps to `data/pc` in the project root.
+
 If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
+
+Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
+
+### Full stack (with PostgreSQL)
+
+Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
+
+```sh
+BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+  docker compose -f docker/docker-compose.yml up --build
+```
+
+PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+### Untrusted PR review
+
+Isolated container for reviewing untrusted pull requests with Codex or Claude, without exposing your host machine. See `doc/UNTRUSTED-PR-REVIEW.md` for the full workflow.
+
+```sh
+docker compose -f docker/docker-compose.untrusted-review.yml build
+docker compose -f docker/docker-compose.untrusted-review.yml run --rm --service-ports review
+```
 
 ## Authenticated Compose (Single Public URL)
 
@@ -64,9 +119,47 @@ services:
 - bootstrap invite URL defaults
 - hostname allowlist defaults (hostname extracted from URL)
 
+For fresh `authenticated/private` Docker or appliance-style installs, the first
+admin can now be claimed entirely from the browser after sign-in. Open the
+Paperclip URL, sign in or create an account, then choose `Claim this instance`
+on the setup screen. This browser claim is disabled for `authenticated/public`;
+public deployments should run the high-entropy CLI invite fallback instead:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
+
 Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
+
+### Optional Vercel Connect credentials
+
+Vercel Connect's backend integration is retained for controlled testing and
+existing Vercel-backed connections, but its new-connection UI is currently
+withheld from **Apps → Browse**. Setting
+`PAPERCLIP_VERCEL_CONNECT_ENABLED=true` does not expose a customer-facing setup
+entry. Native provider setup screens remain unchanged. Vercel-hosted deployments use the
+workload OIDC token Vercel injects. Other hosted and self-hosted deployments
+can provide `PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN` as a deployment bootstrap
+secret only when that token type is accepted by the live Connect API:
+
+```yaml
+services:
+  paperclip:
+    environment:
+      PAPERCLIP_VERCEL_CONNECT_ENABLED: "true"
+      PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN: ${PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN}
+```
+
+Do not save that access token in a company secret or connection config. It is
+instance bootstrap authority for the operator-selected Vercel account. A token's
+long expiry and broad Vercel scope do not prove Connect compatibility; validate
+it with connector metadata before rollout. Workload OIDC takes precedence when
+both authorities are present. Turning the feature flag off hides new
+Vercel-backed setup; existing connections keep resolving while workload OIDC or
+the bootstrap token remains available. Missing or invalid authority fails
+closed. See the [Vercel Connect operator guide](./connections/VERCEL-CONNECT.md).
 
 ## Claude + Codex Local Adapters in Docker
 
@@ -93,11 +186,72 @@ Notes:
 - Without API keys, the app still runs normally.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 
-## Untrusted PR Review Container
+## Podman Quadlet (systemd)
 
-If you want a separate Docker environment for reviewing untrusted pull requests with `codex` or `claude`, use the dedicated review workflow in `doc/UNTRUSTED-PR-REVIEW.md`.
+The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQL as systemd services via Podman Quadlet.
 
-That setup keeps CLI auth state in Docker volumes instead of your host home directory and uses a separate scratch workspace for PR checkouts and preview runs.
+| File | Purpose |
+|------|---------|
+| `docker/quadlet/paperclip.pod` | Pod definition — groups containers into a shared network namespace |
+| `docker/quadlet/paperclip.container` | Paperclip server — joins the pod, connects to Postgres at `127.0.0.1` |
+| `docker/quadlet/paperclip-db.container` | PostgreSQL 17 — joins the pod, health-checked |
+
+### Setup
+
+1. Build the image (see above).
+
+2. Copy quadlet files to your systemd directory:
+
+   ```sh
+   # Rootless (recommended)
+   cp docker/quadlet/*.pod docker/quadlet/*.container \
+     ~/.config/containers/systemd/
+
+   # Or rootful
+   sudo cp docker/quadlet/*.pod docker/quadlet/*.container \
+     /etc/containers/systemd/
+   ```
+
+3. Create a secrets env file (keep out of version control):
+
+   ```sh
+   cat > ~/.config/containers/systemd/paperclip.env <<EOL
+   BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+   PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32)
+   POSTGRES_USER=paperclip
+   POSTGRES_PASSWORD=paperclip
+   POSTGRES_DB=paperclip
+   DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/paperclip
+   # OPENAI_API_KEY=sk-...
+   # ANTHROPIC_API_KEY=sk-...
+   EOL
+   ```
+
+4. Create the data directory and start:
+
+   ```sh
+   mkdir -p ~/.local/share/paperclip
+   systemctl --user daemon-reload
+   systemctl --user start paperclip-pod
+   ```
+
+### Quadlet management
+
+```sh
+journalctl --user -u paperclip -f        # App logs
+journalctl --user -u paperclip-db -f     # DB logs
+systemctl --user status paperclip-pod    # Pod status
+systemctl --user restart paperclip-pod   # Restart all
+systemctl --user stop paperclip-pod      # Stop all
+```
+
+### Quadlet notes
+
+- **First boot**: Unlike Docker Compose's `condition: service_healthy`, Quadlet's `After=` only waits for the DB unit to *start*, not for PostgreSQL to be ready. On a cold first boot you may see one or two restart attempts in `journalctl --user -u paperclip` while PostgreSQL initialises — this is expected and resolves automatically via `Restart=on-failure`.
+- Containers in a pod share `localhost`, so Paperclip reaches Postgres at `127.0.0.1:5432`.
+- PostgreSQL data persists in the `paperclip-pgdata` named volume.
+- Paperclip data persists at `~/.local/share/paperclip`.
+- For rootful quadlet deployment, remove `%h` prefixes and use absolute paths.
 
 ## Onboard Smoke Test (Ubuntu + npm only)
 
@@ -133,4 +287,11 @@ Notes:
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.
-- The image definition is in `Dockerfile.onboard-smoke`.
+- Set `SMOKE_CONTAINER_NAME` to fix the container's name up front. Automation that has to collect diagnostics when the script *fails* needs a name it already knows, rather than one it can only read back out of a successful run. Defaults to the image name.
+- The container's logs are dumped to `SMOKE_LOG_FILE` (default `$TMPDIR/<container name>.log`) before the script tears the container down, so a run that never became ready still leaves its logs behind.
+- The image definition is in `docker/Dockerfile.onboard-smoke`.
+
+## General Notes
+
+- The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
+- Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).

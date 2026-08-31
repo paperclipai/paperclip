@@ -1,24 +1,21 @@
+import { inferBindModeFromHost } from "@paperclipai/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
-
-function isLoopbackHost(host: string) {
-  const normalized = host.trim().toLowerCase();
-  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
-}
 
 export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
   const mode = config.server.deploymentMode;
   const exposure = config.server.exposure;
   const auth = config.auth;
+  const bind = config.server.bind ?? inferBindModeFromHost(config.server.host);
 
   if (mode === "local_trusted") {
-    if (!isLoopbackHost(config.server.host)) {
+    if (bind !== "loopback") {
       return {
         name: "Deployment/auth mode",
         status: "fail",
-        message: `local_trusted requires loopback host binding (found ${config.server.host})`,
+        message: `local_trusted requires loopback binding (found ${bind})`,
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and set host to 127.0.0.1",
+        repairHint: "Run `paperclipai configure --section server` and choose Local trusted / loopback reachability",
       };
     }
     return {
@@ -86,6 +83,6 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
   return {
     name: "Deployment/auth mode",
     status: "pass",
-    message: `Mode ${mode}/${exposure} with auth URL mode ${auth.baseUrlMode}`,
+    message: `Mode ${mode}/${exposure} with bind ${bind} and auth URL mode ${auth.baseUrlMode}`,
   };
 }

@@ -9,6 +9,8 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  unique,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -17,6 +19,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -30,7 +33,12 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    lastStatusDecisionId: uuid("last_status_decision_id"),
+    workMode: text("work_mode").notNull().default("standard"),
+    harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -39,18 +47,32 @@ export const issues = pgTable(
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
+    responsibleUserId: text("responsible_user_id"),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     originRunId: text("origin_run_id"),
+    originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
+    executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
+    executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
+    monitorNextCheckAt: timestamp("monitor_next_check_at", { withTimezone: true }),
+    monitorWakeRequestedAt: timestamp("monitor_wake_requested_at", { withTimezone: true }),
+    monitorLastTriggeredAt: timestamp("monitor_last_triggered_at", { withTimezone: true }),
+    monitorAttemptCount: integer("monitor_attempt_count").notNull().default(0),
+    monitorNotes: text("monitor_notes"),
+    monitorScheduledBy: text("monitor_scheduled_by"),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    unblockDescriptor: jsonb("unblock_descriptor").$type<IssueUnblockDescriptor | null>(),
+    blockedTransitionAt: timestamp("blocked_transition_at", { withTimezone: true }),
+    blockedOwnerNotifiedAt: timestamp("blocked_owner_notified_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -59,7 +81,9 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
@@ -70,14 +94,30 @@ export const issues = pgTable(
       table.assigneeUserId,
       table.status,
     ),
+    responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
+    dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
+    companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
+    companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
+    openNormalizedTitleCreatedIdx: index("issues_open_normalized_title_created_idx")
+      .on(
+        table.companyId,
+        table.parentId,
+        sql`lower(regexp_replace(btrim(${table.title}), '\\s+', ' ', 'g'))`,
+        table.createdAt,
+      )
+      .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
+    companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
+    identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
+    descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
-      .on(table.companyId, table.originKind, table.originId)
+      .on(table.companyId, table.originKind, table.originId, table.originFingerprint)
       .where(
         sql`${table.originKind} = 'routine_execution'
           and ${table.originId} is not null
@@ -85,5 +125,60 @@ export const issues = pgTable(
           and ${table.executionRunId} is not null
           and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
       ),
+    activeLivenessRecoveryIncidentIdx: uniqueIndex("issues_active_liveness_recovery_incident_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'harness_liveness_escalation'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeLivenessRecoveryLeafIdx: uniqueIndex("issues_active_liveness_recovery_leaf_uq")
+      .on(table.companyId, table.originKind, table.originFingerprint)
+      .where(
+        sql`${table.originKind} = 'harness_liveness_escalation'
+          and ${table.originFingerprint} <> 'default'
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeStaleRunEvaluationIdx: uniqueIndex("issues_active_stale_run_evaluation_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'stale_active_run_evaluation'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeTaskWatchdogIdx: uniqueIndex("issues_active_task_watchdog_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'task_watchdog'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeProductivityReviewIdx: uniqueIndex("issues_active_productivity_review_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'issue_productivity_review'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeStrandedIssueRecoveryIdx: uniqueIndex("issues_active_stranded_issue_recovery_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'stranded_issue_recovery'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    // The onboarding first-task origin grants privileged behavior (agent-attributed
+    // greeting, description suppression), so at most one issue per company may ever
+    // carry it — concurrent creates race on the pre-insert count check and this
+    // index is what atomically rejects the loser.
+    onboardingFirstTaskIdx: uniqueIndex("issues_onboarding_first_task_uq")
+      .on(table.companyId)
+      .where(sql`${table.originKind} = 'onboarding_first_task'`),
   }),
 );

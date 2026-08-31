@@ -1,10 +1,13 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { accessApi } from "../api/access";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
@@ -30,11 +33,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
-import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -48,6 +51,7 @@ export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -68,6 +72,25 @@ export function NewProjectDialog() {
     enabled: !!selectedCompanyId && newProjectOpen,
   });
 
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users]);
+
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.create(selectedCompanyId!, data),
@@ -75,7 +98,7 @@ export function NewProjectDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
     },
   });
@@ -94,11 +117,10 @@ export function NewProjectDialog() {
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const isGitHubRepoUrl = (value: string) => {
+  const looksLikeRepoUrl = (value: string) => {
     try {
       const parsed = new URL(value);
-      const host = parsed.hostname.toLowerCase();
-      if (host !== "github.com" && host !== "www.github.com") return false;
+      if (parsed.protocol !== "https:") return false;
       const segments = parsed.pathname.split("/").filter(Boolean);
       return segments.length >= 2;
     } catch {
@@ -132,8 +154,8 @@ export function NewProjectDialog() {
       setWorkspaceError("Local folder must be a full absolute path.");
       return;
     }
-    if (repoUrl && !isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub repo URL.");
+    if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
+      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
       return;
     }
 
@@ -144,7 +166,7 @@ export function NewProjectDialog() {
         name: name.trim(),
         description: description.trim() || undefined,
         status,
-        color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
+        // No color is sent — new projects persist color = null (neutral gray). See PAP-68.
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
       });
@@ -160,7 +182,7 @@ export function NewProjectDialog() {
         await projectsApi.createWorkspace(created.id, workspacePayload);
       }
 
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(created.id) });
       reset();
       closeNewProject();
@@ -199,7 +221,7 @@ export function NewProjectDialog() {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
-                {selectedCompany.name.slice(0, 3).toUpperCase()}
+                {selectedCompany.issuePrefix}
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
@@ -250,7 +272,8 @@ export function NewProjectDialog() {
             onChange={setDescription}
             placeholder="Add description..."
             bordered={false}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            mentions={mentionOptions}
+            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
               return asset.contentPath;
@@ -267,7 +290,7 @@ export function NewProjectDialog() {
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-[240px] text-xs">
+                <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
                   Link a GitHub repository so agents can clone, read, and push code for this project.
                 </TooltipContent>
               </Tooltip>
@@ -280,29 +303,38 @@ export function NewProjectDialog() {
             />
           </div>
 
-          <div>
-            <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
-                </TooltipContent>
-              </Tooltip>
+          {/*
+            The local folder is an absolute path on the execution host. Under
+            the managed-sandbox-only policy every agent runs in the
+            platform-managed environment, so the field and its folder picker
+            never render and the create request carries no cwd. The field also
+            stays hidden until the policy is known.
+          */}
+          {!hideHostPaths && (
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label className="block text-xs text-muted-foreground">Local folder</label>
+                <span className="text-xs text-muted-foreground/50">optional</span>
+                <Tooltip delayDuration={300}>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
+                    Set an absolute path on this machine where local agents will read and write files for this project.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                  value={workspaceLocalPath}
+                  onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
+                  placeholder="/absolute/path/to/workspace"
+                />
+                <ChoosePathButton />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                value={workspaceLocalPath}
-                onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
-                placeholder="/absolute/path/to/workspace"
-              />
-              <ChoosePathButton />
-            </div>
-          </div>
+          )}
 
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
@@ -340,7 +372,7 @@ export function NewProjectDialog() {
               className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
             >
               <Target className="h-3 w-3 text-muted-foreground" />
-              <span className="max-w-[160px] truncate">{goal.title}</span>
+              <span className="max-w-(--sz-160px) truncate">{goal.title}</span>
               <button
                 className="text-muted-foreground hover:text-foreground"
                 onClick={() => setGoalIds((prev) => prev.filter((id) => id !== goal.id))}

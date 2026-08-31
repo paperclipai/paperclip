@@ -23,7 +23,7 @@ Paperclip is the command, communication, and control plane for a company of AI a
 - **Track work in real time** — see at any moment what every agent is working on
 - **Control costs** — token salary budgets per agent, spend tracking, burn rate
 - **Align to goals** — agents see how their work serves the bigger mission
-- **Store company knowledge** — a shared brain for the organization
+- **Preserve work context** — comments, documents, work products, attachments, and company state stay attached to the work
 
 ## Architecture
 
@@ -36,17 +36,20 @@ The central nervous system. Manages:
 - Agent registry and org chart
 - Task assignment and status
 - Budget and token spend tracking
-- Company knowledge base
+- Issue comments, documents, work products, attachments, and company state
 - Goal hierarchy (company → team → agent → task)
 - Heartbeat monitoring — know when agents are alive, idle, or stuck
 
+It also enforces execution-control semantics such as single-assignee issues, atomic checkout and execution locks, blockers, recovery issues, and workspace/runtime controls.
+
 ### 2. Execution Services (adapters)
 
-Agents run externally and report into the control plane. An agent is just Python code that gets kicked off and does work. Adapters connect different execution environments:
+Agents run externally and report into the control plane. Adapters connect different execution environments and define how a heartbeat is invoked, observed, and cancelled:
 
-- **OpenClaw** — initial adapter target
-- **Heartbeat loop** — simple custom Python that loops, checks in, does work
-- **Others** — any runtime that can call an API
+- **Local CLI/session adapters** — built-in adapters for tools such as Claude Code, Codex, Gemini, OpenCode, Pi, and Cursor
+- **HTTP/process-style adapters** — command or webhook/API integrations for custom runtimes
+- **OpenClaw gateway** — integration for OpenClaw-style remote agents
+- **External adapter plugins** — dynamically loaded adapters installed outside the core app
 
 The control plane doesn't run agents. It orchestrates them. Agents run wherever they run and phone home.
 

@@ -1,6 +1,19 @@
 import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
-import { eq, and, like, desc } from "drizzle-orm";
+import {
+  activityLog,
+  agentTaskSessions as agentTaskSessionsTable,
+  agents as agentsTable,
+  budgetIncidents,
+  companyMemberships,
+  costEvents,
+  heartbeatRuns,
+  invites,
+  issues as issuesTable,
+  pluginLogs,
+  principalPermissionGrants,
+  projects as projectsTable,
+} from "@paperclipai/db";
+import { eq, and, like, desc, inArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -10,30 +23,67 @@ import type {
   Goal,
   PluginWorkspace,
   IssueComment,
+  PluginIssueAssigneeSummary,
+  PluginIssueOrchestrationSummary,
+  PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
+import { budgetService } from "./budgets.js";
+import { issueApprovalService } from "./issue-approvals.js";
+import { approvalService } from "./approvals.js";
+import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
-import { randomUUID } from "node:crypto";
-import { activityService } from "./activity.js";
-import { costService } from "./costs.js";
-import { assetService } from "./assets.js";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import path from "node:path";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
+import { pluginDatabaseService } from "./plugin-database.js";
+import { pluginManagedAgentService } from "./plugin-managed-agents.js";
+import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import { pluginManagedSkillService } from "./plugin-managed-skills.js";
+import {
+  assertConfiguredLocalFolder,
+  assertWritableConfiguredLocalFolder,
+  getStoredLocalFolders,
+  deletePluginLocalFolderFile,
+  inspectPluginLocalFolder,
+  listPluginLocalFolderEntries,
+  preparePluginLocalFolder,
+  readPluginLocalFolderText,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+  writePluginLocalFolderTextAtomic,
+} from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
+import { accessService } from "./access.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { redactEventPayload, sanitizeRecord } from "../redaction.js";
+import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import {
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -47,6 +97,7 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -362,6 +413,14 @@ function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<
 interface BufferedLogEntry {
   db: Db;
   pluginId: string;
+  /**
+   * Owning tenant for `plugin_logs.company_id` — populated when the caller
+   * attributes the log/metric to a specific company so the row participates
+   * in the `ON DELETE CASCADE` from `companies`. `null` means instance-scope
+   * (cron jobs / public webhooks without a tenant); those rows survive
+   * company deletes but are still attributable.
+   */
+  companyId: string | null;
   level: string;
   message: string;
   meta: Record<string, unknown> | null;
@@ -394,6 +453,7 @@ export async function flushPluginLogBuffer(): Promise<void> {
   for (const [dbInstance, group] of byDb) {
     const values = group.map((e) => ({
       pluginId: e.pluginId,
+      companyId: e.companyId,
       level: e.level,
       message: e.message,
       meta: e.meta,
@@ -436,26 +496,266 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+// ---------------------------------------------------------------------------
+// Provider span trust boundary (the `span.record` host handler)
+// ---------------------------------------------------------------------------
+//
+// The plugin worker runs in a separate process, so the host treats every field
+// of a worker-sent span as untrusted input. The host re-clamps the span name
+// and every attribute here, before it records the span. A worker-side or
+// plugin-side helper is not sufficient; this is the single boundary.
+
+const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
+
+/** The closed set of provider span leaf names a plugin may emit. `pack` and
+ * `transfer` are the host-local build and the byte upload. `ensureDirectory`,
+ * `checkSymlinkEscape`, `promote`, `extractTarball`, and `postUploadCommand`
+ * are the per-round-trip command spans in the inbound sync path. `session.open`
+ * and `session.close` are the short spans that wrap a persistent-session create
+ * and delete. */
+const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
+  "pack",
+  "transfer",
+  "ensureDirectory",
+  "checkSymlinkEscape",
+  "promote",
+  "extractTarball",
+  "postUploadCommand",
+  "session.open",
+  "session.close",
+]);
+
+/** Clamp the span name to a closed, namespaced set. A known name maps to
+ * `sandbox.daytona.<name>`; any other value maps to `sandbox.daytona.other`, so
+ * a span name never carries free-form data. Only the daytona provider emits
+ * these spans today, so the segment is the literal `daytona`. When a second
+ * provider emits provider spans, derive the segment from the normalized
+ * `provider` family attribute on the span instead of this literal. */
+function clampProviderSpanName(raw: unknown): string {
+  const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
+  return `sandbox.daytona.${name}`;
+}
+
+/** The closed allowlist of attribute keys a provider span may carry. The host
+ * drops every other key, so a command, an argument, a path, an id, a standard
+ * output, a standard error, or an `extra` field can never ride a provider span. */
+const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.provider,
+  SPAN_ATTRS.outcome,
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+  SPAN_ATTRS.transferDirection,
+]);
+
+/** The subset of allowed keys that carry a finite number. */
+const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+]);
+
+/** The closed value set for the `outcome` attribute. */
+const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "failed"]);
+
+/** The closed value set for the `transfer.direction` attribute. */
+const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
+/**
+ * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
+ * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
+ * bound `outcome` and `transfer.direction` each to its closed set, and keep a
+ * numeric attribute only when it is a finite number. The result holds only
+ * bounded, low-cardinality values.
+ */
+export function clampProviderSpanAttributes(
+  raw: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> {
+  const clamped: Record<string, string | number | boolean> = {};
+  if (!raw) return clamped;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.provider) {
+      clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
+      continue;
+    }
+    if (key === SPAN_ATTRS.outcome) {
+      if (typeof value === "string" && KNOWN_SPAN_OUTCOMES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === SPAN_ATTRS.transferDirection) {
+      if (typeof value === "string" && KNOWN_TRANSFER_DIRECTIONS.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
+      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      continue;
+    }
+  }
+  return clamped;
+}
+
+/**
+ * Parse and validate a W3C `traceparent`. Return the parts, or `null` when the
+ * value is absent or malformed. The host mints the value, but this is the trust
+ * boundary, so it validates before use. It never logs the value.
+ */
+export function parseTraceparent(raw: string | undefined | null): ParsedTraceparent | null {
+  if (typeof raw !== "string") return null;
+  const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(raw);
+  if (!match) return null;
+  const [, version, traceId, spanId, flags] = match;
+  if (version === "ff") return null; // the W3C spec forbids version 0xff
+  if (traceId === "0".repeat(32)) return null; // an all-zero trace id is invalid
+  if (spanId === "0".repeat(16)) return null; // an all-zero span id is invalid
+  return { traceId, spanId, traceFlags: parseInt(flags, 16) };
+}
+
+/** Keep only the numeric status code. A status message could carry free-form
+ * text, so the host drops it — never a standard-stream text on a span. */
+function clampSpanStatus(
+  status: { code?: unknown; message?: unknown } | undefined,
+): { code: number } | undefined {
+  if (!status || typeof status.code !== "number" || !Number.isFinite(status.code)) return undefined;
+  return { code: status.code };
+}
+
+/** The largest span duration the host accepts as a real wall-clock width. A
+ * larger difference means a skewed or wrong clock, so the host drops the pair. */
+const MAX_PROVIDER_SPAN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+/** The largest age the host accepts for a span start time relative to its own
+ * clock. An older start means a stale or wrong clock, so the host drops the
+ * pair. A small negative skew (a start slightly ahead of the host clock) is
+ * allowed, because the host and the worker clocks can differ. */
+const MAX_PROVIDER_SPAN_START_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+/** The largest amount by which the end time may be ahead of the host clock. A
+ * larger lead means a wrong or skewed clock, so the host drops the pair. This
+ * upper bound rejects a timestamp pair that is far in the future. It still
+ * allows a small clock skew between the host and the worker. */
+const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
+
+/**
+ * Validate the worker-sent start-time and end-time pair at the trust boundary.
+ * Return the pair only when it passes the clock-safety policy:
+ * - both values are finite numbers;
+ * - the start time is less than or equal to the end time;
+ * - the duration is not larger than a bounded ceiling;
+ * - the start time is not older than a bounded age relative to the host clock;
+ * - the end time is not ahead of the host clock by more than a bounded skew.
+ * Return `undefined` when any check fails, so the host falls back to the
+ * synchronous open-and-end path.
+ */
+function validateProviderSpanTimes(
+  startTimeMs: unknown,
+  endTimeMs: unknown,
+): { startTimeMs: number; endTimeMs: number } | undefined {
+  if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
+  if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
+  if (startTimeMs > endTimeMs) return undefined;
+  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
+  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
+  return { startTimeMs, endTimeMs };
+}
+
+/**
+ * Record a worker-sent provider span through the real tracer. This is the host
+ * trust boundary: it validates the host-minted `traceparent`, re-clamps the span
+ * name and every attribute, mints the parentage host-side, and drops a status
+ * message. It validates the optional start-time and end-time pair with a
+ * clock-safety policy; a valid pair gives the span its true native width, and an
+ * absent or invalid pair falls back to the synchronous open-and-end path. It
+ * rejects a span with a missing or malformed `traceparent`. It never throws —
+ * observability must not change control flow.
+ */
+export function recordWorkerProviderSpan(
+  params: {
+    name: string;
+    attributes?: Record<string, unknown>;
+    status?: { code?: unknown; message?: unknown };
+    startTimeMs?: unknown;
+    endTimeMs?: unknown;
+  },
+  context: WorkerHostCallContext | undefined,
+): void {
+  const parent = parseTraceparent(context?.traceparent);
+  if (!parent) return; // reject a missing or malformed traceparent
+  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
+  const status = clampSpanStatus(params.status);
+  recordProviderPluginSpan({
+    name: clampProviderSpanName(params.name),
+    parent,
+    attributes: clampProviderSpanAttributes(params.attributes),
+    ...(status ? { status } : {}),
+    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
+  });
+}
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    heartbeatRuntimeEnv?: Record<string, string | undefined>;
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
+  const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
-  const heartbeat = heartbeatService(db);
+  const managedAgents = pluginManagedAgentService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    instructionTemplateVariables: async (companyId) => {
+      const variables: Record<string, string | null | undefined> = {};
+      for (const declaration of options.manifest?.localFolders ?? []) {
+        const status = await inspectPluginLocalFolder({
+          folderKey: declaration.folderKey,
+          declaration,
+          storedConfig: await getStoredLocalFolderConfig(companyId, declaration.folderKey),
+        });
+        const prefix = `localFolders.${declaration.folderKey}`;
+        variables[`${prefix}.path`] = status.realPath ?? status.path ?? null;
+        variables[`${prefix}.agentsPath`] = status.realPath ? path.join(status.realPath, "AGENTS.md") : null;
+      }
+      return variables;
+    },
+  });
+  const managedRoutines = pluginManagedRoutineService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const managedSkills = pluginManagedSkillService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+    runtimeEnv: options.heartbeatRuntimeEnv,
+  });
   const projects = projectService(db);
+  const executionWorkspaces = executionWorkspaceService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
-  const activity = activityService(db);
-  const costs = costService(db);
-  const assets = assetService(db);
+  const access = accessService(db);
+  const authorization = authorizationService(db);
+  const budgets = budgetService(db);
+  const issueApprovals = issueApprovalService(db);
+  const approvalSvc = approvalService(db);
+  const interactions = issueThreadInteractionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
   // Track active session event subscriptions for cleanup
@@ -487,6 +787,17 @@ export function buildHostServices(
     return rows.slice(offset, offset + limit);
   };
 
+  const authorizationAuditDecisionCondition = (decisionFilter: string) => {
+    const conditions = [
+      sql`lower(${activityLog.details}->>'decision') = ${decisionFilter}`,
+      decisionFilter === "allow" ? sql`left(coalesce(${activityLog.details}->>'reason', ''), 6) = 'allow_'` : undefined,
+      decisionFilter === "deny" ? sql`left(coalesce(${activityLog.details}->>'reason', ''), 5) = 'deny_'` : undefined,
+      decisionFilter === "allow" ? sql`${activityLog.details}->>'allowed' = 'true'` : undefined,
+      decisionFilter === "deny" ? sql`${activityLog.details}->>'allowed' = 'false'` : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    return sql`(${sql.join(conditions, sql` OR `)})`;
+  };
+
   /**
    * Plugins are instance-wide in the current runtime. Company IDs are still
    * required for company-scoped data access, but there is no per-company
@@ -494,10 +805,56 @@ export function buildHostServices(
    */
   const ensurePluginAvailableForCompany = async (_companyId: string) => {};
 
+  const getLocalFolderDeclaration = (folderKey: string) =>
+    requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
+
+  const getStoredLocalFolderConfig = async (companyId: string, folderKey: string) => {
+    ensureCompanyId(companyId);
+    await ensurePluginAvailableForCompany(companyId);
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    return getStoredLocalFolders(settings?.settingsJson)[folderKey] ?? null;
+  };
+
+  const inspectStoredLocalFolder = async (companyId: string, folderKey: string) =>
+    inspectPluginLocalFolder({
+      folderKey,
+      declaration: getLocalFolderDeclaration(folderKey),
+      storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
+    });
+
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
     companyId: string,
   ): record is T => Boolean(record && record.companyId === companyId);
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  const readProviderMetadata = (metadata: Record<string, unknown> | null | undefined) => {
+    if (!isRecord(metadata)) return null;
+    if (isRecord(metadata.providerMetadata)) return { ...metadata.providerMetadata };
+    const rebuild = metadata.rebuild;
+    if (!isRecord(rebuild)) return null;
+    const rebuildMetadata = rebuild.metadata;
+    if (!isRecord(rebuildMetadata) || !isRecord(rebuildMetadata.providerMetadata)) return null;
+    return { ...rebuildMetadata.providerMetadata };
+  };
+
+  const toPluginExecutionWorkspaceMetadata = (
+    workspace: NonNullable<Awaited<ReturnType<typeof executionWorkspaces.getById>>>,
+  ): PluginExecutionWorkspaceMetadata => ({
+    id: workspace.id,
+    companyId: workspace.companyId,
+    projectId: workspace.projectId,
+    projectWorkspaceId: workspace.projectWorkspaceId,
+    path: workspace.cwd ?? workspace.providerRef,
+    cwd: workspace.cwd,
+    repoUrl: workspace.repoUrl,
+    baseRef: workspace.baseRef,
+    branchName: workspace.branchName,
+    providerType: workspace.providerType,
+    providerMetadata: readProviderMetadata(workspace.metadata),
+  });
 
   const requireInCompany = <T extends { companyId: string | null | undefined }>(
     entityName: string,
@@ -510,11 +867,647 @@ export function buildHostServices(
     return record;
   };
 
+  /**
+   * Verify `userId` is an active human member of `companyId` before letting a
+   * plugin attribute a mutation to them. Mirrors the authorization bar the
+   * web app's own board routes apply — a plugin can only ever attribute an
+   * action to an identity that could have taken it in the web app itself.
+   * Used by any plugin capability that accepts an `actorUserId`
+   * (`createComment`'s human-attributed path, `respondInteraction`, and
+   * `approvals.decide`).
+   *
+   * All current call sites are non-safe (write) actions, so by default this
+   * also rejects a `viewer`-role member — the web app's board write-routes
+   * treat `membershipRole === "viewer"` as read-only and 403 it ("Viewer
+   * access is read-only", routes/authz.ts:115-116). Without this bar a plugin
+   * holding `approvals.respond` / `issue.interactions.respond` could attribute
+   * a decision to a viewer who is denied that same action in the web UI —
+   * strictly more authority than the paired user has (privilege escalation).
+   * A future *read-only* attribution path can opt into allowing viewers with
+   * `{ allowViewer: true }`; the default is failure-closed.
+   */
+  const requireActiveHumanMember = async (
+    companyId: string,
+    userId: string,
+    { allowViewer = false }: { allowViewer?: boolean } = {},
+  ): Promise<void> => {
+    const [membership] = await db
+      .select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .limit(1);
+    if (!membership) {
+      throw new Error(`actorUserId "${userId}" is not an active human member of this company`);
+    }
+    if (!allowViewer && membership.membershipRole === "viewer") {
+      throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
+    }
+  };
+
+  /**
+   * Wake the assignee of a continuation issue after a plugin-relayed board-user
+   * interaction resolution, mirroring the web app's board interaction routes
+   * (routes/issues.ts's queueResolvedInteractionContinuationWakeup) so a
+   * confirmation accepted/rejected from chat resumes the agent the same way it
+   * would from the web app. Deliberately narrower than the HTTP helper: it
+   * carries the core interaction context plus the plan-review continuation
+   * payload (the confirmation kind the gateway resolves), and skips the
+   * checkbox/tool-action/item-verdict extras that the gateway's yes/no decision
+   * cards never produce. Failure-tolerant: a wake failure is logged, never
+   * thrown back to the plugin (the decision itself already applied).
+   */
+  const queuePluginInteractionContinuationWakeup = (args: {
+    issue: { id: string; assigneeAgentId: string | null; status: string };
+    interaction: {
+      id: string;
+      kind: string;
+      status: string;
+      continuationPolicy: string;
+      sourceCommentId?: string | null;
+      sourceRunId?: string | null;
+      payload?: unknown;
+    };
+    actorUserId: string;
+    source: string;
+  }): void => {
+    const { interaction, issue } = args;
+    if (
+      interaction.continuationPolicy !== "wake_assignee"
+      && interaction.continuationPolicy !== "wake_assignee_on_accept"
+    ) return;
+    if (
+      interaction.continuationPolicy === "wake_assignee_on_accept"
+      && interaction.status !== "accepted"
+    ) return;
+    if (interaction.status === "expired") return;
+    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") return;
+
+    let planReviewInteraction: Record<string, unknown> | null = null;
+    if (interaction.kind === "request_confirmation" && isRecord(interaction.payload)) {
+      const target = isRecord(interaction.payload.target) ? interaction.payload.target : null;
+      if (
+        target
+        && target.type === "issue_document"
+        && target.key === "plan"
+        && typeof target.issueId === "string"
+        && target.issueId === issue.id
+      ) {
+        planReviewInteraction = {
+          id: interaction.id,
+          kind: interaction.kind,
+          status: interaction.status,
+          target,
+          acceptedTargetRevision: interaction.status === "accepted" ? target : null,
+        };
+      }
+    }
+
+    void heartbeat.wakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        sourceCommentId: interaction.sourceCommentId ?? null,
+        sourceRunId: interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        mutation: "interaction",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: args.actorUserId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        wakeReason: "issue_commented",
+        source: `plugin:${pluginKey}`,
+      },
+    }).catch((err) => logger.warn({
+      err,
+      issueId: issue.id,
+      interactionId: interaction.id,
+      agentId: issue.assigneeAgentId,
+      source: args.source,
+    }, "failed to wake assignee on plugin-relayed interaction resolution"));
+  };
+
+  /**
+   * Redact an approval's payload before returning it through the plugin bridge,
+   * mirroring the web app's own approval read routes (routes/approvals.ts's
+   * redactApprovalPayload). Ensures the chat surface never receives secrets the
+   * web app itself hides from an approval reader.
+   */
+  const redactApprovalPayload = <T extends { payload: Record<string, unknown> }>(approval: T): T => ({
+    ...approval,
+    payload: redactEventPayload(approval.payload) ?? {},
+  });
+
+  const pluginActivityDetails = (
+    details: Record<string, unknown> | null | undefined,
+    actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null },
+  ) => {
+    const initiatingActorType = actor?.actorAgentId ? "agent" : actor?.actorUserId ? "user" : null;
+    const initiatingActorId = actor?.actorAgentId ?? actor?.actorUserId ?? null;
+    return {
+      ...(details ?? {}),
+      sourcePluginId: pluginId,
+      sourcePluginKey: pluginKey,
+      initiatingActorType,
+      initiatingActorId,
+      initiatingAgentId: actor?.actorAgentId ?? null,
+      initiatingUserId: actor?.actorUserId ?? null,
+      initiatingRunId: actor?.actorRunId ?? null,
+      pluginId,
+      pluginKey,
+    };
+  };
+
+  const defaultPluginOriginKind = `plugin:${pluginKey}`;
+  const normalizePluginOriginKind = (originKind: unknown = defaultPluginOriginKind) => {
+    if (originKind == null || originKind === "") return defaultPluginOriginKind;
+    if (typeof originKind !== "string") {
+      throw new Error("Plugin issue originKind must be a string");
+    }
+    if (originKind === defaultPluginOriginKind || originKind.startsWith(`${defaultPluginOriginKind}:`)) {
+      return originKind;
+    }
+    throw new Error(`Plugin may only use originKind values under ${defaultPluginOriginKind}`);
+  };
+
+  const assertReadableOriginFilter = (originKind: unknown) => {
+    if (typeof originKind !== "string" || !originKind.startsWith("plugin:")) return;
+    normalizePluginOriginKind(originKind);
+  };
+
+  const logPluginActivity = async (input: {
+    companyId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    details?: Record<string, unknown> | null;
+    actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null };
+  }) => {
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "plugin",
+      actorId: pluginId,
+      agentId: input.actor?.actorAgentId ?? null,
+      runId: input.actor?.actorRunId ?? null,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      details: pluginActivityDetails(input.details, input.actor),
+    });
+  };
+
+  const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
+    const seen = new Set<string>([rootIssueId]);
+    let frontier = [rootIssueId];
+
+    while (frontier.length > 0) {
+      const children = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.parentId, frontier)));
+      frontier = children.map((child) => child.id).filter((id) => !seen.has(id));
+      for (const id of frontier) seen.add(id);
+    }
+
+    return [...seen];
+  };
+
+  const getIssueRunSummaries = async (
+    companyId: string,
+    issueIds: string[],
+    options: { activeOnly?: boolean } = {},
+  ) => {
+    if (issueIds.length === 0) return [];
+    const issueIdExpr = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const statusCondition = options.activeOnly
+      ? inArray(heartbeatRuns.status, ["queued", "running"])
+      : undefined;
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        issueId: issueIdExpr,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(100);
+
+    return rows.map((row) => ({
+      ...row,
+      startedAt: row.startedAt?.toISOString() ?? null,
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  };
+
+  const setBlockedByWithActivity = async (params: {
+    issueId: string;
+    companyId: string;
+    blockedByIssueIds: string[];
+    mutation: "set" | "add" | "remove";
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+    actorRunId?: string | null;
+  }) => {
+    const existing = requireInCompany("Issue", await issues.getById(params.issueId), params.companyId);
+    const previous = await issues.getRelationSummaries(params.issueId);
+    await issues.update(params.issueId, {
+      blockedByIssueIds: params.blockedByIssueIds,
+      actorAgentId: params.actorAgentId ?? null,
+      actorUserId: params.actorUserId ?? null,
+    } as any);
+    const relations = await issues.getRelationSummaries(params.issueId);
+    await logPluginActivity({
+      companyId: params.companyId,
+      action: "issue.relations.updated",
+      entityType: "issue",
+      entityId: params.issueId,
+      actor: {
+        actorAgentId: params.actorAgentId,
+        actorUserId: params.actorUserId,
+        actorRunId: params.actorRunId,
+      },
+      details: {
+        identifier: existing.identifier,
+        mutation: params.mutation,
+        blockedByIssueIds: params.blockedByIssueIds,
+        previousBlockedByIssueIds: previous.blockedBy.map((relation) => relation.id),
+      },
+    });
+    return relations;
+  };
+
+  const getIssueCostSummary = async (
+    companyId: string,
+    issueIds: string[],
+    billingCode?: string | null,
+  ) => {
+    const scopeConditions = [
+      issueIds.length > 0 ? inArray(costEvents.issueId, issueIds) : undefined,
+      billingCode ? eq(costEvents.billingCode, billingCode) : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    if (scopeConditions.length === 0) {
+      return {
+        costCents: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        billingCode: billingCode ?? null,
+      };
+    }
+    const scopeCondition = scopeConditions.length === 1 ? scopeConditions[0]! : and(...scopeConditions);
+    const [row] = await db
+      .select({
+        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+        inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+        cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+        outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+      })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, companyId), scopeCondition));
+
+    return {
+      costCents: Number(row?.costCents ?? 0),
+      inputTokens: Number(row?.inputTokens ?? 0),
+      cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
+      outputTokens: Number(row?.outputTokens ?? 0),
+      billingCode: billingCode ?? null,
+    };
+  };
+
+  const getOpenBudgetIncidents = async (companyId: string) => {
+    const rows = await db
+      .select({
+        id: budgetIncidents.id,
+        scopeType: budgetIncidents.scopeType,
+        scopeId: budgetIncidents.scopeId,
+        metric: budgetIncidents.metric,
+        windowKind: budgetIncidents.windowKind,
+        thresholdType: budgetIncidents.thresholdType,
+        amountLimit: budgetIncidents.amountLimit,
+        amountObserved: budgetIncidents.amountObserved,
+        status: budgetIncidents.status,
+        approvalId: budgetIncidents.approvalId,
+        createdAt: budgetIncidents.createdAt,
+      })
+      .from(budgetIncidents)
+      .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
+      .orderBy(desc(budgetIncidents.createdAt));
+
+    return rows.map((row) => ({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  };
+
+  const INVITE_TOKEN_PREFIX = "pcp_invite_";
+  // 256 bits of entropy, base64url-encoded. Keep in sync with createInviteToken
+  // in routes/access.ts. The token is public, so it must not be brute-forceable.
+  const INVITE_TOKEN_ENTROPY_BYTES = 32;
+  const INVITE_TOKEN_MAX_RETRIES = 5;
+  const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
+
+  const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+
+  const createInviteToken = () => {
+    const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
+    return `${INVITE_TOKEN_PREFIX}${suffix}`;
+  };
+
+  const isInviteTokenHashCollisionError = (error: unknown) => {
+    const candidates = [
+      error,
+      (error as { cause?: unknown } | null)?.cause ?? null,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const code = "code" in candidate && typeof candidate.code === "string" ? candidate.code : null;
+      const message = "message" in candidate && typeof candidate.message === "string" ? candidate.message : "";
+      const constraint = "constraint" in candidate && typeof candidate.constraint === "string" ? candidate.constraint : null;
+      if (code !== "23505") continue;
+      if (constraint === "invites_token_hash_unique_idx") return true;
+      if (message.includes("invites_token_hash_unique_idx")) return true;
+    }
+    return false;
+  };
+
+  const inviteState = (invite: typeof invites.$inferSelect) => {
+    if (invite.revokedAt) return "revoked" as const;
+    if (invite.acceptedAt) return "accepted" as const;
+    if (invite.expiresAt <= new Date()) return "expired" as const;
+    return "active" as const;
+  };
+
+  const redactInvite = (invite: typeof invites.$inferSelect) => {
+    const { tokenHash: _tokenHash, defaultsPayload, ...safeInvite } = invite;
+    return {
+      ...safeInvite,
+      allowedJoinTypes: safeInvite.allowedJoinTypes as InviteJoinType,
+      defaultsPayload: defaultsPayload && typeof defaultsPayload === "object"
+        ? sanitizeRecord(defaultsPayload)
+        : defaultsPayload ?? null,
+      state: inviteState(invite),
+    };
+  };
+
+  const inviteStateWhereClause = (state: unknown) => {
+    const now = new Date();
+    switch (state) {
+      case "active":
+        return and(isNull(invites.revokedAt), isNull(invites.acceptedAt), gt(invites.expiresAt, now));
+      case "accepted":
+        return isNotNull(invites.acceptedAt);
+      case "expired":
+        return and(isNull(invites.revokedAt), isNull(invites.acceptedAt), lte(invites.expiresAt, now));
+      case "revoked":
+        return isNotNull(invites.revokedAt);
+      default:
+        return undefined;
+    }
+  };
+
+  const mergeInviteDefaults = (defaultsPayload: Record<string, unknown> | null | undefined, agentMessage: string | null, humanRole: string | null) => {
+    const defaults = defaultsPayload && typeof defaultsPayload === "object"
+      ? { ...defaultsPayload }
+      : {};
+    if (humanRole) {
+      defaults.human = {
+        ...(typeof defaults.human === "object" && defaults.human !== null ? defaults.human as Record<string, unknown> : {}),
+        role: humanRole,
+      };
+    }
+    if (agentMessage) {
+      defaults.agent = {
+        ...(typeof defaults.agent === "object" && defaults.agent !== null ? defaults.agent as Record<string, unknown> : {}),
+        message: agentMessage,
+      };
+    }
+    return sanitizeRecord(defaults);
+  };
+
+  const redactGrant = (grant: typeof principalPermissionGrants.$inferSelect) => ({
+    ...grant,
+    principalType: grant.principalType as PrincipalType,
+    permissionKey: grant.permissionKey as PermissionKey,
+    scope: grant.scope && typeof grant.scope === "object" ? sanitizeRecord(grant.scope) : grant.scope ?? null,
+  });
+
+  const loadPluginMember = async (companyId: string, memberId: string) => {
+    const member = await access.getMemberById(companyId, memberId);
+    if (!member) return null;
+    const grants = await access.listPrincipalGrants(
+      companyId,
+      member.principalType as PrincipalType,
+      member.principalId,
+    );
+    return {
+      ...member,
+      principalType: member.principalType as PrincipalType,
+      status: member.status as "pending" | "active" | "suspended" | "archived",
+      grants: grants.map(redactGrant),
+    };
+  };
+
+  const pluginAssignmentActor = (actor: {
+    type: "agent" | "board";
+    agentId?: string | null;
+    companyId?: string | null;
+    userId?: string | null;
+    companyIds?: string[];
+  }): AuthorizationActor => {
+    if (actor.type === "agent") {
+      return {
+        type: "agent",
+        agentId: actor.agentId ?? null,
+        companyId: actor.companyId ?? null,
+        source: "agent_key",
+      };
+    }
+    return {
+      type: "board",
+      userId: actor.userId ?? null,
+      companyIds: Array.isArray(actor.companyIds) ? actor.companyIds : [],
+      source: "session",
+    };
+  };
+
+  const policyPathForResource = (resourceType: "company" | "agent" | "project" | "issue") => {
+    switch (resourceType) {
+      case "agent":
+        return { table: "agent" as const };
+      case "project":
+        return { table: "project" as const };
+      case "issue":
+        return { table: "issue" as const };
+      case "company":
+        return { table: "company" as const };
+    }
+  };
+
+  const readAuthorizationPolicy = async (companyId: string, resourceType: "company" | "agent" | "project" | "issue", resourceId: string) => {
+    const pathInfo = policyPathForResource(resourceType);
+    if (pathInfo.table === "agent") {
+      const agent = await agents.getById(resourceId);
+      if (!inCompany(agent, companyId)) return null;
+      const permissions = agent.permissions && typeof agent.permissions === "object" ? agent.permissions as Record<string, unknown> : {};
+      return {
+        resourceType,
+        resourceId,
+        companyId,
+        policy: permissions.authorizationPolicy && typeof permissions.authorizationPolicy === "object"
+          ? sanitizeRecord(permissions.authorizationPolicy as Record<string, unknown>)
+          : null,
+        updatedAt: agent.updatedAt,
+      };
+    }
+    if (pathInfo.table === "project") {
+      const project = await projects.getById(resourceId);
+      if (!inCompany(project, companyId)) return null;
+      const policy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"
+        ? (project.executionWorkspacePolicy as unknown as Record<string, unknown>).authorizationPolicy
+        : null;
+      return {
+        resourceType,
+        resourceId,
+        companyId,
+        policy: policy && typeof policy === "object" ? sanitizeRecord(policy as Record<string, unknown>) : null,
+        updatedAt: project.updatedAt,
+      };
+    }
+    if (pathInfo.table === "issue") {
+      const issue = await issues.getById(resourceId);
+      if (!inCompany(issue, companyId)) return null;
+      const policy = issue.executionPolicy && typeof issue.executionPolicy === "object"
+        ? (issue.executionPolicy as Record<string, unknown>).authorizationPolicy
+        : null;
+      return {
+        resourceType,
+        resourceId,
+        companyId,
+        policy: policy && typeof policy === "object" ? sanitizeRecord(policy as Record<string, unknown>) : null,
+        updatedAt: issue.updatedAt,
+      };
+    }
+    const company = await companies.getById(resourceId);
+    if (!company || company.id !== companyId) return null;
+    return { resourceType, resourceId, companyId, policy: null, updatedAt: company.updatedAt };
+  };
+
   return {
     config: {
-      async get() {
-        const configRow = await registry.getConfig(pluginId);
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const configRow = await registry.getConfig(pluginId, companyId);
         return configRow?.configJson ?? {};
+      },
+    },
+
+    localFolders: {
+      async declarations() {
+        return options.manifest?.localFolders ?? [];
+      },
+
+      async configure(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const declaration = getLocalFolderDeclaration(params.folderKey);
+        const existing = await registry.getCompanySettings(pluginId, companyId);
+        const existingConfig = getStoredLocalFolders(existing?.settingsJson)[params.folderKey] ?? null;
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+        const status = await inspectPluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+
+        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
+          path: params.path,
+          access: status.access,
+          requiredDirectories: status.requiredDirectories,
+          requiredFiles: status.requiredFiles,
+        });
+        await registry.upsertCompanySettings(pluginId, companyId, {
+          enabled: existing?.enabled ?? true,
+          settingsJson: nextSettings,
+          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+        });
+        return status;
+      },
+
+      async status(params) {
+        return inspectStoredLocalFolder(params.companyId, params.folderKey);
+      },
+
+      async list(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        const listing = await listPluginLocalFolderEntries(status.realPath!, {
+          relativePath: params.relativePath,
+          recursive: params.recursive,
+          maxEntries: params.maxEntries,
+        });
+        return { ...listing, folderKey: params.folderKey };
+      },
+
+      async readText(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        return readPluginLocalFolderText(status.realPath!, params.relativePath);
+      },
+
+      async writeTextAtomic(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration: getLocalFolderDeclaration(params.folderKey),
+          storedConfig: await getStoredLocalFolderConfig(companyId, params.folderKey),
+        });
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
+      },
+
+      async deleteFile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await deletePluginLocalFolderFile(status.realPath!, params.relativePath, params.folderKey);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
       },
     },
 
@@ -539,6 +1532,18 @@ export function buildHostServices(
           scopeId: params.scopeId,
           namespace: params.namespace,
         });
+      },
+    },
+
+    db: {
+      async namespace() {
+        return pluginDb.getRuntimeNamespace(pluginId);
+      },
+      async query(params) {
+        return pluginDb.query(pluginId, params.sql, params.params);
+      },
+      async execute(params) {
+        return pluginDb.execute(pluginId, params.sql, params.params);
       },
     },
 
@@ -592,7 +1597,9 @@ export function buildHostServices(
 
     secrets: {
       async resolve(params) {
-        return secretsHandler.resolve(params);
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return secretsHandler.resolve({ ...params, companyId });
       },
     },
 
@@ -602,12 +1609,12 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         await logActivity(db, {
           companyId,
-          actorType: "system",
+          actorType: "plugin",
           actorId: pluginId,
           action: params.message,
           entityType: params.entityType ?? "plugin",
           entityId: params.entityId ?? pluginId,
-          details: params.metadata,
+          details: pluginActivityDetails(params.metadata),
         });
       },
     },
@@ -624,6 +1631,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: "metric",
           message: safeName,
           meta: sanitiseMeta({ value: params.value, tags: params.tags ?? null }),
@@ -633,6 +1641,20 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered metric flush failed:", err);
           });
         }
+      },
+    },
+
+    telemetry: {
+      async track(params) {
+        const eventName = String(params.eventName ?? "").trim();
+        if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
+          throw new Error(
+            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
+          );
+        }
+        const telemetryClient = getTelemetryClient();
+        if (!telemetryClient) return;
+        telemetryClient.trackDynamic(`plugin.${pluginKey}.${eventName}`, params.dimensions);
       },
     },
 
@@ -658,6 +1680,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: level ?? "info",
           message: safeMessage,
           meta: safeMeta,
@@ -667,6 +1690,17 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered log flush failed:", err);
           });
         }
+      },
+    },
+
+    tracer: {
+      async record(params, context) {
+        // The host trust boundary: validate the host-minted `traceparent`,
+        // re-clamp the span name and every attribute, mint the parentage
+        // host-side, and record the span through the real tracer. The capability
+        // gate in `createHostClientHandlers` already rejected an ungranted
+        // plugin before this runs.
+        recordWorkerProviderSpan(params, context);
       },
     },
 
@@ -706,6 +1740,9 @@ export function buildHostServices(
             projectId: row.projectId,
             name,
             path,
+            repoUrl: row.repoUrl,
+            repoRef: row.repoRef,
+            defaultRef: row.defaultRef,
             isPrimary: row.isPrimary,
             createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
@@ -725,6 +1762,9 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
@@ -748,10 +1788,114 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
+      },
+      async getManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          createIfMissing: false,
+        });
+      },
+      async reconcileManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+        });
+      },
+      async resetManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          reset: true,
+        });
+      },
+    },
+
+    executionWorkspaces: {
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const workspace = await executionWorkspaces.getById(params.workspaceId);
+        if (inCompany(workspace, companyId)) {
+          return toPluginExecutionWorkspaceMetadata(workspace);
+        }
+        return null;
+      },
+    },
+
+    routines: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.get(params.routineKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reconcile(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reset(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedUpdate(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.update(params.routineKey, companyId, {
+          status: params.status,
+        });
+      },
+      async managedRun(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.run(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+    },
+
+    skills: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.get(params.skillKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reconcile(params.skillKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reset(params.skillKey, companyId);
       },
     },
 
@@ -759,6 +1903,7 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        assertReadableOriginFilter(params.originKind);
         return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
       },
       async get(params) {
@@ -770,13 +1915,462 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return (await issues.create(companyId, params as any)) as Issue;
+        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const normalizedOriginKind = normalizePluginOriginKind(
+          surfaceVisibility === "plugin_operation" && !originKind
+            ? pluginOperationIssueOriginKind(pluginKey)
+            : originKind,
+        );
+        const issue = (await issues.create(companyId, {
+          ...(issueInput as any),
+          originKind: normalizedOriginKind,
+          originId: params.originId ?? null,
+          originRunId: params.originRunId ?? actorRunId ?? null,
+          createdByAgentId: actorAgentId ?? null,
+          createdByUserId: actorUserId ?? null,
+          actorResponsibleUserId: actorUserId ?? null,
+          trustExplicitResponsibleUserId: true,
+        })) as Issue;
+        await logPluginActivity({
+          companyId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId, actorUserId, actorRunId },
+          details: {
+            title: issue.title,
+            identifier: issue.identifier,
+            originKind: normalizedOriginKind,
+            originId: issue.originId,
+            billingCode: issue.billingCode,
+            blockedByIssueIds: params.blockedByIssueIds ?? [],
+          },
+        });
+        return issue;
       },
       async update(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const patch = { ...(params.patch as Record<string, unknown>) };
+        const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
+        const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
+        const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
+        delete patch.actorAgentId;
+        delete patch.actorUserId;
+        delete patch.actorRunId;
+        if (patch.originKind !== undefined) {
+          patch.originKind = normalizePluginOriginKind(patch.originKind);
+        }
+        const updated = (await issues.update(params.issueId, {
+          ...(patch as any),
+          actorAgentId,
+          actorUserId,
+        })) as Issue;
+        await logPluginActivity({
+          companyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: updated.id,
+          actor: { actorAgentId, actorUserId, actorRunId },
+          details: {
+            identifier: updated.identifier,
+            patch,
+            _previous: {
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              assigneeUserId: existing.assigneeUserId,
+            },
+          },
+        });
+        return updated;
+      },
+      async getRelations(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
         requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.update(params.issueId, params.patch as any)) as Issue;
+        return await issues.getRelationSummaries(params.issueId);
+      },
+      async setBlockedBy(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: params.blockedByIssueIds,
+          mutation: "set",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async addBlockers(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const previous = await issues.getRelationSummaries(params.issueId);
+        const nextBlockedByIssueIds = [
+          ...new Set([
+            ...previous.blockedBy.map((relation) => relation.id),
+            ...params.blockerIssueIds,
+          ]),
+        ];
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: nextBlockedByIssueIds,
+          mutation: "add",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async removeBlockers(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const previous = await issues.getRelationSummaries(params.issueId);
+        const removals = new Set(params.blockerIssueIds);
+        const nextBlockedByIssueIds = previous.blockedBy
+          .map((relation) => relation.id)
+          .filter((issueId) => !removals.has(issueId));
+        return setBlockedByWithActivity({
+          companyId,
+          issueId: params.issueId,
+          blockedByIssueIds: nextBlockedByIssueIds,
+          mutation: "remove",
+          actorAgentId: params.actorAgentId,
+          actorUserId: params.actorUserId,
+          actorRunId: params.actorRunId,
+        });
+      },
+      async assertCheckoutOwner(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const ownership = await issues.assertCheckoutOwner(
+          params.issueId,
+          params.actorAgentId,
+          params.actorRunId,
+        );
+        if (ownership.adoptedFromRunId) {
+          await logPluginActivity({
+            companyId,
+            action: "issue.checkout_lock_adopted",
+            entityType: "issue",
+            entityId: params.issueId,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              previousCheckoutRunId: ownership.adoptedFromRunId,
+              checkoutRunId: params.actorRunId,
+              reason: "stale_checkout_run",
+            },
+          });
+        }
+        return {
+          issueId: ownership.id,
+          status: ownership.status as Issue["status"],
+          assigneeAgentId: ownership.assigneeAgentId,
+          checkoutRunId: ownership.checkoutRunId,
+          adoptedFromRunId: ownership.adoptedFromRunId,
+        };
+      },
+      async getSubtree(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const includeRoot = params.includeRoot !== false;
+        const subtreeIssueIds = await collectIssueSubtreeIds(companyId, rootIssue.id);
+        const issueIds = includeRoot ? subtreeIssueIds : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
+        const issueRows = issueIds.length > 0
+          ? await db
+            .select()
+            .from(issuesTable)
+            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+          : [];
+        const issuesById = new Map(issueRows.map((issue) => [issue.id, issue as Issue]));
+        const outputIssues = issueIds
+          .map((issueId) => issuesById.get(issueId))
+          .filter((issue): issue is Issue => Boolean(issue));
+
+        const assigneeAgentIds = [
+          ...new Set(outputIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
+        ];
+
+        const [relationPairs, documentPairs, activeRunRows, assigneeRows] = await Promise.all([
+          params.includeRelations
+            ? Promise.all(issueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const))
+            : Promise.resolve(null),
+          params.includeDocuments
+            ? Promise.all(
+              issueIds.map(async (issueId) => {
+                const docs = await documents.listIssueDocuments(issueId);
+                const summaries: IssueDocumentSummary[] = docs.map((document) => {
+                  const { body: _body, ...summary } = document as typeof document & { body?: string };
+                  return { ...summary, format: "markdown" as const };
+                });
+                return [
+                  issueId,
+                  summaries,
+                ] as const;
+              }),
+            )
+            : Promise.resolve(null),
+          params.includeActiveRuns
+            ? getIssueRunSummaries(companyId, issueIds, { activeOnly: true })
+            : Promise.resolve(null),
+          params.includeAssignees && assigneeAgentIds.length > 0
+            ? db
+              .select({
+                id: agentsTable.id,
+                name: agentsTable.name,
+                role: agentsTable.role,
+                title: agentsTable.title,
+                status: agentsTable.status,
+              })
+              .from(agentsTable)
+              .where(and(eq(agentsTable.companyId, companyId), inArray(agentsTable.id, assigneeAgentIds)))
+            : Promise.resolve(params.includeAssignees ? [] : null),
+        ]);
+
+        const activeRuns = activeRunRows
+          ? Object.fromEntries(issueIds.map((issueId) => [
+            issueId,
+            activeRunRows.filter((run) => run.issueId === issueId),
+          ]))
+          : undefined;
+
+        return {
+          rootIssueId: rootIssue.id,
+          companyId,
+          issueIds,
+          issues: outputIssues,
+          ...(relationPairs ? { relations: Object.fromEntries(relationPairs) } : {}),
+          ...(documentPairs ? { documents: Object.fromEntries(documentPairs) } : {}),
+          ...(activeRuns ? { activeRuns } : {}),
+          ...(assigneeRows
+            ? {
+                assignees: Object.fromEntries(assigneeRows.map((agent) => [
+                  agent.id,
+                  { ...agent, status: agent.status as Agent["status"] } as PluginIssueAssigneeSummary,
+                ])),
+              }
+            : {}),
+        };
+      },
+      async requestWakeup(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        if (!issue.assigneeAgentId) {
+          throw new Error("Issue has no assigned agent to wake");
+        }
+        if (["backlog", "done", "cancelled"].includes(issue.status)) {
+          throw new Error(`Issue is not wakeable in status: ${issue.status}`);
+        }
+        const relations = await issues.getRelationSummaries(issue.id);
+        const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+        if (unresolvedBlockers.length > 0) {
+          throw new Error("Issue is blocked by unresolved blockers");
+        }
+        const budgetBlock = await budgets.getInvocationBlock(companyId, issue.assigneeAgentId, {
+          issueId: issue.id,
+          projectId: issue.projectId,
+        });
+        if (budgetBlock) {
+          throw new Error(budgetBlock.reason);
+        }
+        const contextSource = params.contextSource ?? "plugin.issue.requestWakeup";
+        const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: params.reason ?? "plugin_issue_wakeup_requested",
+          payload: {
+            issueId: issue.id,
+            mutation: "plugin_wakeup",
+            pluginId,
+            pluginKey,
+            contextSource,
+          },
+          idempotencyKey: params.idempotencyKey ?? null,
+          requestedByActorType: "system",
+          requestedByActorId: pluginId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: params.reason ?? "plugin_issue_wakeup_requested",
+            source: contextSource,
+            pluginId,
+            pluginKey,
+          },
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.assignment_wakeup_requested",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: {
+            actorAgentId: params.actorAgentId,
+            actorUserId: params.actorUserId,
+            actorRunId: params.actorRunId,
+          },
+          details: {
+            identifier: issue.identifier,
+            assigneeAgentId: issue.assigneeAgentId,
+            runId: run?.id ?? null,
+            reason: params.reason ?? "plugin_issue_wakeup_requested",
+            contextSource,
+          },
+        });
+        return { queued: Boolean(run), runId: run?.id ?? null };
+      },
+      async requestWakeups(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const results = [];
+        for (const issueId of [...new Set(params.issueIds)]) {
+          const issue = requireInCompany("Issue", await issues.getById(issueId), companyId);
+          if (!issue.assigneeAgentId) {
+            throw new Error("Issue has no assigned agent to wake");
+          }
+          if (["backlog", "done", "cancelled"].includes(issue.status)) {
+            throw new Error(`Issue is not wakeable in status: ${issue.status}`);
+          }
+          const relations = await issues.getRelationSummaries(issue.id);
+          const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+          if (unresolvedBlockers.length > 0) {
+            throw new Error("Issue is blocked by unresolved blockers");
+          }
+          const budgetBlock = await budgets.getInvocationBlock(companyId, issue.assigneeAgentId, {
+            issueId: issue.id,
+            projectId: issue.projectId,
+          });
+          if (budgetBlock) {
+            throw new Error(budgetBlock.reason);
+          }
+          const contextSource = params.contextSource ?? "plugin.issue.requestWakeups";
+          const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: params.reason ?? "plugin_issue_wakeup_requested",
+            payload: {
+              issueId: issue.id,
+              mutation: "plugin_wakeup",
+              pluginId,
+              pluginKey,
+              contextSource,
+            },
+            idempotencyKey: params.idempotencyKeyPrefix ? `${params.idempotencyKeyPrefix}:${issue.id}` : null,
+            requestedByActorType: "system",
+            requestedByActorId: pluginId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: params.reason ?? "plugin_issue_wakeup_requested",
+              source: contextSource,
+              pluginId,
+              pluginKey,
+            },
+          });
+          await logPluginActivity({
+            companyId,
+            action: "issue.assignment_wakeup_requested",
+            entityType: "issue",
+            entityId: issue.id,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorUserId: params.actorUserId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              identifier: issue.identifier,
+              assigneeAgentId: issue.assigneeAgentId,
+              runId: run?.id ?? null,
+              reason: params.reason ?? "plugin_issue_wakeup_requested",
+              contextSource,
+            },
+          });
+          results.push({ issueId: issue.id, queued: Boolean(run), runId: run?.id ?? null });
+        }
+        return results;
+      },
+      async getOrchestrationSummary(params): Promise<PluginIssueOrchestrationSummary> {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const subtreeIssueIds = params.includeSubtree
+          ? await collectIssueSubtreeIds(companyId, rootIssue.id)
+          : [rootIssue.id];
+        const relationPairs = await Promise.all(
+          subtreeIssueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const),
+        );
+        const approvalRows = (
+          await Promise.all(
+            subtreeIssueIds.map(async (issueId) => {
+              const rows = await issueApprovals.listApprovalsForIssue(issueId);
+              return rows.map((approval) => ({
+                issueId,
+                id: approval.id,
+                type: approval.type,
+                status: approval.status,
+                requestedByAgentId: approval.requestedByAgentId,
+                requestedByUserId: approval.requestedByUserId,
+                decidedByUserId: approval.decidedByUserId,
+                decidedAt: approval.decidedAt?.toISOString() ?? null,
+                createdAt: approval.createdAt.toISOString(),
+              }));
+            }),
+          )
+        ).flat();
+        const [runs, costsSummary, openBudgetIncidents] = await Promise.all([
+          getIssueRunSummaries(companyId, subtreeIssueIds),
+          getIssueCostSummary(companyId, subtreeIssueIds, params.billingCode ?? rootIssue.billingCode ?? null),
+          getOpenBudgetIncidents(companyId),
+        ]);
+        const issueRows = await db
+          .select({
+            id: issuesTable.id,
+            assigneeAgentId: issuesTable.assigneeAgentId,
+            projectId: issuesTable.projectId,
+          })
+          .from(issuesTable)
+          .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, subtreeIssueIds)));
+        const invocationBlocks = (
+          await Promise.all(
+            issueRows
+              .filter((issueRow) => issueRow.assigneeAgentId)
+              .map(async (issueRow) => {
+                const block = await budgets.getInvocationBlock(companyId, issueRow.assigneeAgentId!, {
+                  issueId: issueRow.id,
+                  projectId: issueRow.projectId,
+                });
+                return block
+                  ? {
+                    issueId: issueRow.id,
+                    agentId: issueRow.assigneeAgentId!,
+                    scopeType: block.scopeType,
+                    scopeId: block.scopeId,
+                    scopeName: block.scopeName,
+                    reason: block.reason,
+                  }
+                  : null;
+              }),
+          )
+        ).filter((block): block is NonNullable<typeof block> => block !== null);
+        return {
+          issueId: rootIssue.id,
+          companyId,
+          subtreeIssueIds,
+          relations: Object.fromEntries(relationPairs),
+          approvals: approvalRows,
+          runs,
+          costs: costsSummary,
+          openBudgetIncidents,
+          invocationBlocks,
+        };
       },
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -787,12 +2381,339 @@ export function buildHostServices(
       async createComment(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.addComment(
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        if (params.actorUserId) {
+          await requireActiveHumanMember(companyId, params.actorUserId);
+        }
+        const comment = (await issues.addComment(
           params.issueId,
           params.body,
-          {},
+          { agentId: params.actorUserId ? undefined : params.authorAgentId, userId: params.actorUserId },
         )) as IssueComment;
+        await logPluginActivity({
+          companyId,
+          action: "issue.comment.created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.actorUserId ? null : params.authorAgentId ?? null, actorUserId: params.actorUserId ?? null },
+          details: {
+            identifier: issue.identifier,
+            commentId: comment.id,
+            bodySnippet: comment.body.slice(0, 120),
+          },
+        });
+
+        // Human-attributed comments participate in the same "wake the
+        // assignee" behavior a board user's comment gets in the web app
+        // (routes/issues.ts's addComment route) — a plugin's own
+        // agent-attributed comments never do this. Deliberately narrower
+        // than the HTTP route: no reopen/resume/interrupt/scheduled-retry
+        // handling here, just the core wake. An assignee-less or
+        // closed-status issue is a silent no-op, matching the route's own
+        // guard.
+        //
+        // The guard re-fetches the issue instead of trusting the pre-insert
+        // `issue` snapshot: a concurrent close/unassign/reassign landing
+        // between the initial fetch and here would otherwise wake the wrong
+        // (or no-longer-relevant) agent off stale state.
+        //
+        // The comment is already committed above, so this best-effort wake
+        // must never change that outcome: a failed re-fetch is logged and
+        // falls back to the in-hand snapshot rather than rejecting
+        // createComment — a rejection would surface to the caller as a failed
+        // write and invite a retry that inserts a duplicate comment.
+        if (params.actorUserId) {
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin-relayed human comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
+          if (
+            postCommentIssue.assigneeAgentId
+            && postCommentIssue.status !== "done"
+            && postCommentIssue.status !== "cancelled"
+          ) {
+            await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                mutation: "comment",
+              },
+              requestedByActorType: "user",
+              requestedByActorId: params.actorUserId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                sourceCommentId: comment.id,
+                wakeReason: "issue_commented",
+                source: `plugin:${pluginKey}`,
+              },
+            }).catch((err) => logger.warn({
+              err,
+              issueId: issue.id,
+              commentId: comment.id,
+              agentId: postCommentIssue.assigneeAgentId,
+            }, "failed to wake assignee on plugin-relayed human comment"));
+          }
+        }
+
+        return comment;
+      },
+      async createInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const interaction = await issueThreadInteractionService(db).create(issue, params.interaction as CreateIssueThreadInteraction, {
+          agentId: params.authorAgentId ?? null,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.thread_interaction_created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.authorAgentId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            continuationPolicy: interaction.continuationPolicy,
+          },
+        });
+        return interaction as any;
+      },
+      async listInteractions(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        return (await interactions.listForIssue(params.issueId)) as any;
+      },
+      async respondInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Resolving an interaction is a board-user action (the web app's
+        // interaction-resolve routes are board-only). The host re-verifies the
+        // paired user is an active human member at apply time and never trusts
+        // the plugin-supplied identity — matching the createComment bar.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const current = await interactions.getById(params.interactionId);
+        if (!current || current.issueId !== issue.id || current.companyId !== companyId) {
+          throw new Error(`Interaction "${params.interactionId}" not found for this issue`);
+        }
+        // Idempotent replay: an already-resolved interaction converges without
+        // re-applying, so a duplicate button tap from chat is a safe no-op.
+        if (current.status !== "pending") {
+          return { interaction: current as any, applied: false };
+        }
+
+        const actor = { userId: params.actorUserId };
+        let resolved: typeof current;
+        let continuationTarget = {
+          id: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          status: issue.status,
+        };
+        if (params.action === "accept") {
+          const result = await interactions.acceptInteraction(
+            {
+              id: issue.id,
+              companyId,
+              projectId: issue.projectId ?? null,
+              goalId: issue.goalId ?? null,
+              status: issue.status,
+            },
+            params.interactionId,
+            {},
+            actor,
+          );
+          resolved = result.interaction as typeof current;
+          if (result.continuationIssue) {
+            continuationTarget = {
+              id: result.continuationIssue.id,
+              assigneeAgentId: result.continuationIssue.assigneeAgentId,
+              status: result.continuationIssue.status,
+            };
+          }
+        } else {
+          resolved = (await interactions.rejectInteraction(
+            { id: issue.id, companyId, status: issue.status },
+            params.interactionId,
+            { reason: params.reason ?? undefined },
+            actor,
+          )) as typeof current;
+        }
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "accept"
+            ? "issue.thread_interaction_accepted"
+            : "issue.thread_interaction_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            identifier: issue.identifier,
+            interactionId: resolved.id,
+            interactionKind: resolved.kind,
+            interactionStatus: resolved.status,
+          },
+        });
+
+        queuePluginInteractionContinuationWakeup({
+          issue: continuationTarget,
+          interaction: resolved,
+          actorUserId: params.actorUserId,
+          source: `plugin:${pluginKey}:interaction.${params.action}`,
+        });
+
+        return { interaction: resolved as any, applied: true };
+      },
+      async listAttachments(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        return (await issues.listAttachments(params.issueId)) as any;
+      },
+      async getAttachmentContent(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const attachment = await issues.getAttachmentById(params.attachmentId);
+        // Unknown and cross-company ids are deliberately indistinguishable to
+        // the plugin: both return null (no existence oracle across companies).
+        if (!attachment || attachment.companyId !== companyId) return null;
+
+        const maxBytes = typeof params.maxBytes === "number" && params.maxBytes > 0 ? params.maxBytes : null;
+        if (maxBytes !== null && attachment.byteSize > maxBytes) {
+          throw new Error(
+            `attachment ${attachment.id} is ${attachment.byteSize} bytes, over the ${maxBytes}-byte cap`,
+          );
+        }
+
+        const object = await getStorageService().getObject(attachment.companyId, attachment.objectKey);
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of object.stream) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buf.length;
+          // Defense in depth: enforce the cap during streaming too, so a
+          // metadata/object size mismatch can never exceed the requested cap.
+          if (maxBytes !== null && total > maxBytes) {
+            object.stream.destroy();
+            throw new Error(`attachment ${attachment.id} exceeded the ${maxBytes}-byte cap while reading`);
+          }
+          chunks.push(buf);
+        }
+        const bytes = Buffer.concat(chunks);
+
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment.read",
+          entityType: "issue",
+          entityId: attachment.issueId,
+          details: {
+            attachmentId: attachment.id,
+            byteSize: bytes.length,
+            contentType: attachment.contentType,
+          },
+        });
+
+        return {
+          attachmentId: attachment.id,
+          contentType: attachment.contentType,
+          byteSize: bytes.length,
+          sha256: attachment.sha256,
+          originalFilename: attachment.originalFilename ?? null,
+          contentBase64: bytes.toString("base64"),
+        };
+      },
+    },
+
+    approvals: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await approvalSvc.list(companyId, params.status ?? undefined);
+        // Match the web app's approval read surface: payloads are redacted so
+        // the chat bridge never receives secrets the web app itself hides.
+        return rows.map((approval) => redactApprovalPayload(approval)) as any;
+      },
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const approval = await approvalSvc.getById(params.approvalId);
+        if (!approval || approval.companyId !== companyId) return null;
+        return redactApprovalPayload(approval) as any;
+      },
+      async decide(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const existing = await approvalSvc.getById(params.approvalId);
+        if (!existing || existing.companyId !== companyId) {
+          throw new Error(`Approval "${params.approvalId}" not found`);
+        }
+        // Deciding an approval is a board-user action (the web app's approval
+        // decision routes are board-only). Re-verify active membership at apply
+        // time; never trust the plugin-supplied identity.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to decide an approval on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const { approval, applied } = params.action === "approve"
+          ? await approvalSvc.approve(params.approvalId, params.actorUserId, params.decisionNote ?? null)
+          : await approvalSvc.reject(params.approvalId, params.actorUserId, params.decisionNote ?? null);
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "approve" ? "approval.approved" : "approval.rejected",
+          entityType: "approval",
+          entityId: approval.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            type: approval.type,
+            requestedByAgentId: approval.requestedByAgentId,
+            applied,
+          },
+        });
+
+        // Mirror the web app's approve/reject routes: wake the requesting agent
+        // so it resumes after a chat-driven decision. Only on a fresh decision
+        // (applied) and only when a requester agent exists.
+        if (applied && approval.requestedByAgentId) {
+          void heartbeat.wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: params.actorUserId,
+            contextSnapshot: {
+              source: `plugin:${pluginKey}:approval.${params.action}`,
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              wakeReason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            },
+          }).catch((err) => logger.warn({
+            err,
+            approvalId: approval.id,
+            requestedByAgentId: approval.requestedByAgentId,
+          }, "failed to wake requester on plugin-relayed approval decision"));
+        }
+
+        return { approval: redactApprovalPayload(approval) as any, applied };
       },
     },
 
@@ -814,7 +2735,7 @@ export function buildHostServices(
       async upsert(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         const result = await documents.upsertIssueDocument({
           issueId: params.issueId,
           key: params.key,
@@ -823,13 +2744,35 @@ export function buildHostServices(
           format: params.format ?? "markdown",
           changeSummary: params.changeSummary ?? null,
         });
+        await logPluginActivity({
+          companyId,
+          action: "issue.document_upserted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            documentKey: params.key,
+            title: params.title ?? null,
+            format: params.format ?? "markdown",
+          },
+        });
         return result.document as any;
       },
       async delete(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await documents.deleteIssueDocument(params.issueId, params.key);
+        await logPluginActivity({
+          companyId,
+          action: "issue.document_deleted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            documentKey: params.key,
+          },
+        });
       },
     },
 
@@ -873,11 +2816,34 @@ export function buildHostServices(
           triggerDetail: "system",
           reason: params.reason ?? null,
           payload: { prompt: params.prompt },
+          contextSnapshot: {
+            wakeReason: params.reason ?? null,
+            paperclipAgentMessage: {
+              text: params.prompt,
+              source: "plugin_invoke",
+              pluginKey,
+            },
+          },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
+      },
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.get(params.agentKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reconcile(params.agentKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reset(params.agentKey, companyId);
       },
     },
 
@@ -917,6 +2883,337 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         requireInCompany("Goal", await goals.getById(params.goalId), companyId);
         return (await goals.update(params.goalId, params.patch as any)) as Goal;
+      },
+    },
+
+    access: {
+      async listMembers(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await access.listMembers(companyId);
+        const visibleRows = params.includeArchived ? rows : rows.filter((row) => row.status !== "archived");
+        const grants = await db
+          .select()
+          .from(principalPermissionGrants)
+          .where(eq(principalPermissionGrants.companyId, companyId));
+        const grantsByPrincipal = new Map<string, typeof grants>();
+        for (const grant of grants) {
+          const key = `${grant.principalType}:${grant.principalId}`;
+          const existing = grantsByPrincipal.get(key) ?? [];
+          existing.push(grant);
+          grantsByPrincipal.set(key, existing);
+        }
+        return visibleRows.map((member) => ({
+          ...member,
+          principalType: member.principalType as PrincipalType,
+          status: member.status as "pending" | "active" | "suspended" | "archived",
+          grants: (grantsByPrincipal.get(`${member.principalType}:${member.principalId}`) ?? []).map(redactGrant),
+        }));
+      },
+      async getMember(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return loadPluginMember(companyId, params.memberId);
+      },
+      async updateMember(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const updated = await access.updateMember(companyId, params.memberId, params.patch);
+        if (!updated) throw new Error("Member not found");
+        await logPluginActivity({
+          companyId,
+          action: "company_member.updated_by_plugin",
+          entityType: "company_membership",
+          entityId: params.memberId,
+          details: {
+            patch: sanitizeRecord(params.patch as Record<string, unknown>),
+          },
+        });
+        return (await loadPluginMember(companyId, params.memberId))!;
+      },
+      async listInvites(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const limit = Math.min(Math.max(Number(params.limit ?? 20), 1), 100);
+        const offset = Math.max(Number(params.offset ?? 0), 0);
+        const stateClause = inviteStateWhereClause(params.state);
+        const rows = await db
+          .select()
+          .from(invites)
+          .where(stateClause ? and(eq(invites.companyId, companyId), stateClause) : eq(invites.companyId, companyId))
+          .orderBy(desc(invites.createdAt))
+          .limit(limit + 1)
+          .offset(offset);
+        const hasMore = rows.length > limit;
+        return {
+          invites: rows.slice(0, limit).map(redactInvite),
+          nextOffset: hasMore ? offset + limit : null,
+        };
+      },
+      async createInvite(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const normalizedAgentMessage = typeof params.agentMessage === "string"
+          ? params.agentMessage.trim() || null
+          : null;
+        const allowedJoinTypes = params.allowedJoinTypes ?? "both";
+        const humanRole = allowedJoinTypes === "agent" ? null : params.humanRole ?? "operator";
+        const insertValues = {
+          companyId,
+          inviteType: "company_join" as const,
+          allowedJoinTypes,
+          defaultsPayload: mergeInviteDefaults(params.defaultsPayload ?? null, normalizedAgentMessage, humanRole),
+          expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
+          invitedByUserId: null,
+        };
+        let token: string | null = null;
+        let created: typeof invites.$inferSelect | null = null;
+        for (let attempt = 0; attempt < INVITE_TOKEN_MAX_RETRIES; attempt += 1) {
+          const candidateToken = createInviteToken();
+          try {
+            created = await db
+              .insert(invites)
+              .values({
+                ...insertValues,
+                tokenHash: hashToken(candidateToken),
+              })
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            token = candidateToken;
+            break;
+          } catch (error) {
+            if (!isInviteTokenHashCollisionError(error)) throw error;
+          }
+        }
+        if (!token || !created) throw new Error("Failed to generate a unique invite token");
+        await logPluginActivity({
+          companyId,
+          action: "invite.created_by_plugin",
+          entityType: "invite",
+          entityId: created.id,
+          details: {
+            allowedJoinTypes: created.allowedJoinTypes,
+            expiresAt: created.expiresAt.toISOString(),
+            hasAgentMessage: Boolean(normalizedAgentMessage),
+          },
+        });
+        return { ...redactInvite(created), token };
+      },
+      async revokeInvite(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const invite = await db
+          .select()
+          .from(invites)
+          .where(and(eq(invites.id, params.inviteId), eq(invites.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!invite) throw new Error("Invite not found");
+        if (invite.acceptedAt) throw new Error("Invite already consumed");
+        if (invite.revokedAt) return redactInvite(invite);
+        const revoked = await db
+          .update(invites)
+          .set({ revokedAt: new Date(), updatedAt: new Date() })
+          .where(eq(invites.id, invite.id))
+          .returning()
+          .then((rows) => rows[0] ?? invite);
+        await logPluginActivity({
+          companyId,
+          action: "invite.revoked_by_plugin",
+          entityType: "invite",
+          entityId: invite.id,
+        });
+        return redactInvite(revoked);
+      },
+    },
+
+    authorization: {
+      async listGrants(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const conditions = [
+          eq(principalPermissionGrants.companyId, companyId),
+          params.principalType ? eq(principalPermissionGrants.principalType, params.principalType) : undefined,
+          params.principalId ? eq(principalPermissionGrants.principalId, params.principalId) : undefined,
+        ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+        const rows = await db
+          .select()
+          .from(principalPermissionGrants)
+          .where(and(...conditions))
+          .orderBy(principalPermissionGrants.principalType, principalPermissionGrants.principalId, principalPermissionGrants.permissionKey);
+        return rows.map(redactGrant);
+      },
+      async setGrants(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (params.principalType !== "agent" && params.principalType !== "user") {
+          throw new Error("principalType must be 'agent' or 'user'");
+        }
+        if (params.principalType === "agent") {
+          requireInCompany("Agent", await agents.getById(params.principalId), companyId);
+        } else {
+          const membership = await access.getMembership(companyId, params.principalType as PrincipalType, params.principalId);
+          if (!membership) throw new Error("Principal is not a member of this company");
+        }
+        await access.setPrincipalGrants(
+          companyId,
+          params.principalType as PrincipalType,
+          params.principalId,
+          params.grants.map((grant) => ({
+            permissionKey: grant.permissionKey as PermissionKey,
+            scope: grant.scope ? sanitizeRecord(grant.scope) : null,
+          })),
+          params.grantedByUserId ?? null,
+        );
+        await logPluginActivity({
+          companyId,
+          action: "authorization.grants_updated_by_plugin",
+          entityType: "principal_permission_grants",
+          entityId: `${params.principalType}:${params.principalId}`,
+          details: { grantCount: params.grants.length },
+        });
+        return access
+          .listPrincipalGrants(companyId, params.principalType as PrincipalType, params.principalId)
+          .then((rows) => rows.map(redactGrant));
+      },
+      async policySummary(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const [members, grants] = await Promise.all([
+          access.listMembers(companyId),
+          db
+            .select({ id: principalPermissionGrants.id })
+            .from(principalPermissionGrants)
+            .where(eq(principalPermissionGrants.companyId, companyId)),
+        ]);
+        return {
+          companyId,
+          permissionsMode: "simple" as const,
+          memberCount: members.length,
+          activeMemberCount: members.filter((member) => member.status === "active").length,
+          grantCount: grants.length,
+          advancedPolicyAvailable: false as const,
+        };
+      },
+      async getPolicy(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return readAuthorizationPolicy(companyId, params.resourceType, params.resourceId);
+      },
+      async updatePolicy(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const policy = params.policy ? sanitizeRecord(params.policy) : null;
+        if (params.resourceType === "agent") {
+          const agent = requireInCompany("Agent", await agents.getById(params.resourceId), companyId);
+          const permissions = agent.permissions && typeof agent.permissions === "object"
+            ? { ...(agent.permissions as Record<string, unknown>) }
+            : {};
+          if (policy) permissions.authorizationPolicy = policy;
+          else delete permissions.authorizationPolicy;
+          await db
+            .update(agentsTable)
+            .set({ permissions, updatedAt: new Date() })
+            .where(eq(agentsTable.id, agent.id));
+        } else if (params.resourceType === "project") {
+          const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
+          const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"
+            ? { ...(project.executionWorkspacePolicy as unknown as Record<string, unknown>) }
+            : {};
+          if (policy) executionWorkspacePolicy.authorizationPolicy = policy;
+          else delete executionWorkspacePolicy.authorizationPolicy;
+          await db
+            .update(projectsTable)
+            .set({ executionWorkspacePolicy, updatedAt: new Date() })
+            .where(eq(projectsTable.id, project.id));
+        } else if (params.resourceType === "issue") {
+          const issue = requireInCompany("Issue", await issues.getById(params.resourceId), companyId);
+          const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
+            ? { ...(issue.executionPolicy as Record<string, unknown>) }
+            : {};
+          if (policy) executionPolicy.authorizationPolicy = policy;
+          else delete executionPolicy.authorizationPolicy;
+          await db
+            .update(issuesTable)
+            .set({ executionPolicy, updatedAt: new Date() })
+            .where(eq(issuesTable.id, issue.id));
+        } else {
+          const company = await companies.getById(params.resourceId);
+          if (!company || company.id !== companyId) throw new Error("Company not found");
+          throw new Error("Company authorization policy updates are not supported by the current core schema");
+        }
+        await logPluginActivity({
+          companyId,
+          action: "authorization.policy_updated_by_plugin",
+          entityType: params.resourceType,
+          entityId: params.resourceId,
+          details: { hasPolicy: Boolean(policy) },
+        });
+        const updated = await readAuthorizationPolicy(companyId, params.resourceType, params.resourceId);
+        if (!updated) throw new Error("Policy resource not found");
+        return updated;
+      },
+      async previewAssignment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return authorization.decide({
+          actor: pluginAssignmentActor(params.actor),
+          action: "tasks:assign",
+          resource: { type: "issue", companyId, ...params.target },
+          scope: {
+            issueId: params.target.issueId ?? null,
+            projectId: params.target.projectId ?? null,
+            parentIssueId: params.target.parentIssueId ?? null,
+            assigneeAgentId: params.target.assigneeAgentId ?? null,
+            assigneeUserId: params.target.assigneeUserId ?? null,
+          },
+        });
+      },
+      async explainAssignment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return authorization.decide({
+          actor: pluginAssignmentActor(params.actor),
+          action: "tasks:assign",
+          resource: { type: "issue", companyId, ...params.target },
+          scope: {
+            issueId: params.target.issueId ?? null,
+            projectId: params.target.projectId ?? null,
+            parentIssueId: params.target.parentIssueId ?? null,
+            assigneeAgentId: params.target.assigneeAgentId ?? null,
+            assigneeUserId: params.target.assigneeUserId ?? null,
+          },
+        });
+      },
+      async searchAudit(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const limit = Math.min(Math.max(Number(params.limit ?? 50), 1), 100);
+        const offset = Math.max(Number(params.offset ?? 0), 0);
+        const decisionFilter = typeof params.decision === "string" && params.decision.trim()
+          ? params.decision.trim().toLowerCase()
+          : null;
+        const conditions = [
+          eq(activityLog.companyId, companyId),
+          params.action ? eq(activityLog.action, params.action) : undefined,
+          params.actorType ? eq(activityLog.actorType, params.actorType) : undefined,
+          params.actorId ? eq(activityLog.actorId, params.actorId) : undefined,
+          params.entityType ? eq(activityLog.entityType, params.entityType) : undefined,
+          params.entityId ? eq(activityLog.entityId, params.entityId) : undefined,
+          decisionFilter ? authorizationAuditDecisionCondition(decisionFilter) : undefined,
+        ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+        const rows = await db
+          .select()
+          .from(activityLog)
+          .where(and(...conditions))
+          .orderBy(desc(activityLog.createdAt))
+          .limit(limit)
+          .offset(offset);
+        return rows.map((row) => ({
+          ...row,
+          details: row.details && typeof row.details === "object"
+            ? sanitizeRecord(row.details)
+            : row.details ?? null,
+        }));
       },
     },
 
@@ -1005,8 +3302,15 @@ export function buildHostServices(
           payload: { prompt: params.prompt },
           contextSnapshot: {
             taskKey: session.taskKey,
+            wakeReason: params.reason ?? null,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
+            paperclipAgentMessage: {
+              text: params.prompt,
+              source: "plugin_session",
+              pluginKey,
+              sessionId: params.sessionId,
+            },
           },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
@@ -1017,7 +3321,7 @@ export function buildHostServices(
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
-          const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
             unsubscribe();
@@ -1048,7 +3352,9 @@ export function buildHostServices(
                   seq: 0,
                   eventType: status === "succeeded" ? "done" : "error",
                   stream: "system",
-                  message: status === "succeeded" ? "Run completed" : `Run ${status}`,
+                  message: status === "succeeded"
+                    ? (typeof payload.finalText === "string" ? payload.finalText : null)
+                    : `Run ${status}`,
                   payload: payload,
                 });
                 cleanup();

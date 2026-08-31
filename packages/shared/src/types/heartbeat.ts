@@ -3,9 +3,66 @@ import type {
   AgentStatus,
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
+  RunLivenessState,
   WakeupTriggerDetail,
   WakeupRequestStatus,
 } from "../constants.js";
+
+export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
+
+export type GitWorktreeInProgressOperation = "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
+
+export interface GitWorktreeBranchIncoherenceEvidence {
+  reason: "git_worktree_branch_incoherence";
+  fingerprint: string;
+  sourceIssueId: string | null;
+  sourceIdentifier: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  repoRoot: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  /**
+   * Interrupted git operation (rebase/merge/cherry-pick/revert/bisect) whose
+   * state directory is still present in the worktree. Optional so previously
+   * persisted evidence payloads stay valid.
+   */
+  inProgressOperation?: GitWorktreeInProgressOperation | null;
+  statusEntryCount: number | null;
+  dirtyPathSample: string[];
+  contention: {
+    claimedByWorkspaceId: string;
+    claimedByIssueId: string | null;
+    claimedByIssueIdentifier: string | null;
+    activeRun: {
+      id: string;
+      status: "queued" | "running";
+      issueId: string | null;
+      issueIdentifier: string | null;
+    } | null;
+  } | null;
+  provenance: {
+    expectedBranchRef: string;
+    actualBranchRef: string | null;
+    registeredBranchRef: string | null;
+    registeredPathFound: boolean;
+    registeredBranchMatchesHead: boolean;
+    expectedBranchExists: boolean;
+    actualBranchExists: boolean | null;
+    expectedHeadSha: string | null;
+    actualHeadSha: string | null;
+    sameHead: boolean;
+    ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+    plainLanguageReason: string;
+  };
+  safeRepair: {
+    eligible: boolean;
+    attempted: boolean;
+    succeeded: boolean;
+    reason: string;
+  };
+}
 
 export interface HeartbeatRun {
   id: string;
@@ -14,6 +71,7 @@ export interface HeartbeatRun {
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
+  responsibleUserId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
@@ -34,13 +92,87 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   processPid: number | null;
+  processGroupId?: number | null;
   processStartedAt: Date | null;
+  lastOutputAt: Date | null;
+  lastOutputSeq: number;
+  lastOutputStream: "stdout" | "stderr" | null;
+  lastOutputBytes: number | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
+  scheduledRetryAt?: Date | null;
+  scheduledRetryAttempt?: number;
+  scheduledRetryReason?: string | null;
+  retryExhaustedReason?: string | null;
+  livenessState: RunLivenessState | null;
+  livenessReason: string | null;
+  continuationAttempt: number;
+  lastUsefulActionAt: Date | null;
+  nextAction: string | null;
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  outputSilence?: HeartbeatRunOutputSilence;
+  /**
+   * Ephemeral, process-local current status message for an active run. Resolved
+   * from the in-memory runtime status store (never persisted to the database)
+   * and only populated for active/live run reads. Disappears on TTL expiry,
+   * terminal run status, or server restart.
+   */
+  currentStatusMessage?: string | null;
+  currentStatusUpdatedAt?: Date | string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | string | null;
 }
+
+/**
+ * Typed phase labels emitted by the sandbox-managed runtime as it progresses
+ * through workspace preparation, adapter startup, restore/export, and
+ * finalization. Used by the ephemeral runtime status plumbing; not persisted.
+ */
+export type HeartbeatRunStatusPhase =
+  | "git_sync"
+  | "config_sync"
+  | "adapter_startup"
+  | "restore"
+  | "export"
+  | "finalize"
+  | "run_activity";
+
+export type HeartbeatRunOutputSilenceLevel =
+  | "not_applicable"
+  | "ok"
+  | "suspicious"
+  | "critical"
+  | "snoozed";
+
+export interface HeartbeatRunOutputSilence {
+  lastOutputAt: Date | string | null;
+  lastOutputSeq: number;
+  lastOutputStream: "stdout" | "stderr" | null;
+  silenceStartedAt: Date | string | null;
+  silenceAgeMs: number | null;
+  level: HeartbeatRunOutputSilenceLevel;
+  suspicionThresholdMs: number;
+  criticalThresholdMs: number;
+  snoozedUntil: Date | string | null;
+  evaluationIssueId: string | null;
+  evaluationIssueIdentifier: string | null;
+  evaluationIssueAssigneeAgentId: string | null;
+}
+
+export interface AgentWakeupSkipped {
+  status: "skipped";
+  reason: string;
+  message: string | null;
+  issueId: string | null;
+  executionRunId: string | null;
+  executionAgentId: string | null;
+  executionAgentName: string | null;
+}
+
+export type AgentWakeupResponse = HeartbeatRun | AgentWakeupSkipped;
 
 export interface HeartbeatRunEvent {
   id: number;

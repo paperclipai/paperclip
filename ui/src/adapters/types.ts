@@ -4,6 +4,18 @@ import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 // Re-export shared types so local consumers don't need to change imports
 export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@paperclipai/adapter-utils";
 
+export interface StatefulStdoutParser {
+  parseLine: (line: string, ts: string) => import("@paperclipai/adapter-utils").TranscriptEntry[];
+  reset: () => void;
+}
+
+export type StdoutParserFactory = () => StatefulStdoutParser;
+
+export interface TranscriptParserSource {
+  parseStdoutLine: (line: string, ts: string) => import("@paperclipai/adapter-utils").TranscriptEntry[];
+  createStdoutParser?: StdoutParserFactory;
+}
+
 export interface AdapterConfigFieldsProps {
   mode: "create" | "edit";
   isCreate: boolean;
@@ -22,12 +34,42 @@ export interface AdapterConfigFieldsProps {
   models: { id: string; label: string }[];
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
+  /**
+   * When true, the adapter must hide every host filesystem path field and every
+   * execution-engine choice. Non-path behavior toggles stay visible.
+   *
+   * The form sets this from the instance managed-sandbox-only policy
+   * (`enableManagedSandboxOnly`), and also while that policy is still loading,
+   * so a stored path never flashes before the policy resolves.
+   */
+  managedSandboxOnly?: boolean;
 }
 
-export interface UIAdapterModule {
+export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
-  parseStdoutLine: (line: string, ts: string) => import("@paperclipai/adapter-utils").TranscriptEntry[];
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  /**
+   * Optional issue-chat transcript presentation hints. Shared rendering code
+   * resolves these through the registry and never branches on adapter
+   * identities, so external/plugin adapters can declare them too. Omitted
+   * fields fall back to the defaults every adapter has today.
+   */
+  transcriptPresentation?: {
+    /**
+     * Renderable transcript entries kept in the issue-chat window (default
+     * 30). Verbose streaming backends emit hundreds of entries per heartbeat;
+     * trimming those mid-run drops already-rendered content off the front and
+     * the index shift can mangle retraction smoothing.
+     */
+    maxVisibleEntries?: number;
+    /**
+     * Live-run reasoning rendering (default "ticker", the one-line rolling
+     * view). "scrollLog" renders the full reasoning in a scrollable box that
+     * auto-follows the newest line — for backends whose delta volume
+     * overwhelms the ticker.
+     */
+    liveReasoningView?: "ticker" | "scrollLog";
+  };
 }

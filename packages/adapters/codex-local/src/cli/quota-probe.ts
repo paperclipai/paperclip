@@ -5,6 +5,7 @@ import {
   fetchCodexRpcQuota,
   getQuotaWindows,
   readCodexAuthInfo,
+  readCodexQuotaErrorFamily,
   readCodexToken,
 } from "../server/quota.js";
 
@@ -24,6 +25,11 @@ function parseArgs(argv: string[]): ProbeArgs {
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function quotaErrorFamilyJson(error: unknown): Record<string, string> {
+  const errorFamily = readCodexQuotaErrorFamily(error);
+  return errorFamily ? { errorFamily } : {};
 }
 
 async function main() {
@@ -50,6 +56,7 @@ async function main() {
     } catch (error) {
       result.rpc = {
         ok: false,
+        ...quotaErrorFamilyJson(error),
         error: stringifyError(error),
         windows: [],
       };
@@ -72,6 +79,7 @@ async function main() {
       } catch (error) {
         result.wham = {
           ok: false,
+          ...quotaErrorFamilyJson(error),
           error: stringifyError(error),
           windows: [],
         };
@@ -85,6 +93,7 @@ async function main() {
     } catch (error) {
       result.aggregated = {
         ok: false,
+        ...quotaErrorFamilyJson(error),
         error: stringifyError(error),
       };
     }

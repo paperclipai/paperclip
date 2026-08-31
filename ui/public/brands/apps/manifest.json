@@ -1,0 +1,598 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-08-26",
+  "simpleIconsVersion": "16.28.0",
+  "providers": [
+    {
+      "slug": "airtable",
+      "provider": "Airtable",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/airtable.svg",
+      "officialSourceUrl": "https://airtable.com/newsroom",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/airtable.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "anthropic",
+      "provider": "Anthropic",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/anthropic.svg",
+      "darkAsset": "/brands/apps/anthropic-dark.svg",
+      "officialSourceUrl": "https://www.anthropic.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/anthropic.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "asana",
+      "provider": "Asana",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/asana.svg",
+      "officialSourceUrl": "https://asana.com/brand",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/asana.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "beehiiv",
+      "provider": "beehiiv",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/beehiiv.png",
+      "officialSourceUrl": "https://www.beehiiv.com",
+      "upstreamAssetUrl": "https://beehiiv-marketing-images.s3.amazonaws.com/Redesign2023/favicon.png",
+      "assetType": "png",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "bitly",
+      "provider": "Bitly",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/bitly.svg",
+      "officialSourceUrl": "https://bitly.com/pages/press",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/bitly.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "box",
+      "provider": "Box",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/box.svg",
+      "officialSourceUrl": "https://www.box.com/en-gb/about-us/press",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/box.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "brex",
+      "provider": "Brex",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/brex.svg",
+      "darkAsset": "/brands/apps/brex-dark.svg",
+      "officialSourceUrl": "https://www.brex.com/journal/press",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/brex.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "candid",
+      "provider": "Candid",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/candid.png",
+      "officialSourceUrl": "https://candid.org",
+      "upstreamAssetUrl": "https://cdn.candid.org/images/candid-logo/candid-logo-square.png",
+      "assetType": "png",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "clickhouse",
+      "provider": "ClickHouse",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/clickhouse.svg",
+      "officialSourceUrl": "https://github.com/ClickHouse/ClickHouse/blob/12bd453a43819176d25ecf247033f6cb1af54beb/website/images/logo-clickhouse.svg",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/clickhouse.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "cloudflare",
+      "provider": "Cloudflare",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cloudflare.svg",
+      "officialSourceUrl": "https://www.cloudflare.com/logo/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/cloudflare.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "cloudinary",
+      "provider": "Cloudinary",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cloudinary.svg",
+      "darkAsset": "/brands/apps/cloudinary-dark.svg",
+      "officialSourceUrl": "https://cloudinary.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/cloudinary.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "coda",
+      "provider": "Coda",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/coda.svg",
+      "officialSourceUrl": "https://coda.io",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/coda.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "composio",
+      "provider": "Composio",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/composio.svg",
+      "darkAsset": "/brands/apps/composio-dark.svg",
+      "officialSourceUrl": "https://composio.dev",
+      "upstreamAssetUrl": "https://composio.dev/logos/composio-black.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "context7",
+      "provider": "Context7",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/context7.svg",
+      "darkAsset": "/brands/apps/context7-dark.svg",
+      "officialSourceUrl": "https://context7.com",
+      "upstreamAssetUrl": "https://context7.com/_next/static/media/context7-logo-dark.2bd29d7e.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "egnyte",
+      "provider": "Egnyte",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/egnyte.svg",
+      "officialSourceUrl": "https://www.egnyte.com/presskit.html",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/egnyte.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "embat",
+      "provider": "Embat",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/embat.svg",
+      "officialSourceUrl": "https://www.embat.io",
+      "upstreamAssetUrl": "https://www.embat.io/favicon.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "github",
+      "provider": "GitHub",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/github.svg",
+      "darkAsset": "/brands/apps/github-dark.svg",
+      "officialSourceUrl": "https://github.com/logos",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/github.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "gmail",
+      "provider": "Gmail",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gmail.svg",
+      "officialSourceUrl": "https://fonts.gstatic.com/s/i/productlogos/gmail_2020q4/v8/192px.svg",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/gmail.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "google-sheets",
+      "provider": "Google Sheets",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-sheets.svg",
+      "officialSourceUrl": "https://sheets.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlesheets.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "google-drive", "provider": "Google Drive", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-drive.svg", "officialSourceUrl": "https://drive.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googledrive.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-docs", "provider": "Google Docs", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-docs.svg", "officialSourceUrl": "https://docs.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googledocs.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-slides", "provider": "Google Slides", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-slides.svg", "officialSourceUrl": "https://slides.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googleslides.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-calendar", "provider": "Google Calendar", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-calendar.svg", "officialSourceUrl": "https://calendar.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlecalendar.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-chat", "provider": "Google Chat", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-chat.svg", "officialSourceUrl": "https://chat.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlechat.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-people", "provider": "Google People", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-people.svg", "officialSourceUrl": "https://contacts.google.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlecontacts.svg",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "google-workspace-search", "provider": "Google Workspace Search", "catalogVisible": true,
+      "localAsset": "/brands/apps/google-workspace-search.svg", "officialSourceUrl": "https://workspace.google.com",
+      "upstreamAssetUrl": "https://fonts.google.com/icons?selected=Material+Symbols+Outlined:search:FILL@0;wght@400;GRAD@0;opsz@24",
+      "assetType": "svg", "darkVariantRequired": false
+    },
+    {
+      "slug": "hugging-face",
+      "provider": "Hugging Face",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/hugging-face.svg",
+      "officialSourceUrl": "https://huggingface.co/brand",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/huggingface.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "jira",
+      "provider": "Jira",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/jira.svg",
+      "darkAsset": "/brands/apps/jira-dark.svg",
+      "officialSourceUrl": "https://atlassian.design/resources/logo-library",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/jira.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "kernel",
+      "provider": "Kernel",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/kernel.svg",
+      "officialSourceUrl": "https://www.kernel.sh",
+      "upstreamAssetUrl": "https://www.kernel.sh/rebrand/logos/logo-kernel-square.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "linear",
+      "provider": "Linear",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/linear.svg",
+      "officialSourceUrl": "https://linear.app",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/linear.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "local-falcon",
+      "provider": "Local Falcon",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/local-falcon.png",
+      "officialSourceUrl": "https://www.localfalcon.com",
+      "upstreamAssetUrl": "https://www.localfalcon.com/uploads/ico/android-chrome-192x192.png",
+      "assetType": "png",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "make",
+      "provider": "Make",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/make.svg",
+      "darkAsset": "/brands/apps/make-dark.svg",
+      "officialSourceUrl": "https://www.make.com/en/press",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/make.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "manufact",
+      "provider": "Manufact",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/manufact.svg",
+      "officialSourceUrl": "https://manufact.com",
+      "upstreamAssetUrl": "https://manufact.com/favicon.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "mem0",
+      "provider": "Mem0",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/mem0.svg",
+      "officialSourceUrl": "https://mem0.ai",
+      "upstreamAssetUrl": "https://framerusercontent.com/images/2ys67ADJdvcyGmQnhp8vKWSq8.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "miro",
+      "provider": "Miro",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/miro.svg",
+      "darkAsset": "/brands/apps/miro-dark.svg",
+      "officialSourceUrl": "https://miro.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/miro.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "mixpanel",
+      "provider": "Mixpanel",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/mixpanel.svg",
+      "officialSourceUrl": "https://mixpanel.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/mixpanel.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "netlify",
+      "provider": "Netlify",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/netlify.svg",
+      "officialSourceUrl": "https://www.netlify.com/press/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/netlify.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "notion",
+      "provider": "Notion",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/notion.svg",
+      "darkAsset": "/brands/apps/notion-dark.svg",
+      "officialSourceUrl": "https://www.notion.so",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/notion.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "oreilly",
+      "provider": "O'Reilly",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/oreilly.svg",
+      "officialSourceUrl": "https://www.oreilly.com/about/logos/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/oreilly.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "pagerduty",
+      "provider": "PagerDuty",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/pagerduty.svg",
+      "officialSourceUrl": "https://www.pagerduty.com/brand/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/pagerduty.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "planetscale",
+      "provider": "PlanetScale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/planetscale.svg",
+      "darkAsset": "/brands/apps/planetscale-dark.svg",
+      "officialSourceUrl": "https://planetscale.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/planetscale.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "posthog",
+      "provider": "PostHog",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/posthog.svg",
+      "darkAsset": "/brands/apps/posthog-dark.svg",
+      "officialSourceUrl": "https://posthog.com/handbook/company/brand-assets",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/posthog.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "postman",
+      "provider": "Postman",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/postman.svg",
+      "officialSourceUrl": "https://www.getpostman.com/resources/media-assets/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/postman.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "razorpay",
+      "provider": "Razorpay",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/razorpay.svg",
+      "darkAsset": "/brands/apps/razorpay-dark.svg",
+      "officialSourceUrl": "https://razorpay.com/newsroom/brand-assets/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/razorpay.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "resend",
+      "provider": "Resend",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/resend.svg",
+      "darkAsset": "/brands/apps/resend-dark.svg",
+      "officialSourceUrl": "https://resend.com/brand",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/resend.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "sanity",
+      "provider": "Sanity",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/sanity.svg",
+      "darkAsset": "/brands/apps/sanity-dark.svg",
+      "officialSourceUrl": "https://github.com/sanity-io/logos/blob/e298a1ac2757c83910fe08b496a115bc9aef06bd/src/sanityMonogram.tsx",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/sanity.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "sentry",
+      "provider": "Sentry",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/sentry.svg",
+      "darkAsset": "/brands/apps/sentry-dark.svg",
+      "officialSourceUrl": "https://sentry.io/branding/",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/sentry.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "shopify",
+      "provider": "Shopify",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/shopify.svg",
+      "officialSourceUrl": "https://www.shopify.com/brand-assets",
+      "upstreamAssetUrl": "https://cdn.shopify.com/static/brand-assets/shopify-shopping-bag.zip",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "similarweb",
+      "provider": "Similarweb",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/similarweb.svg",
+      "darkAsset": "/brands/apps/similarweb-dark.svg",
+      "officialSourceUrl": "https://www.similarweb.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/similarweb.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "slack",
+      "provider": "Slack",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/slack.png",
+      "officialSourceUrl": "https://slack.com/brand-guidelines",
+      "upstreamAssetUrl": "https://a.slack-edge.com/80588/marketing/img/meta/slack_hash_256.png",
+      "assetType": "png",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "stripe",
+      "provider": "Stripe",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/stripe.svg",
+      "officialSourceUrl": "https://stripe.com/newsroom/information",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/stripe.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "supabase",
+      "provider": "Supabase",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/supabase.svg",
+      "officialSourceUrl": "https://github.com/supabase/supabase/blob/4031a7549f5d46da7bc79c01d56be4177dc7c114/packages/common/assets/images/supabase-logo-wordmark--light.svg",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/supabase.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "ticket-tailor",
+      "provider": "Ticket Tailor",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/ticket-tailor.svg",
+      "darkAsset": "/brands/apps/ticket-tailor-dark.svg",
+      "officialSourceUrl": "https://www.tickettailor.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/tickettailor.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "ticktick",
+      "provider": "TickTick",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/ticktick.svg",
+      "officialSourceUrl": "https://ticktick.com",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/ticktick.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "todoist",
+      "provider": "Todoist",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/todoist.svg",
+      "officialSourceUrl": "https://doist.com/press",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/todoist.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "vercel",
+      "provider": "Vercel",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/vercel.svg",
+      "darkAsset": "/brands/apps/vercel-dark.svg",
+      "officialSourceUrl": "https://vercel.com/geist/brands",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/vercel.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
+      "slug": "webflow",
+      "provider": "Webflow",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/webflow.svg",
+      "officialSourceUrl": "https://brand-at.webflow.io/resources#logos",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/webflow.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "wix",
+      "provider": "Wix",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/wix.svg",
+      "officialSourceUrl": "https://www.wix.com/about/design-assets",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/wix.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "xero",
+      "provider": "Xero",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/xero.svg",
+      "officialSourceUrl": "https://www.xero.com/uk/about/media/downloads",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/xero.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "zapier",
+      "provider": "Zapier",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zapier.svg",
+      "officialSourceUrl": "https://www.figma.com/file/NQFxTCE5pGR3dHZt0DkOyy/Zapier-Brand-Guidelines-%5BExternal%5D?type=design&node-id=101-9701&mode=design",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/zapier.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # No `init: true` here on purpose. The image makes tini PID 1 itself
+    # (Dockerfile ENTRYPOINT), which covers every launch path -- compose, plain
+    # `docker run`, the quadlet units and the ECS task definition -- instead of
+    # one lever per orchestrator. Setting it here too would nest docker-init
+    # around tini and make tini warn that it is not PID 1 on every boot.
+    # pids_limit is the backstop: if something ever does leak processes again,
+    # this container hits its own ceiling and dies visibly rather than starving
+    # the whole host of pids.
+    pids_limit: 2048
+    ports:
+      - "3100:3100"
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+    volumes:
+      - paperclip-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  paperclip-data:

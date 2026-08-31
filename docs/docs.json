@@ -46,9 +46,16 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
+              "guides/board-operator/experimental-features",
+              "guides/board-operator/status-cards",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+              "guides/board-operator/activity-log",
+              "guides/board-operator/importing-and-exporting"
             ]
           },
           {
@@ -57,6 +64,7 @@
               "guides/agent-developer/how-agents-work",
               "guides/agent-developer/heartbeat-protocol",
               "guides/agent-developer/writing-a-skill",
+              "guides/agent-developer/skills-store",
               "guides/agent-developer/task-workflow",
               "guides/agent-developer/comments-and-communication",
               "guides/agent-developer/handling-approvals",
@@ -95,6 +103,8 @@
               "adapters/codex-local",
               "adapters/process",
               "adapters/http",
+              "adapters/external-adapters",
+              "adapters/adapter-ui-parser",
               "adapters/creating-an-adapter"
             ]
           }

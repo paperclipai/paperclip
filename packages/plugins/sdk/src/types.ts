@@ -21,9 +21,42 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  IssueAssigneeAdapterOverrides,
+  IssueAttachment,
+  IssueThreadInteraction,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
+  Approval,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
+  CreateIssueThreadInteraction,
+  PluginIssueOriginKind,
+  IssueSurfaceVisibility,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  PluginManagedSkillResolution,
+  CompanySkill,
+  Routine,
+  RoutineRun,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
+  EnvSecretRefBinding,
 } from "@paperclipai/shared";
+import type { PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -34,13 +67,38 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
+  PluginEnvironmentTemplateConfigBinding,
+  PluginManagedAgentDeclaration,
+  PluginManagedAgentResolution,
+  PluginManagedProjectDeclaration,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineDeclaration,
+  PluginManagedRoutineResolution,
+  PluginManagedSkillDeclaration,
+  PluginManagedSkillFileDeclaration,
+  PluginManagedSkillResolution,
+  CompanySkill,
+  Routine,
+  RoutineRun,
+  PluginLocalFolderDeclaration,
+  PluginCompanySettings,
+  PluginManagedResourceKind,
+  PluginManagedResourceRef,
   PluginUiSlotDeclaration,
   PluginUiDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginDatabaseDeclaration,
+  PluginApiRouteDeclaration,
+  PluginApiRouteCompanyResolution,
+  PluginObjectReferenceRefreshPolicy,
+  PluginObjectReferenceProviderDeclaration,
   PluginRecord,
+  PluginDatabaseNamespaceRecord,
+  PluginMigrationRecord,
   PluginConfig,
   JsonSchema,
   PluginStatus,
@@ -57,6 +115,13 @@ export type {
   PluginJobRunStatus,
   PluginJobRunTrigger,
   PluginWebhookDeliveryStatus,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
   Company,
@@ -65,8 +130,30 @@ export type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  IssueThreadInteraction,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
+  CreateIssueThreadInteraction,
+  PluginIssueOriginKind,
+  IssueSurfaceVisibility,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
+  EnvSecretRefBinding,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -291,12 +378,52 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Checkout/ref requested for the workspace, when known. */
+  repoRef: string | null;
+  /** Default comparison ref for workspace tooling, when known. */
+  defaultRef: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Execution workspace metadata (read-only via ctx.executionWorkspaces)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-safe execution workspace metadata provided by the host. This exposes
+ * the local/repository coordinates plugins need for workspace tooling without
+ * giving the SDK a host-owned diff engine.
+ */
+export interface PluginExecutionWorkspaceMetadata {
+  /** UUID primary key. */
+  id: string;
+  /** UUID of the owning company. */
+  companyId: string;
+  /** UUID of the parent project. */
+  projectId: string;
+  /** UUID of the backing project workspace, when present. */
+  projectWorkspaceId: string | null;
+  /** Absolute filesystem path to the workspace when locally realized. */
+  path: string | null;
+  /** Current working directory for local workspace tooling. */
+  cwd: string | null;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Base ref configured for the workspace, when known. */
+  baseRef: string | null;
+  /** Branch name configured for the workspace, when known. */
+  branchName: string | null;
+  /** Host provider type for the realized workspace. */
+  providerType: string | null;
+  /** Provider metadata already safe for plugin consumption. */
+  providerMetadata: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,11 +442,97 @@ export interface PluginWorkspace {
  */
 export interface PluginConfigClient {
   /**
-   * Returns the resolved operator configuration for this plugin instance.
-   * Values are validated against the plugin's `instanceConfigSchema` by the
-   * host before being passed to the worker.
+   * Returns the resolved operator configuration for this plugin in a company.
+   * When called during a host-scoped invocation, the host may derive the
+   * companyId; otherwise callers must pass it explicitly.
    */
-  get(): Promise<Record<string, unknown>>;
+  get(companyId?: string): Promise<Record<string, unknown>>;
+}
+
+export interface PluginLocalFolderProblem {
+  code:
+    | "not_configured"
+    | "not_absolute"
+    | "missing"
+    | "not_directory"
+    | "not_readable"
+    | "not_writable"
+    | "missing_directory"
+    | "missing_file"
+    | "path_traversal"
+    | "symlink_escape"
+    | "atomic_write_failed";
+  message: string;
+  path?: string;
+}
+
+export interface PluginLocalFolderStatus {
+  folderKey: string;
+  configured: boolean;
+  path: string | null;
+  realPath: string | null;
+  access: "read" | "readWrite";
+  readable: boolean;
+  writable: boolean;
+  requiredDirectories: string[];
+  requiredFiles: string[];
+  missingDirectories: string[];
+  missingFiles: string[];
+  healthy: boolean;
+  problems: PluginLocalFolderProblem[];
+  checkedAt: string;
+}
+
+export interface PluginLocalFolderConfigureInput {
+  companyId: string;
+  folderKey: string;
+  path: string;
+  access?: "read" | "readWrite";
+  requiredDirectories?: string[];
+  requiredFiles?: string[];
+}
+
+export interface PluginLocalFolderListOptions {
+  relativePath?: string | null;
+  recursive?: boolean;
+  maxEntries?: number;
+}
+
+export interface PluginLocalFolderEntry {
+  path: string;
+  name: string;
+  kind: "file" | "directory";
+  size: number | null;
+  modifiedAt: string | null;
+}
+
+export interface PluginLocalFolderListing {
+  folderKey: string;
+  relativePath: string | null;
+  entries: PluginLocalFolderEntry[];
+  truncated: boolean;
+}
+
+export interface PluginLocalFoldersClient {
+  /** Manifest-declared local folders for this plugin. */
+  declarations(): import("@paperclipai/shared").PluginLocalFolderDeclaration[];
+  /** Persist a company-scoped local folder path after validating it. */
+  configure(input: PluginLocalFolderConfigureInput): Promise<PluginLocalFolderStatus>;
+  /** Check the stored folder readiness for a company and folder key. */
+  status(companyId: string, folderKey: string): Promise<PluginLocalFolderStatus>;
+  /** List entries below a configured folder after containment checks. */
+  list(companyId: string, folderKey: string, options?: PluginLocalFolderListOptions): Promise<PluginLocalFolderListing>;
+  /** Read a UTF-8 text file below a configured folder after containment checks. */
+  readText(companyId: string, folderKey: string, relativePath: string): Promise<string>;
+  /** Write a UTF-8 text file below a configured folder using atomic rename. */
+  writeTextAtomic(
+    companyId: string,
+    folderKey: string,
+    relativePath: string,
+    contents: string,
+  ): Promise<PluginLocalFolderStatus>;
+  /** Delete a file below a configured folder after containment checks. Missing files are treated as already deleted. */
+  deleteFile(companyId: string, folderKey: string, relativePath: string): Promise<PluginLocalFolderStatus>;
 }
 
 /**
@@ -407,6 +620,17 @@ export interface PluginLaunchersClient {
   register(launcher: PluginLauncherRegistration): void;
 }
 
+export interface PluginDatabaseClient {
+  /** Host-derived PostgreSQL schema name for this plugin's namespace. */
+  namespace: string;
+
+  /** Run a restricted SELECT against the plugin namespace and whitelisted core tables. */
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+
+  /** Run a restricted INSERT, UPDATE, or DELETE against the plugin namespace. */
+  execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>;
+}
+
 /**
  * `ctx.http` — make outbound HTTP requests.
  *
@@ -434,9 +658,9 @@ export interface PluginHttpClient {
  *
  * Requires `secrets.read-ref` capability.
  *
- * Plugins store secret *references* in their config (e.g. a secret name).
- * This client resolves the reference through the Paperclip secret provider
- * system and returns the resolved value at execution time.
+ * Plugins store shared `{ type: "secret_ref", secretId, version? }` bindings in
+ * company-scoped config. This client resolves a bound ref through the
+ * Paperclip secret provider system at execution time.
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  */
@@ -444,16 +668,19 @@ export interface PluginSecretsClient {
   /**
    * Resolve a secret reference to its current value.
    *
-   * The reference is a string identifier pointing to a secret configured
-   * in the Paperclip secret provider (e.g. `"MY_API_KEY"`).
+   * The reference must be the shared `secret_ref` object shape from plugin
+   * config. Legacy string UUID references fail closed.
    *
    * Secret values are resolved at call time and must never be cached or
    * written to logs, config, or other persistent storage.
    *
-   * @param secretRef - The secret reference string from plugin config
+   * @param secretRef - The secret reference object from plugin config
    * @returns The resolved secret value
    */
-  resolve(secretRef: string): Promise<string>;
+  resolve(
+    secretRef: string | EnvSecretRefBinding,
+    options?: { companyId?: string; configPath?: string },
+  ): Promise<string>;
 }
 
 /**
@@ -659,6 +886,70 @@ export interface PluginProjectsClient {
    * @see PLUGIN_SPEC.md §20 — Local Tooling
    */
   getWorkspaceForIssue(issueId: string, companyId: string): Promise<PluginWorkspace | null>;
+
+  /** Resolve and reconcile manifest-declared plugin-managed projects by stable key. Requires `projects.managed`. */
+  managed: {
+    get(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+    reconcile(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+    reset(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+  };
+}
+
+/**
+ * `ctx.executionWorkspaces` — read execution workspace metadata.
+ *
+ * Requires `execution.workspaces.read`.
+ */
+export interface PluginExecutionWorkspacesClient {
+  /**
+   * Return plugin-safe metadata for an execution workspace. The host enforces
+   * company access before returning any workspace coordinates.
+   */
+  get(workspaceId: string, companyId: string): Promise<PluginExecutionWorkspaceMetadata | null>;
+}
+
+/**
+ * `ctx.routines` — resolve and reconcile plugin-managed Paperclip routines.
+ *
+ * Requires `routines.managed` capability.
+ */
+export interface PluginRoutinesClient {
+  managed: {
+    get(routineKey: string, companyId: string): Promise<PluginManagedRoutineResolution>;
+    reconcile(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<PluginManagedRoutineResolution>;
+    reset(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<PluginManagedRoutineResolution>;
+    update(
+      routineKey: string,
+      companyId: string,
+      patch: { status?: string },
+    ): Promise<Routine>;
+    run(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<RoutineRun>;
+  };
+}
+
+/**
+ * `ctx.skills` — resolve and reconcile plugin-managed company skills.
+ *
+ * Requires `skills.managed` capability.
+ */
+export interface PluginSkillsClient {
+  managed: {
+    get(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reconcile(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reset(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+  };
 }
 
 /**
@@ -691,9 +982,12 @@ export interface PluginActionsClient {
    * Register a handler for a plugin-defined action key.
    *
    * @param key - Stable string identifier for this action (e.g. `"resync"`)
-   * @param handler - Async function that receives action params and returns a result
+   * @param handler - Async function that receives action params plus immutable host actor context and returns a result
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -740,6 +1034,58 @@ export interface PluginLogger {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin tracer
+// ---------------------------------------------------------------------------
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free span contract. The plugin worker
+ * builds a real span through this surface; the host records it through the real
+ * tracer. The shape is a subset of the `@opentelemetry/api` `Span` shape, so the
+ * plugin SDK never imports `@opentelemetry/api`.
+ *
+ * A span with no active host trace context is a no-op: it accepts the calls and
+ * ends without an effect. So a lifecycle hook can always open a span, and the
+ * span records nothing until tracing is on.
+ */
+export interface PluginSpan {
+  /** Set one bounded attribute. The host re-clamps every attribute at its trust
+   * boundary, so an out-of-allowlist attribute never reaches a recorded span. */
+  setAttribute(key: string, value: string | number | boolean): void;
+  /** Set the span status. The host maps it onto the recorded span. */
+  setStatus(status: { code: number; message?: string }): void;
+  /** End the span. The worker sends the span data to the host once, here. */
+  end(): void;
+}
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free tracer contract. The plugin uses
+ * it the same way as `ctx.logger`. The default is a no-op that never throws, so
+ * a plugin span changes nothing until the host injects a live tracer and an
+ * active host trace context.
+ */
+export interface PluginTracer {
+  /** Start one span. `options.attributes` seeds the span attributes. */
+  startSpan(
+    name: string,
+    options?: { attributes?: Record<string, string | number | boolean> },
+  ): PluginSpan;
+}
+
+/** A shared no-op span. It satisfies the span contract and does nothing, so a
+ * plugin with no injected tracer changes no behavior. */
+export const NOOP_PLUGIN_SPAN: PluginSpan = {
+  setAttribute() {},
+  setStatus() {},
+  end() {},
+};
+
+/** The default tracer. It opens no real span, so a lifecycle hook that wraps
+ * work in a span behaves exactly as before when no live tracer is injected. */
+export const NOOP_PLUGIN_TRACER: PluginTracer = {
+  startSpan: () => NOOP_PLUGIN_SPAN,
+};
+
+// ---------------------------------------------------------------------------
 // Plugin metrics
 // ---------------------------------------------------------------------------
 
@@ -759,6 +1105,28 @@ export interface PluginMetricsClient {
    * @param tags - Optional key-value tags for filtering
    */
   write(name: string, value: number, tags?: Record<string, string>): Promise<void>;
+}
+
+/**
+ * `ctx.telemetry` — emit plugin-scoped telemetry to the host's external
+ * telemetry pipeline.
+ *
+ * Requires `telemetry.track` capability.
+ */
+export interface PluginTelemetryClient {
+  /**
+   * Track a plugin telemetry event.
+   *
+   * The host prefixes the final event name as `plugin.<pluginId>.<eventName>`
+   * before forwarding it to the shared telemetry client.
+   *
+   * @param eventName - Bare plugin event slug (for example `"sync_completed"`)
+   * @param dimensions - Optional structured dimensions
+   */
+  track(
+    eventName: string,
+    dimensions?: Record<string, string | number | boolean>,
+  ): Promise<void>;
 }
 
 /**
@@ -845,6 +1213,192 @@ export interface PluginIssueDocumentsClient {
   delete(issueId: string, key: string, companyId: string): Promise<void>;
 }
 
+export interface PluginIssueMutationActor {
+  /** Agent that initiated the plugin operation, when the plugin is acting from an agent run. */
+  actorAgentId?: string | null;
+  /** Board/user that initiated the plugin operation, when known. */
+  actorUserId?: string | null;
+  /** Heartbeat run that initiated the operation. Required for checkout-aware agent actions. */
+  actorRunId?: string | null;
+}
+
+export interface PluginIssueRelationSummary {
+  blockedBy: IssueRelationIssueSummary[];
+  blocks: IssueRelationIssueSummary[];
+}
+
+export interface PluginIssueRelationsClient {
+  /** Read blocker relationships for an issue. Requires `issue.relations.read`. */
+  get(issueId: string, companyId: string): Promise<PluginIssueRelationSummary>;
+  /** Replace the issue's blocked-by relation set. Requires `issue.relations.write`. */
+  setBlockedBy(
+    issueId: string,
+    blockedByIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Add one or more blockers while preserving existing blockers. Requires `issue.relations.write`. */
+  addBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Remove one or more blockers while preserving all other blockers. Requires `issue.relations.write`. */
+  removeBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+}
+
+export interface PluginIssueCheckoutOwnership {
+  issueId: string;
+  status: Issue["status"];
+  assigneeAgentId: string | null;
+  checkoutRunId: string | null;
+  adoptedFromRunId: string | null;
+}
+
+export interface PluginIssueWakeupResult {
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueWakeupBatchResult {
+  issueId: string;
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueRunSummary {
+  id: string;
+  issueId: string | null;
+  agentId: string;
+  status: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueApprovalSummary {
+  issueId: string;
+  id: string;
+  type: string;
+  status: string;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueCostSummary {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  billingCode: string | null;
+}
+
+export interface PluginBudgetIncidentSummary {
+  id: string;
+  scopeType: string;
+  scopeId: string;
+  metric: string;
+  windowKind: string;
+  thresholdType: string;
+  amountLimit: number;
+  amountObserved: number;
+  status: string;
+  approvalId: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueInvocationBlockSummary {
+  issueId: string;
+  agentId: string;
+  scopeType: "company" | "agent" | "project";
+  scopeId: string;
+  scopeName: string;
+  reason: string;
+}
+
+export interface PluginIssueOrchestrationSummary {
+  issueId: string;
+  companyId: string;
+  subtreeIssueIds: string[];
+  relations: Record<string, PluginIssueRelationSummary>;
+  approvals: PluginIssueApprovalSummary[];
+  runs: PluginIssueRunSummary[];
+  costs: PluginIssueCostSummary;
+  openBudgetIncidents: PluginBudgetIncidentSummary[];
+  invocationBlocks: PluginIssueInvocationBlockSummary[];
+}
+
+export interface PluginIssueSubtreeOptions {
+  /** Include the root issue in the result. Defaults to true. */
+  includeRoot?: boolean;
+  /** Include blocker relationship summaries keyed by issue ID. */
+  includeRelations?: boolean;
+  /** Include issue document summaries keyed by issue ID. */
+  includeDocuments?: boolean;
+  /** Include queued/running heartbeat runs keyed by issue ID. */
+  includeActiveRuns?: boolean;
+  /** Include assignee summaries keyed by agent ID. */
+  includeAssignees?: boolean;
+}
+
+export interface PluginIssueAssigneeSummary {
+  id: string;
+  name: string;
+  role: string;
+  title: string | null;
+  status: Agent["status"];
+}
+
+export interface PluginIssueSubtree {
+  rootIssueId: string;
+  companyId: string;
+  issueIds: string[];
+  issues: Issue[];
+  relations?: Record<string, PluginIssueRelationSummary>;
+  documents?: Record<string, IssueDocumentSummary[]>;
+  activeRuns?: Record<string, PluginIssueRunSummary[]>;
+  assignees?: Record<string, PluginIssueAssigneeSummary>;
+}
+
+export interface PluginIssueSummariesClient {
+  /**
+   * Read the compact orchestration inputs a workflow plugin needs for an
+   * issue or issue subtree. Requires `issues.orchestration.read`.
+   */
+  getOrchestration(input: {
+    issueId: string;
+    companyId: string;
+    includeSubtree?: boolean;
+    billingCode?: string | null;
+  }): Promise<PluginIssueOrchestrationSummary>;
+}
+
+/**
+ * Attachment content bytes returned by `ctx.issues.getAttachmentContent`.
+ * Bytes are base64-encoded; there is no URL surface.
+ */
+export interface PluginIssueAttachmentContent {
+  attachmentId: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  originalFilename: string | null;
+  /** The attachment's raw bytes, base64-encoded. */
+  contentBase64: string;
+}
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -852,8 +1406,16 @@ export interface PluginIssueDocumentsClient {
  * - `issues.read` for read operations
  * - `issues.create` for create
  * - `issues.update` for update
+ * - `issues.checkout` for checkout ownership assertions
+ * - `issues.wakeup` for assignment wakeup requests
+ * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.comments.create_human_attributed` for `createComment` calls that pass `actorUserId`
+ * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
+ * - `issue.interactions.read` for `listInteractions`
+ * - `issue.interactions.respond` for `respondInteraction`
+ * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -862,7 +1424,11 @@ export interface PluginIssuesClient {
     companyId: string;
     projectId?: string;
     assigneeAgentId?: string;
+    originKind?: PluginIssueOriginKind;
+    originKindPrefix?: string;
+    originId?: string;
     status?: Issue["status"];
+    includePluginOperations?: boolean;
     limit?: number;
     offset?: number;
   }): Promise<Issue[]>;
@@ -872,23 +1438,217 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
+    status?: Issue["status"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
+    assigneeUserId?: string | null;
+    requestDepth?: number;
+    billingCode?: string | null;
+    assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+    surfaceVisibility?: IssueSurfaceVisibility;
+    originKind?: PluginIssueOriginKind;
+    originId?: string | null;
+    originRunId?: string | null;
+    blockedByIssueIds?: string[];
+    labelIds?: string[];
+    executionWorkspaceId?: string | null;
+    executionWorkspacePreference?: string | null;
+    executionWorkspaceSettings?: Record<string, unknown> | null;
+    actor?: PluginIssueMutationActor;
   }): Promise<Issue>;
   update(
     issueId: string,
     patch: Partial<Pick<
       Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
-    >>,
+      | "title"
+      | "description"
+      | "status"
+      | "priority"
+      | "assigneeAgentId"
+      | "assigneeUserId"
+      | "billingCode"
+      | "originKind"
+      | "originId"
+      | "originRunId"
+      | "requestDepth"
+      | "executionWorkspaceId"
+      | "executionWorkspacePreference"
+    >> & {
+      blockedByIssueIds?: string[];
+      labelIds?: string[];
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+    },
     companyId: string,
+    actor?: PluginIssueMutationActor,
   ): Promise<Issue>;
+  assertCheckoutOwner(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }): Promise<PluginIssueCheckoutOwnership>;
+  /**
+   * Read a root issue's descendants with optional relation/document/run/assignee
+   * summaries. Requires `issue.subtree.read`.
+   */
+  getSubtree(
+    issueId: string,
+    companyId: string,
+    options?: PluginIssueSubtreeOptions,
+  ): Promise<PluginIssueSubtree>;
+  requestWakeup(
+    issueId: string,
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKey?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupResult>;
+  requestWakeups(
+    issueIds: string[],
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKeyPrefix?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupBatchResult[]>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
-  createComment(issueId: string, body: string, companyId: string): Promise<IssueComment>;
+  /**
+   * Post a comment on an issue.
+   *
+   * Pass `authorAgentId` to attribute the comment to the plugin's own agent
+   * identity (requires `issue.comments.create`, the default).
+   *
+   * Pass `actorUserId` to attribute the comment to a real human instead —
+   * for example, relaying a paired chat user's reply back into the issue
+   * thread. Requires the additional `issue.comments.create_human_attributed`
+   * capability. The host independently verifies that `actorUserId` is an
+   * active human member of the issue's company before applying the
+   * attribution — a plugin can only ever attribute comments to identities
+   * that could have posted them in the web app. A human-attributed comment
+   * also participates in the normal wake-the-assignee behavior a board
+   * user's comment gets in the web app (subject to the same closed-issue /
+   * no-assignee exclusions) — unlike a plugin's own agent-attributed
+   * comments, which never wake anyone.
+   */
+  createComment(
+    issueId: string,
+    body: string,
+    companyId: string,
+    options?: { authorAgentId?: string; actorUserId?: string },
+  ): Promise<IssueComment>;
+  createInteraction(
+    issueId: string,
+    interaction: CreateIssueThreadInteraction,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<IssueThreadInteraction>;
+  suggestTasks(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "suggest_tasks" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<SuggestTasksInteraction>;
+  askUserQuestions(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<AskUserQuestionsInteraction>;
+  requestConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestConfirmationInteraction>;
+  requestCheckboxConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_checkbox_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestCheckboxConfirmationInteraction>;
+  /**
+   * List the issue-thread interactions (decision cards) on an issue.
+   * Requires `issue.interactions.read`.
+   */
+  listInteractions(issueId: string, companyId: string): Promise<IssueThreadInteraction[]>;
+  /**
+   * Resolve (accept/reject) a pending issue-thread interaction on behalf of a
+   * paired board user. Requires `issue.interactions.respond`.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human
+   * member of the issue's company before applying the decision — a plugin can
+   * only ever resolve interactions as an identity that could have resolved
+   * them in the web app (whose interaction-resolve routes are board-only).
+   *
+   * Returns the (possibly already-resolved) interaction and `applied`, which is
+   * `true` when this call performed the resolution and `false` when the
+   * interaction had already converged to a resolved state (idempotent replays).
+   */
+  respondInteraction(
+    issueId: string,
+    interactionId: string,
+    input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+    companyId: string,
+  ): Promise<{ interaction: IssueThreadInteraction; applied: boolean }>;
+  /** List attachment metadata for an issue. Requires `issue.attachments.read`. */
+  listAttachments(issueId: string, companyId: string): Promise<IssueAttachment[]>;
+  /**
+   * Read an attachment's content bytes (base64) through the capability-scoped
+   * host bridge. Requires `issue.attachments.read`.
+   *
+   * Company-scoped and audit-logged host-side; there is no URL surface. Returns
+   * `null` for an unknown or cross-company attachment id (indistinguishable by
+   * design). Pass `maxBytes` to refuse over-cap assets — the host throws rather
+   * than partially reading when the stored size exceeds the cap.
+   */
+  getAttachmentContent(
+    attachmentId: string,
+    companyId: string,
+    options?: { maxBytes?: number | null },
+  ): Promise<PluginIssueAttachmentContent | null>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
+  /** Read and write blocker relationships. */
+  relations: PluginIssueRelationsClient;
+  /** Read compact orchestration summaries. */
+  summaries: PluginIssueSummariesClient;
+}
+
+/**
+ * `ctx.approvals` — read and decide company approvals.
+ *
+ * Requires `approvals.read` for `list` / `get`; `approvals.respond` for
+ * `decide`. Approval payloads returned by `list` / `get` are redacted host-side
+ * to match the web app's own approval read surface (no secret leakage through
+ * the bridge).
+ */
+export interface PluginApprovalsClient {
+  list(input: { companyId: string; status?: string | null }): Promise<Approval[]>;
+  get(approvalId: string, companyId: string): Promise<Approval | null>;
+  /**
+   * Approve or reject an approval on behalf of a paired board user.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human member
+   * of the approval's company before applying the decision — a plugin can only
+   * ever decide approvals as an identity that could have decided them in the
+   * web app (whose approval-decision routes are board-only).
+   *
+   * `applied` is `true` when this call performed the decision and `false` when
+   * the approval had already converged to a decided state (idempotent replays).
+   */
+  decide(
+    approvalId: string,
+    input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+    companyId: string,
+  ): Promise<{ approval: Approval; applied: boolean }>;
 }
 
 /**
@@ -906,6 +1666,12 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
+  managed: {
+    get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+    reconcile(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+    reset(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+  };
   /** Create, message, and close agent chat sessions. Requires `agent.sessions.*` capabilities. */
   sessions: PluginAgentSessionsClient;
 }
@@ -937,6 +1703,10 @@ export interface AgentSessionEvent {
   /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
   eventType: "chunk" | "status" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
+  /**
+   * Event text. On a successful `done` event this is the canonical final
+   * user-facing assistant reply, or null when the run produced no reply text.
+   */
   message: string | null;
   payload: Record<string, unknown> | null;
 }
@@ -1016,6 +1786,169 @@ export interface PluginGoalsClient {
 }
 
 // ---------------------------------------------------------------------------
+// Access and Authorization
+// ---------------------------------------------------------------------------
+
+export interface PluginAccessMember {
+  id: string;
+  companyId: string;
+  principalType: PrincipalType;
+  principalId: string;
+  status: MembershipStatus;
+  membershipRole: string | null;
+  grants: PrincipalPermissionGrant[];
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface PluginAccessInvite {
+  id: string;
+  companyId: string | null;
+  inviteType: string;
+  allowedJoinTypes: InviteJoinType;
+  defaultsPayload: Record<string, unknown> | null;
+  expiresAt: Date | string;
+  invitedByUserId: string | null;
+  revokedAt: Date | string | null;
+  acceptedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  state: "active" | "revoked" | "accepted" | "expired";
+}
+
+export interface PluginAccessMembersClient {
+  list(input: { companyId: string; includeArchived?: boolean }): Promise<PluginAccessMember[]>;
+  get(memberId: string, companyId: string): Promise<PluginAccessMember | null>;
+  update(
+    memberId: string,
+    patch: {
+      membershipRole?: HumanCompanyMembershipRole | null;
+      status?: Extract<MembershipStatus, "pending" | "active" | "suspended">;
+    },
+    companyId: string,
+  ): Promise<PluginAccessMember>;
+}
+
+export interface PluginAccessInvitesClient {
+  list(input: {
+    companyId: string;
+    state?: PluginAccessInvite["state"];
+    limit?: number;
+    offset?: number;
+  }): Promise<{ invites: PluginAccessInvite[]; nextOffset: number | null }>;
+  create(input: {
+    companyId: string;
+    allowedJoinTypes?: InviteJoinType;
+    humanRole?: HumanCompanyMembershipRole | null;
+    defaultsPayload?: Record<string, unknown> | null;
+    agentMessage?: string | null;
+  }): Promise<PluginAccessInvite & { token: string }>;
+  revoke(inviteId: string, companyId: string): Promise<PluginAccessInvite>;
+}
+
+export interface PluginAccessClient {
+  /** Read and update company memberships. Requires `access.members.*`. */
+  members: PluginAccessMembersClient;
+  /** Read, create, and revoke company invites. Requires `access.invites.*`. */
+  invites: PluginAccessInvitesClient;
+}
+
+export interface PluginAuthorizationPolicySummary {
+  companyId: string;
+  permissionsMode: "simple";
+  memberCount: number;
+  activeMemberCount: number;
+  grantCount: number;
+  advancedPolicyAvailable: false;
+}
+
+export interface PluginAuthorizationPolicyRecord {
+  resourceType: "company" | "agent" | "project" | "issue";
+  resourceId: string;
+  companyId: string;
+  policy: Record<string, unknown> | null;
+  updatedAt: Date | string | null;
+}
+
+export interface PluginAssignmentPreviewInput {
+  companyId: string;
+  actor:
+    | { type: "board"; userId?: string | null; companyIds?: string[]; isInstanceAdmin?: boolean }
+    | { type: "agent"; agentId: string; companyId: string };
+  target: {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string | null;
+  };
+}
+
+export interface PluginAuthorizationDecisionResult {
+  allowed: boolean;
+  action: string;
+  explanation: string;
+  reason: string;
+  grant?: {
+    principalType: PrincipalType;
+    principalId: string;
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  };
+}
+
+export interface PluginAuthorizationAuditEntry {
+  id: string;
+  companyId: string;
+  actorType: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown> | null;
+  createdAt: Date | string;
+}
+
+export interface PluginAuthorizationClient {
+  grants: {
+    list(input: { companyId: string; principalType?: PrincipalType; principalId?: string }): Promise<PrincipalPermissionGrant[]>;
+    set(input: {
+      companyId: string;
+      principalType: PrincipalType;
+      principalId: string;
+      grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+      grantedByUserId?: string | null;
+    }): Promise<PrincipalPermissionGrant[]>;
+  };
+  policies: {
+    summary(companyId: string): Promise<PluginAuthorizationPolicySummary>;
+    get(input: { companyId: string; resourceType: PluginAuthorizationPolicyRecord["resourceType"]; resourceId: string }): Promise<PluginAuthorizationPolicyRecord | null>;
+    update(input: {
+      companyId: string;
+      resourceType: PluginAuthorizationPolicyRecord["resourceType"];
+      resourceId: string;
+      policy: Record<string, unknown> | null;
+    }): Promise<PluginAuthorizationPolicyRecord>;
+    previewAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+    explainAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+  };
+  audit: {
+    search(input: {
+      companyId: string;
+      action?: string;
+      actorType?: string;
+      actorId?: string;
+      entityType?: string;
+      entityId?: string;
+      decision?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PluginAuthorizationAuditEntry[]>;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Streaming (worker → UI push channel)
 // ---------------------------------------------------------------------------
 
@@ -1063,6 +1996,97 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
+/**
+ * `ctx.loginPty` — stream one live login pseudo-terminal's output and exit
+ * from a sandbox provider worker to the host.
+ *
+ * The worker opener registers the output listener on the session and forwards
+ * each raw chunk through `output(workerSessionId, chunk)`. It forwards the child
+ * exit through `exit(workerSessionId, exitCode)`. Each call carries the worker
+ * session identifier the open reply returned, so the host binds the output to
+ * the open route by that identifier while the route is open. The host drops a
+ * chunk or an exit that carries an unknown or a mismatched identifier, and it
+ * never logs the raw bytes. The default is a no-op that never throws.
+ */
+export interface PluginLoginPtyClient {
+  /**
+   * Deliver one raw output chunk of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw terminal output text.
+   */
+  output(workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(workerSessionId: string, exitCode: number | null): void;
+}
+
+/**
+ * `ctx.duplexChannel` — stream one persistent duplex channel's data and exit from
+ * a sandbox provider worker to the host.
+ *
+ * The worker registers the data listener on the channel and forwards each raw
+ * chunk through `data(workerSessionId, chunk)`. It forwards the child exit through
+ * `exit(workerSessionId, exitCode)`. Each call carries the worker session
+ * identifier the open reply returned, so the host binds the data to the open route
+ * by that identifier while the route is open. The host drops a chunk or an exit
+ * that carries an unknown or a mismatched identifier, and it never logs the raw
+ * bytes. The default is a no-op that never throws. This client models the
+ * `loginPty` client, but it carries no login command allowlist.
+ */
+export interface PluginDuplexChannelClient {
+  /**
+   * Deliver one raw data chunk of a persistent duplex channel.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw channel output bytes.
+   */
+  data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void;
+  /**
+   * Deliver the child exit of a persistent duplex channel.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   * @param transportClosed - True when the transport closed with no exit data, so the exit is a reason-less transport close, not a process exit. Absent marks a real process exit.
+   */
+  exit(
+    hostRouteId: string,
+    workerSessionId: string,
+    exitCode: number | null,
+    transportClosed?: boolean,
+  ): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -1101,6 +2125,9 @@ export interface PluginContext {
   /** Read resolved operator configuration. */
   config: PluginConfigClient;
 
+  /** Configure and safely access trusted company-scoped local folders. */
+  localFolders: PluginLocalFoldersClient;
+
   /** Subscribe to and emit domain events. Requires `events.subscribe` / `events.emit`. */
   events: PluginEventsClient;
 
@@ -1109,6 +2136,9 @@ export interface PluginContext {
 
   /** Register launcher metadata that the host can surface in plugin UI entry points. */
   launchers: PluginLaunchersClient;
+
+  /** Restricted plugin-owned database namespace. Requires database namespace capabilities. */
+  db: PluginDatabaseClient;
 
   /** Make outbound HTTP requests. Requires `http.outbound`. */
   http: PluginHttpClient;
@@ -1128,17 +2158,35 @@ export interface PluginContext {
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
 
+  /** Read execution workspace metadata. Requires `execution.workspaces.read`. */
+  executionWorkspaces: PluginExecutionWorkspacesClient;
+
+  /** Resolve and reconcile plugin-managed routines. Requires `routines.managed`. */
+  routines: PluginRoutinesClient;
+
+  /** Resolve and reconcile plugin-managed company skills. Requires `skills.managed`. */
+  skills: PluginSkillsClient;
+
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;
 
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
 
+  /** Read and decide company approvals. Requires `approvals.read` / `approvals.respond`. */
+  approvals: PluginApprovalsClient;
+
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;
 
   /** Read and mutate goals. Requires `goals.read` for reads; `goals.create` / `goals.update` for write ops. */
   goals: PluginGoalsClient;
+
+  /** Read and manage access memberships and invites. Requires `access.*` capabilities. */
+  access: PluginAccessClient;
+
+  /** Read and manage authorization grants, policy summaries, previews, and audit entries. Requires `authorization.*` capabilities. */
+  authorization: PluginAuthorizationClient;
 
   /** Register getData handlers for the plugin's UI components. */
   data: PluginDataClient;
@@ -1149,12 +2197,33 @@ export interface PluginContext {
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
 
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
+
+  /** Stream one live login pseudo-terminal's output and exit to the host.
+   * The default is a no-op for a provider that opens no login
+   * pseudo-terminal. */
+  loginPty: PluginLoginPtyClient;
+
+  /** Stream one persistent duplex channel's data and exit to the host. The
+   * default is a no-op for a provider that opens no duplex channel. */
+  duplexChannel: PluginDuplexChannelClient;
+
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;
 
   /** Write plugin metrics. Requires `metrics.write`. */
   metrics: PluginMetricsClient;
 
+  /** Emit plugin-scoped external telemetry. Requires `telemetry.track`. */
+  telemetry: PluginTelemetryClient;
+
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Tracer for provider spans. The default is a no-op; the host records a span
+   * only when tracing is on and an active host trace context is present. */
+  tracer: PluginTracer;
 }

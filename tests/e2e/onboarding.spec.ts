@@ -1,142 +1,240 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * E2E: Onboarding wizard flow (skip_llm mode).
+ * E2E: Onboarding wizard flow (NUX Phase 2 expanded wizard).
  *
- * Walks through the 4-step OnboardingWizard:
- *   Step 1 — Name your company
- *   Step 2 — Create your first agent (adapter selection + config)
- *   Step 3 — Give it something to do (task creation)
- *   Step 4 — Ready to launch (summary + open issue)
+ * The wizard now opens on a front door (path picker) and the "Create a new
+ * company" path runs:
+ *   Step 0  — Front door (Create a new company / Level up existing)
+ *   Step 1a — Name your organization (creates the company)
+ *   Step 2  — Hire your team lead (adapter picker)
+ *   Step 3+ — Launch celebration → CEO chat → hiring plan → orientation
  *
- * By default this runs in skip_llm mode: we do NOT assert that an LLM
- * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
- * assertions (requires a valid ANTHROPIC_API_KEY).
+ * This test covers the deterministic, LLM-free core: it drives the front door
+ * through company naming (which creates the company) and verifies the wizard
+ * advances to the team-lead step without asking for a mission.
+ *
+ * The tail (CEO chat at step 4, hiring-plan generation at step 5, final
+ * landing) depends on a live LLM and is verified separately during manual /
+ * LLM-backed QA — see PAP-50. Surface-level rendering of every step is
+ * snapshotted by nux-phase4-screenshots.spec.ts.
  */
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
-
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
-const AGENT_NAME = "CEO";
-const TASK_TITLE = "E2E test task";
 
 test.describe("Onboarding wizard", () => {
-  test("completes full wizard flow", async ({ page }) => {
-    await page.goto("/");
+  test("create-company path: naming creates the company, and no goal is invented", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
 
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
-    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+    // New-NUX surfaces are flag-gated default-OFF (PAP-136/137/138): turn the
+    // experimental flag on for this throwaway instance before driving them.
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
 
-    await expect(
-      wizardHeading.or(newCompanyBtn)
-    ).toBeVisible({ timeout: 15_000 });
+    await page.goto("/onboarding");
 
-    if (await newCompanyBtn.isVisible()) {
-      await newCompanyBtn.click();
+    // The wizard may open on a launcher card or directly on the capsule
+    // wizard; the front door (step 0) requires a click into the create path.
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Organization|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
+    }
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
     }
 
-    await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
-
-    const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
-    await companyNameInput.fill(COMPANY_NAME);
-
-    const nextButton = page.getByRole("button", { name: "Next" });
-    await nextButton.click();
-
+    // Step 1 — Name your organization.
     await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 10_000 });
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
+    await page.getByRole("button", { name: /^Continue/ }).click();
 
-    const agentNameInput = page.locator('input[placeholder="CEO"]');
-    await expect(agentNameInput).toHaveValue(AGENT_NAME);
+    // Step 1's "Next" now creates the company and goes straight to the agent.
+    // The mission step used to sit between them and do the creating; onboarding
+    // no longer asks for the mission, which is collected later in the app.
+    await page.waitForSelector("#onboarding-agent-name", {
+      timeout: 30_000,
+    });
 
-    await expect(
-      page.locator("button", { hasText: "Claude Code" }).locator("..")
-    ).toBeVisible();
-
-    await page.getByRole("button", { name: "More Agent Adapter Types" }).click();
-    await expect(page.getByRole("button", { name: "Process" })).toHaveCount(0);
-
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 10_000 });
-
-    const taskTitleInput = page.locator(
-      'input[placeholder="e.g. Research competitor pricing"]'
-    );
-    await taskTitleInput.clear();
-    await taskTitleInput.fill(TASK_TITLE);
-
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 10_000 });
-
-    await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
-
-    await page.getByRole("button", { name: "Create & Open Issue" }).click();
-
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
-
+    // Verify the company + company-level goal were persisted.
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
-
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
     expect(companiesRes.ok()).toBe(true);
     const companies = await companiesRes.json();
     const company = companies.find(
-      (c: { name: string }) => c.name === COMPANY_NAME
+      (c: { name: string }) => c.name === COMPANY_NAME,
     );
-    expect(company).toBeTruthy();
+    expect(company, `company ${COMPANY_NAME} should exist`).toBeTruthy();
 
-    const agentsRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/agents`
+    // And no company-level goal, which is the point rather than an omission.
+    // Onboarding no longer asks for a mission, so writing one here would mean
+    // inventing a goal the customer never chose. The mission is collected later
+    // in the app, and the absence is what leaves room for it.
+    const goalsRes = await page.request.get(
+      `${baseUrl}/api/companies/${company.id}/goals`,
     );
-    expect(agentsRes.ok()).toBe(true);
-    const agents = await agentsRes.json();
-    const ceoAgent = agents.find(
-      (a: { name: string }) => a.name === AGENT_NAME
+    expect(goalsRes.ok()).toBe(true);
+    const goals = await goalsRes.json();
+    const companyGoal = (Array.isArray(goals) ? goals : []).find(
+      (g: { level?: string }) => g.level === "company",
     );
-    expect(ceoAgent).toBeTruthy();
-    expect(ceoAgent.role).toBe("ceo");
-    expect(ceoAgent.adapterType).not.toBe("process");
-
-    const instructionsBundleRes = await page.request.get(
-      `${baseUrl}/api/agents/${ceoAgent.id}/instructions-bundle?companyId=${company.id}`
-    );
-    expect(instructionsBundleRes.ok()).toBe(true);
-    const instructionsBundle = await instructionsBundleRes.json();
     expect(
-      instructionsBundle.files.map((file: { path: string }) => file.path).sort()
-    ).toEqual(["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"]);
+      companyGoal,
+      "onboarding must not invent a mission the customer never gave",
+    ).toBeFalsy();
 
-    const issuesRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/issues`
-    );
-    expect(issuesRes.ok()).toBe(true);
-    const issues = await issuesRes.json();
-    const task = issues.find(
-      (i: { title: string }) => i.title === TASK_TITLE
-    );
-    expect(task).toBeTruthy();
-    expect(task.assigneeAgentId).toBe(ceoAgent.id);
-    expect(task.description).toContain(
-      "You are the CEO. You set the direction for the company."
-    );
-    expect(task.description).not.toContain("github.com/paperclipai/companies");
+    // The expanded wizard must not crash the app (Rules-of-Hooks regression).
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
+  });
 
-    if (!SKIP_LLM) {
-      await expect(async () => {
-        const res = await page.request.get(
-          `${baseUrl}/api/issues/${task.id}`
-        );
-        const issue = await res.json();
-        expect(["in_progress", "done"]).toContain(issue.status);
-      }).toPass({ timeout: 120_000, intervals: [5_000] });
+  test("adapter step shows the login panel from the cheap auth signal, and blocks the hire on a failed test", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
+
+    // The login panel's capability gate requires a sandbox environment with a
+    // login-capable provider, and this throwaway instance has neither: it
+    // only auto-creates the local environment. Add one fake sandbox
+    // environment to the real list, make it the instance default, and declare
+    // its provider's login pseudo-terminal capability — this reproduces the
+    // gate a real sandbox-backed instance would already pass, without
+    // changing any other field the rest of the page depends on.
+    const FAKE_SANDBOX_ENVIRONMENT_ID = "e2e-fake-sandbox-environment";
+    const FAKE_SANDBOX_PROVIDER = "e2e-fake-provider";
+
+    await page.route("**/environments", async (route) => {
+      const response = await route.fetch();
+      const environments = await response.json();
+      environments.push({
+        id: FAKE_SANDBOX_ENVIRONMENT_ID,
+        name: "E2E fake sandbox",
+        description: null,
+        driver: "sandbox",
+        status: "active",
+        config: { provider: FAKE_SANDBOX_PROVIDER },
+        envVars: {},
+        metadata: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await route.fulfill({ response, json: environments });
+    });
+
+    await page.route("**/environments/capabilities", async (route) => {
+      const response = await route.fetch();
+      const capabilities = await response.json();
+      capabilities.sandboxProviders[FAKE_SANDBOX_PROVIDER] = {
+        status: "supported",
+        supportsSavedProbe: true,
+        supportsUnsavedProbe: true,
+        supportsRunExecution: true,
+        supportsReusableLeases: false,
+        supportsInteractiveSetup: false,
+        interactiveSetupConnectionTypes: [],
+        supportsTemplateCapture: false,
+        supportsTemplateDelete: false,
+        supportsLoginPty: true,
+        source: "plugin",
+      };
+      await route.fulfill({ response, json: capabilities });
+    });
+
+    await page.route("**/instance/settings", async (route) => {
+      const response = await route.fetch();
+      const settings = await response.json();
+      settings.defaultEnvironmentId = FAKE_SANDBOX_ENVIRONMENT_ID;
+      await route.fulfill({ response, json: settings });
+    });
+
+    // Report no ready credential, so the wizard shows the login panel right
+    // after the adapter is picked, before it ever runs an adapter test.
+    await page.route("**/adapters/*/auth-signal*", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ status: "absent" }),
+      }),
+    );
+
+    // Fail the adapter test the "Connect" button runs, so the hire gate
+    // blocks the create and this test can prove no agent is hired.
+    await page.route("**/test-environment", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          adapterType: "claude_local",
+          status: "fail",
+          checks: [
+            {
+              code: "claude_cli_not_found",
+              level: "fail",
+              message: "The claude CLI was not found on this host.",
+            },
+          ],
+          testedAt: new Date().toISOString(),
+        }),
+      }),
+    );
+
+    let hireCalled = false;
+    await page.route("**/agent-hires", (route) => {
+      hireCalled = true;
+      return route.continue();
+    });
+
+    await page.goto("/onboarding");
+
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Organization|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
     }
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
+    }
+
+    await expect(
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`${COMPANY_NAME}-auth-signal`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+
+    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // Step 4 (Connect a model): the default adapter is claude_local, and the
+    // signal above reports no ready credential, so the login panel must show
+    // with no button to reuse a saved login.
+    await expect(page.getByText("Sign in to the environment")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: /^Connect/ }).click();
+
+    // The failed test blocks the hire and shows its own checks.
+    await expect(page.getByText("The claude CLI was not found on this host.")).toBeVisible({
+      timeout: 15_000,
+    });
+    expect(hireCalled).toBe(false);
+
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 });

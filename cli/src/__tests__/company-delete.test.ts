@@ -15,12 +15,17 @@ function makeCompany(overrides: Partial<Company>): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
-    brandColor: null,
+    feedbackDataSharingEnabled: false,
+    feedbackDataSharingConsentAt: null,
+    feedbackDataSharingConsentByUserId: null,
+    feedbackDataSharingTermsVersion: null,
     logoAssetId: null,
     logoUrl: null,
+    defaultResponsibleUserId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+    interactionResolverGovernance: overrides.interactionResolverGovernance ?? {},
   };
 }
 

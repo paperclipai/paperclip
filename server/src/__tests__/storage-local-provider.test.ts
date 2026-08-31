@@ -42,6 +42,26 @@ describe("local disk storage provider", () => {
     expect(stored.sha256).toHaveLength(64);
   });
 
+  it("streams only requested byte ranges", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    const stored = await service.putFile({
+      companyId: "company-1",
+      namespace: "issues/issue-1",
+      originalFilename: "demo.mp4",
+      contentType: "video/mp4",
+      body: Buffer.from("0123456789", "utf8"),
+    });
+
+    const fetched = await service.getObject("company-1", stored.objectKey, { range: { start: 2, end: 5 } });
+    const fetchedBody = await readStreamToBuffer(fetched.stream);
+
+    expect(fetchedBody.toString("utf8")).toBe("2345");
+    expect(fetched.contentLength).toBe(4);
+  });
+
   it("blocks cross-company object access", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
     tempRoots.push(root);

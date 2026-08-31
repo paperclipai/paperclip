@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "slug": "context7",
+  "name": "Context7",
+  "description": "Look up current documentation for software libraries.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/context7.svg",
+    "darkLogoUrl": "/brands/apps/context7-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.context7.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.context7.com/mcp"
+      },
+      "guidanceMd": "Connect Context7 to give agents current library documentation.",
+      "riskTier": "S1"
+    }
+  ]
+}

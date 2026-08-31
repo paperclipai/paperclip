@@ -19,10 +19,12 @@
  *
  *     // Subscribe to events
  *     ctx.events.on("issue.created", async (event) => {
- *       const config = await ctx.config.get();
+ *       const companyId = event.companyId;
+ *       const config = await ctx.config.get(companyId);
+ *       const apiKey = await ctx.secrets.resolve(config.apiKeyRef, { companyId, configPath: "apiKeyRef" });
  *       await ctx.http.fetch(`https://api.linear.app/...`, {
  *         method: "POST",
- *         headers: { Authorization: `Bearer ${await ctx.secrets.resolve(config.apiKeyRef as string)}` },
+ *         headers: { Authorization: `Bearer ${apiKey}` },
  *         body: JSON.stringify({ title: event.payload.title }),
  *       });
  *     });
@@ -48,6 +50,51 @@
  */
 
 import type { PluginContext } from "./types.js";
+import type {
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentExecuteResult,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
+  PluginEnvironmentLease,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentProbeResult,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentValidationResult,
+  DetectExternalObjectsParams,
+  DetectExternalObjectsResult,
+  ResolveExternalObjectParams,
+  PluginExternalObjectResolveResult,
+  RefreshExternalObjectsParams,
+  RefreshExternalObjectsResult,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyOpenResult,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginLoginPtyCloseResult,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelOpenResult,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
+  PluginDuplexChannelCloseResult,
+} from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Health check result
@@ -107,6 +154,55 @@ export interface PluginWebhookInput {
   requestId: string;
 }
 
+export interface PluginApiRequestInput {
+  routeKey: string;
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  actor: {
+    actorType: "user" | "agent";
+    actorId: string;
+    agentId?: string | null;
+    userId?: string | null;
+    runId?: string | null;
+  };
+  companyId: string;
+  headers: Record<string, string>;
+}
+
+export interface PluginApiResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Config change context
+// ---------------------------------------------------------------------------
+
+/**
+ * Scope metadata delivered alongside a `configChanged` RPC so the worker knows
+ * *which company's* configuration changed.
+ *
+ * The host→worker `configChanged` message has always carried the company scope,
+ * but the SDK historically dropped it before invoking `onConfigChanged`, leaving
+ * proactive plugins to keep a single worker-global config. That is safe for a
+ * single-tenant plugin but silently collapses a multi-company plugin onto
+ * whichever company's config was delivered last. Threading the scope through
+ * lets a `multiCompanyConfig` plugin maintain per-company state.
+ *
+ * @see PLUGIN_SPEC.md §13.4 — `configChanged`
+ */
+export interface PluginConfigChangeContext {
+  /**
+   * The company whose configuration changed, or `null` for an instance/global
+   * save that is not bound to a specific company.
+   */
+  companyId: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
@@ -149,15 +245,38 @@ export interface PluginDefinition {
   onHealth?(): Promise<PluginHealthDiagnostics>;
 
   /**
-   * Called when the operator updates the plugin's instance configuration at
-   * runtime, without restarting the worker.
+   * When true, this plugin's worker correctly serves configuration from more
+   * than one company inside a single worker process — for example by keying its
+   * state on `context.companyId` in `onConfigChanged` and running one connection
+   * / subscription set per company.
+   *
+   * When false or omitted (the default), the plugin is treated as single-tenant.
+   * The host then **fails closed** if `configChanged` would ever deliver a
+   * second, distinct company's configuration to the same worker: instead of
+   * silently collapsing the worker onto whichever company arrived last (a
+   * cross-tenant identity/secret confusion bug), the delivery is rejected with
+   * `PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG`. Re-delivering an unchanged
+   * config for a different company (idempotent replay) is still allowed.
+   */
+  multiCompanyConfig?: boolean;
+
+  /**
+   * Called when the operator updates this plugin's company-scoped configuration
+   * at runtime, without restarting the worker.
    *
    * If not implemented, the host restarts the worker to apply the new config.
    *
    * @param newConfig - The newly resolved configuration
+   * @param context - Scope of the change. `context.companyId` identifies the
+   *   company whose config changed (null for an instance/global save). A
+   *   multi-company plugin (`multiCompanyConfig: true`) MUST key its per-company
+   *   state on this value rather than assuming a single global config.
    * @see PLUGIN_SPEC.md §13.4 — `configChanged`
    */
-  onConfigChanged?(newConfig: Record<string, unknown>): Promise<void>;
+  onConfigChanged?(
+    newConfig: Record<string, unknown>,
+    context?: PluginConfigChangeContext,
+  ): Promise<void>;
 
   /**
    * Called when the host is about to shut down the plugin worker.
@@ -197,6 +316,189 @@ export interface PluginDefinition {
    * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
    */
   onWebhook?(input: PluginWebhookInput): Promise<void>;
+
+  /**
+   * Called for manifest-declared scoped JSON API routes under
+   * `/api/plugins/:pluginId/api/*` after the host has enforced auth, company
+   * access, capabilities, and checkout policy.
+   */
+  onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
+
+  /**
+   * Called when Paperclip scans issue/comment/document content and asks this
+   * plugin whether any sanitized URL candidates belong to its external object
+   * providers. The host has already stripped URL userinfo, query strings, and
+   * fragments unless provider-safe identity components were explicitly hashed.
+   *
+   * Requires `external.objects.detect`.
+   */
+  onDetectExternalObjects?(
+    params: DetectExternalObjectsParams,
+  ): Promise<DetectExternalObjectsResult>;
+
+  /**
+   * Called when Paperclip needs the current normalized status for one external
+   * object owned by a manifest-declared provider.
+   *
+   * Requires `external.objects.read`.
+   */
+  onResolveExternalObject?(
+    params: ResolveExternalObjectParams,
+  ): Promise<PluginExternalObjectResolveResult>;
+
+  /**
+   * Optional batch resolver used by providers that can refresh many objects
+   * more efficiently than individual `onResolveExternalObject` calls.
+   *
+   * Requires `external.objects.refresh`.
+   */
+  onRefreshExternalObjects?(
+    params: RefreshExternalObjectsParams,
+  ): Promise<RefreshExternalObjectsResult>;
+
+  /**
+   * Called to validate provider-specific configuration for a plugin-hosted
+   * environment driver.
+   */
+  onEnvironmentValidateConfig?(
+    params: PluginEnvironmentValidateConfigParams,
+  ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Called to test reachability or readiness of a plugin-hosted environment. */
+  onEnvironmentProbe?(
+    params: PluginEnvironmentProbeParams,
+  ): Promise<PluginEnvironmentProbeResult>;
+
+  /** Called before a run starts to acquire a provider lease. */
+  onEnvironmentAcquireLease?(
+    params: PluginEnvironmentAcquireLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called to reconnect to a previously acquired provider lease. */
+  onEnvironmentResumeLease?(
+    params: PluginEnvironmentResumeLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called when a run finishes and the provider lease can be released. */
+  onEnvironmentReleaseLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<void>;
+
+  /** Called when the host needs to force-destroy provider state. */
+  onEnvironmentDestroyLease?(
+    params: PluginEnvironmentDestroyLeaseParams,
+  ): Promise<void>;
+
+  /** Called to materialize the run workspace inside the provider lease. */
+  onEnvironmentRealizeWorkspace?(
+    params: PluginEnvironmentRealizeWorkspaceParams,
+  ): Promise<PluginEnvironmentRealizeWorkspaceResult>;
+
+  /** Called to execute a command inside the provider lease. */
+  onEnvironmentExecute?(
+    params: PluginEnvironmentExecuteParams,
+  ): Promise<PluginEnvironmentExecuteResult>;
+
+  /**
+   * Optional, opt-in: called before execution to place host files/directories at
+   * target sandbox paths using a provider-native transport instead of the default
+   * base64-over-exec fallback. Defining this hook (together with
+   * `onEnvironmentSyncOut`) advertises `environmentSyncIn`; leaving it undefined
+   * keeps the byte-identical fallback. See `doc/plugins/SANDBOX_FILE_SYNC_HOOKS.md`.
+   */
+  onEnvironmentSyncIn?(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult>;
+
+  /**
+   * Optional, opt-in: called after execution to copy sandbox files/directories
+   * back to target host paths using a provider-native transport. Defining this
+   * hook (together with `onEnvironmentSyncIn`) advertises `environmentSyncOut`.
+   * See `doc/plugins/SANDBOX_FILE_SYNC_HOOKS.md`.
+   */
+  onEnvironmentSyncOut?(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult>;
+
+  /** Called to start an interactive setup sandbox and return redacted connection metadata. */
+  onEnvironmentStartInteractiveSetup?(
+    params: PluginEnvironmentStartInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to read setup status and, when authorized, a one-time connection payload. */
+  onEnvironmentGetInteractiveSetup?(
+    params: PluginEnvironmentGetInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to capture a reusable provider template from a live setup sandbox. */
+  onEnvironmentCaptureTemplate?(
+    params: PluginEnvironmentCaptureTemplateParams,
+  ): Promise<PluginEnvironmentCaptureTemplateResult>;
+
+  /** Called to cancel and clean up a setup sandbox without promoting a template. */
+  onEnvironmentCancelInteractiveSetup?(
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+  ): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+
+  /** Called for optional best-effort cleanup of a captured provider template. */
+  onEnvironmentDeleteTemplate?(
+    params: PluginEnvironmentDeleteTemplateParams,
+  ): Promise<PluginEnvironmentDeleteTemplateResult>;
+
+  /**
+   * Called to open one live Claude `setup-token` login pseudo-terminal.
+   * The worker registers the terminal under the host route identifier and returns a
+   * worker session identifier for the output notification binding only. The worker
+   * streams output and the exit through `ctx.loginPty`, never as a reply.
+   * Defining the four `onLoginPty*` hooks advertises the four methods.
+   */
+  onLoginPtyOpen?(
+    params: PluginLoginPtyOpenParams,
+  ): Promise<PluginLoginPtyOpenResult>;
+
+  /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
+  onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
+
+  /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
+  onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;
+
+  /**
+   * Called to close an open login pseudo-terminal by the host route identifier. The
+   * worker closes the exact terminal registered under that identifier and returns a
+   * close acknowledgement that carries the same identifier.
+   */
+  onLoginPtyClose?(
+    params: PluginLoginPtyCloseParams,
+  ): Promise<PluginLoginPtyCloseResult>;
+
+  /**
+   * Called to open one persistent duplex channel. The worker registers the
+   * channel under the host route identifier and returns a worker session
+   * identifier for the data notification binding only. The worker streams data
+   * and the exit through worker→host notifications, never as a reply. Defining
+   * the four `onDuplexChannel*` hooks advertises the four methods. The host reads
+   * the open verb to gate the `duplexCommandStream` capability.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+   */
+  onDuplexChannelOpen?(
+    params: PluginDuplexChannelOpenParams,
+  ): Promise<PluginDuplexChannelOpenResult>;
+
+  /** Called to write raw input to an open duplex channel, keyed by the worker session identifier. */
+  onDuplexChannelWrite?(params: PluginDuplexChannelWriteParams): Promise<void>;
+
+  /** Called to stop an open duplex channel child, keyed by the worker session identifier. */
+  onDuplexChannelStop?(params: PluginDuplexChannelStopParams): Promise<void>;
+
+  /**
+   * Called to close an open duplex channel by the host route identifier. The
+   * worker closes the exact channel registered under that identifier and returns
+   * a close acknowledgement that carries the same identifier.
+   */
+  onDuplexChannelClose?(
+    params: PluginDuplexChannelCloseParams,
+  ): Promise<PluginDuplexChannelCloseResult>;
 }
 
 // ---------------------------------------------------------------------------

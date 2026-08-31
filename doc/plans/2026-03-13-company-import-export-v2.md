@@ -484,8 +484,8 @@ The CLI should continue to support direct import/export without a registry.
 Target commands:
 
 - `paperclipai company export <company-id> --out <path>`
-- `paperclipai company import --from <path-or-url> --dry-run`
-- `paperclipai company import --from <path-or-url> --target existing -C <company-id>`
+- `paperclipai company import <path-or-url> --dry-run`
+- `paperclipai company import <path-or-url> --target existing -C <company-id>`
 
 Planned additions:
 

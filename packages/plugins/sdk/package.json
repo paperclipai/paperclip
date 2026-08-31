@@ -103,17 +103,18 @@
   "scripts": {
     "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
+    "ensure-build-deps": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
     "dev:server": "tsx src/dev-cli.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "zod": "^3.24.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
-    "@types/react": "^19.0.8",
-    "typescript": "^5.7.3"
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -122,5 +123,8 @@
     "react": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

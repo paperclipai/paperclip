@@ -22,6 +22,7 @@ The question is not "which memory project wins?" The question is "what is the sm
 ### Hosted memory APIs
 
 - `mem0`
+- `AWS Bedrock AgentCore Memory`
 - `supermemory`
 - `Memori`
 
@@ -49,6 +50,7 @@ These emphasize local persistence, inspectability, and low operational overhead.
 |---|---|---|---|---|
 | [nuggets](https://github.com/NeoVertex1/nuggets) | local memory engine + messaging gateway | topic-scoped HRR memory with `remember`, `recall`, `forget`, fact promotion into `MEMORY.md` | good example of lightweight local memory and automatic promotion | very specific architecture; not a general multi-tenant service |
 | [mem0](https://github.com/mem0ai/mem0) | hosted + OSS SDK | `add`, `search`, `getAll`, `get`, `update`, `delete`, `deleteAll`; entity partitioning via `user_id`, `agent_id`, `run_id`, `app_id` | closest to a clean provider API with identities and metadata filters | provider owns extraction heavily; Paperclip should not assume every backend behaves like mem0 |
+| [AWS Bedrock AgentCore Memory](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory.html) | AWS-managed memory service | explicit short-term and long-term memories, actor/session/event APIs, memory strategies, namespace templates, optional self-managed extraction pipeline | strong example of provider-managed memory with clear scoped ids, retention controls, and standalone API access outside a single agent framework | AWS-hosted and IAM-centric; Paperclip would still need its own company/run/comment provenance, cost rollups, and likely a plugin wrapper instead of baking AWS semantics into core |
 | [MemOS](https://github.com/MemTensor/MemOS) | memory OS / framework | unified add-retrieve-edit-delete, memory cubes, multimodal memory, tool memory, async scheduler, feedback/correction | strong source for optional capabilities beyond plain search | much broader than the minimal contract Paperclip should standardize first |
 | [supermemory](https://github.com/supermemoryai/supermemory) | hosted memory + context API | `add`, `profile`, `search.memories`, `search.documents`, document upload, settings; automatic profile building and forgetting | strong example of "context bundle" rather than raw search results | heavily productized around its own ontology and hosted flow |
 | [memU](https://github.com/NevaMind-AI/memU) | proactive agent memory framework | file-system metaphor, proactive loop, intent prediction, always-on companion model | good source for when memory should trigger agent behavior, not just retrieval | proactive assistant framing is broader than Paperclip's task-centric control plane |
@@ -77,6 +79,7 @@ These differences are exactly why Paperclip needs a layered contract instead of 
 ### 1. Who owns extraction?
 
 - `mem0`, `supermemory`, and `Memori` expect the provider to infer memories from conversations.
+- `AWS Bedrock AgentCore Memory` supports both provider-managed extraction and self-managed pipelines where the host writes curated long-term memory records.
 - `memsearch` expects the host to decide what markdown to write, then indexes it.
 - `MemOS`, `memU`, `EverMemOS`, and `OpenViking` sit somewhere in between and often expose richer memory construction pipelines.
 
@@ -104,6 +107,7 @@ Paperclip should make plain search the minimum contract and richer outputs optio
 ### 4. Is memory synchronous or asynchronous?
 
 - local tools often work synchronously in-process.
+- `AWS Bedrock AgentCore Memory` is synchronous at the API edge, but its long-term memory path includes background extraction/indexing behavior and retention policies managed by the provider.
 - larger systems add schedulers, background indexing, compaction, or sync jobs.
 
 Paperclip needs both direct request/response operations and background maintenance hooks.

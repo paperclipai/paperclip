@@ -18,44 +18,122 @@ When a heartbeat fires, Paperclip:
 
 | Adapter | Type Key | Description |
 |---------|----------|-------------|
-| [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
-| [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
-| [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally |
-| OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
-| OpenClaw | `openclaw` | Sends wake payloads to an OpenClaw webhook |
+| [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally, with a native ACP engine when available |
+| [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally, with a native ACP engine when available |
+| [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Kimi Code CLI](/adapters/kimi-local) | `kimi_local` | Runs Kimi Code CLI locally through ACP, with headless `-p` mode as a fallback |
+| OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
+| Cursor | `cursor` | Runs Cursor in background mode |
+| Pi | `pi_local` | Runs an embedded Pi agent locally |
+| Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
+| Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
+| OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
+## Credential ownership for sandbox targets
+
+Local CLI adapters can run on the Paperclip host, SSH targets, or managed
+sandbox targets. The adapter decides which credential home is authoritative
+before the CLI starts:
+
+| Adapter | Credential topology | Which credential file wins on managed sandbox targets |
+|---------|---------------------|-------------------------------------------------------|
+| [`codex_local`](/adapters/codex-local) | Host-owns-auth for Paperclip-managed `CODEX_HOME` | A host-owned `auth.json` is symlinked into the managed `CODEX_HOME` and uploaded to the sandbox. If a per-agent `OPENAI_API_KEY` is configured, Paperclip writes an API-key `auth.json` instead and that file wins. A login baked into the sandbox image is shadowed because Codex runs with Paperclip's uploaded `CODEX_HOME`. |
+| [`claude_local`](/adapters/claude-local) | Snapshot-owns-auth for managed remote Claude config | A configured `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (agent or environment env) wins over any stored login. Otherwise Paperclip uploads only sanitized settings and skill/runtime assets, and when the remote managed config has no Claude credential files it copies `.credentials.json` or `credentials.json` from the sandbox image's own `$HOME/.claude`, so the image's login wins. |
+
+Worked examples:
+
+- **Codex sandbox with host ChatGPT login:** the host `~/.codex/auth.json`
+  is symlinked into the managed home, then uploaded as the sandbox
+  `CODEX_HOME`. Codex reads that uploaded file and does not use any
+  `auth.json` already present inside the sandbox image.
+- **Claude sandbox with image login:** Paperclip materializes a remote
+  `CLAUDE_CONFIG_DIR`, then fills missing `.credentials.json` /
+  `credentials.json` from the sandbox image's own `$HOME/.claude`. The
+  snapshot's Claude login is the credential source for the run.
+
+### Hermes local vs gateway
+
+Use `hermes_local` when Paperclip should start the local `hermes` CLI on the
+same host for each heartbeat. Use `hermes_gateway` when Hermes is already
+running as an HTTP/SSE API server and Paperclip should call that server instead
+of spawning a process. Both type keys are stable built-ins.
+
+The unified Hermes package owns both built-in adapters. The older
+`@paperclipai/adapter-hermes-gateway` package remains only as a deprecated
+compatibility shim that re-exports the gateway entrypoints for one release.
+New plugin overrides should target `@paperclipai/hermes-paperclip-adapter` and
+set the desired type key (`hermes_local` or `hermes_gateway`).
+
+### External (plugin) adapters
+
+These adapters ship as standalone npm packages and are installed via the plugin system:
+
+| Adapter | Package | Type Key | Description |
+|---------|---------|----------|-------------|
+| Droid | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+
+## External Adapters
+
+You can build and distribute adapters as standalone packages — no changes to Paperclip's source code required. External adapters are loaded at startup via the plugin system.
+
+```sh
+# Install from npm via API
+curl -X POST http://localhost:3102/api/adapters \
+  -d '{"packageName": "my-paperclip-adapter"}'
+
+# Or link from a local directory
+curl -X POST http://localhost:3102/api/adapters \
+  -d '{"localPath": "/home/user/my-adapter"}'
+```
+
+See [External Adapters](/adapters/external-adapters) for the full guide.
+
 ## Adapter Architecture
 
-Each adapter is a package with three modules:
+Each adapter is a package with modules consumed by three registries:
 
 ```
-packages/adapters/<name>/
+my-adapter/
   src/
     index.ts            # Shared metadata (type, label, models)
     server/
       execute.ts        # Core execution logic
       parse.ts          # Output parsing
       test.ts           # Environment diagnostics
-    ui/
-      parse-stdout.ts   # Stdout -> transcript entries for run viewer
-      build-config.ts   # Form values -> adapterConfig JSON
+    ui-parser.ts        # Self-contained UI transcript parser (for external adapters)
     cli/
       format-event.ts   # Terminal output for `paperclipai run --watch`
 ```
 
-Three registries consume these modules:
-
-| Registry | What it does |
-|----------|-------------|
-| **Server** | Executes agents, captures results |
-| **UI** | Renders run transcripts, provides config forms |
-| **CLI** | Formats terminal output for live watching |
+| Registry | What it does | Source |
+|----------|-------------|--------|
+| **Server** | Executes agents, captures results | `createServerAdapter()` from package root |
+| **UI** | Renders run transcripts, provides config forms | `ui-parser.js` (dynamic) or static import (built-in) |
+| **CLI** | Formats terminal output for live watching | Static import |
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `gemini_local`, or `opencode_local`
+- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
+- **Need the richest live run feedback?** Use `claude_local`, `codex_local`, or `gemini_local` with `adapterConfig.engine` set to `acp` when the execution environment satisfies the ACP prerequisites — see [Feedback granularity](#feedback-granularity)
+- **Need Hermes on another host or already running as a service?** Use `hermes_gateway`
 - **Need to run a script or command?** Use `process`
-- **Need to call an external service?** Use `http`
-- **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)
+- **Need to call a custom external service?** Use `http`
+- **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter) or [build an external adapter plugin](/adapters/external-adapters)
+
+## Feedback Granularity
+
+Adapter choice determines how much structured, live detail a run's transcript can show while the agent is still working. Every adapter's stdout is streamed to the run log and rendered live in the UI — including runs on sandbox execution targets, whose logs are tailed and delivered incrementally — but the *granularity* of what you see depends on the event stream the adapter emits.
+
+Rough tiers, richest first:
+
+1. **Native ACP engine (`claude_local`, `codex_local`, or `gemini_local` with `engine: "acp"`) — full structured event stream.** ACP emits a JSONL event per meaningful runtime moment: `acpx.session` (agent, mode, session identity), `acpx.status` (progress text plus context-window usage), `acpx.text_delta` (assistant/thinking token deltas), `acpx.tool_call` (tool title, call id, and status updates as the call progresses), `acpx.result` (stop reason summary), and `acpx.error` (code, message, retryability). The transcript renders these as live-updating message, thinking, tool, and status blocks, and repeated `acpx.tool_call` status updates fold into a single tool card instead of stacking duplicates.
+2. **CLI wrappers (`claude_local`, `codex_local`, `cursor`, `opencode_local`, …).** These parse each CLI's own streaming JSON output. You get assistant text, tool calls/results, and a final usage/cost summary, but granularity is limited to what the CLI prints — some emit tool progress, others only call/finish pairs.
+3. **Generic adapters (`process`, `http`).** Plain stdout/stderr lines with no structured transcript — you see raw output only.
+
+**Recommendation:** use the native ACP engine on `claude_local`, `codex_local`, or `gemini_local` when the selected execution environment supports it. Rich ACP status events (including context usage) and incremental tool-call updates give the closest thing to watching the agent work locally.
+
+## UI Parser Contract
+
+External adapters can ship a self-contained UI parser that tells the Paperclip web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.

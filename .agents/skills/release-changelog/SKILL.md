@@ -23,6 +23,8 @@ intended release date (UTC) plus the next same-day stable patch slot.
 Output:
 
 - `releases/vYYYY.MDD.P.md`
+- a `release` Case, upserted by `(caseType, key)` when Cases are enabled, with a
+  `body` document revision containing the changelog body
 
 Important rules:
 
@@ -30,13 +32,56 @@ Important rules:
 - do not derive versions from semver bump types
 - do not create canary changelog files
 
+## Channel Process — Source Commit and File Location
+
+Stables promote a **soaked beta**, so the changelog describes the beta's
+source commit, not the tip of `master`:
+
+- The release **source** is the commit the newest `beta/v<beta-version>`
+  tag points at (`{beta-src}` below). Resolve it with:
+
+  ```bash
+  git fetch origin --tags
+  npm view paperclipai dist-tags   # the beta dist-tag names the version
+  git rev-parse 'beta/v{beta-version}^{commit}'
+  ```
+
+- Commits on `master` after `{beta-src}` ship in the **next** release.
+  Never include them; they are input for a "what's next" section, not the
+  changelog.
+- During the soak, the file lives at `releases/beta/v{beta-version}.md`
+  on the branch `release-notes/v{beta-version}` (PR to `master`). The
+  release workflow pushes that branch with a generated skeleton when the
+  beta publishes; work on it and rewrite the skeleton in place. If the
+  branch does not exist (a beta cut before the automation), create it
+  from `origin/master` and seed the skeleton:
+
+  ```bash
+  ./scripts/draft-stable-notes.sh {beta-version}
+  ```
+
+- The PR must merge to `master` **before** the stable is dispatched: the
+  stable preflight reads the file from `master` and fails without it.
+- Never create `releases/vYYYY.MDD.P.md` yourself on this path — after
+  the stable ships, the workflow opens a canonicalization PR that renames
+  the beta-keyed file to it.
+- **Fix path exception** (patch releases from a `candidate/release-*`
+  branch): there the notes *do* go directly on the candidate branch as
+  `releases/vYYYY.MDD.P.md`, committed alongside the cherry-picked fixes.
+
 ## Step 0 — Idempotency Check
 
-Before generating anything, check whether the file already exists:
+Before generating anything, check whether the changelog already exists:
 
 ```bash
-ls releases/vYYYY.MDD.P.md 2>/dev/null
+ls releases/beta/v{beta-version}.md 2>/dev/null   # soak-window home
+ls releases/vYYYY.MDD.P.md 2>/dev/null            # canonicalized / fix path
+git ls-remote origin 'refs/heads/release-notes/v{beta-version}'
 ```
+
+A `release-notes/v{beta-version}` branch holding only the generated
+skeleton is the normal starting state, not a conflict — rewrite it in
+place.
 
 If it exists:
 
@@ -47,12 +92,16 @@ If it exists:
 
 ## Step 1 — Determine the Stable Range
 
-Find the last stable tag:
+Find the last stable tag and the beta source commit:
 
 ```bash
 git tag --list 'v*' --sort=-version:refname | head -1
-git log v{last}..HEAD --oneline --no-merges
+beta_src="$(git rev-parse 'beta/v{beta-version}^{commit}')"
+git log v{last}..${beta_src} --oneline --no-merges
 ```
+
+The changelog range is always `v{last}..{beta-src}` — never `..HEAD` and
+never `..origin/master`.
 
 The stable version comes from one of:
 
@@ -74,8 +123,8 @@ Collect release data from:
 Useful commands:
 
 ```bash
-git log v{last}..HEAD --oneline --no-merges
-git log v{last}..HEAD --format="%H %s" --no-merges
+git log v{last}..{beta-src} --oneline --no-merges
+git log v{last}..{beta-src} --format="%H %s" --no-merges
 ls .changeset/*.md | grep -v README.md
 gh pr list --state merged --search "merged:>={last-tag-date}" --json number,title,body,labels
 ```
@@ -92,10 +141,10 @@ Look for:
 Key commands:
 
 ```bash
-git diff --name-only v{last}..HEAD -- packages/db/src/migrations/
-git diff v{last}..HEAD -- packages/db/src/schema/
-git diff v{last}..HEAD -- server/src/routes/ server/src/api/
-git log v{last}..HEAD --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
+git diff --name-only v{last}..{beta-src} -- packages/db/src/migrations/
+git diff v{last}..{beta-src} -- packages/db/src/schema/
+git diff v{last}..{beta-src} -- server/src/routes/ server/src/api/
+git log v{last}..{beta-src} --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
 ```
 
 If breaking changes are detected, flag them prominently — they must appear in the
@@ -119,6 +168,19 @@ Guidelines:
 - write from the user perspective
 - keep highlights short and concrete
 - spell out upgrade actions for breaking changes
+- **write at full stable depth from the first pass**: the beta-keyed
+  draft ships verbatim as the stable's notes, so the previous stable's
+  file is the density bar the moment the draft is first written — never
+  leave it at generated-skeleton density for the soak. The skeleton's
+  nested PR summaries are raw material to rewrite, not a format to keep.
+- **describe deltas, not repeats**: read the previous stable's notes
+  (`releases/v<last-stable>.md`) before writing. When they already
+  introduced a feature, this release's entry covers only what changed —
+  a default flip, a hardening, a completion — phrased against the prior
+  release ("last release introduced X; this release makes it the
+  default"), never re-describing the feature as if it debuted. A theme
+  that headlined the previous release does not headline again for
+  follow-through work; demote it to Improvements.
 
 ### Inline PR and contributor attribution
 
@@ -141,10 +203,22 @@ Rules:
 
 ## Step 5 — Write the File
 
+The **file path** is the beta-keyed one from the Channel Process section
+(`releases/beta/v{beta-version}.md`), but the **content** is titled with
+the planned stable version. Resolve it with
+`./scripts/release.sh stable --date {planned-promotion-date} --print-version`
+(promotion is normally the beta publish date plus the 3-day soak). If the
+promotion date slips, the version re-resolves at dispatch — the beta-keyed
+filename makes that harmless; refresh the title when it happens.
+
+The opening line of the changelog must be an H1 of the format `# Paperclip {version}`
+(no braces), e.g. `# Paperclip v2026.618.0`. Always include the `Paperclip ` prefix and
+the `v` on the version.
+
 Template:
 
 ```markdown
-# vYYYY.MDD.P
+# Paperclip vYYYY.MDD.P
 
 > Released: YYYY-MM-DD
 
@@ -171,22 +245,91 @@ The `Contributors` section should always be included. List every person who auth
 commits in the release range, @-mentioning them by their **GitHub username** (not their
 real name or email). To find GitHub usernames:
 
-1. Extract usernames from merge commit messages: `git log v{last}..HEAD --oneline --merges` — the branch prefix (e.g. `from username/branch`) gives the GitHub username.
+1. Extract usernames from merge commit messages: `git log v{last}..{beta-src} --oneline --merges` — the branch prefix (e.g. `from username/branch`) gives the GitHub username.
 2. For noreply emails like `user@users.noreply.github.com`, the username is the part before `@`.
 3. For contributors whose username is ambiguous, check `gh api users/{guess}` or the PR page.
 
 **Never expose contributor email addresses.** Use `@username` only.
 
-Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list. List contributors
-in alphabetical order by GitHub username (case-insensitive).
+Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list.
+Exclude specific folks from the list — the Contributors section credits
+community contributors only. The canonical exclusion list (keep it here;
+the Discord skill defers to it):
+`cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`,
+`nguyenm7`, `nickyleach`, `tonio-alucema`
+
+List contributors in alphabetical order by GitHub username (case-insensitive).
+
+If there are no contributors left after exclusions, then just skip this section and don't mention it.
+
+## Step 5b — Upsert The Release Case
+
+After writing `releases/vYYYY.MDD.P.md`, emit or refresh the top-level release
+case when the run has Paperclip API context. Use `skills/paperclip/references/cases.md`
+as the API contract. If the API returns `403 Cases are disabled`, report that
+Cases must be enabled and continue with the changelog file only.
+
+Request:
+
+```http
+POST /api/companies/:companyId/cases
+{
+  "caseType": "release",
+  "key": "paperclip-release:vYYYY.MDD.P",
+  "title": "Paperclip vYYYY.MDD.P release",
+  "summary": "Stable Paperclip release notes for vYYYY.MDD.P.",
+  "status": "in_progress",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "release_date": "YYYY-MM-DD",
+    "release_patch": 0,
+    "stable": true,
+    "channels": ["changelog", "blog_post", "tweet_storm"],
+    "artifacts": {
+      "changelog_path": "releases/vYYYY.MDD.P.md",
+      "github_release_url": null
+    },
+    "verification": {
+      "typecheck": "unknown",
+      "tests": "unknown",
+      "build": "unknown",
+      "smoke": "unknown"
+    },
+    "notes": null
+  }
+}
+```
+
+This fields schema deliberately exercises every generic field value type:
+string, number, boolean, array, object, and null. Keep the keys stable across
+runs and send the full object on every upsert because fields are replaced, not
+deep-merged.
+
+Then write the changelog into the case body document:
+
+```http
+PUT /api/cases/:releaseCaseId/documents/body
+{
+  "title": "Paperclip vYYYY.MDD.P changelog",
+  "format": "markdown",
+  "body": "<contents of releases/vYYYY.MDD.P.md>",
+  "changeSummary": "Initial stable changelog"
+}
+```
+
+If updating an existing body document, fetch the case first and pass the latest
+`baseRevisionId`. On `409 stale_base_revision`, refetch, merge intentionally,
+and retry once.
 
 ## Step 6 — Review Before Release
 
 Before handing it off:
 
-1. confirm the heading is the stable version only
+1. confirm the H1 heading is `# Paperclip {version}` (e.g. `# Paperclip v2026.618.0`) with the stable version only
 2. confirm there is no `-canary` language in the title or filename
 3. confirm any breaking changes have an upgrade path
-4. present the draft for human sign-off
+4. confirm the `release` case exists or explain why Cases were unavailable
+5. present the draft for human sign-off
 
 This skill never publishes anything. It only prepares the stable changelog artifact.

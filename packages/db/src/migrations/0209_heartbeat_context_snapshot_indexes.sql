@@ -1,0 +1,4 @@
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_ctx_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id", ("context_snapshot" ->> 'issueId'), "created_at" DESC);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_ctx_task_created_idx" ON "heartbeat_runs" USING btree ("company_id", ("context_snapshot" ->> 'taskId'), "created_at" DESC);--> statement-breakpoint
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable. This expression index removes per-issue full scans of agent_wakeup_requests in recovery sweeps (hasActiveExecutionPath), which currently dominate server load; the one-time build lock is the lesser cost.
+CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_company_payload_issue_idx" ON "agent_wakeup_requests" USING btree ("company_id", ("payload" ->> 'issueId'));
