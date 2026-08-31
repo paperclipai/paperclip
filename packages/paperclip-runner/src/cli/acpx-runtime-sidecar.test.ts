@@ -16,6 +16,7 @@ import {
   readSidecarHostStatusWithin,
   recoverAndCombineSidecarHostCleanup,
   recoverSidecarHostCleanup,
+  reportAuthoritativeSidecarHostCleanupFailure,
   requireSidecarCommandHost,
   verifyOpenedAcpxSidecarHost,
 } from "./acpx-sidecar-lifecycle.js";
@@ -279,6 +280,60 @@ describe("Codex ACPX runtime sidecar", () => {
         Promise.resolve(),
       ]),
     ).resolves.toBeUndefined();
+  });
+
+  it("does not escalate a superseded cleanup owner failure", async () => {
+    let rejectOlder!: (error: unknown) => void;
+    const older = new Promise<void>((_resolve, reject) => {
+      rejectOlder = reject;
+    });
+    const replacement = combineSidecarHostCleanups([
+      older,
+      Promise.resolve(),
+    ]);
+    const reportFailure = vi.fn();
+    void older.catch((error: unknown) => {
+      reportAuthoritativeSidecarHostCleanupFailure(
+        false,
+        replacement,
+        older,
+        error,
+        reportFailure,
+      );
+    });
+
+    rejectOlder(new Error("older recovery exhausted"));
+    await expect(replacement).resolves.toBeUndefined();
+    expect(reportFailure).not.toHaveBeenCalled();
+  });
+
+  it("escalates only an authoritative cleanup owner's terminal failure", async () => {
+    const owner = combineSidecarHostCleanups([
+      Promise.reject(new Error("older recovery exhausted")),
+      Promise.reject(new Error("replacement recovery exhausted")),
+    ]);
+    const reportFailure = vi.fn();
+
+    await owner.catch((error: unknown) => {
+      reportAuthoritativeSidecarHostCleanupFailure(
+        false,
+        owner,
+        owner,
+        error,
+        reportFailure,
+      );
+    });
+    expect(reportFailure).toHaveBeenCalledOnce();
+    expect(reportFailure.mock.calls[0]?.[0]).toBeInstanceOf(AggregateError);
+
+    reportAuthoritativeSidecarHostCleanupFailure(
+      true,
+      owner,
+      owner,
+      new Error("shutdown cleanup failed"),
+      reportFailure,
+    );
+    expect(reportFailure).toHaveBeenCalledOnce();
   });
 
   it("bounds status verification before cleaning up the opened host", async () => {

@@ -59,6 +59,7 @@ import {
   parseAcpxRunAttachment,
   readSidecarHostStatusWithin,
   recoverAndCombineSidecarHostCleanup,
+  reportAuthoritativeSidecarHostCleanupFailure,
   requireSidecarCommandHost,
   verifyOpenedAcpxSidecarHost,
 } from "./acpx-sidecar-lifecycle.js";
@@ -1126,10 +1127,19 @@ function retainActiveHostCleanup(
         }
       },
       (error: unknown) => {
-        if (!closing) {
-          diagnostic("active_host_cleanup_failed", safeMessage(error));
-          requestShutdown("ACPX active-host cleanup could not recover");
-        }
+        reportAuthoritativeSidecarHostCleanupFailure(
+          closing,
+          activeHostCleanup,
+          retained,
+          error,
+          (authoritativeError) => {
+            diagnostic(
+              "active_host_cleanup_failed",
+              safeMessage(authoritativeError),
+            );
+            requestShutdown("ACPX active-host cleanup could not recover");
+          },
+        );
       },
     )
     .finally(() => {

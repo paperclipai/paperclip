@@ -134,6 +134,16 @@ export function recoverAndCombineSidecarHostCleanup(
     : recovered;
 }
 
+export function reportAuthoritativeSidecarHostCleanupFailure(
+  closing: boolean,
+  activeCleanup: Promise<void> | null,
+  failedCleanup: Promise<void>,
+  error: unknown,
+  reportFailure: (error: unknown) => void,
+): void {
+  if (!closing && activeCleanup === failedCleanup) reportFailure(error);
+}
+
 export async function closeActiveSidecarHostWithin(
   host: Pick<OpenedAcpxSidecarHost, "close">,
   reason: string,
