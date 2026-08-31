@@ -3689,6 +3689,48 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("exposes managed Google methods only for profiles signed for this enrolled instance", async () => {
+    const company = await createCompany(db);
+    const userId = `gallery-pilot-${randomUUID()}`;
+    const pilotConnector = fakeGoogleWorkspaceConnector(company.id, userId, "gmail.read");
+    const nonPilotConnector: PaperclipCloudConnector = {
+      ...pilotConnector,
+      getCapabilities: vi.fn(async () => []),
+    };
+
+    const nonPilot = await request(createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner", userId),
+      undefined,
+      { paperclipCloudConnector: nonPilotConnector },
+    )).get(`/api/companies/${company.id}/tools/gallery`);
+    expect(nonPilot.status).toBe(200);
+    const nonPilotGmail = nonPilot.body.apps.find((app: { slug: string }) => app.slug === "gmail");
+    expect(nonPilotGmail.ownershipAvailability.platform_shared).toBe(false);
+    expect(nonPilotGmail.methods.some((method: { oauthStrategy?: string }) =>
+      method.oauthStrategy === "paperclip_cloud_connector"
+    )).toBe(false);
+    expect(nonPilotGmail.methods.map((method: { key: string }) => method.key)).toEqual([
+      "customer-read-oauth",
+      "customer-draft-oauth",
+    ]);
+
+    const pilot = await request(createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner", userId),
+      undefined,
+      { paperclipCloudConnector: pilotConnector },
+    )).get(`/api/companies/${company.id}/tools/gallery`);
+    expect(pilot.status).toBe(200);
+    const pilotGmail = pilot.body.apps.find((app: { slug: string }) => app.slug === "gmail");
+    expect(pilotGmail.ownershipAvailability.platform_shared).toBe(true);
+    expect(pilotGmail.methods.map((method: { key: string }) => method.key)).toEqual([
+      "paperclip-read",
+      "customer-read-oauth",
+      "customer-draft-oauth",
+    ]);
+  });
+
   it("preflights only public Jira metadata without credentials or OAuth registration", async () => {
     const requests: Array<{ url: string; method: string; hasAuthorization: boolean }> = [];
     const service = createTestToolAccessService(db, {

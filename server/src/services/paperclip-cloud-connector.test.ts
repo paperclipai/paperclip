@@ -152,16 +152,46 @@ describe("Paperclip Cloud connector", () => {
 
   it("accepts only the current capability protocol and known profiles", async () => {
     const keys = config();
-    const request = vi.fn(async () => Response.json({
-      providers: [{ key: "google", profiles: [
-        { key: "gmail.read", enabled: true },
-        { key: "drive.write", enabled: true },
-        { key: "unknown.profile", enabled: true },
-        { key: "gmail.draft", enabled: false },
-      ] }],
-    }));
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { request: string };
+      const [, encodedClaims] = body.request.split(".");
+      const claims = JSON.parse(Buffer.from(encodedClaims!, "base64url").toString("utf8"));
+      expect(claims).toMatchObject({
+        iss: instanceId,
+        aud: "https://my.example.test/v1/connector/instance-status",
+        sub: "instance-capabilities",
+        cid: "instance-capabilities",
+        env: "staging",
+        op: "status",
+      });
+      expect(claims).not.toHaveProperty("prv");
+      expect(claims).not.toHaveProperty("prf");
+      expect(claims).not.toHaveProperty("scp");
+      return Response.json({
+        active: true,
+        status: "active",
+        profiles: ["gmail.read", "drive.write", "unknown.profile", "gmail.read"],
+      });
+    });
     const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
     await expect(connector.getCapabilities()).resolves.toEqual(["gmail.read", "drive.write"]);
+  });
+
+  it("fails capability discovery closed for inactive, legacy, malformed, or rejected status responses", async () => {
+    const keys = config();
+    const responses = [
+      Response.json({ active: false, status: "suspended", profiles: ["gmail.read"] }),
+      Response.json({ active: true, status: "active" }),
+      Response.json({ active: true, status: "active", profiles: "gmail.read" }),
+      new Response("detail must not escape", { status: 403 }),
+    ];
+    for (const response of responses) {
+      const connector = createPaperclipCloudConnector({
+        config: keys.config,
+        request: vi.fn(async () => response) as typeof fetch,
+      });
+      await expect(connector.getCapabilities()).resolves.toEqual([]);
+    }
   });
 
   it("checks Cloud enrollment status with an instance-only signed request", async () => {

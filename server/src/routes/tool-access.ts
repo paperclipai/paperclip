@@ -683,7 +683,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const googleConnectorProfiles = new Set(await paperclipCloudConnectorCapabilitiesFromEnv());
+    const advertisedProfiles = options.paperclipCloudConnector === undefined
+      ? await paperclipCloudConnectorCapabilitiesFromEnv()
+      : options.paperclipCloudConnector
+        ? await options.paperclipCloudConnector.getCapabilities()
+        : [];
+    const googleConnectorProfiles = new Set(advertisedProfiles);
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
