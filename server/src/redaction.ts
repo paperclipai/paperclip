@@ -51,6 +51,8 @@ const CONNECTION_STRING_RE =
 const AUTHORIZATION_HEADER_RE = /(\bAuthorization\s*:\s*)[^\r\n]+/gi;
 const GITHUB_FINE_GRAINED_TOKEN_RE = /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g;
 const COOLIFY_TOKEN_RE = /\bops_[A-Za-z0-9_-]{12,}\b/g;
+const COOLIFY_NUMERIC_TOKEN_RE = /\b\d+\|[A-Za-z0-9_-]{12,}\b/g;
+const COOLIFY_NUMERIC_TOKEN_HINT_RE = /\b\d+\|[A-Za-z0-9_-]{12,}\b/;
 const TAILNET_AUTH_KEY_RE = /\btskey-[A-Za-z0-9_-]{12,}\b/g;
 const SECRET_SHAPED_VALUE_RE = /[A-Za-z0-9+/_=-]{32,}/g;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -90,7 +92,9 @@ export const REDACTED_UNCLASSIFIED_COMMENT_VALUE =
 
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
-  return SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) || input.includes(".");
+  return SECRET_TEXT_HINTS.some((hint) => lower.includes(hint))
+    || input.includes(".")
+    || COOLIFY_NUMERIC_TOKEN_HINT_RE.test(input);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -203,6 +207,7 @@ export function redactSensitiveText(input: string): string {
       .replace(CONNECTION_STRING_RE, REDACTED_EVENT_VALUE)
       .replace(GITHUB_FINE_GRAINED_TOKEN_RE, REDACTED_EVENT_VALUE)
       .replace(COOLIFY_TOKEN_RE, REDACTED_EVENT_VALUE)
+      .replace(COOLIFY_NUMERIC_TOKEN_RE, REDACTED_EVENT_VALUE)
       .replace(TAILNET_AUTH_KEY_RE, REDACTED_EVENT_VALUE),
     REDACTED_EVENT_VALUE,
   );

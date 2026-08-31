@@ -7017,11 +7017,13 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
   it("sanitizes synthetic infrastructure output at the single comment persistence boundary", async () => {
     const encodedConfig =
       "c2VydmljZXM6CiAgYXBwOgogICAgZW52aXJvbm1lbnQ6CiAgICAtIERBVEFCQVNFX1VSTD1wb3N0Z3JlczovL3VzZXI6cGFzc0BkYi9hcHA=";
+    const coolifyToken = "67|abcthisisa123dummytoken";
     const body = [
       "App: synthetic-app",
       "Status: running",
       "FQDN: https://synthetic.example.test",
       'raw inventory: {"manual_webhook_secret":"synthetic-webhook-value"}',
+      `Coolify token: ${coolifyToken}`,
       `encoded configuration: ${encodedConfig}`,
       "HTTP: 200 in 42ms",
       "Last deploy: succeeded",
@@ -7041,6 +7043,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     expect(persisted).toContain("Last deploy: succeeded");
     expect(persisted).toContain(REDACTED_UNCLASSIFIED_COMMENT_VALUE);
     expect(persisted).not.toContain("synthetic-webhook-value");
+    expect(persisted).not.toContain(coolifyToken);
     expect(persisted).not.toContain(encodedConfig);
   });
 });

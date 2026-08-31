@@ -160,6 +160,7 @@ describe("redaction", () => {
       "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
       "github_pat_11AA22BB33CC44DD55EE66FF77GG88HH",
       "ops_11AA22BB33CC44DD55EE66FF",
+      "67|abcthisisa123dummytoken",
       "tskey-auth-11AA22BB33CC44DD55EE66FF",
       "PRIVATE_KEY=synthetic-private-key-value",
       "CREDENTIAL=synthetic-credential-value",
@@ -172,6 +173,12 @@ describe("redaction", () => {
       const secretPart = value.includes("=") ? value.split("=").at(-1)! : value;
       expect(result).not.toContain(secretPart);
     }
+  });
+
+  it("redacts a documented Coolify numeric API token without relying on context", () => {
+    const token = "67|abcthisisa123dummytoken";
+
+    expect(sanitizeIssueCommentBody(token)).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("fails closed on an unclassified secret-shaped line", () => {
