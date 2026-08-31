@@ -2105,7 +2105,7 @@ export function agentRoutes(
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
-      { entryFile: input?.entryFile ?? "AGENTS.md", replaceExisting: false },
+      { entryFile: input?.entryFile ?? "AGENTS.md" },
     );
     const nextAdapterConfig = { ...materialized.adapterConfig };
     delete nextAdapterConfig.promptTemplate;

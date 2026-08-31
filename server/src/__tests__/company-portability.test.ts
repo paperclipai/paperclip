@@ -467,6 +467,19 @@ describe("company portability", () => {
         instructionsEntryFile: "AGENTS.md",
         instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
       },
+      materialization: {
+        stockStatus: "missing",
+        action: "added",
+        stockHash: "sha256:stock",
+        previousHash: null,
+        recordedStockHash: null,
+        added: ["AGENTS.md"],
+        removed: [],
+        updated: [],
+        skipped: [],
+        backedUp: [],
+        backupPath: null,
+      },
     }));
   });
 
@@ -3625,7 +3638,6 @@ describe("company portability", () => {
       }),
       expect.objectContaining({
         clearLegacyPromptTemplate: true,
-        replaceExisting: true,
       }),
     );
     const materializedFiles = agentInstructionsSvc.materializeManagedBundle.mock.calls[0]?.[1] as Record<string, string>;
@@ -5665,6 +5677,15 @@ describe("company portability", () => {
       },
     });
 
+    agentSvc.list.mockResolvedValue([{
+      id: "agent-1",
+      name: "ClaudeCoder",
+      status: "idle",
+      adapterConfig: {
+        instructionsStockHash: "sha256:previous-stock",
+      },
+    }]);
+
     secretSvc.normalizeAdapterConfigForPersistence.mockResolvedValueOnce({
       normalized: "updated",
     });
@@ -5674,8 +5695,32 @@ describe("company portability", () => {
       adapterType: patch.adapterType,
       adapterConfig: patch.adapterConfig,
     }));
+    agentInstructionsSvc.materializeManagedBundle.mockImplementationOnce(async (agent: { id: string; adapterConfig: Record<string, unknown> }) => ({
+      bundle: null,
+      adapterConfig: {
+        ...agent.adapterConfig,
+        instructionsBundleMode: "managed",
+        instructionsRootPath: `/tmp/${agent.id}`,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
+        instructionsStockHash: "sha256:previous-stock",
+      },
+      materialization: {
+        stockStatus: "operator_modified",
+        action: "skipped",
+        stockHash: "sha256:imported-stock",
+        previousHash: "sha256:operator-tree",
+        recordedStockHash: "sha256:previous-stock",
+        added: [],
+        removed: ["OPERATOR.md"],
+        updated: ["AGENTS.md"],
+        skipped: ["AGENTS.md", "OPERATOR.md"],
+        backedUp: [],
+        backupPath: null,
+      },
+    }));
 
-    await portability.importBundle({
+    const result = await portability.importBundle({
       source: {
         type: "inline",
         rootPath: exported.rootPath,
@@ -5715,8 +5760,22 @@ describe("company portability", () => {
       adapterType: "codex_local",
       adapterConfig: {
         normalized: "updated",
+        instructionsStockHash: "sha256:previous-stock",
       },
     }));
+    expect(agentInstructionsSvc.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "agent-1",
+        adapterConfig: expect.objectContaining({
+          instructionsStockHash: "sha256:previous-stock",
+        }),
+      }),
+      expect.any(Object),
+      { clearLegacyPromptTemplate: true },
+    );
+    expect(result.warnings).toContain(
+      "Preserved operator-modified instructions bundle for claudecoder; imported stock files were skipped.",
+    );
   });
 
   it("nameOverrides applied after collision detection do not re-validate uniqueness", async () => {
