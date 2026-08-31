@@ -628,13 +628,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toResult(initial);
   } finally {
-    await Promise.all([
-      restoreRemoteWorkspace?.(),
-      stagedAssets.cleanup(),
-    ]);
-    // Remove the staged GROK_HOME allowlist temp dir on every exit path
-    // (teardown AND error), never only the happy path. Cleanup failure is
-    // logged, not fatal — a leaked temp dir must not crash the run.
+    // Remove the staged GROK_HOME allowlist temp dir first, before the
+    // `Promise.all` below. A rejecting member of that `Promise.all` (for
+    // example a failed workspace restore) throws out of this `finally` and
+    // skips every statement after it, so the removal must run before that
+    // await to hold on every exit path (teardown AND error), never only the
+    // happy path. Cleanup failure is logged, not fatal — a leaked temp dir
+    // must not crash the run.
     if (stagedGrokHomeDir) {
       await fs.rm(stagedGrokHomeDir, { recursive: true, force: true }).catch(async (error) => {
         await onLog(
@@ -645,5 +645,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       });
     }
+    await Promise.all([
+      restoreRemoteWorkspace?.(),
+      stagedAssets.cleanup(),
+    ]);
   }
 }

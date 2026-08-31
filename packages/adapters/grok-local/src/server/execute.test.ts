@@ -538,5 +538,30 @@ describe("grok_local execute", () => {
       expect(stagedDir).not.toBe("");
       expect(await pathExists(stagedDir)).toBe(false);
     });
+
+    it("removes the staged home when the workspace restore rejects during teardown", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      let stagedDir = "";
+      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      prepareRuntimeMock.mockImplementationOnce(async (input: { assets?: Array<{ localDir: string }> }) => {
+        stagedDir = input.assets?.[0]?.localDir ?? "";
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: async () => {
+            throw new Error("restore failed");
+          },
+        };
+      });
+
+      await expect(execute(await makeCtx("run-remote-teardown-restore-reject", await makeTempRoot()))).rejects.toThrow(
+        "restore failed",
+      );
+
+      expect(stagedDir).not.toBe("");
+      expect(await pathExists(stagedDir)).toBe(false);
+    });
   });
 });
