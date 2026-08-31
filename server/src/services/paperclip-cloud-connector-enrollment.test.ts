@@ -131,6 +131,7 @@ describe("Paperclip Cloud self-host enrollment", () => {
     const values = {
       origin: "https://private.example.test",
       companyId: "company-test",
+      initiatedBy: "user:admin-test",
       env: {
         PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://my.example.test",
         PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "development",
@@ -150,7 +151,13 @@ describe("Paperclip Cloud self-host enrollment", () => {
     expect(loadPaperclipCloudConnectorIdentity()?.pending).toMatchObject({
       enrollmentId: "enroll-shared",
       companyId: "company-test",
+      initiatedBy: "user:admin-test",
     });
+    await expect(startPaperclipCloudConnectorEnrollment({
+      ...values,
+      initiatedBy: "user:another-admin",
+    })).rejects.toThrow(/another administrator/);
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it("defaults an enrollment to the environment of the standard Cloud broker", () => {

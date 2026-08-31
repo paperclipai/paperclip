@@ -47,7 +47,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
@@ -345,9 +345,13 @@ export function toolAccessRoutes(
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
     return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
-  }
+}
 
-  /**
+function connectorEnrollmentPrincipal(req: Request): string {
+  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+}
+
+/**
    * A failed first authorization is still an incomplete setup, not an app
    * configuration task. Send it back to the same exact draft so the operator
    * can retry the missing checkpoint. Reauthorization of an already-active
@@ -841,7 +845,7 @@ export function toolAccessRoutes(
   });
 
   router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : "";
     if (!companyId) throw badRequest("Paperclip Cloud enrollment requires a company");
     assertCompanyAccess(req, companyId);
@@ -851,6 +855,7 @@ export function toolAccessRoutes(
       status = await startPaperclipCloudConnectorEnrollment({
         origin,
         companyId,
+        initiatedBy: connectorEnrollmentPrincipal(req),
         label: typeof req.body?.label === "string" ? req.body.label : undefined,
       });
     } catch {
@@ -871,13 +876,16 @@ export function toolAccessRoutes(
   });
 
   router.get("/tools/oauth/cloud-connector/enrollment-callback", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const enrollmentId = typeof req.query.enrollment_id === "string" ? req.query.enrollment_id : "";
     const approvalCode = typeof req.query.approval_code === "string" ? req.query.approval_code : "";
     const state = typeof req.query.state === "string" ? req.query.state : "";
     if (!enrollmentId || !approvalCode || !state) throw badRequest("Invalid Paperclip Cloud enrollment callback");
     const pending = loadPaperclipCloudConnectorIdentity()?.pending;
     if (pending?.companyId && !hasCompanyAccess(req, pending.companyId)) {
+      throw notFound("Paperclip Cloud enrollment not found");
+    }
+    if (pending?.initiatedBy && pending.initiatedBy !== connectorEnrollmentPrincipal(req)) {
       throw notFound("Paperclip Cloud enrollment not found");
     }
     let status;

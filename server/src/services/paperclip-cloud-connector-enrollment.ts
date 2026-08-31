@@ -24,6 +24,7 @@ type PendingEnrollment = {
   origin: string;
   expiresAt: string;
   companyId?: string;
+  initiatedBy?: string;
 };
 
 export type PaperclipCloudConnectorIdentity = {
@@ -114,6 +115,7 @@ export async function startPaperclipCloudConnectorEnrollment(input: {
   origin: string;
   label?: string;
   companyId?: string;
+  initiatedBy?: string;
   env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
@@ -124,6 +126,7 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
   origin: string;
   label?: string;
   companyId?: string;
+  initiatedBy?: string;
   env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
@@ -134,6 +137,9 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
   if (identity.status === "pending" && identity.pending && Date.parse(identity.pending.expiresAt) > Date.now()) {
     if (identity.pending.origin !== origin) {
       throw new Error("Paperclip Cloud enrollment is already pending for another origin");
+    }
+    if (input.initiatedBy && identity.pending.initiatedBy && identity.pending.initiatedBy !== input.initiatedBy) {
+      throw new Error("Paperclip Cloud enrollment is already pending for another administrator");
     }
     return paperclipCloudConnectorEnrollmentStatus(env);
   }
@@ -172,6 +178,7 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
       origin,
       expiresAt: body.expiresAt,
       ...(input.companyId ? { companyId: input.companyId } : {}),
+      ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
     },
   };
   saveIdentity(identity);

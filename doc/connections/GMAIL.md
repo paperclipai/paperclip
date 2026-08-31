@@ -226,8 +226,10 @@ Before an instance can create a session:
    key. Both private keys stay local; Ed25519 authenticates requests and
    X25519 lets Paperclip Cloud encrypt token responses that only the instance can
    open.
-2. An operator signs in to Paperclip Cloud through its existing Paperclip ID
-   OIDC login and enrolls the instance.
+2. An instance administrator signs in to Paperclip Cloud through its existing
+   Paperclip ID OIDC login and enrolls the instance. Enrollment is
+   instance-global: ordinary company membership cannot start it, and the
+   initiating administrator must complete the return callback.
 3. Paperclip Cloud binds the account, opaque instance id, both public keys,
    deployment environment, and exact allowed browser return origins.
 4. Tailscale HTTPS origins are allowed only when explicitly enrolled. Loopback
