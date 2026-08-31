@@ -16,10 +16,12 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issueRelations,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  labels,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -114,7 +116,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.delete(issueComments);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(issueLabels);
     await db.delete(issueRelations);
+    await db.delete(labels);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -372,6 +376,81 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(0);
+  });
+
+  it.each([
+    { blockerAssigneeAgentId: null, state: "blocked_by_unassigned_issue" },
+    { blockerAssigneeAgentId: "manager" as const, state: "blocked_by_assigned_backlog_issue" },
+  ])("suppresses $state after hydrating the parked-v1 issue label", async ({
+    blockerAssigneeAgentId,
+  }) => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId,
+    });
+    const [parkedLabel] = await db.insert(labels).values({
+      companyId,
+      name: "parked",
+      color: "#64748b",
+    }).returning({ id: labels.id });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: parkedLabel!.id });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(await db.select().from(issues).where(eq(issues.originKind, "harness_liveness_escalation")))
+      .toHaveLength(0);
+    expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.id, blockedIssueId)))
+      .toEqual([{ id: blockedIssueId, status: "blocked" }]);
+    expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.id, blockerIssueId)))
+      .toEqual([{ id: blockerIssueId, status: "backlog" }]);
+    expect(await db.select().from(issueRelations).where(and(
+      eq(issueRelations.issueId, blockerIssueId),
+      eq(issueRelations.relatedIssueId, blockedIssueId),
+    ))).toHaveLength(1);
+  });
+
+  it.each([
+    { blockerAssigneeAgentId: null, state: "blocked_by_unassigned_issue" },
+    { blockerAssigneeAgentId: "manager" as const, state: "blocked_by_assigned_backlog_issue" },
+  ])("restores the original parked backlog finding and reconciliation when the flag is exactly false for $state", async ({
+    blockerAssigneeAgentId,
+  }) => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId,
+    });
+    const [parkedLabel] = await db
+      .insert(labels)
+      .values({ companyId, name: "parked", color: "#64748b" })
+      .returning({ id: labels.id });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: parkedLabel!.id });
+    const previous = process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION;
+    process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION = "false";
+
+    try {
+      const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+      expect(result.findings).toBe(1);
+      expect(result.escalationsCreated).toBe(1);
+      expect(result.issueIds).toEqual([blockedIssueId]);
+      expect(await db.select().from(issues).where(eq(issues.originKind, "harness_liveness_escalation")))
+        .toHaveLength(1);
+      expect(await db.select().from(issueRelations).where(and(
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+      ))).toHaveLength(1);
+      expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, blockedIssueId)))
+        .toEqual([{ status: "blocked" }]);
+      expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, blockerIssueId)))
+        .toEqual([{ status: "backlog" }]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION;
+      else process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION = previous;
+    }
   });
 
   it("runs exactly one bounded review-path recovery before surfacing a stalled decision", async () => {
