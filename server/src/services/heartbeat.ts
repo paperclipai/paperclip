@@ -187,6 +187,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { executionWorkspaceLifecycleService } from "./execution-workspace-lifecycle.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import {
@@ -7044,6 +7045,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
@@ -15668,6 +15670,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cleanupReason: null,
       });
     }
+    // This run created a new shared session: archive the sessions of earlier runs on the
+    // same issue right away, otherwise they pile up one per run and are never closed.
+    if (issueId && persistedExecutionWorkspace?.mode === "shared_workspace") {
+      try {
+        await executionWorkspaceLifecycle.archiveSupersededSharedSessionsForIssue({
+          companyId: agent.companyId,
+          issueId,
+          keepWorkspaceId: persistedExecutionWorkspace.id,
+          actor: { actorType: "agent", actorId: agent.id, agentId: agent.id, runId: run.id },
+        });
+      } catch (error) {
+        logger.warn(
+          { err: error, issueId, executionWorkspaceId: persistedExecutionWorkspace.id },
+          "failed to archive superseded shared execution workspace sessions",
+        );
+      }
+    }
     if (issueId && persistedExecutionWorkspace) {
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
@@ -17597,6 +17616,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
+          const terminalIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          if (terminalIssueId) {
+            await executionWorkspaceLifecycle.finishDeferredCleanup({
+              issueId: terminalIssueId,
+              actor: {
+                actorType: "agent",
+                actorId: run.agentId,
+                agentId: run.agentId,
+                runId: run.id,
+              },
+            }).catch((err) => {
+              logger.warn(
+                { err, issueId: terminalIssueId, runId: run.id },
+                "failed to finish terminal issue execution workspace cleanup",
+              );
+            });
+          }
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
