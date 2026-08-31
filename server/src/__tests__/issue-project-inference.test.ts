@@ -23,6 +23,15 @@ describe("normalizeRepoIdentity", () => {
     );
   });
 
+  it("ignores the port so one repo folds together across transports", () => {
+    // A self-hosted repo is commonly https on the default port and ssh on a
+    // custom one. Those are the same repo and must match each other.
+    const expected = "git.example.com/team/service";
+    expect(normalizeRepoIdentity("https://git.example.com/team/service")).toBe(expected);
+    expect(normalizeRepoIdentity("https://git.example.com:8443/team/service")).toBe(expected);
+    expect(normalizeRepoIdentity("ssh://git@git.example.com:2222/team/service.git")).toBe(expected);
+  });
+
   it("rejects anything that is not an owner/repo remote", () => {
     expect(normalizeRepoIdentity("")).toBeNull();
     expect(normalizeRepoIdentity("   ")).toBeNull();
@@ -124,6 +133,21 @@ describe("matchProjectIdByRepoReference", () => {
   it("ignores workspaces that carry neither a repo nor a cwd", () => {
     expect(
       matchProjectIdByRepoReference({ text: "project-no-repo", workspaces }),
+    ).toBeNull();
+  });
+
+  it("reports two projects that collide on one port-less identity as ambiguous", () => {
+    // The flip side of folding ports away: two distinct repos on one host at
+    // one path, separated only by port, become indistinguishable. That is
+    // reported as ambiguous and yields no project — never the wrong one.
+    expect(
+      matchProjectIdByRepoReference({
+        text: "Broken by https://git.example.com:8443/team/service",
+        workspaces: [
+          { projectId: "project-a", repoUrl: "https://git.example.com:8443/team/service", cwd: null },
+          { projectId: "project-b", repoUrl: "https://git.example.com:9443/team/service", cwd: null },
+        ],
+      }),
     ).toBeNull();
   });
 

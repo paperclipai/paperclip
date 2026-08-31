@@ -70,6 +70,15 @@ function splitRemote(raw: string): { host: string; path: string } | null {
     try {
       const url = new URL(trimmed);
       if (!url.hostname) return null;
+      // `hostname`, not `host`: the port is deliberately dropped. One repo is
+      // routinely reachable over https on the default port and over ssh on a
+      // custom one, and those must fold onto the same identity or a plain
+      // remote in the text stops matching the workspace it names. The cost is
+      // that two *distinct* repos sharing a host and an owner/repo path but
+      // differing by port collapse together — a single host serving two git
+      // services at an identical path, which the match then reports as
+      // ambiguous and resolves to null. Both directions end at "no project",
+      // never at the wrong one.
       return { host: normalizeHost(url.hostname), path: url.pathname };
     } catch {
       return null;
