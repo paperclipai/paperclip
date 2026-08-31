@@ -271,7 +271,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     const removeItem = Storage.prototype.removeItem;
     const removeItemSpy = vi
       .spyOn(Storage.prototype, "removeItem")
-      .mockImplementation(function (key: string) {
+      .mockImplementation(function (this: Storage, key: string) {
         if (key === "paperclip-onboarding-state") handoffOrder.push("clear draft");
         return removeItem.call(this, key);
       });
