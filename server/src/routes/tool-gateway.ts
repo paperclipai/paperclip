@@ -204,7 +204,21 @@ async function handleMcpGatewayProtocol(
   } catch (err) {
     if (err instanceof ToolGatewayHttpError) {
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
-      res.status(err.status).json({
+      // HTTP 404 and 400 carry reserved meaning under the MCP Streamable HTTP
+      // transport spec ("session not found" / "server not initialized"), and
+      // spec-compliant clients (e.g. Claude Code) act on the raw HTTP status
+      // directly - reconnecting or reporting "session expired" - without
+      // reading the JSON-RPC body. This endpoint is a stateless bearer-token
+      // gateway with no mcp-session-id concept at all, so a ToolGatewayHttpError
+      // with one of those statuses (e.g. "tool not found", "invalid_parameters")
+      // is always an ordinary application-level failure here, never an actual
+      // dead session. Passing it through as a raw 404/400 made spec-compliant
+      // clients misreport routine tool errors (a bad tool name, missing args)
+      // as a broken session - confusing agents into abandoning otherwise-fine
+      // sessions. Surface those as a normal JSON-RPC error on HTTP 200 instead;
+      // genuine transport-auth failures (401/403) are unaffected.
+      const httpStatus = err.status === 404 || err.status === 400 ? 200 : err.status;
+      res.status(httpStatus).json({
         jsonrpc: "2.0",
         id,
         error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
