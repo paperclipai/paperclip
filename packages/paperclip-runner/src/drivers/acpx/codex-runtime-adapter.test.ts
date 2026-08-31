@@ -1388,11 +1388,11 @@ describe("Codex ACPX runtime adapter", () => {
         .catch(() => undefined);
     }
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
-    await vi.waitFor(() => expect(settledCleanups).toHaveSize(1));
+    await vi.waitFor(() => expect(settledCleanups.size).toBe(1));
     expect(runtime.close).toHaveBeenCalledTimes(5);
 
     rejectHandshake?.(new Error("test handshake stopped"));
-    await vi.waitFor(() => expect(settledCleanups).toHaveSize(3));
+    await vi.waitFor(() => expect(settledCleanups.size).toBe(3));
     await expect(Promise.all(retainedCleanups)).resolves.toBeDefined();
   });
 
