@@ -177,6 +177,10 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
+export function cloudConnectorEnrollmentReturnPath(issuePrefix: string): string {
+  return `/${encodeURIComponent(issuePrefix)}/apps/connections?cloud_connector=enrolled`;
+}
+
 export function toolAccessRoutes(
   db: Db,
   options: {
@@ -888,6 +892,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (pending?.initiatedBy && pending.initiatedBy !== connectorEnrollmentPrincipal(req)) {
       throw notFound("Paperclip Cloud enrollment not found");
     }
+    const [company] = pending?.companyId
+      ? await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, pending.companyId))
+        .limit(1)
+      : [];
+    if (!company) throw notFound("Paperclip Cloud enrollment not found");
     let status;
     try {
       status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
@@ -905,7 +917,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { environment: status.environment, status: status.status },
       });
     }
-    res.redirect(303, "/apps/connections?cloud_connector=enrolled");
+    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix));
   });
 
   const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {
