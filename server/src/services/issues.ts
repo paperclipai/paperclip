@@ -6655,6 +6655,32 @@ export function issueService(db: Db) {
         }));
     },
 
+    transitionResolvedBlockedDependentsToTodo: async (
+      dependentIssueIds: string[],
+      resolvedBlockerIssueId: string,
+      source: string,
+    ) => {
+      if (dependentIssueIds.length === 0) return [];
+      const transitioned: string[] = [];
+      const now = new Date();
+      for (const issueId of dependentIssueIds) {
+        const [updated] = await db
+          .update(issues)
+          .set({ status: "todo", updatedAt: now })
+          .where(and(eq(issues.id, issueId), eq(issues.status, "blocked")))
+          .returning({ id: issues.id, companyId: issues.companyId });
+        if (!updated) continue;
+        transitioned.push(issueId);
+        await db.insert(issueComments).values({
+          companyId: updated.companyId,
+          issueId,
+          authorType: "system",
+          body: `All blockers resolved — transitioned from blocked to todo. (source: ${source})`,
+        });
+      }
+      return transitioned;
+    },
+
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
       const parent = await db
         .select({
