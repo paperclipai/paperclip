@@ -35,6 +35,8 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
   const bundledDependencyNames = new Set(bundledDependencies);
   const installManifest = structuredClone(publishManifest);
 
+  delete installManifest.devDependencies;
+
   for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
     if (!installManifest[section]) continue;
     installManifest[section] = Object.fromEntries(
