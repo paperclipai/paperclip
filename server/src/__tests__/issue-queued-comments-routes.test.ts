@@ -10,6 +10,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await db.update(agentWakeupRequests).set({ runId: null }).catch(() => undefined);
     await db.delete(activityLog).catch(() => undefined);
     await db.delete(issueComments).catch(() => undefined);
+    await db.delete(heartbeatRunEvents).catch(() => undefined);
     await db.delete(heartbeatRuns).catch(() => undefined);
     await db.delete(agentWakeupRequests).catch(() => undefined);
     await db.delete(issues).catch(() => undefined);

@@ -291,6 +291,7 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
     const [newerDecision] = await db.insert(statusDecisions).values({
       companyId,
       issueId: staleIssueId,
+      runId: newerRunId,
       assessmentId: newerAssessment!.id,
       decisionVersion: 1,
       policyVersion: "phase6-v3",
