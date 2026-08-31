@@ -40,7 +40,7 @@ export type NativeRuntimeResolution =
       reason: "eligible_opt_in";
       profile: {
         mode: "native";
-        backend: "codex_app_server";
+        backend: "codex_app_server" | "opencode_server" | "acpx_runtime";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -127,12 +127,6 @@ export function resolveNativeRuntimeMode(input: {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
       "Paperclip Runner requires a standard, planning, or ask task.",
-    );
-  }
-  if (!input.target || input.target.kind !== "local") {
-    throw ineligible(
-      "paperclip_runner_environment_unsupported",
-      "Paperclip Runner currently requires a local execution environment.",
     );
   }
   const rollout = resolveNativeMigrationStatus({
@@ -267,13 +261,17 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
         );
       }
       const driverKind = input.persisted.driverKind;
-      const backend = driverKind === null
-        || driverKind === undefined
-        || driverKind === "codex"
-        || driverKind === "codex_app_server"
-        ? "codex_app_server"
-        : null;
-      if (!backend) {
+      const backend = driverKind === "opencode_server"
+        ? "opencode_server"
+        : driverKind === "acpx_runtime"
+          ? "acpx_runtime"
+          : driverKind === null
+              || driverKind === undefined
+              || driverKind === "codex"
+              || driverKind === "codex_app_server"
+            ? "codex_app_server"
+            : null;
+      if (backend === null) {
         throw ineligible(
           "paperclip_runner_driver_unsupported",
           `Persisted Paperclip Runner driver is unsupported: ${driverKind}`,

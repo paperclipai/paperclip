@@ -23,6 +23,7 @@ const SNAPSHOT: EffectiveExecutionCapabilities = {
   // inbound sync, so the opt-in stays off.
   concurrentSyncOperations: false,
   duplexCommandStream: false,
+  runnerWebSocketIngress: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
@@ -36,6 +37,7 @@ const FULL_GRANT: EffectiveExecutionCapabilities = {
   incrementalSessionOutput: true,
   concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed
@@ -196,6 +198,59 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
 
     expect(target?.kind).toBe("remote");
     expect(resolveCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("carries the environment-owned warm runner lifecycle and reuse requirement", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: FULL_GRANT,
+      supportsSync: false,
+      config: {
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        runnerIdleTimeoutMs: 45_000,
+      },
+    });
+
+    expect(target.runnerLifecyclePolicy).toEqual({
+      mode: "warm",
+      idleTimeoutMs: 45_000,
+    });
+    expect(target.reusableLeaseConfigured).toBe(true);
+  });
+
+  it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
+    });
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
+      leaseId: "lease-row-1",
+      leaseMetadata: {
+        remoteCwd: "/work",
+        sandboxLeaseAcquisition: { outcome: "resumed" },
+      },
+      lease: {
+        id: "lease-row-1",
+        providerLeaseId: "daytona-sandbox-1",
+        leasePolicy: "reuse_by_environment",
+        metadata: { sandboxLeaseAcquisition: { outcome: "resumed" } },
+      } as never,
+      environmentRuntime: {
+        supportsSync: () => false,
+        resolveCapabilities: vi.fn(async () => ({ ...FULL_GRANT })),
+      } as unknown as EnvironmentRuntimeService,
+    });
+    if (target?.kind !== "remote" || target.transport !== "sandbox") {
+      throw new Error("expected a sandbox target");
+    }
+    expect(target.sandboxLeaseAcquisition).toEqual({
+      outcome: "resumed",
+      providerLeaseId: "daytona-sandbox-1",
+    });
   });
 });
 

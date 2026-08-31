@@ -2965,6 +2965,7 @@ describe("sandbox adapter execution targets", () => {
       incrementalSessionOutput: false,
       concurrentSyncOperations: false,
       duplexCommandStream,
+      runnerWebSocketIngress: false,
     };
   }
 

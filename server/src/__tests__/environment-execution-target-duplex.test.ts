@@ -48,6 +48,7 @@ const DUPLEX_GRANT: EffectiveExecutionCapabilities = {
   incrementalSessionOutput: true,
   concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
 const DUPLEX_ABSENT: EffectiveExecutionCapabilities = {

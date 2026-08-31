@@ -75,6 +75,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   // off the host keeps the file bridge for every run with no manifest change and
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
+  enableRunnerPreviewIngress: z.boolean().default(false),
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),

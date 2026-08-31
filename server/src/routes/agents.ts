@@ -1690,6 +1690,18 @@ export function agentRoutes(
     );
   }
 
+  function assertProviderTraceSettingTransition(
+    req: Request,
+    nextRuntimeConfig: unknown,
+    previousRuntimeConfig?: unknown,
+  ): void {
+    const previousRaw =
+      asRecord(asRecord(previousRuntimeConfig)?.debug)?.providerTrace === "raw";
+    const nextRaw =
+      asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
+    if (previousRaw !== nextRaw) assertInstanceAdmin(req);
+  }
+
   async function assertAgentDefaultEnvironmentSelection(
     companyId: string,
     environmentId: string | null | undefined,
@@ -1783,19 +1795,6 @@ export function agentRoutes(
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
-  }
-
-  function assertCanPersistRawProviderTrace(
-    req: Request,
-    runtimeConfig: unknown,
-  ): void {
-    const debug = asRecord(asRecord(runtimeConfig)?.debug);
-    if (debug?.providerTrace === "raw") {
-      // Raw provider payloads can contain prompts, tool inputs, and provider
-      // metadata. Apply the same instance-admin boundary on every persistence
-      // path so create/hire cannot bypass the PATCH guard.
-      assertInstanceAdmin(req);
-    }
   }
 
   function asNonEmptyString(value: unknown): string | null {
@@ -3503,6 +3502,11 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    assertProviderTraceSettingTransition(
+      req,
+      rollbackConfig.runtimeConfig,
+      existing.runtimeConfig,
+    );
     const rollbackAdapterType = assertKnownAdapterType(
       typeof rollbackConfig.adapterType === "string"
         ? rollbackConfig.adapterType
@@ -3623,6 +3627,7 @@ export function agentRoutes(
     } = req.body;
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     assertFreshPaperclipRunnerProvider(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -3633,7 +3638,6 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    assertCanPersistRawProviderTrace(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3847,6 +3851,7 @@ export function agentRoutes(
     } = req.body;
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     assertFreshPaperclipRunnerProvider(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -3857,7 +3862,6 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
-    assertCanPersistRawProviderTrace(req, createInput.runtimeConfig);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -4301,7 +4305,11 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
-      assertCanPersistRawProviderTrace(req, runtimeConfig);
+      assertProviderTraceSettingTransition(
+        req,
+        runtimeConfig,
+        existing.runtimeConfig,
+      );
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =

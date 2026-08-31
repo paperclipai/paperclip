@@ -598,6 +598,65 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).toHaveBeenCalledOnce();
   });
 
+  it("rejects non-Codex providers on fresh paperclip_runner agents and hires", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const createResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Native OpenCode",
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "opencode" },
+        }),
+    );
+    const hireResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "Native ACPX",
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "acpx" },
+        }),
+    );
+
+    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(422);
+    expect(createResponse.body.details).toMatchObject({
+      code: "paperclip_runner_provider_unavailable",
+    });
+    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(422);
+    expect(hireResponse.body.details).toMatchObject({
+      code: "paperclip_runner_provider_unavailable",
+    });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects provider changes but preserves edits to historical runner agents", async () => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "opencode", model: "historical" },
+    });
+    const app = await createApp();
+    const ordinaryEdit = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ name: "Historical Runner" }),
+    );
+    const providerChange = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { provider: "acpx" } }),
+    );
+
+    expect(ordinaryEdit.status, JSON.stringify(ordinaryEdit.body)).toBe(200);
+    expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(422);
+    expect(providerChange.body.details).toMatchObject({
+      code: "paperclip_runner_provider_unavailable",
+    });
+  });
+
   it("keeps an existing paperclip_runner agent editable after the flag is disabled", async () => {
     const existing = await mockAgentService.getById();
     mockAgentService.getById.mockResolvedValue({

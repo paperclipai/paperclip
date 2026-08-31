@@ -20,6 +20,7 @@ function execution(runId: string, cwd = "/workspace") {
     agentId,
     workspace: { id: runId, cwd, repoUrl: null, repoRef: null, branchName: null },
     normalizedSessionId,
+    provider: "codex",
     completionContract: {
       id: "70000000-0000-4000-8000-000000000007",
       sha256: `sha256:${"a".repeat(64)}`,
@@ -43,6 +44,7 @@ function planningExecution(runId: string, revisionId: string) {
     agentId,
     workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
     normalizedSessionId,
+    provider: "codex",
     executionMode: "plan",
     planningContext: {
       documentId: "80000000-0000-4000-8000-000000000008",
@@ -189,7 +191,7 @@ describe("rebindNativeSessionCheckpoint", () => {
 });
 
 describe("buildNativeExecutionInput wake projection", () => {
-  it("writes native v4 and pins the complete Codex configuration", () => {
+  it("writes native v4 and pins every provider's complete effective configuration", () => {
     const common = {
       companyId,
       runId: currentRunId,
@@ -203,14 +205,36 @@ describe("buildNativeExecutionInput wake projection", () => {
     } as const;
     const codex = buildNativeExecutionInput({
       ...common,
+      provider: "codex",
       codexApprovalPolicy: "on-request",
+    });
+    const opencode = buildNativeExecutionInput({
+      ...common,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
+      opencodePermissionMode: "ask",
+    });
+    const acpx = buildNativeExecutionInput({
+      ...common,
+      provider: "acpx",
+      acpxAgent: "claude",
+      model: "claude-sonnet-5",
+      acpxPermissionMode: "deny-all",
     });
 
     expect(codex).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
-    expect(JSON.stringify(codex))
+    expect(opencode).toMatchObject({
+      schema: "paperclip.native-execution-input.v4",
+      provider: { kind: "opencode", permissionMode: "ask" },
+    });
+    expect(acpx).toMatchObject({
+      schema: "paperclip.native-execution-input.v4",
+      provider: { kind: "acpx", permissionMode: "deny-all" },
+    });
+    expect(JSON.stringify([codex, opencode, acpx]))
       .not.toMatch(/OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET_ACCESS_KEY|PAPERCLIP_API_KEY/);
   });
 
@@ -257,6 +281,8 @@ describe("buildNativeExecutionInput wake projection", () => {
         branchName: null,
       },
       normalizedSessionId,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007",
         sha256: `sha256:${"a".repeat(64)}`,

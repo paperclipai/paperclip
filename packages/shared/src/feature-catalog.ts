@@ -269,6 +269,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableRunnerPreviewIngress: {
+    title: "Runner Preview Ingress",
+    description:
+      "Let paperclip_runner connect through an authenticated sandbox-provider WebSocket ingress. Legacy adapters never use this path.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",
     description:
