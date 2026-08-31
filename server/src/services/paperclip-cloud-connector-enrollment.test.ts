@@ -418,6 +418,47 @@ describe("Paperclip Cloud self-host enrollment", () => {
     })).toThrow(/do not match/);
   });
 
+  it("does not create or complete self-host enrollment with managed identity configuration", async () => {
+    const origin = "https://private.example.test";
+    const localEnv = {
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://my-staging.paperclip.app",
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "staging",
+    };
+    const enrollmentRequest = vi.fn(async () => Response.json({
+      enrollmentId: "enroll-local",
+      verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=enroll-local",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }, { status: 201 }));
+    await startPaperclipCloudConnectorEnrollment({
+      origin,
+      env: localEnv,
+      request: enrollmentRequest as typeof fetch,
+    });
+    const pendingIdentity = loadPaperclipCloudConnectorIdentity()!;
+    const managedEnv = {
+      ...localEnv,
+      PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: "managed-staging-instance",
+      PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: "managed-signing-key",
+      PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: "managed-sealing-key",
+    };
+    const managedRequest = vi.fn();
+
+    await expect(startPaperclipCloudConnectorEnrollment({
+      origin,
+      env: managedEnv,
+      request: managedRequest as typeof fetch,
+    })).rejects.toThrow(/unavailable with managed identity/);
+    await expect(completePaperclipCloudConnectorEnrollment({
+      enrollmentId: "enroll-local",
+      approvalCode: "approval-code",
+      state: pendingIdentity.pending!.returnState,
+      env: managedEnv,
+      request: managedRequest as typeof fetch,
+    })).rejects.toThrow(/Invalid or expired/);
+    expect(managedRequest).not.toHaveBeenCalled();
+    expect(loadPaperclipCloudConnectorIdentity()).toEqual(pendingIdentity);
+  });
+
   it("does not treat legacy Paperclip ID keys as a Cloud enrollment", () => {
     expect(paperclipCloudConnectorEnrollmentStatus({
       PAPERCLIP_ID_CONNECTOR_INSTANCE_ID: "legacy-instance",

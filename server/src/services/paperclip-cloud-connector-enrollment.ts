@@ -76,8 +76,7 @@ export function paperclipCloudConnectorEnrollmentStatus(
   const managedSignPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim();
   const managedSealPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim();
   const managedEnvironment = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim();
-  const hasManagedIdentityOverride = [managedInstanceId, managedSignPrivateKey, managedSealPrivateKey]
-    .some(Boolean);
+  const hasManagedIdentityOverride = hasManagedConnectorIdentityOverride(env);
   if (hasManagedIdentityOverride) {
     const { brokerBaseUrl, environment } = connectorTarget(env);
     if (!managedInstanceId || !managedSignPrivateKey || !managedSealPrivateKey || !managedEnvironment) {
@@ -149,6 +148,9 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   const env = input.env ?? process.env;
   const request = input.request ?? fetch;
+  if (hasManagedConnectorIdentityOverride(env)) {
+    throw new Error("Paperclip Cloud self-host enrollment is unavailable with managed identity configuration");
+  }
   const origin = normalizeInstanceOrigin(input.origin);
   const existingIdentity = loadPaperclipCloudConnectorIdentity();
   const target = connectorTarget(env, existingIdentity);
@@ -244,7 +246,8 @@ async function completePaperclipCloudConnectorEnrollmentUnlocked(input: {
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   const identity = loadPaperclipCloudConnectorIdentity();
   const pending = identity?.pending;
-  if (!identity || !pending || identity.status !== "pending"
+  if (hasManagedConnectorIdentityOverride(input.env ?? process.env)
+    || !identity || !pending || identity.status !== "pending"
     || pending.enrollmentId !== input.enrollmentId || pending.returnState !== input.state
     || Date.parse(pending.expiresAt) <= Date.now()
     || !identityMatchesTarget(identity, connectorTarget(input.env ?? process.env, identity))) {
@@ -370,6 +373,14 @@ function identityMatchesTarget(
   target: Pick<PaperclipCloudConnectorIdentity, "brokerBaseUrl" | "environment">,
 ): boolean {
   return identity.brokerBaseUrl === target.brokerBaseUrl && identity.environment === target.environment;
+}
+
+function hasManagedConnectorIdentityOverride(env: NodeJS.ProcessEnv): boolean {
+  return [
+    env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
+    env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY,
+    env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY,
+  ].some((value) => Boolean(value?.trim()));
 }
 
 function isEnvironment(value: unknown): value is LocalConnectorEnvironment {
