@@ -23,17 +23,23 @@ const codexPatch = await readFile(
   ),
   "utf8",
 );
+const claudePatch = await readFile(
+  new URL(
+    "../../../patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
-test("the runner pins only the Codex ACPX production dependencies", () => {
+test("the runner pins every qualified ACPX production dependency", () => {
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/codex-acp"],
     "1.6.2",
   );
-  assert.equal(runnerPackage.dependencies["pi-acp"], undefined);
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-    undefined,
+    "0.70.0",
   );
 });
 
@@ -52,6 +58,12 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
+      "@agentclientprotocol/claude-agent-acp@0.70.0"
+    ],
+    "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+  );
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies[
       "@agentclientprotocol/codex-acp@1.6.2"
     ],
     "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
@@ -60,6 +72,10 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   assert.match(
     workspace,
     /codex-acp@1\.6\.2': patches\/@agentclientprotocol__codex-acp@1\.6\.2\.patch/,
+  );
+  assert.match(
+    workspace,
+    /claude-agent-acp@0\.70\.0': patches\/@agentclientprotocol__claude-agent-acp@0\.70\.0\.patch/,
   );
 });
 
@@ -106,6 +122,19 @@ test("the Codex patch enforces isolated instructions, tools, and skills", () => 
   ]) {
     assert.match(
       codexPatch,
+      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+});
+
+test("the Claude patch removes ambient project and local configuration", () => {
+  for (const token of [
+    "PAPERCLIP_ACPX_ISOLATED_CONTEXT",
+    'settingSources: ["user"]',
+    "userProvidedOptions?.mcpServers",
+  ]) {
+    assert.match(
+      claudePatch,
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }

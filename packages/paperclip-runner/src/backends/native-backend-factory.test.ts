@@ -55,7 +55,9 @@ function execution(
   };
 }
 
-function acpxExecution(agent: "codex" | "pi" = "codex"): NativeExecutionInput {
+function acpxExecution(
+  agent: "codex" | "pi" | "claude" = "codex",
+): NativeExecutionInput {
   return {
     ...execution(),
     session: {
@@ -70,7 +72,9 @@ function acpxExecution(agent: "codex" | "pi" = "codex"): NativeExecutionInput {
       model:
         agent === "codex"
           ? "gpt-5.6-sol"
-          : "openrouter/deepseek/deepseek-v4-flash-0731",
+          : agent === "pi"
+            ? "openrouter/deepseek/deepseek-v4-flash-0731"
+            : "claude-sonnet-5",
       permissionPolicy: "interactive",
       profile: {
         driverKind: "acpx_runtime",
@@ -79,15 +83,22 @@ function acpxExecution(agent: "codex" | "pi" = "codex"): NativeExecutionInput {
         agent,
         agentProfileVersion: 1,
         agentServerPackage:
-          agent === "codex" ? "@agentclientprotocol/codex-acp" : "pi-acp",
-        agentServerVersion: agent === "codex" ? "1.6.2" : "0.0.33",
+          agent === "codex"
+            ? "@agentclientprotocol/codex-acp"
+            : agent === "pi"
+              ? "pi-acp"
+              : "@agentclientprotocol/claude-agent-acp",
+        agentServerVersion:
+          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.70.0",
         agentRuntimePackage:
-          agent === "codex" ? null : "@earendil-works/pi-coding-agent",
-        agentRuntimeVersion: agent === "codex" ? null : "0.84.2",
+          agent === "pi" ? "@earendil-works/pi-coding-agent" : null,
+        agentRuntimeVersion: agent === "pi" ? "0.84.2" : null,
         commandDigest:
           agent === "codex"
             ? "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79"
-            : "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f",
+            : agent === "pi"
+              ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
+              : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       },
     },
   };
@@ -168,15 +179,32 @@ describe("native backend factory", () => {
     });
   });
 
-  it("requires an explicit runtime root and keeps other ACPX agents disabled", () => {
+  it("requires an explicit runtime root", () => {
     expect(() => createNativeSessionBackend(acpxExecution())).toThrow(
       "requires an instance runtime directory",
     );
+  });
+
+  it.each(["claude" as const])(
+    "constructs the qualified %s ACPX backend",
+    async (agent) => {
+      const backend = createNativeSessionBackend(acpxExecution(agent), {
+        acpxRuntimeDirectory: "/runtime",
+      });
+
+      await expect(backend.descriptor()).resolves.toMatchObject({
+        name: "acpx_runtime",
+        version: "0.13.1",
+      });
+    },
+  );
+
+  it("rejects Pi before constructing an ACPX backend", () => {
     expect(() =>
       createNativeSessionBackend(acpxExecution("pi"), {
         acpxRuntimeDirectory: "/runtime",
       }),
-    ).toThrow("ACPX backend for pi is not included");
+    ).toThrow("descriptor-confined verified launch");
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {

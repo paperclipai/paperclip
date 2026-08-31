@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
 const HANDLE: AcpRuntimeHandle = {
@@ -99,6 +100,35 @@ describe("Codex ACPX runtime adapter", () => {
       agentSessionId: "agent-1",
     });
   });
+
+  it.each([["claude" as const, "claude-sonnet-5"]])(
+    "opens the qualified %s session through the verified lease",
+    async (agent, model) => {
+      const runtime = fakeRuntime();
+      const command = fakeCommand();
+      const options = openOptions(command);
+      options.profile = resolveQualifiedAcpxProfile(agent, model);
+      options.launchEnvironment = { PATH: "/verified/bin" };
+
+      await openCodexAcpxRuntime(options, {
+        createRegistry: ({ overrides }) => {
+          expect(overrides).toEqual({
+            [agent]: ["paperclip-verified-acpx-command"],
+          });
+          return registry();
+        },
+        createStore: () => store(),
+        createRuntime: () => runtime,
+      });
+
+      expect(runtime.ensureSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent,
+          sessionOptions: expect.objectContaining({ model }),
+        }),
+      );
+    },
+  );
 
   it("launches only through the verified command lease", async () => {
     const runtime = fakeRuntime();
@@ -1137,7 +1167,7 @@ describe("Codex ACPX runtime adapter", () => {
         { createRuntime },
       ),
     ).rejects.toThrow(
-      "The production ACPX runtime requires an inherited credential-home fence",
+      "The production ACPX runtime requires an inherited provider-lifetime fence",
     );
 
     expect(createRuntime).not.toHaveBeenCalled();
@@ -1157,7 +1187,7 @@ describe("Codex ACPX runtime adapter", () => {
         { createRuntime },
       ),
     ).rejects.toThrow(
-      "The production ACPX runtime requires an inherited credential-home fence",
+      "The production ACPX runtime requires an inherited provider-lifetime fence",
     );
 
     expect(createRuntime).not.toHaveBeenCalled();
@@ -2397,22 +2427,6 @@ describe("Codex ACPX runtime adapter", () => {
     await retainCleanup.mock.calls[3]?.[0];
   });
 
-  it("rejects non-Codex profiles before constructing ACPX", async () => {
-    const createRuntime = vi.fn();
-    await expect(
-      openCodexAcpxRuntime(
-        {
-          ...openOptions(fakeCommand()),
-          profile: {
-            ...openOptions(fakeCommand()).profile,
-            agent: "claude",
-          },
-        },
-        { createRuntime },
-      ),
-    ).rejects.toThrow("currently supports Codex only");
-    expect(createRuntime).not.toHaveBeenCalled();
-  });
 });
 
 function openOptions(

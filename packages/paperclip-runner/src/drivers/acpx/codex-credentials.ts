@@ -111,14 +111,63 @@ let nextCredentialLeaseGeneration = 0;
 export type ManagedCodexCredentialMode =
   "api_key" | "inline_json" | "managed_file";
 
-export interface ManagedCodexCredentialLease {
-  readonly path: string;
-  readonly mode: ManagedCodexCredentialMode;
+export interface AcpxProviderLifetimeLease {
   /** Duplicate both quorum listeners into the provider lifetime sentinel. */
   readonly lifetimeFenceFds: readonly [number, number];
-  /** Validate the guardian while the credential quorum is still held. */
+  /** Validate the guardian while the provider-lifetime quorum is still held. */
   activateLifetimeOwner(pid: number): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface ManagedCodexCredentialLease
+  extends AcpxProviderLifetimeLease {
+  readonly path: string;
+  readonly mode: ManagedCodexCredentialMode;
+}
+
+/**
+ * Acquire the same kernel-backed provider lifetime ownership used by Codex
+ * when an ACPX agent has no staged credential home of its own.
+ */
+export async function acquireAcpxProviderLifetimeLease(input: {
+  agentHomeDirectory: string;
+}): Promise<AcpxProviderLifetimeLease> {
+  const home = await resolvePrivateAgentHome(input.agentHomeDirectory);
+  const lock = await acquireCredentialHomeLock(home);
+  let closed = false;
+  let closeAttempt: Promise<void> | null = null;
+  let lifetimeOwnerAttempt: Promise<void> | null = null;
+  return Object.freeze({
+    lifetimeFenceFds: lock.inheritanceFds(),
+    async activateLifetimeOwner(pid: number): Promise<void> {
+      if (closed || closeAttempt !== null) {
+        throw new Error("ACPX provider lifetime lease is closing");
+      }
+      if (lifetimeOwnerAttempt !== null) return await lifetimeOwnerAttempt;
+      const attempt = lock.activateLifetimeOwner(pid);
+      lifetimeOwnerAttempt = attempt;
+      try {
+        await attempt;
+      } finally {
+        if (lifetimeOwnerAttempt === attempt) lifetimeOwnerAttempt = null;
+      }
+    },
+    async close(): Promise<void> {
+      if (closed) return;
+      if (closeAttempt !== null) return await closeAttempt;
+      const attempt = (async () => {
+        await lifetimeOwnerAttempt?.catch(() => undefined);
+        await lock.release();
+        closed = true;
+      })();
+      closeAttempt = attempt;
+      try {
+        await attempt;
+      } finally {
+        if (closeAttempt === attempt) closeAttempt = null;
+      }
+    },
+  });
 }
 
 /** Stage one explicit Codex authentication source in its isolated runtime home. */
@@ -127,19 +176,7 @@ export async function stageManagedCodexCredential(input: {
   environment?: NodeJS.ProcessEnv;
   sourcePath?: string;
 }): Promise<ManagedCodexCredentialLease> {
-  const home = await realpath(input.agentHomeDirectory);
-  const homeMetadata = await lstat(home);
-  if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
-    throw new Error("Managed Codex credential home must be a real directory");
-  }
-  if (
-    process.platform !== "win32" &&
-    ((homeMetadata.mode & 0o077) !== 0 ||
-      (typeof process.getuid === "function" &&
-        homeMetadata.uid !== process.getuid()))
-  ) {
-    throw new Error("Managed Codex credential home permissions are unsafe");
-  }
+  const home = await resolvePrivateAgentHome(input.agentHomeDirectory);
   // Join an older failed close before claiming the next generation. This
   // keeps quarantine recovery authoritative over the shared paths without
   // mistaking a waiting admission for an already-active successor.
@@ -164,6 +201,23 @@ export async function stageManagedCodexCredential(input: {
     releaseCredentialLeaseGeneration(home, ownerGeneration);
     throw error;
   }
+}
+
+async function resolvePrivateAgentHome(directory: string): Promise<string> {
+  const home = await realpath(directory);
+  const homeMetadata = await lstat(home);
+  if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
+    throw new Error("ACPX agent home must be a real directory");
+  }
+  if (
+    process.platform !== "win32" &&
+    ((homeMetadata.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" &&
+        homeMetadata.uid !== process.getuid()))
+  ) {
+    throw new Error("ACPX agent home permissions are unsafe");
+  }
+  return home;
 }
 
 async function stageClaimedManagedCodexCredential(

@@ -59,6 +59,7 @@ import {
   acpxDriverDescriptor,
   validateAcpxDriverConfig,
 } from "./driver-profile.js";
+import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
@@ -120,6 +121,8 @@ export interface CodexAcpxDynamicToolCall {
 }
 
 export interface CodexAcpxDriverOptions {
+  /** Defaults to Codex for backward compatibility. */
+  agent?: QualifiedAcpxAgent;
   runtimeDirectory: string;
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
@@ -166,7 +169,7 @@ export interface CodexAcpxDriverDependencies {
   }) => Promise<AcpxRecoveryWorkspaceLease>;
 }
 
-/** Codex-only HarnessDriver backed by the admitted ACPX runtime host. */
+/** Qualified HarnessDriver backed by the admitted ACPX runtime host. */
 export class CodexAcpxDriver implements HarnessDriver {
   readonly #options: CodexAcpxDriverOptions;
   readonly #openHost: NonNullable<CodexAcpxDriverDependencies["openHost"]>;
@@ -183,8 +186,14 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
+    if (options.agent === "pi") {
+      throw new Error(
+        "Pi ACPX driver is unavailable until descriptor-confined verified launch is implemented",
+      );
+    }
     this.#options = {
       ...options,
+      agent: options.agent ?? "codex",
       ...(options.environment
         ? { environment: { ...options.environment } }
         : {}),
@@ -214,10 +223,9 @@ export class CodexAcpxDriver implements HarnessDriver {
   }
 
   async descriptor(): Promise<HarnessDriverDescriptor> {
-    const descriptor = acpxDriverDescriptor("codex");
+    const descriptor = acpxDriverDescriptor(this.#options.agent ?? "codex");
     return {
       ...descriptor,
-      displayName: "Codex via ACPX",
       runtimeContextCapabilities: {
         instructions: "native",
         skills: "unsupported",
@@ -235,7 +243,10 @@ export class CodexAcpxDriver implements HarnessDriver {
 
   async validateConfig(value: unknown): Promise<HarnessDriverConfigValidation> {
     const validation = validateAcpxDriverConfig(value);
-    if (!validation.ok || validation.config.agent === "codex")
+    if (
+      !validation.ok ||
+      validation.config.agent === (this.#options.agent ?? "codex")
+    )
       return validation;
     return {
       ok: false,
@@ -244,7 +255,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         {
           path: "agent",
           code: "unsupported_agent",
-          message: "The production ACPX driver currently supports Codex only.",
+          message: `This ACPX driver is bound to ${this.#options.agent ?? "codex"}.`,
         },
       ],
     };
@@ -355,7 +366,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         runtimeDirectory: this.#options.runtimeDirectory,
         normalizedSessionId: input.normalizedSessionId,
         workingDirectory: input.workingDirectory,
-        agent: "codex",
+        agent: this.#options.agent ?? "codex",
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-reads",
         systemInstructions: this.#options.systemInstructions,
@@ -383,6 +394,7 @@ export class CodexAcpxDriver implements HarnessDriver {
       input.signal?.throwIfAborted();
       session = new CodexAcpxSession({
         host,
+        agent: this.#options.agent ?? "codex",
         input,
         dynamicToolHandler: this.#options.dynamicToolHandler,
         now: this.#options.now ?? (() => new Date()),
@@ -625,6 +637,7 @@ export class CodexAcpxDriver implements HarnessDriver {
 
 class CodexAcpxSession implements HarnessSession {
   readonly #host: CodexAcpxHost;
+  readonly #agent: QualifiedAcpxAgent;
   readonly #input: OpenHarnessSessionInput;
   readonly #dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
   readonly #now: () => Date;
@@ -680,6 +693,7 @@ class CodexAcpxSession implements HarnessSession {
 
   constructor(input: {
     host: CodexAcpxHost;
+    agent: QualifiedAcpxAgent;
     input: OpenHarnessSessionInput;
     dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
     now: () => Date;
@@ -695,6 +709,7 @@ class CodexAcpxSession implements HarnessSession {
       throw new Error("Codex ACPX host returned a different session identity");
     }
     this.#host = input.host;
+    this.#agent = input.agent;
     this.#input = structuredClone(input.input);
     this.#dynamicToolHandler = input.dynamicToolHandler;
     this.#now = input.now;
@@ -1545,7 +1560,7 @@ class CodexAcpxSession implements HarnessSession {
       input: structuredClone(normalized.questionSet),
       origin: {
         adapter: "acpx-runtime",
-        provider: "codex",
+        provider: this.#agent,
         method: "elicitation/create",
       },
     };

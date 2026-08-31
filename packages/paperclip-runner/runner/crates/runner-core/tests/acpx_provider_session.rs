@@ -87,10 +87,10 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
 }
 
 #[test]
-fn validates_codex_policy_and_tool_catalog_before_spawning() {
+fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_agent = config("bootstrap");
-    invalid_agent.agent = "opencode".to_owned();
-    assert!(start_error(&invalid_agent).contains("Codex only"));
+    invalid_agent.agent = "pi".to_owned();
+    assert!(start_error(&invalid_agent).contains("claude or codex"));
 
     let mut unpinned = config("bootstrap");
     unpinned.permission_mode_pinned = false;
@@ -99,6 +99,24 @@ fn validates_codex_policy_and_tool_catalog_before_spawning() {
     let mut invalid_tools = config("bootstrap");
     invalid_tools.tool_set.catalog_digest = "invalid".to_owned();
     assert!(start_error(&invalid_tools).contains("authorized tools"));
+}
+
+#[test]
+fn admits_each_exact_qualified_agent_model_pair() {
+    for (agent, model) in [("codex", "gpt-5.6-sol"), ("claude", "claude-sonnet-5")] {
+        let mut qualified = config("bootstrap");
+        qualified.agent = agent.to_owned();
+        qualified.model = model.to_owned();
+        qualified.validate().unwrap();
+    }
+
+    let mut drifted = config("bootstrap");
+    drifted.agent = "claude".to_owned();
+    assert!(drifted
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("exact model"));
 }
 
 #[test]

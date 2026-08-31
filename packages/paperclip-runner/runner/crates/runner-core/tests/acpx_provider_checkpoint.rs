@@ -135,7 +135,8 @@ fn admits_recovery_only_for_the_exact_run_catalog_and_provider_identity() {
         operations,
     };
     let mut changed_model = config.clone();
-    changed_model.model = "gpt-5.6-sol-mini".to_owned();
+    changed_model.agent = "claude".to_owned();
+    changed_model.model = "claude-sonnet-5".to_owned();
     let mut changed_permission = config.clone();
     changed_permission.permission_mode = AcpxPermissionMode::ApproveAll;
     let mut changed_expected_identity = config.clone();

@@ -130,7 +130,7 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "construction cleanup recovered" });
   });
 
-  it("advertises only the implemented Codex production surface", async () => {
+  it("binds validation to the configured qualified agent", async () => {
     const fixture = driverFixture();
     const descriptor = await fixture.driver.descriptor();
 
@@ -160,6 +160,38 @@ describe("Codex ACPX harness driver", () => {
       ok: false,
       issues: [{ code: "unsupported_agent" }],
     });
+  });
+
+  it("opens the qualified Claude profile through the shared driver", async () => {
+    const fixture = driverFixture({
+      agent: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    await expect(fixture.driver.descriptor()).resolves.toMatchObject({
+      displayName: "Claude via ACPX",
+    });
+    await expect(
+      fixture.driver.validateConfig({
+        agent: "claude",
+        model: "claude-sonnet-5",
+        permissionMode: "approve-reads",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const session = await fixture.driver.openSession({
+      runId: "run-claude",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    expect(fixture.hostOptions).toMatchObject({
+      agent: "claude",
+      model: "claude-sonnet-5",
+    });
+    expect(
+      fixture.hostOptions?.managedCodexCredentialSourcePath,
+    ).toBeUndefined();
+    await session.close({ reason: "qualified Claude driver verified" });
   });
 
   it("maps one turn, dispatches tools, and commits one semantic result", async () => {

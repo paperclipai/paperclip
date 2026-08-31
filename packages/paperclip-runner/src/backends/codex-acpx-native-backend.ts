@@ -16,21 +16,27 @@ export interface CodexAcpxNativeSessionBackendOptions extends Omit<
   "model" | "permissionMode" | "systemInstructions"
 > {}
 
+export type AcpxNativeSessionBackendOptions =
+  CodexAcpxNativeSessionBackendOptions;
+
 /**
- * Constructs the qualified Codex ACPX backend. Other ACPX agents remain
- * unavailable until their runtime, policy, and conformance slices ship.
+ * Constructs a backend only after the persisted ACPX snapshot matches the
+ * closed, package-owned qualification profile for its selected agent.
  */
-export function createCodexAcpxNativeSessionBackend(
+export function createAcpxNativeSessionBackend(
   input: NativeExecutionInput,
-  options: CodexAcpxNativeSessionBackendOptions,
+  options: AcpxNativeSessionBackendOptions,
 ): NativeSessionBackend {
-  if (input.provider.kind !== "acpx" || input.provider.agent !== "codex") {
+  if (input.provider.kind !== "acpx") {
+    throw new Error("ACPX backend requires provider kind acpx");
+  }
+  if (input.provider.agent === "pi") {
     throw new Error(
-      "Codex ACPX backend requires provider kind acpx with agent codex",
+      "Pi ACPX backend is unavailable until descriptor-confined verified launch is implemented",
     );
   }
   const qualifiedProfile = resolveQualifiedAcpxProfile(
-    "codex",
+    input.provider.agent,
     input.provider.model,
   );
   for (const field of [
@@ -47,7 +53,7 @@ export function createCodexAcpxNativeSessionBackend(
   ] as const) {
     if (input.provider.profile[field] !== qualifiedProfile[field]) {
       throw new Error(
-        `Persisted Codex ACPX profile does not match the qualified ${field}`,
+        `Persisted ${input.provider.agent} ACPX profile does not match the qualified ${field}`,
       );
     }
   }
@@ -63,9 +69,23 @@ export function createCodexAcpxNativeSessionBackend(
   return new HarnessDriverBackend(
     new CodexAcpxDriver({
       ...options,
+      agent: input.provider.agent,
       model: input.provider.model,
       permissionMode: input.provider.permissionMode ?? "approve-reads",
       systemInstructions,
     }),
   );
+}
+
+/** Backward-compatible Codex-specific constructor. */
+export function createCodexAcpxNativeSessionBackend(
+  input: NativeExecutionInput,
+  options: CodexAcpxNativeSessionBackendOptions,
+): NativeSessionBackend {
+  if (input.provider.kind !== "acpx" || input.provider.agent !== "codex") {
+    throw new Error(
+      "Codex ACPX backend requires provider kind acpx with agent codex",
+    );
+  }
+  return createAcpxNativeSessionBackend(input, options);
 }

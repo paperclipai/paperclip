@@ -20,15 +20,15 @@ The package also publishes the canonical semantic action declarations and
 their input and output schemas. Its package-local dispatcher projects only
 bound, run-authorized actions and emits redacted semantic receipts.
 
-The production-selected provider remains Codex. The package also contains the
-qualified OpenCode 1.18.17 driver, authenticated loopback MCP bridge, and
-runnerd-compatible proxy, but this slice does not authorize the server to
-select OpenCode for a fresh native run. Dynamic semantic tools remain
-undiscoverable unless the hidden server coordinator projects one of the five
-same-task read bindings for an already persisted native Codex run. Catalog
-membership alone does not grant authority. The server can now create and start
-a Codex-backed native run only through the default-off `paperclip_runner`
-adapter. See
+The first and only provider selected directly by runnerd remains Codex. The
+package also contains the qualified OpenCode 1.18.17 proxy and the bounded ACPX
+sidecar for Codex and Claude, but this slice does not authorize the server
+to select those additional providers for a fresh native run. Dynamic semantic
+tools remain undiscoverable unless the hidden server coordinator projects one
+of the five same-task read bindings for an already persisted native Codex run.
+Catalog membership alone does not grant authority. The server can now create
+and start a Codex-backed native run only through the default-off
+`paperclip_runner` adapter. See
 [`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
 The package has two initial public surfaces:
@@ -60,10 +60,13 @@ and preserves exact provider session identity for recovery. The backend factory
 requires an explicit runtime directory before constructing this provider.
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
-stdin/stdout bridge admits the qualified Codex ACPX profile only. It validates
-the exact model, session identity, tool catalog, structured input, and terminal
-settlement at the process boundary. Runnerd and the server do not select this
-sidecar in this slice. Other ACPX agents remain unavailable.
+stdin/stdout bridge admits the closed Claude and Codex ACPX profiles. It
+validates each agent's exact package/model pair, session identity, tool catalog,
+structured input, and terminal settlement at the process boundary. Claude runs
+without ambient project or local settings. Pi remains unavailable until its
+separately spawned runtime can use the same descriptor-confined verified launch
+boundary as the ACP server. Runnerd and the server do not select this sidecar
+in this slice.
 
 The Rust core includes a bounded client for this sidecar protocol. It enforces
 request identity, event order, frame and queue limits, timeouts, redacted
@@ -100,7 +103,7 @@ unresolved turn-scoped requests. This reducer still does not select ACPX in
 runnerd.
 
 The package-local session bootstrap starts the bounded sidecar transport,
-verifies the Codex-only capability handshake and effective model, opens one
+verifies the selected qualified capability handshake and effective model, opens one
 identity-bound session, and confirms its run attachment. Any failed bootstrap
 terminates the process; session shutdown preserves persistent provider state.
 The session can then start one immutable-workspace turn, request interruption,
@@ -118,9 +121,8 @@ against the exact persisted question IDs, answer modes, options, required
 answers, custom-answer policy, and text constraints before provider delivery.
 Tool results and structured question responses then use two-phase resolution:
 validate retained identity and schema, require the exact sidecar
-acknowledgement, and only then clear pending local state. Codex permission
-requests violate its pinned sidecar policy and terminate the session fail
-closed.
+acknowledgement, and only then clear pending local state. Permission events that
+escape the pinned sidecar policy terminate the session fail closed.
 Safe suspension is available only with no active turn or pending request. The
 sidecar must return the exact persistent session identity before runnerd
 terminates the local process.

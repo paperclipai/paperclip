@@ -73,7 +73,7 @@ class AcpxSessionHandshakeTimeoutError extends Error {
   }
 }
 
-export interface CodexAcpxRuntimeDependencies {
+export interface QualifiedAcpxRuntimeDependencies {
   createRuntime?: (options: AcpRuntimeOptions) => AcpRuntime;
   createRegistry?: (input: {
     overrides: Record<string, string | string[]>;
@@ -92,14 +92,17 @@ export interface CodexAcpxRuntimeDependencies {
   platform?: NodeJS.Platform;
 }
 
+/** @deprecated Use QualifiedAcpxRuntimeDependencies for provider-neutral ACPX runtimes. */
+export type CodexAcpxRuntimeDependencies = QualifiedAcpxRuntimeDependencies;
+
 /**
  * Adapt the pinned ACPX library to Paperclip's admitted runtime port. The
  * executable, launch environment, and spawn cwd stay host-owned and are never
  * persisted in ACPX's session options.
  */
-export async function openCodexAcpxRuntime(
+export async function openQualifiedAcpxRuntime(
   options: AcpxRuntimePortOpenOptions,
-  dependencies: CodexAcpxRuntimeDependencies = {},
+  dependencies: QualifiedAcpxRuntimeDependencies = {},
 ): Promise<AcpxRuntimePort> {
   if (options.signal?.aborted) {
     // The host may have already transferred its staged credential to this
@@ -116,11 +119,6 @@ export async function openCodexAcpxRuntime(
   // bounded sidecar exit and retained ownership of an unresponsive process
   // tree when Node cannot safely signal a verified provider process group.
   assertVerifiedAcpxProviderPlatform(dependencies.platform ?? process.platform);
-  if (options.profile.agent !== "codex") {
-    throw new Error(
-      "The production ACPX runtime currently supports Codex only",
-    );
-  }
   options.signal?.throwIfAborted();
   const credentialFenceFds = options.credentialFenceFds;
   if (
@@ -133,7 +131,7 @@ export async function openCodexAcpxRuntime(
     typeof options.activateCredentialFenceOwner !== "function"
   ) {
     throw new Error(
-      "The production ACPX runtime requires an inherited credential-home fence",
+      "The production ACPX runtime requires an inherited provider-lifetime fence",
     );
   }
 
@@ -174,7 +172,7 @@ export async function openCodexAcpxRuntime(
       backend: "acpx",
       runtimeSessionName: encodeAcpxRuntimeHandleState({
         name: runtimeSessionName,
-        agent: "codex",
+        agent: options.profile.agent,
         cwd: record.cwd,
         mode: "persistent",
         acpxRecordId: record.acpxRecordId,
@@ -221,7 +219,7 @@ export async function openCodexAcpxRuntime(
     cwd: options.cwd,
     sessionStore,
     agentRegistry: createRegistry({
-      overrides: { codex: [VERIFIED_COMMAND_SENTINEL] },
+      overrides: { [options.profile.agent]: [VERIFIED_COMMAND_SENTINEL] },
     }),
     permissionMode: options.permissionMode,
     elicitationModes: ["form"],
@@ -282,7 +280,7 @@ export async function openCodexAcpxRuntime(
   const handshake = Promise.resolve().then(() =>
     runtime.ensureSession({
       sessionKey: options.providerSessionKey,
-      agent: "codex",
+      agent: options.profile.agent,
       mode: "persistent",
       cwd: options.cwd,
       sessionOptions: {
@@ -379,6 +377,9 @@ export async function openCodexAcpxRuntime(
     throw error;
   }
 }
+
+/** Backward-compatible name retained for existing Codex-only consumers. */
+export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
 function raceRuntimeHandshakeWithAbort<T>(
   handshake: Promise<T>,

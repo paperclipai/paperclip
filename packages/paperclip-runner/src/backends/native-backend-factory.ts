@@ -9,7 +9,7 @@ import {
   type CodexNativeSessionBackendOptions,
 } from "./codex-native-backend.js";
 import {
-  createCodexAcpxNativeSessionBackend,
+  createAcpxNativeSessionBackend,
   type CodexAcpxNativeSessionBackendOptions,
 } from "./codex-acpx-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
@@ -56,21 +56,23 @@ export function createNativeSessionBackend(
     });
   }
   if (input.provider.kind === "acpx") {
-    if (input.provider.agent !== "codex") {
+    if (input.provider.agent === "pi") {
       throw new Error(
-        `Native ACPX backend for ${input.provider.agent} is not included in the Codex-first runner`,
+        "Native ACPX backend for pi is unavailable until descriptor-confined verified launch is implemented",
       );
     }
     if (!options.acpxRuntimeDirectory?.trim()) {
-      throw new Error(
-        "Codex ACPX backend requires an instance runtime directory",
-      );
+      throw new Error("ACPX backend requires an instance runtime directory");
     }
-    return createCodexAcpxNativeSessionBackend(input, {
+    return createAcpxNativeSessionBackend(input, {
       runtimeDirectory: options.acpxRuntimeDirectory,
       environment: options.acpxEnvironment,
-      managedCodexCredentialSourcePath:
-        options.acpxManagedCodexCredentialSourcePath,
+      ...(input.provider.agent === "codex"
+        ? {
+            managedCodexCredentialSourcePath:
+              options.acpxManagedCodexCredentialSourcePath,
+          }
+        : {}),
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.acpxDynamicToolHandler,
     });
