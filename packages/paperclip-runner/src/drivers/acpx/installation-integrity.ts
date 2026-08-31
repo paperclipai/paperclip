@@ -32,11 +32,42 @@ const COMMAND_SOURCE_FD = 3;
 const COMMAND_DIRECTORY_FD = 4;
 const DEPENDENCY_ANCESTOR_FD_START = 5;
 const MAX_DEPENDENCY_ANCESTORS = 64;
-const PROVIDER_GUARDIAN_HANDSHAKE_TIMEOUT_MS = 1_000;
+const PROVIDER_WATCHDOG_HANDSHAKE_TIMEOUT_MS = 2_000;
+const PROVIDER_GUARDIAN_HANDSHAKE_TIMEOUT_MS = 5_000;
+
+const PROVIDER_LIFETIME_WATCHDOG_SOURCE = `
+const fs = require("node:fs");
+let reaped = false;
+const reap = () => {
+  if (reaped) return;
+  reaped = true;
+  try {
+    // Resolve the watchdog's current group at signal-delivery time. The live
+    // watchdog itself pins that identity until this atomic reap.
+    process.kill(0, "SIGKILL");
+  } catch {
+    try {
+      process.kill(process.pid, "SIGKILL");
+    } catch {
+      process.exit(1);
+    }
+  }
+};
+const owner = fs.createReadStream("", { fd: 3, autoClose: false });
+owner.once("end", reap);
+owner.once("error", reap);
+owner.resume();
+try {
+  fs.writeSync(4, "armed\\n");
+} catch {
+  reap();
+}
+`;
 
 export const PROVIDER_LIFETIME_GUARDIAN_SOURCE = `
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const WATCHDOG_SOURCE = ${JSON.stringify(PROVIDER_LIFETIME_WATCHDOG_SOURCE)};
 const dependencyAncestorCount = Number.parseInt(process.argv[4], 10);
 if (!Number.isSafeInteger(dependencyAncestorCount) || dependencyAncestorCount < 0 || dependencyAncestorCount > ${MAX_DEPENDENCY_ANCESTORS}) throw new Error("ACPX provider dependency ancestry is invalid");
 const OWNER_FD = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount;
@@ -46,6 +77,7 @@ const CREDENTIAL_FENCE_FD_START = PROVIDER_EXIT_FD + 1;
 const dependencyAncestorFds = Array.from({ length: dependencyAncestorCount }, (_, index) => ${DEPENDENCY_ANCESTOR_FD_START} + index);
 const PROVIDER_GUARDIAN_FD = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount;
 let provider;
+let watchdog;
 let reaped = false;
 let shutdownStarted = false;
 const reap = () => {
@@ -76,34 +108,85 @@ const shutdown = () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 process.on("SIGHUP", shutdown);
+const startProvider = () => {
+  if (provider || reaped || shutdownStarted) return;
+  try {
+    provider = spawn(
+      process.execPath,
+      ["--eval", process.argv[1], ...process.argv.slice(2)],
+      {
+        cwd: process.cwd(),
+        detached: false,
+        env: process.env,
+        shell: false,
+        // The provider observes this guardian-owned pipe directly. Kernel EOF
+        // therefore revokes it even when SIGKILL/OOM prevents our JS reap path.
+        // It also inherits both quorum fences until that self-reap completes.
+        stdio: [0, 1, 2, ${COMMAND_SOURCE_FD}, ${COMMAND_DIRECTORY_FD}, ...dependencyAncestorFds, "pipe", PROVIDER_EXIT_FD, CREDENTIAL_FENCE_FD_START, CREDENTIAL_FENCE_FD_START + 1],
+        windowsHide: true,
+      },
+    );
+    provider.once("error", reap);
+    provider.once("exit", reap);
+    provider.once("spawn", () => {
+      try {
+        if (reaped || shutdownStarted) {
+          reap();
+          return;
+        }
+        // The provider now owns the only child-side copy. Parent-side EOF is an
+        // independent kernel observation of provider exit even if this guardian
+        // is killed before it can reap the group.
+        fs.closeSync(PROVIDER_EXIT_FD);
+        fs.writeSync(OWNERSHIP_FD, "owned\\n");
+      } catch {
+        reap();
+      }
+    });
+  } catch {
+    reap();
+  }
+};
 try {
-  provider = spawn(
-    process.execPath,
-    ["--eval", process.argv[1], ...process.argv.slice(2)],
-    {
-      cwd: process.cwd(),
-      detached: false,
-      env: process.env,
-      shell: false,
-      // The provider observes this guardian-owned pipe directly. Kernel EOF
-      // therefore revokes it even when SIGKILL/OOM prevents our JS reap path.
-      // It also inherits both quorum fences until that self-reap completes.
-      stdio: [0, 1, 2, ${COMMAND_SOURCE_FD}, ${COMMAND_DIRECTORY_FD}, ...dependencyAncestorFds, "pipe", PROVIDER_EXIT_FD, CREDENTIAL_FENCE_FD_START, CREDENTIAL_FENCE_FD_START + 1],
-      windowsHide: true,
-    },
-  );
-  provider.once("error", reap);
-  provider.once("exit", reap);
-  provider.once("spawn", () => {
-    try {
-      // The provider now owns the only child-side copy. Parent-side EOF is an
-      // independent kernel observation of provider exit even if this guardian
-      // is killed before it can reap the group.
-      fs.closeSync(PROVIDER_EXIT_FD);
-      fs.writeSync(OWNERSHIP_FD, "owned\\n");
-    } catch {
+  // A credential-free peer in this same process group reaps the group through
+  // its live identity if this guardian is killed before it can run `reap`.
+  // Its private owner pipe reaches kernel EOF on guardian death even while the
+  // provider is stopped and unable to process its own guardian-loss callback.
+  watchdog = spawn(process.execPath, ["--eval", WATCHDOG_SOURCE], {
+    cwd: process.cwd(),
+    detached: false,
+    env: {},
+    shell: false,
+    stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const watchdogOwnerPipe = watchdog.stdio[3];
+  const watchdogReady = watchdog.stdio[4];
+  if (watchdogOwnerPipe == null) throw new Error("ACPX provider lifetime watchdog omitted its owner pipe");
+  if (watchdogReady == null) throw new Error("ACPX provider lifetime watchdog omitted its readiness pipe");
+  watchdogOwnerPipe.once("error", reap);
+  watchdog.once("error", reap);
+  watchdog.once("exit", reap);
+  let watchdogOutput = "";
+  let watchdogArmed = false;
+  const watchdogReadyTimeout = setTimeout(reap, ${PROVIDER_WATCHDOG_HANDSHAKE_TIMEOUT_MS});
+  watchdogReadyTimeout.unref();
+  const rejectUnarmedWatchdog = () => {
+    if (!watchdogArmed) reap();
+  };
+  watchdogReady.once("error", rejectUnarmedWatchdog);
+  watchdogReady.once("close", rejectUnarmedWatchdog);
+  watchdogReady.on("data", (chunk) => {
+    watchdogOutput += chunk.toString();
+    if (watchdogOutput.length > 64) {
       reap();
+      return;
     }
+    if (!watchdogOutput.includes("armed\\n")) return;
+    watchdogArmed = true;
+    clearTimeout(watchdogReadyTimeout);
+    watchdogReady.removeAllListeners("data");
+    startProvider();
   });
 } catch {
   reap();

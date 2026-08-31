@@ -1352,34 +1352,15 @@ describe("ACPX installation integrity", () => {
         providerPid = Number.parseInt(await waitForFile(pidFile), 10);
         expect(processAlive(providerPid)).toBe(true);
 
-        // Freeze the provider so the guardian and runner can die first. The
-        // provider's inherited quorum must still reject a competing owner, and
-        // guardian-pipe EOF must reap it as soon as it can run again.
+        // Freeze the provider so it cannot process guardian-pipe EOF itself.
+        // The armed credential-free peer must still reap the current group.
         process.kill(providerPid, "SIGSTOP");
-        try {
-          process.kill(guardianPid, "SIGKILL");
-          owner.kill("SIGKILL");
-          await once(owner, "exit");
-          // The provider's inherited quorum remains authoritative whether the
-          // dead guardian is still observable as a zombie or has been reaped.
-          await expect(
-            stageManagedCodexCredential({
-              agentHomeDirectory: credentialHome,
-              environment: {
-                PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-              },
-            }),
-          ).rejects.toThrow("already has an active lease");
-        } finally {
-          if (owner.exitCode === null && owner.signalCode === null) {
-            owner.kill("SIGKILL");
-            await once(owner, "exit").catch(() => undefined);
-          }
-          // The stopped provider PID cannot be reused before this matching
-          // resume; guardian-pipe EOF then reaps that exact live process.
-          process.kill(providerPid, "SIGCONT");
-          await waitUntil(() => !processAlive(providerPid));
-        }
+        await waitUntilAsync(() => processStopped(providerPid));
+        process.kill(guardianPid, "SIGKILL");
+        owner.kill("SIGKILL");
+        await once(owner, "exit");
+        await waitUntil(() => !processAlive(providerPid));
+
         const contender = await stageManagedCodexCredential({
           agentHomeDirectory: credentialHome,
           environment: {
@@ -1389,17 +1370,21 @@ describe("ACPX installation integrity", () => {
         await contender.close();
       } finally {
         if (owner.exitCode === null && owner.signalCode === null) {
-          // Cleanup is authorized only through the direct child handle and
-          // its owner pipe. Saved guardian/provider identifiers may be reused.
           owner.kill("SIGKILL");
           await once(owner, "exit").catch(() => undefined);
+        }
+        if (providerPid > 0 && processAlive(providerPid)) {
+          // Failure cleanup only: allow the provider's own guardian-loss
+          // callback to reap its still-pinned group if the watchdog regressed.
+          process.kill(providerPid, "SIGCONT");
+          await waitUntil(() => !processAlive(providerPid));
         }
       }
     },
   );
 
   it.runIf(process.platform === "linux")(
-    "keeps provider exit proof pending after an external guardian kill",
+    "reaps a stopped provider after an external guardian kill",
     async () => {
       const fixture = await persistentInstallationFixture();
       const pidFile = join(fixture.root, "provider-exit-proof.pid");
@@ -1430,35 +1415,23 @@ describe("ACPX installation integrity", () => {
       const guardianExit = once(guardian, "exit");
       process.kill(providerPid, "SIGSTOP");
       await waitUntilAsync(() => processStopped(providerPid));
-      let exitProven = false;
-      void providerExit.then(
-        () => {
-          exitProven = true;
-        },
-        () => undefined,
-      );
 
       try {
         // Bypass the protected cleanup method to model SIGKILL/OOM of the
-        // guardian itself while the credential-bearing provider is stopped.
+        // guardian itself. Its credential-free peer must reap the stopped
+        // provider without waiting for provider JavaScript to run.
         process.kill(guardian.pid!, "SIGKILL");
         await guardianExit;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(processAlive(providerPid)).toBe(true);
-        expect(exitProven).toBe(false);
-
-        process.kill(providerPid, "SIGCONT");
         await providerExit;
         await waitUntil(() => !processAlive(providerPid));
-        expect(exitProven).toBe(true);
       } finally {
-        if (processAlive(providerPid)) {
-          process.kill(providerPid, "SIGCONT");
-          await waitUntil(() => !processAlive(providerPid));
-        }
         if (guardian.exitCode === null && guardian.signalCode === null) {
           guardian.kill("SIGKILL");
           await guardianExit.catch(() => undefined);
+        }
+        if (processAlive(providerPid)) {
+          process.kill(providerPid, "SIGCONT");
+          await waitUntil(() => !processAlive(providerPid));
         }
         await Promise.all(fences.map(closeServer));
       }
