@@ -268,7 +268,7 @@ impl AcpxSidecarTransport {
                 Ok(ProcessOutput::StdoutError(message)) => {
                     return Err(LocalRunnerError::invalid(format!(
                         "ACPX sidecar stdout failed at {stage}: {}{}",
-                        redact_diagnostic(&message),
+                        message,
                         self.diagnostic_suffix()
                     )));
                 }
