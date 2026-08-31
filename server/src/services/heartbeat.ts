@@ -1053,7 +1053,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   trustPreset?: TrustPresetResolution;
   requiredScopedEnvBinding?: {
     keys: string[];
-    consumerScopes: Array<"agent" | "project">;
+    consumerScopes: Array<"agent" | "project" | "environment" | "routine">;
     reason: string;
     remediation: string;
   };
@@ -1080,6 +1080,12 @@ export async function resolveExecutionRunAdapterConfig(input: {
     ) || (
       requiredScopedEnvBinding.consumerScopes.includes("project")
       && isConfiguredEnvBindingValue(projectEnv?.[key])
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("environment")
+      && isConfiguredEnvBindingValue(environmentEnv?.[key])
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("routine")
+      && isConfiguredEnvBindingValue(routineEnv?.[key])
     ))
     : false;
   if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured) {
@@ -1173,7 +1179,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
       const requiredScopes = new Set(requiredScopedEnvBinding.consumerScopes);
       const requiredMissingBindings = missingBindings.filter((binding) =>
-        requiredScopes.has(binding.consumerType as "agent" | "project")
+        requiredScopes.has(binding.consumerType as "agent" | "project" | "environment" | "routine")
         && requiredEnvKeys.has(binding.envKey),
       );
       if (requiredMissingBindings.length > 0) {
@@ -15158,10 +15164,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requiredScopedEnvBinding: pushCapabilityPreflightRequired
         ? {
             keys: [...PUSH_CAPABILITY_ENV_KEYS],
-            consumerScopes: ["agent", "project"],
+            consumerScopes: ["agent", "project", "environment", "routine"],
             reason: "push_write_credential_missing",
             remediation:
-              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
           }
         : undefined,
     });

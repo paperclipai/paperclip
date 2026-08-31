@@ -401,7 +401,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
-  it("fails push-capability preflight when no GitHub write credential is bound at agent or project scope", async () => {
+  it("fails push-capability preflight when no GitHub write credential is bound at any supported scope", async () => {
     await expect(resolveExecutionRunAdapterConfig({
       companyId: "company-1",
       agentId: "agent-1",
@@ -410,9 +410,10 @@ describe("resolveExecutionRunAdapterConfig", () => {
       projectEnv: { PROJECT_ONLY: "project-only" },
       requiredScopedEnvBinding: {
         keys: ["GH_TOKEN", "GITHUB_TOKEN"],
-        consumerScopes: ["agent", "project"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
         reason: "push_write_credential_missing",
-        remediation: "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+        remediation:
+          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
       },
       secretsSvc: {
         resolveAdapterConfigForRuntime: vi.fn(),
@@ -420,13 +421,45 @@ describe("resolveExecutionRunAdapterConfig", () => {
       } as any,
     })).rejects.toMatchObject({
       code: "configuration_incomplete",
-      message: expect.stringContaining("GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN"),
+      message: expect.stringContaining("agent, project, environment, or routine scope"),
       resultJson: {
         configurationIncomplete: {
           reason: "push_write_credential_missing",
           requiredEnvKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
-          requiredScopes: ["agent", "project"],
+          requiredScopes: ["agent", "project", "environment", "routine"],
           missingBindings: [],
+        },
+      },
+    });
+  });
+
+  it("does not accept a lowercase GitHub credential binding key", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      environmentId: "environment-1",
+      routineId: "routine-1",
+      executionRunConfig: { env: { gh_token: "agent-token" } },
+      environmentEnv: { gh_token: "environment-token" },
+      projectEnv: { gh_token: "project-token" },
+      routineEnv: { gh_token: "routine-token" },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation:
+          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "push_write_credential_missing",
         },
       },
     });
@@ -454,9 +487,10 @@ describe("resolveExecutionRunAdapterConfig", () => {
       projectEnv: { GH_TOKEN: { type: "plain", value: "github-token" } },
       requiredScopedEnvBinding: {
         keys: ["GH_TOKEN", "GITHUB_TOKEN"],
-        consumerScopes: ["agent", "project"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
         reason: "push_write_credential_missing",
-        remediation: "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+        remediation:
+          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
       },
       secretsSvc: {
         resolveAdapterConfigForRuntime,
@@ -474,6 +508,98 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(collectMissingRuntimeBindings.mock.calls[1]?.[2]).toMatchObject({
       consumerType: "project",
       consumerId: "project-1",
+    });
+  });
+
+  it("passes push-capability preflight for an environment-scoped GitHub credential", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { AGENT_ONLY: "agent-only" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({
+      env: { GH_TOKEN: "environment-token" },
+      secretKeys: new Set(["GH_TOKEN"]),
+      manifest: [],
+    });
+    const collectMissingRuntimeBindings = vi.fn().mockResolvedValue([]);
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      environmentId: "environment-1",
+      environmentEnv: { GH_TOKEN: { type: "plain", value: "environment-token" } },
+      executionRunConfig: { env: { AGENT_ONLY: "agent-only" } },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation:
+          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+        collectMissingRuntimeBindings,
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({
+      GH_TOKEN: "environment-token",
+      AGENT_ONLY: "agent-only",
+    });
+    expect(resolveEnvBindings).toHaveBeenCalledOnce();
+    expect(collectMissingRuntimeBindings.mock.calls[0]?.[2]).toMatchObject({
+      consumerType: "environment",
+      consumerId: "environment-1",
+    });
+  });
+
+  it("passes push-capability preflight for a routine-scoped GitHub credential", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { AGENT_ONLY: "agent-only" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({
+      env: { GITHUB_TOKEN: "routine-token" },
+      secretKeys: new Set(["GITHUB_TOKEN"]),
+      manifest: [],
+    });
+    const collectMissingRuntimeBindings = vi.fn().mockResolvedValue([]);
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      routineId: "routine-1",
+      executionRunConfig: { env: { AGENT_ONLY: "agent-only" } },
+      projectEnv: null,
+      routineEnv: { GITHUB_TOKEN: { type: "plain", value: "routine-token" } },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation:
+          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+        collectMissingRuntimeBindings,
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({
+      AGENT_ONLY: "agent-only",
+      GITHUB_TOKEN: "routine-token",
+    });
+    expect(resolveEnvBindings).toHaveBeenCalledOnce();
+    expect(collectMissingRuntimeBindings.mock.calls[1]?.[2]).toMatchObject({
+      consumerType: "routine",
+      consumerId: "routine-1",
     });
   });
 });
