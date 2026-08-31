@@ -113,7 +113,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  isAgentFallbackWorkspaceCwd,
+  resolveDefaultAgentWorkspaceDir,
+  resolveIssueScopedAgentWorkspaceDir,
+  resolveManagedProjectWorkspaceDir,
+} from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -4300,8 +4305,10 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       warning: null as string | null,
     };
   }
-  const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
-  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
+  // Recognize both the per-agent fallback dir and an issue-scoped fallback subdir
+  // of it, so a session that ran in the issue-scoped fallback (BRO-1717) still
+  // migrates into a project workspace once one becomes available for the issue.
+  if (!isAgentFallbackWorkspaceCwd(agentId, previousCwd)) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
@@ -9031,7 +9038,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    // For a non-project issue with no reusable session workspace, key the fallback
+    // dir by issue as well as agent so successive heartbeats of the *same* issue land
+    // in the same directory (and reuse whatever git worktree/branch/commits the prior
+    // heartbeat left there) instead of a per-agent dir shared across every non-project
+    // issue, where an interleaved run on another issue can trample it (BRO-1717).
+    // A non-conforming issueId (should not happen for real UUIDs) degrades to the
+    // per-agent dir rather than failing the run.
+    let cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    if (issueId) {
+      try {
+        cwd = resolveIssueScopedAgentWorkspaceDir(agent.id, issueId);
+      } catch {
+        cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      }
+    }
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
