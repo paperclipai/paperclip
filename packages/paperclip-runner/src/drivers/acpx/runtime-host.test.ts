@@ -189,6 +189,9 @@ describe("ACPX runtime host", () => {
           agent: "codex",
           model: "gpt-5.6-sol",
           permissionMode: "approve-reads",
+          environment: {
+            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}",
+          },
           assertWorkspaceHeld,
         },
         fixture.dependencies({ openRuntime }),
