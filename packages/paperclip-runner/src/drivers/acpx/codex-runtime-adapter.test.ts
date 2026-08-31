@@ -32,14 +32,23 @@ describe("Codex ACPX runtime adapter", () => {
     controller.abort(cancellation);
     const command = fakeCommand();
     const createRuntime = vi.fn();
+    const retainFailedAdmissionCleanup = vi.fn();
 
     await expect(
       openCodexAcpxRuntime(
-        { ...openOptions(command), signal: controller.signal },
+        {
+          ...openOptions(command),
+          signal: controller.signal,
+          retainFailedAdmissionCleanup,
+        },
         { createRuntime },
       ),
     ).rejects.toBe(cancellation);
 
+    expect(retainFailedAdmissionCleanup).toHaveBeenCalledOnce();
+    await expect(
+      retainFailedAdmissionCleanup.mock.calls[0]?.[0],
+    ).resolves.toBeUndefined();
     expect(createRuntime).not.toHaveBeenCalled();
     expect(command.spawn).not.toHaveBeenCalled();
   });
@@ -1372,11 +1381,18 @@ describe("Codex ACPX runtime adapter", () => {
     // Retain the pending handshake, the discovered runtime handle cleanup,
     // and their host-facing aggregate proof until the same obligation settles.
     expect(retainedCleanups).toHaveLength(3);
+    const settledCleanups = new Set<Promise<void>>();
+    for (const cleanup of retainedCleanups) {
+      void cleanup
+        .finally(() => settledCleanups.add(cleanup))
+        .catch(() => undefined);
+    }
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
-    await expect(retainedCleanups[1]).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(settledCleanups).toHaveSize(1));
     expect(runtime.close).toHaveBeenCalledTimes(5);
 
     rejectHandshake?.(new Error("test handshake stopped"));
+    await vi.waitFor(() => expect(settledCleanups).toHaveSize(3));
     await expect(Promise.all(retainedCleanups)).resolves.toBeDefined();
   });
 

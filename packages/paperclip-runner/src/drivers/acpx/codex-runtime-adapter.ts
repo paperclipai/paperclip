@@ -69,12 +69,19 @@ export async function openCodexAcpxRuntime(
   options: AcpxRuntimePortOpenOptions,
   dependencies: CodexAcpxRuntimeDependencies = {},
 ): Promise<AcpxRuntimePort> {
+  if (options.signal?.aborted) {
+    // The host may have already transferred its staged credential to this
+    // pending admission before this microtask begins. No adapter resources
+    // exist yet, so publish an already-complete cleanup proof before preserving
+    // the caller's exact abort reason.
+    options.retainFailedAdmissionCleanup(Promise.resolve());
+    throw options.signal.reason;
+  }
   if (options.profile.agent !== "codex") {
     throw new Error(
       "The production ACPX runtime currently supports Codex only",
     );
   }
-  options.signal?.throwIfAborted();
   // The verified-command boundary already refuses to mint a Windows command
   // lease, because Node cannot pin its executable there. Repeat the platform
   // gate at this lower boundary so alternate host wiring cannot launch a

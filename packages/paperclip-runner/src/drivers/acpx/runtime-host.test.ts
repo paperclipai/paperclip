@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
   VerifiedAcpxCommandLease,
@@ -58,6 +59,65 @@ describe("ACPX runtime host", () => {
     expect(verifyInstallation).not.toHaveBeenCalled();
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+
+  it("scrubs credentials when abort wins before the adapter body starts", async () => {
+    const fixture = await hostFixture();
+    const controller = new AbortController();
+    const cancellation = new Error("runtime admission cancelled before entry");
+    const createRuntime = vi.fn();
+    let credentialHome = "";
+    const openRuntime = vi.fn((options: AcpxRuntimePortOpenOptions) => {
+      credentialHome = options.launchEnvironment.CODEX_HOME!;
+      // The host has scheduled its openRuntime callback and transferred the
+      // staged credential to that pending admission. Abort before entering the
+      // adapter so its pre-entry path must publish a completed cleanup proof.
+      controller.abort(cancellation);
+      return openCodexAcpxRuntime(options, { createRuntime });
+    });
+
+    await expect(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+          signal: controller.signal,
+        },
+        fixture.dependencies({ openRuntime }),
+      ),
+    ).rejects.toBe(cancellation);
+
+    expect(openRuntime).toHaveBeenCalledOnce();
+    expect(createRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+    const authPath = join(credentialHome, "auth.json");
+    const contender = await vi.waitFor(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
+    await contender.close();
+    await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const retryRuntime = runtimePort();
+    const retryHost = await AcpxRuntimeHost.open(
+      {
+        ...fixture.options,
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "deny-all",
+        environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      },
+      fixture.dependencies({ openRuntime: async () => retryRuntime }),
+    );
+    await retryHost.close({ reason: "retry admission complete" });
+    expect(retryRuntime.close).toHaveBeenCalledOnce();
   });
 
   it("composes admission, isolation, model verification, and cleanup", async () => {
@@ -909,12 +969,16 @@ describe("ACPX runtime host", () => {
         code: "ENOENT",
       });
     });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    // File removal precedes kernel lease release. Wait for the lease itself so
+    // this assertion cannot race between those two ordered cleanup steps.
+    const contender = await vi.waitFor(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
   });
 
