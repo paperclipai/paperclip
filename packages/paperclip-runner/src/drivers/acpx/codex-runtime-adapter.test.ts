@@ -694,12 +694,16 @@ describe("Codex ACPX runtime adapter", () => {
       const finalReconciliation = new Promise<void>((resolve) => {
         resolveFinalReconciliation = resolve;
       });
+      let resolveRenewedReconciliation!: () => void;
+      const renewedReconciliation = new Promise<void>((resolve) => {
+        resolveRenewedReconciliation = resolve;
+      });
       vi.mocked(runtime.close)
         .mockReturnValueOnce(initialClose)
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockReturnValueOnce(finalReconciliation)
-        .mockResolvedValueOnce(undefined);
+        .mockReturnValueOnce(renewedReconciliation);
       const child = failingSignalChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child.child);
@@ -733,11 +737,16 @@ describe("Codex ACPX runtime adapter", () => {
         port.close({ reason: "external observer of failed process cleanup" }),
       ).rejects.toThrow("ACPX runtime and provider cleanup failed");
       resolveFinalReconciliation();
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(4_000);
       await finalObserver;
 
-      await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
+      for (
+        let turn = 0;
+        turn < 50 && vi.mocked(runtime.close).mock.calls.length < 5;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(runtime.close).toHaveBeenCalledTimes(5);
       expect(runtime.close).toHaveBeenLastCalledWith({
         handle: HANDLE,
         reason: "ACPX late protocol cleanup reconciliation 1",
@@ -745,7 +754,9 @@ describe("Codex ACPX runtime adapter", () => {
       });
       child.child.signalCode = "SIGKILL";
       child.child.emit("exit", null, "SIGKILL");
+      resolveRenewedReconciliation();
       await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
       expect(runtime.close).toHaveBeenCalledTimes(5);
     } finally {
       vi.useRealTimers();
