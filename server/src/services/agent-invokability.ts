@@ -160,5 +160,11 @@ export function listInvalidOrgChainDescendantIds(
 }
 
 export function shouldCancelRunsForNonInvokableAgent(result: AgentInvokability) {
-  return !result.invokable && (result.reason === "terminated" || result.invalidOrgChain);
+  // A pause is a cancellation boundary, not a deferred queue. Keeping queued
+  // runs while paused would let stale work start silently after a later resume.
+  return !result.invokable && (
+    result.reason === "paused" ||
+    result.reason === "terminated" ||
+    result.invalidOrgChain
+  );
 }

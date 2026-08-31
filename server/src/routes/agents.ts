@@ -4331,7 +4331,7 @@ export function agentRoutes(
       return;
     }
 
-    await heartbeat.cancelActiveForAgent(id);
+    await heartbeat.cancelActiveForAgent(id, undefined, agent.pausedAt ?? undefined);
 
     await logActivity(db, {
       companyId: agent.companyId,

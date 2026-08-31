@@ -14356,7 +14356,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
-          await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+          await cancelActiveForAgentInternal(
+            agentId,
+            `Cancelled because the agent is not invokable: ${invokability.reason}`,
+            invokability.reason === "paused" ? "agent_paused" : "cancelled",
+            invokability.reason === "paused" ? agent.pausedAt ?? undefined : undefined,
+          );
         }
         return [];
       }
@@ -19833,12 +19838,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause", errorCode = "cancelled") {
+  async function cancelActiveForAgentInternal(
+    agentId: string,
+    reason = "Cancelled due to agent pause",
+    errorCode = "cancelled",
+    createdAtLte?: Date,
+  ) {
+    // A pause cancellation can finish after the agent has resumed. Restrict it
+    // to work that existed at the observed pause boundary so it cannot cancel a
+    // newly valid run that was accepted after resume.
     const agent = await getAgent(agentId);
     const runs = await db
       .select()
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+        createdAtLte ? lte(heartbeatRuns.createdAt, createdAtLte) : undefined,
+      ));
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {
@@ -20353,7 +20370,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
      * agent pause route. For non-pause cancellations use cancelRun, or call the internal
      * cancelActiveForAgentInternal(agentId, reason, errorCode) with an explicit errorCode.
      */
-    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason, "agent_paused"),
+    cancelActiveForAgent: (agentId: string, reason?: string, pauseBoundary?: Date) =>
+      cancelActiveForAgentInternal(agentId, reason, "agent_paused", pauseBoundary),
 
     cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
       cancelInvocationsForAgentsInternal(agentIds, reason),
