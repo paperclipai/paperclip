@@ -25,4 +25,15 @@ describe("buildOpenCodeModelProfiles cheap lane", () => {
     });
     expect(cheap.adapterConfig).toEqual({ model: "anthropic/gw/cheap" });
   });
+
+  it("applies variant low only for Codex models, not for local or gateway models", () => {
+    // Local Ollama model — no variant
+    const [local] = buildOpenCodeModelProfiles({ PAPERCLIP_OPENCODE_CHEAP_MODEL: "local-gpt-oss/gpt-oss:20b" });
+    expect(local.adapterConfig).toEqual({ model: "local-gpt-oss/gpt-oss:20b" });
+    expect(local.adapterConfig).not.toHaveProperty("variant");
+
+    // Codex override — variant low preserved
+    const [codex] = buildOpenCodeModelProfiles({ PAPERCLIP_OPENCODE_CHEAP_MODEL: "openai/gpt-5.1-codex-mini" });
+    expect(codex.adapterConfig).toEqual({ model: "openai/gpt-5.1-codex-mini", variant: "low" });
+  });
 });
