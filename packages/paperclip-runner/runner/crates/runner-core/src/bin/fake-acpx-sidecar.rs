@@ -575,34 +575,6 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
         }),
         "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
         "session.suspend" => json!({
-            "suspended":true,
-            "identity": {
-                "kind": "acpx",
-                "normalizedSessionId": "session-1",
-                "acpxRecordId": "record-1",
-                "backendSessionId": "backend-1",
-                "agentSessionId": "agent-1",
-                "profileDigest": format!("sha256:{}", "1".repeat(64)),
-                "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
-                "requestedModel": "gpt-5.6-sol",
-                "effectiveModel": "gpt-5.6-sol",
-                "permissionMode": "approve-reads",
-            },
-        }),
-        "tool.resolve" => json!({
-            "resolved":if mode == "resolutions-error-redaction" {
-                params.get("callId").and_then(Value::as_str) == Some("call-1")
-                    && params.get("turnId").and_then(Value::as_str) == Some("turn-1")
-                    && params.get("result").is_none()
-                    && params.pointer("/error/message").and_then(Value::as_str)
-                        == Some("Paperclip semantic operation failed")
-                    && !params.to_string().contains("violet-internal-diagnostic-4821")
-            } else {
-                mode != "resolutions-wrong-ack"
-            }
-        }),
-        "input.resolve" => json!({"resolved":true}),
-        "session.suspend" => json!({
             "suspended":mode != "suspend-wrong-ack",
             "identity": if mode == "suspend-missing-identity" { Value::Null } else { json!({
                 "kind": "acpx",
@@ -617,6 +589,19 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                 "permissionMode": "approve-reads",
             })},
         }),
+        "tool.resolve" => json!({
+            "resolved":if mode == "resolutions-error-redaction" {
+                params.get("callId").and_then(Value::as_str) == Some("call-1")
+                    && params.get("turnId").and_then(Value::as_str) == Some("turn-1")
+                    && params.get("result").is_none()
+                    && params.pointer("/error/message").and_then(Value::as_str)
+                        == Some("Paperclip semantic operation failed")
+                    && !params.to_string().contains("violet-internal-diagnostic-4821")
+            } else {
+                mode != "resolutions-wrong-ack"
+            }
+        }),
+        "input.resolve" => json!({"resolved":true}),
         "session.close" => json!({"closed":true}),
         _ => json!({"command":command,"params":params}),
     };
