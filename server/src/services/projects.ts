@@ -576,6 +576,12 @@ export function projectService(db: Db) {
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    // Non-UUID refs (for example a project shortname the route could not
+    // resolve) previously reached the uuid-typed query and threw a
+    // DrizzleQueryError ("invalid input syntax for type uuid"), surfacing as
+    // HTTP 500 from GET /api/projects/:id. Treat them as not-found so the
+    // route returns 404.
+    if (!isUuidLike(id)) return null;
     const row = await db
       .select()
       .from(projects)
