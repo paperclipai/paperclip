@@ -207,6 +207,77 @@ export function detectHarnesses({ envPath = process.env.PATH ?? "" } = {}) {
   return rows;
 }
 
+function parseVersion(value) {
+  const match = /^v?(\d+)(?:\.(\d+))?/.exec(value?.trim() ?? "");
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2] ?? 0) };
+}
+
+function versionAtLeast(value, minimumMajor, minimumMinor = 0) {
+  const parsed = parseVersion(value);
+  if (!parsed) return false;
+  return parsed.major > minimumMajor
+    || (parsed.major === minimumMajor && parsed.minor >= minimumMinor);
+}
+
+function harnessLabel(harness) {
+  if (harness === "codex") return "Codex";
+  if (harness === "claude") return "Claude Code";
+  return harness;
+}
+
+export function evaluateDelegatePrerequisites({
+  nodeVersion,
+  requirePnpm,
+  pnpm,
+  harnesses,
+  requiredHarness = null,
+}) {
+  const issues = [];
+  if (!versionAtLeast(nodeVersion, 24, 11)) {
+    issues.push(`Node.js 24.11 or newer is required; found ${nodeVersion || "an unknown version"}.`);
+  }
+
+  if (requirePnpm) {
+    if (!pnpm?.installed) {
+      issues.push('pnpm 9 or newer is not installed. Run "corepack enable", then rerun ./setup-delegate.');
+    } else if (!pnpm.version || !versionAtLeast(pnpm.version, 9)) {
+      issues.push(
+        `pnpm 9 or newer is required; found ${pnpm.version || "an unreadable version"}.`,
+      );
+    }
+  }
+
+  if (requiredHarness) {
+    const selected = harnesses.find((row) => row.id === requiredHarness);
+    const label = harnessLabel(requiredHarness);
+    if (!selected) {
+      issues.push(`${label} is required by the saved or selected delegate profile but is not installed.`);
+    } else if (!selected.authenticated) {
+      issues.push(`${label} is installed but not signed in.`);
+    }
+  } else if (!harnesses.some((row) => row.authenticated)) {
+    if (harnesses.length === 0) {
+      issues.push("Install and sign in to Codex or Claude Code.");
+    } else {
+      const labels = harnesses.map((row) => row.label).join(" and ");
+      issues.push(`${labels} ${harnesses.length === 1 ? "is" : "are"} installed but not signed in.`);
+    }
+  }
+
+  return issues;
+}
+
+function detectPnpm({ envPath = process.env.PATH ?? "" } = {}) {
+  const path = executablePath("pnpm", envPath);
+  if (!path) return { installed: false, version: null };
+  const version = commandResult(path, ["--version"]);
+  return {
+    installed: true,
+    version: version.ok ? version.stdout.split(/\s+/)[0] ?? null : null,
+  };
+}
+
 function defaultWorkspaceName() {
   const username = userInfo().username || "Personal";
   const display = username.charAt(0).toUpperCase() + username.slice(1);
@@ -708,6 +779,31 @@ async function prepareCommand() {
   output.write(`Prepared ${desired.workspaceName} with ${desired.harness}${desired.model ? ` (${desired.model})` : " (default model)"}.\n`);
 }
 
+function preflightCommand() {
+  const profilePath = process.env.PAPERCLIP_DELEGATE_PROFILE_PATH?.trim();
+  const existingProfile = profilePath ? readJsonIfPresent(profilePath) : null;
+  const reconfigure = process.env.PAPERCLIP_DELEGATE_RECONFIGURE === "true";
+  const requiredHarness = !reconfigure
+    && existingProfile
+    && [1, DELEGATE_PROFILE_VERSION].includes(existingProfile.version)
+    ? existingProfile.harness
+    : process.env.PAPERCLIP_DELEGATE_HARNESS?.trim().toLowerCase() || null;
+  const issues = evaluateDelegatePrerequisites({
+    nodeVersion: process.versions.node,
+    requirePnpm: process.env.PAPERCLIP_DELEGATE_SKIP_BUILD !== "true",
+    pnpm: detectPnpm(),
+    harnesses: detectHarnesses(),
+    requiredHarness,
+  });
+  if (issues.length > 0) {
+    throw new Error(
+      `Delegate setup cannot continue. Fix these missing or incompatible prerequisites:\n${issues
+        .map((issue) => `  - ${issue}`)
+        .join("\n")}`,
+    );
+  }
+}
+
 async function ensureInstanceCommand() {
   const configPath = requiredEnv("PAPERCLIP_CONFIG");
   const envPath = requiredEnv("PAPERCLIP_DELEGATE_ENV_PATH");
@@ -748,11 +844,14 @@ function profileIdsCommand() {
 
 async function main() {
   const command = process.argv[2];
+  if (command === "preflight") return preflightCommand();
   if (command === "ensure-instance") return ensureInstanceCommand();
   if (command === "prepare") return prepareCommand();
   if (command === "provision") return provisionCommand();
   if (command === "profile-ids") return profileIdsCommand();
-  throw new Error("Usage: delegate-bootstrap.mjs <ensure-instance|prepare|provision|profile-ids>");
+  throw new Error(
+    "Usage: delegate-bootstrap.mjs <preflight|ensure-instance|prepare|provision|profile-ids>",
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

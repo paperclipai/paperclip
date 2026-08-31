@@ -10,6 +10,11 @@ From a clean clone:
 ./setup-delegate
 ```
 
+Setup requires Node.js 24.11 or newer, pnpm 9 or newer, and at least one signed-in
+Codex or Claude Code CLI. Before installing packages, building, or writing instance
+files, the command checks those prerequisites. If anything is missing, outdated, or
+not signed in, it lists every detected problem and exits.
+
 The setup command installs dependencies, builds Paperclip, and asks which signed-in harness should execute delegated work. It also asks whether to use that harness's default model or a specific model id, plus the name of the personal workspace.
 
 It then starts Paperclip and deterministically creates or reuses one personal company with two agents: a human-facing **Chief of Staff** and a **Generalist** who reports to the Chief. Both use the chosen harness and model, disable timer heartbeats, and run at most one task concurrently. Setup also enables the Conference Room. The company and both agent ids are stored in the instance's `delegate-profile.json`; the Chief of Staff is pinned in both Claude Code and Codex MCP configuration, so the human always works through one agent.
