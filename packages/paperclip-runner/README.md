@@ -106,6 +106,14 @@ event authority.
 The Rust question-response validator checks the versioned response envelope
 against the exact persisted question IDs, answer modes, options, required
 answers, custom-answer policy, and text constraints before provider delivery.
+Tool results and structured question responses then use two-phase resolution:
+validate retained identity and schema, require the exact sidecar
+acknowledgement, and only then clear pending local state. Codex permission
+requests violate its pinned sidecar policy and terminate the session fail
+closed.
+Safe suspension is available only with no active turn or pending request. The
+sidecar must return the exact persistent session identity before runnerd
+terminates the local process.
 
 Run the complete contract gate with:
 
