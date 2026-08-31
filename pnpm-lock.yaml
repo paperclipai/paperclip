@@ -842,6 +842,9 @@ importers:
       '@vercel/connect':
         specifier: 0.6.1
         version: 0.6.1(better-auth@1.7.0(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.3.0))(tsx@4.23.12)))
+      acpx:
+        specifier: 0.13.1
+        version: 0.13.1(patch_hash=klzqvo4xom3l6xnrgmyg2xpqci)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
