@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -1062,6 +1063,189 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         }),
       ]),
     );
+  });
+
+  it.each([
+    ["checkout ownership", { checkoutRunId: true, executionRunId: false }],
+    ["execution ownership", { checkoutRunId: false, executionRunId: true }],
+    ["checkout and execution ownership", { checkoutRunId: true, executionRunId: true }],
+  ])("keeps a queued same-issue run dormant while a sibling holds %s", async (_label, locks) => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const issueId = randomUUID();
+    const ownerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Sibling-owned issue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: locks.checkoutRunId ? ownerRunId : null,
+      executionRunId: locks.executionRunId ? ownerRunId : null,
+      executionLockedAt: locks.executionRunId ? new Date() : null,
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [queuedRun, lockedIssue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+    ]);
+    expect(queuedRun?.status).toBe("queued");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+    expect(lockedIssue?.checkoutRunId).toBe(locks.checkoutRunId ? ownerRunId : null);
+    expect(lockedIssue?.executionRunId).toBe(locks.executionRunId ? ownerRunId : null);
+
+    await heartbeat.cancelRun(ownerRunId, "Release sibling ownership for queued wake");
+    await heartbeat.drainActiveRunExecutions();
+
+    const [completedRun, releasedIssue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+    ]);
+    expect(completedRun?.status).toBe("succeeded");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+    expect(releasedIssue).toMatchObject({ checkoutRunId: null, executionRunId: null });
+  });
+
+  it("lets an authorized source-scoped recovery action run without taking source issue ownership", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const issueId = randomUUID();
+    const ownerRunId = randomUUID();
+    const recoveryActionId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Source issue under recovery",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+      executionLockedAt: new Date(),
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "process_lost",
+      fingerprint: `test:${recoveryActionId}`,
+      evidence: {},
+      nextAction: "Repair source issue liveness.",
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "source_scoped_recovery_action",
+      contextExtras: { recoveryActionId },
+      invocationSource: "automation",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [recoveryRun, issue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+    ]);
+    expect(recoveryRun?.status).toBe("succeeded");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+    expect(issue).toMatchObject({ checkoutRunId: ownerRunId, executionRunId: ownerRunId });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, ownerRunId));
+  });
+
+  it("does not let an invalid source-scoped recovery label bypass sibling ownership", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const issueId = randomUUID();
+    const ownerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Source issue with malformed recovery wake",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+      executionLockedAt: new Date(),
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "source_scoped_recovery_action",
+      contextExtras: { recoveryActionId: randomUUID() },
+      invocationSource: "automation",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [queuedRun, issue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+    ]);
+    expect(queuedRun?.status).toBe("queued");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+    expect(issue).toMatchObject({ checkoutRunId: ownerRunId, executionRunId: ownerRunId });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, ownerRunId));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
   });
 
   it("skips wakes before queueing when per-agent daily cost cap is reached", async () => {

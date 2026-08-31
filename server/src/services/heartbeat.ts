@@ -12952,17 +12952,146 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
+    const recoveryActionId = readNonEmptyString(context.recoveryActionId);
+    const claimed = issueId
+      ? await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          select id from issues
+          where id = ${issueId} and company_id = ${run.companyId}
+          for update
+        `);
+        const issue = await tx
+          .select({
+            id: issues.id,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!issue) return null;
+
+        const authorizedSourceScopedRecovery =
+          readNonEmptyString(context.wakeReason) === "source_scoped_recovery_action" &&
+          recoveryActionId
+            ? await tx
+              .select({ id: issueRecoveryActions.id })
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.id, recoveryActionId),
+                eq(issueRecoveryActions.companyId, run.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issue.id),
+                eq(issueRecoveryActions.ownerAgentId, run.agentId),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .limit(1)
+              .then((rows) => Boolean(rows[0]))
+            : false;
+
+        const mustAcquireIssueExecutionAuthority =
+          !authorizedSourceScopedRecovery && issue.assigneeAgentId === run.agentId;
+        if (mustAcquireIssueExecutionAuthority) {
+          // A normal issue-bound run must acquire the source issue's execution
+          // authority before it can become running. Recovery-action runs are a
+          // separate authority contract and intentionally do not claim these fields.
+          const ownerIds = [...new Set(
+            [issue.checkoutRunId, issue.executionRunId]
+              .filter((ownerId): ownerId is string => Boolean(ownerId && ownerId !== run.id)),
+          )];
+          const ownerStatusById = new Map<string, string>();
+          if (ownerIds.length > 0) {
+            await tx.execute(sql`
+              select id from heartbeat_runs
+              where ${inArray(heartbeatRuns.id, ownerIds)}
+              order by id
+              for update
+            `);
+            const owners = await tx
+              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(inArray(heartbeatRuns.id, ownerIds));
+            for (const owner of owners) ownerStatusById.set(owner.id, owner.status);
+          }
+
+          const hasLiveSiblingOwner = ownerIds.some((ownerId) => {
+            const status = ownerStatusById.get(ownerId);
+            return status !== undefined && !isHeartbeatRunTerminalStatus(status);
+          });
+          if (hasLiveSiblingOwner) return null;
+
+          const checkoutOwnerIsStale = Boolean(
+            issue.checkoutRunId &&
+            issue.checkoutRunId !== run.id &&
+            (
+              !ownerStatusById.has(issue.checkoutRunId) ||
+              isHeartbeatRunTerminalStatus(ownerStatusById.get(issue.checkoutRunId))
+            ),
+          );
+          const executionOwnerIsStale = Boolean(
+            issue.executionRunId &&
+            issue.executionRunId !== run.id &&
+            (
+              !ownerStatusById.has(issue.executionRunId) ||
+              isHeartbeatRunTerminalStatus(ownerStatusById.get(issue.executionRunId))
+            ),
+          );
+          if (checkoutOwnerIsStale || executionOwnerIsStale) {
+            await tx
+              .update(issues)
+              .set({
+                ...(checkoutOwnerIsStale ? { checkoutRunId: null } : {}),
+                ...(executionOwnerIsStale
+                  ? {
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                  }
+                  : {}),
+                updatedAt: claimedAt,
+              })
+              .where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
+          }
+        }
+
+        const claimedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "running",
+            responsibleUserId,
+            startedAt: run.startedAt ?? claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!claimedRun) return null;
+
+        if (mustAcquireIssueExecutionAuthority) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: claimedRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(agent.name),
+              executionLockedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
+        }
+
+        return claimedRun;
       })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+      : await db
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -12983,33 +13112,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
