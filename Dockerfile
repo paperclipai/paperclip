@@ -52,9 +52,14 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends cargo rustc \
-  && rm -rf /var/lib/apt/lists/*
+# Debian's packaged rust lags the ecosystem (trixie ships 1.85) and the
+# runner's dependency tree now requires rustc >= 1.88 (icu_* 2.3). Install a
+# pinned stable via rustup instead, matching what the hosted CI runners
+# already provide, so image builds and CI can't drift apart again.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89.0 --profile minimal
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
