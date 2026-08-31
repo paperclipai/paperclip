@@ -3407,6 +3407,76 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/** Resolved facts about a single queued run, used to order an agent's queue. */
+export interface QueuedRunPickupCandidate {
+  /** Epoch ms of the run's createdAt — the FIFO tiebreaker of last resort. */
+  createdAtMs: number;
+  /** Whether the run is tied to an issue at all. */
+  hasIssue: boolean;
+  /** Whether the issue's blockers are resolved. */
+  isDependencyReady: boolean;
+  /** The issue's board status (e.g. "in_progress"). */
+  issueStatus: string | null | undefined;
+  /** The issue's priority ("critical" | "high" | "medium" | "low"). */
+  issuePriority: string | null | undefined;
+  /** The issue's execution state, used to detect reviewer-requested rework. */
+  executionState: Record<string, unknown> | null | undefined;
+}
+
+function queuedRunPickupStatusRank(candidate: QueuedRunPickupCandidate): number {
+  if (!candidate.hasIssue) return 2;
+  if (!candidate.isDependencyReady) return 3;
+  return candidate.issueStatus === "in_progress" ? 0 : 1;
+}
+
+function queuedRunPickupPriorityRank(priority: string | null | undefined): number {
+  switch (priority) {
+    case "critical":
+      return 0;
+    case "high":
+      return 1;
+    case "medium":
+      return 2;
+    case "low":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+// Issues a reviewer sent back with requested changes carry
+// executionState.status === "changes_requested" until the assignee resubmits
+// them for review, at which point the marker clears itself. Detecting it lets
+// us pick the rework up next instead of at the back of the queue.
+function isReworkPickupCandidate(candidate: QueuedRunPickupCandidate): boolean {
+  return readNonEmptyString(candidate.executionState?.status) === "changes_requested";
+}
+
+/**
+ * Ordering that decides which of an agent's queued runs starts next.
+ * Precedence, highest first:
+ *   1. dependency/status rank (in_progress > ready > no-issue > blocked)
+ *   2. reviewer-requested rework — a just-reworked issue is picked next so the
+ *      assignee acts on human feedback right after its current task instead of
+ *      after the rest of its backlog
+ *   3. issue priority (critical > high > medium > low)
+ *   4. FIFO by createdAt
+ * Returns a negative number when `left` should run before `right`.
+ */
+export function compareQueuedRunPickup(
+  left: QueuedRunPickupCandidate,
+  right: QueuedRunPickupCandidate,
+): number {
+  const statusRank = queuedRunPickupStatusRank(left) - queuedRunPickupStatusRank(right);
+  if (statusRank !== 0) return statusRank;
+  const reworkRank = (isReworkPickupCandidate(left) ? 0 : 1) - (isReworkPickupCandidate(right) ? 0 : 1);
+  if (reworkRank !== 0) return reworkRank;
+  const priorityRank =
+    queuedRunPickupPriorityRank(left.issuePriority) - queuedRunPickupPriorityRank(right.issuePriority);
+  if (priorityRank !== 0) return priorityRank;
+  return left.createdAtMs - right.createdAtMs;
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -12818,21 +12888,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  }
-
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -14387,6 +14442,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(
@@ -14396,23 +14452,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
-        const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
-        const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
-        const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
-        const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
-        const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+      const toPickupCandidate = (run: typeof heartbeatRuns.$inferSelect): QueuedRunPickupCandidate => {
+        const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const issue = issueId ? issueById.get(issueId) : null;
+        return {
+          createdAtMs: run.createdAt.getTime(),
+          hasIssue: Boolean(issueId),
+          isDependencyReady: issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true,
+          issueStatus: issue?.status,
+          issuePriority: issue?.priority,
+          executionState: issue?.executionState,
+        };
+      };
+      const prioritizedRuns = [...queuedRuns].sort((left, right) =>
+        compareQueuedRunPickup(toPickupCandidate(left), toPickupCandidate(right)),
+      );
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
