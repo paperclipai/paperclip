@@ -12,7 +12,10 @@ use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
 };
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
-use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedToolSet};
+use paperclip_runner_core::provider_bridge::{
+    authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
+};
+use serde_json::json;
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -85,7 +88,7 @@ fn round_trips_an_exact_private_suspension_checkpoint_idempotently() {
     store.save(&checkpoint).unwrap();
     let recovered = store.load().unwrap().unwrap();
     assert_eq!(recovered, checkpoint);
-    assert_eq!(recovered.expected_identity(), identity());
+    assert_eq!(recovered.admit_recovery(&config).unwrap(), identity());
 
     #[cfg(unix)]
     {
@@ -102,6 +105,57 @@ fn round_trips_an_exact_private_suspension_checkpoint_idempotently() {
             0
         );
     }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn admits_recovery_only_for_the_exact_run_catalog_and_provider_identity() {
+    let directory = temporary_directory("recovery-admission");
+    let config = config(&directory);
+    let checkpoint = AcpxSuspensionCheckpoint::from_suspension(&config, identity()).unwrap();
+
+    let mut changed_run = config.clone();
+    changed_run.run_id = "run-2".to_owned();
+    let mut changed_session = config.clone();
+    changed_session.normalized_session_id = "session-2".to_owned();
+    let mut changed_revision = config.clone();
+    changed_revision.catalog_revision += 1;
+    let mut changed_catalog = config.clone();
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read one issue".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    changed_catalog.tool_set = AuthorizedToolSet {
+        schema: "paperclip.runner.authorized-tools.v1".to_owned(),
+        schema_version: 1,
+        catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+        operations,
+    };
+    let mut changed_model = config.clone();
+    changed_model.model = "gpt-5.6-sol-mini".to_owned();
+    let mut changed_permission = config.clone();
+    changed_permission.permission_mode = AcpxPermissionMode::ApproveAll;
+    let mut changed_expected_identity = config.clone();
+    let mut expected = identity();
+    expected.backend_session_id = "backend-session-2".to_owned();
+    changed_expected_identity.expected_identity = Some(expected);
+
+    for (label, changed) in [
+        ("run", changed_run),
+        ("session", changed_session),
+        ("revision", changed_revision),
+        ("catalog", changed_catalog),
+        ("model", changed_model),
+        ("permission", changed_permission),
+        ("expected identity", changed_expected_identity),
+    ] {
+        let error = checkpoint.admit_recovery(&changed).unwrap_err().to_string();
+        assert!(error.contains("conflict"), "{label}: {error}");
+    }
+
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -126,11 +180,32 @@ fn fails_closed_on_unknown_or_oversized_checkpoint_files() {
     let store = AcpxSuspensionCheckpointStore::new(&directory).unwrap();
     store.save(&checkpoint).unwrap();
 
-    let mut malformed: serde_json::Value =
+    let valid: serde_json::Value =
         serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
-    malformed["unexpected"] = serde_json::json!(true);
-    fs::write(store.path(), serde_json::to_vec(&malformed).unwrap()).unwrap();
-    assert!(store.load().unwrap_err().to_string().contains("malformed"));
+    let mut top_level_unknown = valid.clone();
+    top_level_unknown["unexpected"] = json!(true);
+    let mut nested_unknown = valid.clone();
+    nested_unknown["identity"]["unexpected"] = json!(true);
+    let mut missing_permission = valid.clone();
+    missing_permission["identity"]
+        .as_object_mut()
+        .unwrap()
+        .remove("permissionMode");
+    let mut invalid_run = valid.clone();
+    invalid_run["runId"] = json!("run 1");
+    let mut invalid_session = valid;
+    invalid_session["normalizedSessionId"] = json!("séssion-1");
+
+    for malformed in [
+        top_level_unknown,
+        nested_unknown,
+        missing_permission,
+        invalid_run,
+        invalid_session,
+    ] {
+        fs::write(store.path(), serde_json::to_vec(&malformed).unwrap()).unwrap();
+        assert!(store.load().is_err());
+    }
 
     fs::write(store.path(), vec![b'x'; 1024 * 1024 + 1]).unwrap();
     assert!(store.load().unwrap_err().to_string().contains("1 MiB"));

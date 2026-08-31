@@ -9,11 +9,14 @@ use std::os::unix::fs::DirBuilderExt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::acpx_provider_session::{AcpxProviderSessionConfig, AcpxProviderSessionIdentity};
+use crate::acpx_provider_session::{
+    AcpxPermissionMode, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
+};
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory,
 };
 use crate::local_runner::LocalRunnerError;
+use crate::stable_identity::{is_stable_id, SHORT_STABLE_ID_CHARS};
 
 const CHECKPOINT_SCHEMA: &str = "paperclip.runner.acpx-suspension-checkpoint.v1";
 const CHECKPOINT_DIRECTORY: &str = "acpx-provider";
@@ -24,12 +27,69 @@ const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpxSuspensionCheckpoint {
-    pub schema: String,
-    pub run_id: String,
-    pub normalized_session_id: String,
-    pub catalog_revision: u64,
-    pub catalog_digest: String,
-    pub identity: AcpxProviderSessionIdentity,
+    schema: String,
+    run_id: String,
+    normalized_session_id: String,
+    catalog_revision: u64,
+    catalog_digest: String,
+    identity: PersistedAcpxProviderSessionIdentity,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedAcpxProviderSessionIdentity {
+    kind: String,
+    normalized_session_id: String,
+    acpx_record_id: String,
+    backend_session_id: String,
+    agent_session_id: String,
+    profile_digest: String,
+    workspace_digest: String,
+    requested_model: String,
+    effective_model: String,
+    permission_mode: AcpxPermissionMode,
+}
+
+impl PersistedAcpxProviderSessionIdentity {
+    fn from_runtime(identity: AcpxProviderSessionIdentity) -> Result<Self, LocalRunnerError> {
+        identity.validate()?;
+        let permission_mode = identity.permission_mode.ok_or_else(|| {
+            LocalRunnerError::invalid(
+                "ACPX suspension checkpoint identity omitted its pinned permission mode",
+            )
+        })?;
+        Ok(Self {
+            kind: identity.kind,
+            normalized_session_id: identity.normalized_session_id,
+            acpx_record_id: identity.acpx_record_id,
+            backend_session_id: identity.backend_session_id,
+            agent_session_id: identity.agent_session_id,
+            profile_digest: identity.profile_digest,
+            workspace_digest: identity.workspace_digest,
+            requested_model: identity.requested_model,
+            effective_model: identity.effective_model,
+            permission_mode,
+        })
+    }
+
+    fn runtime_identity(&self) -> AcpxProviderSessionIdentity {
+        AcpxProviderSessionIdentity {
+            kind: self.kind.clone(),
+            normalized_session_id: self.normalized_session_id.clone(),
+            acpx_record_id: self.acpx_record_id.clone(),
+            backend_session_id: self.backend_session_id.clone(),
+            agent_session_id: self.agent_session_id.clone(),
+            profile_digest: self.profile_digest.clone(),
+            workspace_digest: self.workspace_digest.clone(),
+            requested_model: self.requested_model.clone(),
+            effective_model: self.effective_model.clone(),
+            permission_mode: Some(self.permission_mode),
+        }
+    }
+
+    fn validate(&self) -> Result<(), LocalRunnerError> {
+        self.runtime_identity().validate()
+    }
 }
 
 impl AcpxSuspensionCheckpoint {
@@ -58,7 +118,7 @@ impl AcpxSuspensionCheckpoint {
             normalized_session_id: config.normalized_session_id.clone(),
             catalog_revision: config.catalog_revision,
             catalog_digest: config.tool_set.catalog_digest.clone(),
-            identity,
+            identity: PersistedAcpxProviderSessionIdentity::from_runtime(identity)?,
         };
         checkpoint.validate()?;
         Ok(checkpoint)
@@ -70,8 +130,8 @@ impl AcpxSuspensionCheckpoint {
                 "ACPX suspension checkpoint schema is unsupported",
             ));
         }
-        validate_text(&self.run_id, 160, "run")?;
-        validate_text(&self.normalized_session_id, 160, "normalized session")?;
+        validate_stable_id(&self.run_id, "run")?;
+        validate_stable_id(&self.normalized_session_id, "normalized session")?;
         if self.catalog_revision == 0 || self.catalog_revision > MAX_JSON_SAFE_INTEGER {
             return Err(LocalRunnerError::invalid(
                 "ACPX suspension checkpoint catalog revision is invalid",
@@ -91,8 +151,20 @@ impl AcpxSuspensionCheckpoint {
         Ok(())
     }
 
-    pub fn expected_identity(&self) -> AcpxProviderSessionIdentity {
-        self.identity.clone()
+    pub fn admit_recovery(
+        &self,
+        config: &AcpxProviderSessionConfig,
+    ) -> Result<AcpxProviderSessionIdentity, LocalRunnerError> {
+        self.validate()?;
+        config.validate()?;
+        let identity = self.identity.runtime_identity();
+        let expected = Self::from_suspension(config, identity.clone())?;
+        if &expected != self {
+            return Err(LocalRunnerError::invalid(
+                "ACPX suspension checkpoint conflicts with the recovery configuration",
+            ));
+        }
+        Ok(identity)
     }
 }
 
@@ -233,11 +305,8 @@ fn secure_directory(path: &Path, label: &str) -> Result<(), LocalRunnerError> {
     })
 }
 
-fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
-    if value.trim().is_empty()
-        || value.chars().count() > max_chars
-        || value.chars().any(char::is_control)
-    {
+fn validate_stable_id(value: &str, label: &str) -> Result<(), LocalRunnerError> {
+    if !is_stable_id(value, SHORT_STABLE_ID_CHARS) {
         return Err(LocalRunnerError::invalid(format!(
             "ACPX suspension checkpoint {label} identity is invalid"
         )));
