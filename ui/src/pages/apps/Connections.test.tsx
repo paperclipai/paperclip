@@ -13,6 +13,8 @@ const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
+const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 
@@ -25,6 +27,8 @@ vi.mock("@/api/tools", () => ({
     listProfiles: (companyId: string) => listProfilesMock(companyId),
     archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
       archiveConnectionMock(connectionId, options),
+    getCloudConnectorEnrollment: () => getCloudConnectorEnrollmentMock(),
+    startCloudConnectorEnrollment: (companyId: string, label?: string) => startCloudConnectorEnrollmentMock(companyId, label),
   },
 }));
 
@@ -165,6 +169,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     listProfilesMock.mockResolvedValue({ profiles: [] });
     listUserDirectoryMock.mockResolvedValue({ users: [] });
     archiveConnectionMock.mockResolvedValue(connection({ id: "c-deleted", status: "archived" }));
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: true,
+      status: "active",
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: "instance-test",
+      environment: "development",
+      origins: ["http://localhost:3100"],
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
   });

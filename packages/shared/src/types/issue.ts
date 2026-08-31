@@ -970,6 +970,38 @@ export interface IssueComment {
   updatedAt: Date;
 }
 
+export type IssueQueuedCommentProtocol = "paperclip_runner_v1" | "legacy";
+export type IssueQueuedCommentQueueState = "deferred" | "queued";
+export type IssueQueuedCommentSteeringDisposition =
+  | "available"
+  | "unsupported"
+  | "temporarily_unavailable";
+
+export interface IssueQueuedCommentEntry {
+  comment: IssueComment;
+  position: number;
+  canEdit: boolean;
+  canDiscard: boolean;
+}
+
+/**
+ * Authoritative projection of comments waiting to be delivered to an issue
+ * run. `queueId` remains stable while a deferred wake is promoted to a queued
+ * run. `revision` is opaque and must be echoed by queue mutations so a stale
+ * browser cannot overwrite newer queue content or ordering.
+ */
+export interface IssueQueuedCommentQueue {
+  issueId: string;
+  queueId: string | null;
+  state: IssueQueuedCommentQueueState | null;
+  /** The currently-running turn that can accept same-turn steering. */
+  targetRunId: string | null;
+  revision: string;
+  protocol: IssueQueuedCommentProtocol;
+  steeringDisposition: IssueQueuedCommentSteeringDisposition;
+  entries: IssueQueuedCommentEntry[];
+}
+
 interface IssueCommentMetadataRowBase {
   type: IssueCommentMetadataRowType;
   label?: string | null;
@@ -1082,7 +1114,7 @@ export interface SuggestTasksResultCreatedTask {
 
 export interface SuggestTasksResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome?: "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
@@ -1178,7 +1210,7 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome?: "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
@@ -1386,6 +1418,7 @@ export interface RequestConfirmationResult {
     | "superseded_by_comment"
     | "superseded_by_newer_request"
     | "stale_target"
+    | "skipped"
     | "withdrawn"
     | "issue_closed"
     | "addressee_deleted";
@@ -1424,7 +1457,7 @@ export interface RequestItemVerdictsResultItem {
 
 export interface RequestItemVerdictsResult {
   version: 1;
-  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];

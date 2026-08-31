@@ -26,6 +26,7 @@ import {
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
+  resolveNativeRecoveryExecutionWorkspaceBinding,
   resolveExecutionWorkspaceBranchOwnership,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
@@ -1722,6 +1723,17 @@ describe("effective run execution workspace config freshness", () => {
       realizeWorkspace,
     })).rejects.toThrow(/could not be restored/);
     expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake a projectless native run-id binding for a missing persisted workspace", () => {
+    expect(resolveNativeRecoveryExecutionWorkspaceBinding({
+      bindingId: "run-projectless",
+      persistedWorkspaceFound: false,
+    })).toBeNull();
+    expect(resolveNativeRecoveryExecutionWorkspaceBinding({
+      bindingId: "workspace-persisted",
+      persistedWorkspaceFound: true,
+    })).toBe("workspace-persisted");
   });
 
   it.each([

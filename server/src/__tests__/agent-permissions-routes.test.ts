@@ -504,6 +504,72 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("requires instance administration to enable agent-scoped raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { debug: { providerTrace: "raw" } } }));
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows instance administrators to enable agent-scoped raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { debug: { providerTrace: "raw" } } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ["direct creation", `/api/companies/${companyId}/agents`],
+    ["hire creation", `/api/companies/${companyId}/agent-hires`],
+  ])("requires instance administration for raw provider traces during %s", async (_label, path) => {
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(path)
+      .send({
+        name: "Trace attempt",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      }));
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
   it("blocks api key creation for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

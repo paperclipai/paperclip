@@ -173,7 +173,7 @@ describe("AppDefinition catalog",()=>{
   for(const [slug,serverUrl] of Object.entries(expected)){
    const app=APP_DEFINITIONS.find((candidate)=>candidate.slug===slug);
    expect(app,slug).toBeTruthy();
-   expect(app?.methods.some((method)=>method.oauthStrategy==="paperclip_id_connector")).toBe(true);
+   expect(app?.methods.some((method)=>method.oauthStrategy==="paperclip_cloud_connector")).toBe(true);
    for(const method of app?.methods.filter((candidate)=>candidate.auth==="oauth")??[]){
     expect(method.grantKinds,`${slug}:${method.key}`).toEqual(["user"]);
     expect(method.defaults?.serverUrl,`${slug}:${method.key}`).toBe(serverUrl);
@@ -183,7 +183,7 @@ describe("AppDefinition catalog",()=>{
  });
  it("advertises managed Gmail methods with their profile-scoped grants",()=>{
   const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail");
-  const managedMethods=gmail?.methods.filter((method)=>method.oauthStrategy==="paperclip_id_connector")??[];
+  const managedMethods=gmail?.methods.filter((method)=>method.oauthStrategy==="paperclip_cloud_connector")??[];
   expect(managedMethods.map((method)=>method.key)).toEqual(["paperclip-read","paperclip-draft"]);
   expect(managedMethods.map((method)=>[method.connectorProfile,method.defaults?.scopesHint])).toEqual([
    ["gmail.read",["https://www.googleapis.com/auth/gmail.readonly"]],

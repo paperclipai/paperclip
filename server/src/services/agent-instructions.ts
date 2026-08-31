@@ -170,7 +170,10 @@ function shouldIgnoreInstructionsEntry(entry: { name: string; isDirectory(): boo
   );
 }
 
-async function listFilesRecursive(rootPath: string): Promise<string[]> {
+async function listFilesRecursive(
+  rootPath: string,
+  options?: { rejectSymlinks?: boolean },
+): Promise<string[]> {
   const output: string[] = [];
 
   async function walk(currentPath: string, relativeDir: string) {
@@ -181,6 +184,12 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
       const relativePath = normalizeRelativeFilePath(
         relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name,
       );
+      if (entry.isSymbolicLink()) {
+        if (options?.rejectSymlinks) {
+          throw unprocessable(`Instructions bundle may not contain symlinks: ${relativePath}`);
+        }
+        continue;
+      }
       if (entry.isDirectory()) {
         await walk(absolutePath, relativePath);
         continue;
@@ -653,7 +662,7 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
-  async function exportFiles(agent: AgentLike): Promise<{
+  async function exportFiles(agent: AgentLike, options?: { rejectSymlinks?: boolean }): Promise<{
     files: Record<string, string>;
     entryFile: string;
     warnings: string[];
@@ -662,7 +671,7 @@ export function agentInstructionsService() {
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
-        const relativePaths = await listFilesRecursive(state.rootPath);
+        const relativePaths = await listFilesRecursive(state.rootPath, options);
         const files = Object.fromEntries(await Promise.all(relativePaths.map(async (relativePath) => {
           const absolutePath = resolvePathWithinRoot(state.rootPath!, relativePath);
           const content = await fs.readFile(absolutePath, "utf8");

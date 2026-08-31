@@ -87,6 +87,12 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import { providerTraceStore } from "../services/provider-trace-store.js";
+import {
+  persistReprojectedWorkspaceDiffs,
+  projectCodexWorkspaceDiffsFromTrace,
+  type WorkspaceDiffReprojectionSkipReason,
+} from "../services/provider-trace-workspace-diff-reprojection.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -99,6 +105,22 @@ import {
 } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+import {
+  HarnessRuntimeRequestResolutionError,
+  parseHarnessRuntimeRequestResolution,
+  type HarnessRuntimeRequestKind,
+  type HarnessRuntimeRequestResolution,
+} from "../vendor/paperclip-runner/index.js";
+import {
+  queueRunnerPrpRuntimeRequestResolution,
+  RunnerPrpRuntimeRequestResolutionError,
+} from "../realtime/runner-prp-ws.js";
+import {
+  assertNativeRuntimeRequestResolverAuthorized,
+  NativeRuntimeRequestResolutionAuthorizationError,
+  readPendingNativeRuntimeRequest,
+  type NativeRuntimeRequestResolver,
+} from "../services/native-runtime/runtime-request-resolution-authority.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
   instanceSettingsService,
@@ -487,6 +509,11 @@ export function agentRoutes(
   const runRedactions = createRunSecretRedactionRegistry(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const providerTraces = providerTraceStore(db);
+  const traceExpiryCleanup = providerTraces.cleanupExpired?.();
+  void traceExpiryCleanup?.catch((error) => {
+    logger.warn({ error }, "provider trace expiry cleanup failed");
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
@@ -1741,6 +1768,19 @@ export function agentRoutes(
     return value as Record<string, unknown>;
   }
 
+  function assertCanPersistRawProviderTrace(
+    req: Request,
+    runtimeConfig: unknown,
+  ): void {
+    const debug = asRecord(asRecord(runtimeConfig)?.debug);
+    if (debug?.providerTrace === "raw") {
+      // Raw provider payloads can contain prompts, tool inputs, and provider
+      // metadata. Apply the same instance-admin boundary on every persistence
+      // path so create/hire cannot bypass the PATCH guard.
+      assertInstanceAdmin(req);
+    }
+  }
+
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -2413,6 +2453,14 @@ export function agentRoutes(
     );
 
     const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
+    if (
+      adapterType === "paperclip_runner" &&
+      desiredSkillEntries.some((entry) => entry.key === "paperclipai/paperclip/paperclip")
+    ) {
+      throw unprocessable(
+        "paperclip_runner does not support the legacy Paperclip operational skill (paperclipai/paperclip/paperclip); remove it from this agent",
+      );
+    }
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),
@@ -3534,6 +3582,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertCanPersistRawProviderTrace(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3753,6 +3802,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertCanPersistRawProviderTrace(req, createInput.runtimeConfig);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -4196,6 +4246,7 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertCanPersistRawProviderTrace(req, runtimeConfig);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
@@ -4665,6 +4716,9 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    if (req.body.debug?.providerTrace === "raw") {
+      assertInstanceAdmin(req);
+    }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
@@ -4684,6 +4738,16 @@ export function agentRoutes(
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        ...(req.body.reason === "rerun_with_provider_trace" &&
+        req.body.debug?.providerTrace === "raw"
+          ? { resumeIntent: true }
+          : {}),
+        ...(req.body.debug?.providerTrace === "raw"
+          ? {
+              debug: { providerTrace: "raw" },
+              providerTraceRequestedBy: req.actor.userId ?? "local-admin",
+            }
+          : {}),
       },
     });
 
@@ -4704,6 +4768,23 @@ export function agentRoutes(
       entityId: run.id,
       details: { agentId: id },
     });
+    if (req.body.debug?.providerTrace === "raw") {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: run.id,
+        action: "provider_trace.capture_requested",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          mode: "raw",
+          retentionHours: 24,
+          maxBytes: 64 * 1024 * 1024,
+        },
+      });
+    }
 
     res.status(202).json(run);
   };
@@ -4735,6 +4816,10 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    const providerTraceRequested = req.body?.debug?.providerTrace === "raw";
+    if (providerTraceRequested) {
+      assertInstanceAdmin(req);
+    }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
@@ -4748,6 +4833,7 @@ export function agentRoutes(
       idempotencyKey: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
+      debug: unknown;
     }>;
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
@@ -4755,6 +4841,14 @@ export function agentRoutes(
     };
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
+    }
+    if (providerTraceRequested) {
+      contextSnapshot.debug = { providerTrace: "raw" };
+      contextSnapshot.providerTraceRequestedBy =
+        req.actor.userId ?? "local-admin";
+      if (body.reason === "rerun_with_provider_trace") {
+        contextSnapshot.resumeIntent = true;
+      }
     }
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
@@ -4791,6 +4885,23 @@ export function agentRoutes(
       entityId: run.id,
       details: { agentId: id },
     });
+    if (providerTraceRequested) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: run.id,
+        action: "provider_trace.capture_requested",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          mode: "raw",
+          retentionHours: 24,
+          maxBytes: 64 * 1024 * 1024,
+        },
+      });
+    }
 
     res.status(202).json(run);
   });
@@ -5284,6 +5395,35 @@ export function agentRoutes(
     res.json(await Promise.all(runs.map((run) => runRedactions.redactForRun(companyId, run.id, run))));
   });
 
+  router.get("/companies/:companyId/provider-traces", async (req, res) => {
+    assertInstanceAdmin(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runIds = String(req.query.runIds ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    const traces = await providerTraces.listMetadataForRuns(companyId, runIds);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "provider_trace.metadata_listed",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        requestedRunCount: runIds.length,
+        traceCount: traces.length,
+        payloadLogged: false,
+      },
+    });
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(traces);
+  });
+
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -5416,6 +5556,156 @@ export function agentRoutes(
     res.json(run);
   });
 
+  router.post(
+    "/heartbeat-runs/:runId/runtime-requests/:requestId/resolve",
+    async (req, res) => {
+      assertBoard(req);
+      const runId = req.params.runId as string;
+      const requestId = req.params.requestId as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!existing) return;
+      if (existing.runtimeMode !== "native" || existing.status !== "running") {
+        throw conflict(
+          "This runner session is no longer accepting runtime responses.",
+        );
+      }
+      if (!requestId || requestId.length > 160) {
+        throw badRequest("A runtime request identifier is required.");
+      }
+      const resolutionActor: NativeRuntimeRequestResolver = {
+        type: "user",
+        userId:
+          req.actor.userId
+          ?? (req.actor.source === "local_implicit" ? "local-admin" : ""),
+        isInstanceAdmin:
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true,
+      };
+      const pendingRequest = await readPendingNativeRuntimeRequest(db, {
+        companyId: existing.companyId,
+        runId,
+        requestId,
+      });
+      if (!pendingRequest) {
+        throw conflict("This runtime request is stale or is no longer pending.");
+      }
+      try {
+        assertNativeRuntimeRequestResolverAuthorized(
+          pendingRequest,
+          resolutionActor,
+        );
+      } catch (error) {
+        if (error instanceof NativeRuntimeRequestResolutionAuthorizationError) {
+          throw forbidden(
+            pendingRequest.resolverPolicy === "instance_admin"
+              ? "Instance admin access is required to resolve privileged runtime approvals."
+              : "This actor is not authorized to resolve the runtime request.",
+          );
+        }
+        throw error;
+      }
+      // Kind and turn are read only from the server-persisted PRP event. Body
+      // values are deliberately ignored so a caller cannot downgrade an
+      // approval into a human-only question or move a response across turns.
+      const rawRequestKind = pendingRequest.requestKind;
+      let resolution: HarnessRuntimeRequestResolution;
+      try {
+        if (rawRequestKind === "runtime") {
+          const candidate = req.body?.resolution;
+          const action = candidate?.action;
+          if (action === "decline" || action === "cancel") {
+            resolution = { action };
+          } else if (
+            action === "submit" &&
+            candidate?.response?.schema === "paperclip.question_response.v1" &&
+            candidate.response.answers &&
+            typeof candidate.response.answers === "object" &&
+            !Array.isArray(candidate.response.answers)
+          ) {
+            // The active session/durable runner validates this untrusted
+            // response against its persisted question set immediately before
+            // translating it back to the provider.
+            resolution = { action: "submit", response: candidate.response };
+          } else {
+            throw new HarnessRuntimeRequestResolutionError(
+              "user_input",
+              "runtime input requires a canonical submit, decline, or cancel",
+            );
+          }
+        } else {
+          resolution = parseHarnessRuntimeRequestResolution(
+            rawRequestKind as HarnessRuntimeRequestKind,
+            req.body?.resolution,
+          );
+        }
+      } catch (error) {
+        if (error instanceof HarnessRuntimeRequestResolutionError) {
+          throw badRequest("Invalid runtime request response.");
+        }
+        throw error;
+      }
+
+      try {
+        // Re-read the canonical lifecycle immediately before the durable
+        // command mutation. A resolution/cancellation committed while the
+        // response body was parsed revokes this route's authority.
+        const currentPendingRequest = await readPendingNativeRuntimeRequest(db, {
+          companyId: existing.companyId,
+          runId,
+          requestId,
+        });
+        if (
+          !currentPendingRequest
+          || currentPendingRequest.requestKind !== pendingRequest.requestKind
+          || currentPendingRequest.turnId !== pendingRequest.turnId
+        ) {
+          throw conflict("This runtime request is stale or is no longer pending.");
+        }
+        const queued = queueRunnerPrpRuntimeRequestResolution({
+          companyId: existing.companyId,
+          runId,
+          pendingRequest: currentPendingRequest,
+          actor: resolutionActor,
+          resolution,
+        });
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "heartbeat.runtime_request_resolution_queued",
+          entityType: "heartbeat_run",
+          entityId: existing.id,
+          details: {
+            requestId,
+            requestKind: currentPendingRequest.requestKind,
+            resolverPolicy: currentPendingRequest.resolverPolicy,
+            resolvedByUserId: resolutionActor.userId,
+            action: resolution.action,
+          },
+        });
+        res.status(202).json({ accepted: true, commandId: queued.commandId });
+      } catch (error) {
+        if (error instanceof NativeRuntimeRequestResolutionAuthorizationError) {
+          throw forbidden(
+            "This actor is not authorized to resolve the runtime request.",
+          );
+        }
+        if (error instanceof RunnerPrpRuntimeRequestResolutionError) {
+          throw conflict(
+            error.code === "runtime_request_resolution_conflict"
+              ? "A different response was already submitted for this runtime request."
+              : "The runner session is no longer accepting runtime responses.",
+          );
+        }
+        throw error;
+      }
+    },
+  );
+
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
@@ -5446,6 +5736,193 @@ export function agentRoutes(
     });
 
     res.json(row);
+  });
+
+  router.get("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
+    assertInstanceAdmin(req);
+    const runId = req.params.runId as string;
+    const run = await getAccessibleResource(
+      req,
+      res,
+      heartbeat.getRun(runId),
+      "Heartbeat run not found",
+    );
+    if (!run) return;
+    const inspection = await providerTraces.inspect(run.id, run.companyId);
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "local-admin",
+      action: "provider_trace.redacted_viewed",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        traceId: inspection.trace?.id ?? null,
+        rawPayloadRevealed: false,
+      },
+    });
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(inspection);
+  });
+
+  router.post(
+    "/heartbeat-runs/:runId/provider-trace/reproject-workspace-diffs",
+    async (req, res) => {
+      assertBoard(req);
+      const runId = req.params.runId as string;
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+
+      const trace = await providerTraces.getByRun(run.id, run.companyId);
+      let unavailable: WorkspaceDiffReprojectionSkipReason | null = null;
+      if (!trace || trace.deletedAt) unavailable = { reason: "trace_unavailable" };
+      else if (trace.expiresAt <= new Date()) unavailable = { reason: "trace_expired" };
+      else if (trace.status !== "complete") unavailable = { reason: "trace_incomplete" };
+      if (unavailable !== null) {
+        res.json({ created: 0, skipped: 1, skipReasons: [unavailable] });
+        return;
+      }
+
+      const entries = await providerTraces
+        .readExactEntries(run.id, run.companyId)
+        .catch(() => null);
+      if (entries === null) {
+        res.json({
+          created: 0,
+          skipped: 1,
+          skipReasons: [{ reason: "trace_unavailable" }],
+        });
+        return;
+      }
+      const result = await persistReprojectedWorkspaceDiffs(db, {
+        traceId: trace.id,
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        projection: projectCodexWorkspaceDiffsFromTrace(entries),
+      });
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-board",
+        action: "provider_trace.workspace_diffs_reprojected",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          traceId: trace.id,
+          created: result.created,
+          skipped: result.skipped,
+          providerActionsReplayed: 0,
+        },
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/heartbeat-runs/:runId/provider-trace/frames/:frameId/reveal",
+    async (req, res) => {
+      assertInstanceAdmin(req);
+      const runId = req.params.runId as string;
+      const frameId = Number(req.params.frameId);
+      if (!Number.isSafeInteger(frameId) || frameId < 1) {
+        throw badRequest("Invalid provider trace frame id");
+      }
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+      const frame = await providerTraces.revealFrame(
+        run.id,
+        run.companyId,
+        frameId,
+      );
+      if (!frame) throw notFound("Provider trace frame not found");
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-admin",
+        action: "provider_trace.frame_revealed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          frameId,
+          digest: frame.digest,
+          byteLength: frame.byteLength,
+        },
+      });
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json(frame);
+    },
+  );
+
+  router.get(
+    "/heartbeat-runs/:runId/provider-trace/download",
+    async (req, res) => {
+      assertInstanceAdmin(req);
+      const runId = req.params.runId as string;
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+      const download = await providerTraces.download(run.id, run.companyId);
+      if (!download) throw notFound("Provider trace not found");
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-admin",
+        action: "provider_trace.downloaded",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          traceId: download.row.id,
+          byteCount: download.bytes.byteLength,
+          digest: download.row.digest,
+        },
+      });
+      res.set("Cache-Control", "no-cache, no-store");
+      res.set("Content-Type", "application/x-ndjson");
+      res.set(
+        "Content-Disposition",
+        `attachment; filename=provider-trace-${run.id}.ndjson`,
+      );
+      res.send(download.bytes);
+    },
+  );
+
+  router.delete("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
+    assertInstanceAdmin(req);
+    const runId = req.params.runId as string;
+    const run = await getAccessibleResource(
+      req,
+      res,
+      heartbeat.getRun(runId),
+      "Heartbeat run not found",
+    );
+    if (!run) return;
+    const removed = await providerTraces.remove(run.id, run.companyId);
+    if (!removed) throw notFound("Provider trace not found");
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "local-admin",
+      action: "provider_trace.deleted",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { traceId: removed.id, recoverable: false },
+    });
+    res.json({ ok: true });
   });
 
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {

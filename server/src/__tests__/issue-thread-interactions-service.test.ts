@@ -1015,6 +1015,81 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("skips every durable interaction kind exactly once and retains partial item verdicts", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Universal composer Skip");
+    const inputs = [
+      {
+        kind: "suggest_tasks" as const,
+        payload: { version: 1 as const, tasks: [{ clientKey: "child", title: "Create child" }] },
+      },
+      {
+        kind: "ask_user_questions" as const,
+        payload: {
+          version: 1 as const,
+          questions: [{
+            id: "scope",
+            prompt: "Scope?",
+            selectionMode: "single" as const,
+            options: [{ id: "one", label: "One" }],
+          }],
+        },
+      },
+      {
+        kind: "request_confirmation" as const,
+        payload: { version: 1 as const, prompt: "Proceed?" },
+      },
+      {
+        kind: "request_checkbox_confirmation" as const,
+        payload: { version: 1 as const, prompt: "Select", options: [{ id: "one", label: "One" }] },
+      },
+    ];
+
+    for (const input of inputs) {
+      const created = await interactionsSvc.create({ id: issueId, companyId }, input, { userId: "local-board" });
+      const skipped = await interactionsSvc.skipInteraction(
+        { id: issueId, companyId, status: "in_progress" },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+      expect(skipped).toMatchObject({ status: "cancelled", result: { version: 1, outcome: "skipped" } });
+      if (skipped.kind === "ask_user_questions") {
+        expect(skipped.result).toMatchObject({ answers: [], cancelled: true });
+      }
+      await expect(interactionsSvc.skipInteraction(
+        { id: issueId, companyId, status: "in_progress" },
+        created.id,
+        {},
+        { userId: "local-board" },
+      )).rejects.toThrow("Interaction has already been resolved");
+    }
+
+    const verdicts = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review items",
+        items: [{ id: "one", label: "One" }, { id: "two", label: "Two" }],
+      },
+    }, { userId: "local-board" });
+    await interactionsSvc.submitItemVerdicts(
+      { id: issueId, companyId },
+      verdicts.id,
+      { verdicts: [{ id: "one", verdict: "approve" }] },
+      { userId: "local-board" },
+    );
+    const skippedVerdicts = await interactionsSvc.skipInteraction(
+      { id: issueId, companyId, status: "in_progress" },
+      verdicts.id,
+      {},
+      { userId: "local-board" },
+    );
+    expect(skippedVerdicts).toMatchObject({
+      status: "cancelled",
+      result: { outcome: "skipped", complete: false, items: [{ id: "one", verdict: "approve" }] },
+    });
+  });
+
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();
@@ -3143,6 +3218,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "in_progress",
       priority: "medium",
     });
+    await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
     // Document is already at revision 2 — revision 1 is stale.
     await db.insert(documents).values({
       id: documentId,
@@ -3235,6 +3311,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
     expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).resolves.toMatchObject({
+      interaction: { status: "accepted" },
+      continuationIssue: { id: issueId },
+    });
+    await expect(issueService(db).getById(issueId)).resolves.toMatchObject({
+      workMode: "standard",
+    });
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {

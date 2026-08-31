@@ -7,6 +7,7 @@ import {
   type DuplexObservabilityRecorder,
   type DuplexObservabilitySpanRecord,
 } from "@paperclipai/adapter-utils/duplex-observability";
+import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 
 /**
  * The host binding for the fixed duplex telemetry surface. This module maps each
@@ -33,7 +34,11 @@ export interface DuplexObservabilitySpan {
  * carries an explicit start time, so the request span duration equals the
  * measured latency. */
 export interface DuplexObservabilityTracer {
-  startSpan(name: string, options?: { startTime?: number }): DuplexObservabilitySpan;
+  startSpan(
+    name: string,
+    options?: { startTime?: number },
+    context?: unknown,
+  ): DuplexObservabilitySpan;
 }
 
 export interface HostDuplexObservabilityRecorderInput {
@@ -48,7 +53,12 @@ export interface HostDuplexObservabilityRecorderInput {
    * Emit one transport event to the run-event path. The caller binds it to the
    * run-events bridge, inside a swallow.
    */
-  emitTransportEvent(event: { name: string; dimensions: DuplexObservabilityDimensions }): void;
+  emitTransportEvent(event: {
+    name: string;
+    dimensions: DuplexObservabilityDimensions;
+  }): void;
+  /** Resolve the currently active native/sandbox step when a span is emitted. */
+  parentContext?: () => unknown;
   /** The wall clock. The default is `Date.now`. Tests inject a fixed clock. */
   now?: () => number;
 }
@@ -60,7 +70,9 @@ export interface HostDuplexObservabilityRecorderInput {
  * breakdown. Both dimension sets are closed and low-cardinality, so the metric
  * cardinality stays bounded. A record with neither dimension uses the base name.
  */
-export function foldDuplexCounterMetric(record: DuplexObservabilityCounterRecord): string {
+export function foldDuplexCounterMetric(
+  record: DuplexObservabilityCounterRecord,
+): string {
   if (record.dimensions.fallback_reason) {
     return `${record.metric}.${record.dimensions.fallback_reason}`;
   }
@@ -80,7 +92,10 @@ export function createHostDuplexObservabilityRecorder(
 ): DuplexObservabilityRecorder {
   const now = input.now ?? Date.now;
 
-  const setDimensionAttributes = (span: DuplexObservabilitySpan, dimensions: DuplexObservabilityDimensions): void => {
+  const setDimensionAttributes = (
+    span: DuplexObservabilitySpan,
+    dimensions: DuplexObservabilityDimensions,
+  ): void => {
     for (const key of DUPLEX_DIMENSION_KEYS) {
       const value = dimensions[key];
       if (typeof value === "string") {
@@ -96,10 +111,16 @@ export function createHostDuplexObservabilityRecorder(
       // span carries no latency, so it opens and ends at the same instant.
       const end = now();
       const latencyMs =
-        record.name === DUPLEX_SPAN_REQUEST && typeof record.latencyMs === "number" && Number.isFinite(record.latencyMs)
+        record.name === DUPLEX_SPAN_REQUEST &&
+        typeof record.latencyMs === "number" &&
+        Number.isFinite(record.latencyMs)
           ? Math.max(0, record.latencyMs)
           : 0;
-      const span = input.tracer.startSpan(record.name, { startTime: end - latencyMs });
+      const span = input.tracer.startSpan(
+        record.name,
+        { startTime: end - latencyMs },
+        input.parentContext?.() ?? getActiveStepContext()?.parentContext,
+      );
       setDimensionAttributes(span, record.dimensions);
       span.end(end);
     },
@@ -107,7 +128,10 @@ export function createHostDuplexObservabilityRecorder(
       input.incrementCounter(foldDuplexCounterMetric(record));
     },
     emitEvent(record: DuplexObservabilityEventRecord): void {
-      input.emitTransportEvent({ name: record.name, dimensions: record.dimensions });
+      input.emitTransportEvent({
+        name: record.name,
+        dimensions: record.dimensions,
+      });
     },
   };
 }
