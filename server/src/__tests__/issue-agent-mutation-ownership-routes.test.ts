@@ -1916,6 +1916,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.not.objectContaining({ assigneeAgentId: expect.anything() }),
       expect.anything(),
       expect.any(Array),
+      expect.any(Array),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ownerAgentId,
@@ -2183,6 +2184,8 @@ describe("agent issue mutation checkout ownership", () => {
         issueId,
         expect.objectContaining({ status: "in_review" }),
         expect.anything(),
+        undefined,
+        expect.any(Array),
       );
     });
 

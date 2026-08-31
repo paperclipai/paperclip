@@ -697,6 +697,82 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(logged).toHaveLength(0);
   });
 
+  // The schema has no direct link between a `blocked` issue and "the
+  // interaction it was raised for" — an issue can carry more than one pending
+  // interaction at once (nothing prevents it). Sweeping every pending row on
+  // blocked-exit, with no scoping, would also revoke an unrelated
+  // still-actionable card that happens to predate this block and has nothing
+  // to do with it. The expiry is scoped to interactions created at or after
+  // `blockedTransitionAt`, so only cards raised during this blocked episode
+  // are swept.
+  it("leaves a pending interaction that predates the block alone, but expires one raised during the block", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked with one unrelated pre-existing pending card and one for the block itself",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Predates the block: an unrelated question raised while the issue was
+    // still `todo`, never resolved, still actionable.
+    const unrelatedInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: unrelatedInteractionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "Unrelated question raised before the block" }] } as never,
+    });
+
+    const blocked = await svc.update(issue.id, { status: "blocked", actorUserId: "local-board" });
+    expect(blocked?.status).toBe("blocked");
+    expect(blocked?.blockedTransitionAt).not.toBeNull();
+
+    // Raised during the block: this is the card the block is actually
+    // waiting on.
+    const blockInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: blockInteractionId,
+      companyId,
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve the rework?" } as never,
+    });
+
+    // A direct reset, same as the operator/board/admin-force-release path:
+    // status flips back to `todo` without either interaction being touched.
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const unrelated = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, unrelatedInteractionId))
+      .then((rows) => rows[0] ?? null);
+    expect(unrelated?.status).toBe("pending");
+    expect(unrelated?.resolvedAt).toBeNull();
+
+    const blockInteraction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, blockInteractionId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockInteraction?.status).toBe("expired");
+    expect(blockInteraction?.result).toMatchObject({ version: 1, outcome: "issue_unblocked" });
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.details).toMatchObject({ interactionId: blockInteractionId });
+  });
+
   it("expires superseded interactions when human comments are added through the service", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {

@@ -8013,10 +8013,15 @@ export function issueService(db: Db) {
             // same way a terminal transition already does, so a stale
             // `pending` interaction can never outlive the block it belonged
             // to and be mistaken, on a later wake, for a real answer.
+            // Scoped to interactions created during this blocked episode
+            // (existing.blockedTransitionAt — the pre-patch value; `updated`
+            // already has it cleared), so an unrelated pending interaction
+            // left over from before this block began is not swept up too.
             const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
             const expiredInteractions = await issueThreadInteractionService(tx).expirePendingInteractionsForUnblockedIssue(
               updated,
               { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+              existing.blockedTransitionAt,
             );
             const {
               nativeQuestionCancellationIdentity,

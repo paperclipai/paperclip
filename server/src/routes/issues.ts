@@ -7015,15 +7015,20 @@ export function issueRoutes(
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
-        const updatedIssue = sourceIssueStatus === "done" || sourceIssueStatus === "cancelled"
-          ? await svc.update(
-              id,
-              issueUpdate,
-              tx,
-              postCommitActivityPublications,
-              postCommitIssueActions,
-            )
-          : await svc.update(id, issueUpdate, tx, postCommitActivityPublications);
+        // Always pass postCommitIssueActions, not only for a terminal target status:
+        // the blocked-exit interaction-expiry path (any status leaving `blocked`, not
+        // just done/cancelled) can also queue a native-question cancellation that
+        // requires this queue when running inside an external transaction like this
+        // one — see the `dbOrTx !== db && !postCommitActions` guard in issues.ts's
+        // update(). Omitting it here would throw and roll back a legitimate recovery
+        // resolution (e.g. restoring a blocked issue to `todo`).
+        const updatedIssue = await svc.update(
+          id,
+          issueUpdate,
+          tx,
+          postCommitActivityPublications,
+          postCommitIssueActions,
+        );
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
       }
@@ -9879,16 +9884,20 @@ export function issueRoutes(
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
-    const shouldCollectTerminalIssueActions =
-      updateFields.status === "done" || updateFields.status === "cancelled";
+    // Always pass postCommitIssueActions whenever this runs inside a transaction
+    // (tx present), not only for a terminal target status. The blocked-exit
+    // interaction-expiry path (any status leaving `blocked`, not just
+    // done/cancelled) can also queue a native-question cancellation that requires
+    // this queue when running inside an external transaction — see the
+    // `dbOrTx !== db && !postCommitActions` guard in issues.ts's update(). Gating
+    // this on a terminal-only status check would throw and roll back a legitimate,
+    // otherwise-valid status update (e.g. an operator resetting a blocked issue to
+    // `todo` while also touching reviewPolicy in the same request).
     const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
       if (tx) {
-        if (shouldCollectCompletionPublication) {
-          return svc.update(id, issueUpdateData, tx, postCommitActivityPublications, postCommitIssueActions);
-        }
-        return shouldCollectTerminalIssueActions
-          ? svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions)
-          : svc.update(id, issueUpdateData, tx);
+        return shouldCollectCompletionPublication
+          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications, postCommitIssueActions)
+          : svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions);
       }
       return shouldCollectCompletionPublication
         ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
