@@ -146,6 +146,7 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  skipIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
@@ -916,6 +917,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "POST /api/issues/{id}/interactions/{interactionId}/skip",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "GET /api/companies/{companyId}/tools/gallery",
   "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
@@ -7239,6 +7241,14 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Cancel an issue question interaction",
   body: cancelIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/skip",
+  tags: ["issues"],
+  summary: "Skip a pending issue thread interaction",
+  body: skipIssueThreadInteractionSchema,
 });
 
 registerCurrentRoute({
