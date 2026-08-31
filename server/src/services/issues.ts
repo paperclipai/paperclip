@@ -8042,6 +8042,25 @@ export function issueService(db: Db) {
         const nextExecutionPolicy = normalizeIssueExecutionPolicy(
           patch.executionPolicy !== undefined ? patch.executionPolicy : receiptExisting.executionPolicy ?? null,
         );
+        const lockedCurrentFence = getIssueAssignmentFence(
+          normalizeIssueExecutionPolicy(receiptExisting.executionPolicy ?? null),
+        );
+        if (
+          lockedCurrentFence &&
+          patch.executionPolicy !== undefined &&
+          !getIssueAssignmentFence(nextExecutionPolicy)
+        ) {
+          throw conflict("Assignment fences cannot be removed by an ordinary issue update", {
+            code: "issue_assignment_fence",
+            reason: "fence_revocation_requires_governed_path",
+          });
+        }
+        if (lockedCurrentFence && patch.executionState !== undefined) {
+          throw conflict("Assignment-fence receipt state is controlled by native run provenance", {
+            code: "issue_assignment_fence",
+            reason: "receipt_state_mutation_rejected",
+          });
+        }
         const nextAssigneeAgentIdLocked =
           patch.assigneeAgentId !== undefined ? patch.assigneeAgentId ?? null : receiptExisting.assigneeAgentId;
         const nextAssigneeUserIdLocked =
