@@ -1174,7 +1174,8 @@ Behavior:
 
 - spawn child process
 - stream stdout/stderr to run logs
-- mark run status on exit code/timeout
+- mark run status on timeout, exit/error fields, and top-level structured adapter failure status; a top-level
+  `error`, `failed`, `failure`, or `errored` cannot persist as `succeeded` when exit code is zero
 - cancel sends SIGTERM then SIGKILL after grace
 
 ## 11.3 HTTP Adapter
@@ -1206,6 +1207,8 @@ Behavior:
 ## 11.5 Recovery Model Profiles
 
 The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
+
+A requested model profile is an execution constraint. Unsupported, unresolved, or disabled profiles fail before adapter dispatch as `configuration_incomplete`; the primary adapter configuration is not an implicit fallback.
 
 Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
 

@@ -575,6 +575,12 @@ This keeps the post-decomposition umbrella (§7) on a real waiting path instead 
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
+Requested profiles fail closed: unsupported, unresolved, or disabled profiles produce `configuration_incomplete` before adapter dispatch and never fall through to the primary model. A top-level adapter `resultJson.status` of `error`, `failed`, `failure`, or `errored` likewise produces a failed run even with exit code zero.
+
+Semantic adapter failures use canonical `adapter_result_error`, discard adapter retry metadata, and do not trigger
+missing-comment retries, immediate recovery, interaction continuation, or successful-run handoff. Timeout and an
+already-terminal concurrent state retain precedence over the semantic payload.
+
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
 ## 10. Startup and Periodic Reconciliation
