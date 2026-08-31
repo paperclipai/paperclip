@@ -421,6 +421,39 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+export function activeTypedIssueMonitorDeadline(
+  input: Pick<IssueLike, "executionPolicy" | "executionState">,
+  now: Date | string | number = new Date(),
+): Date | null {
+  const nowMs = now instanceof Date ? now.getTime() : typeof now === "number" ? now : new Date(now).getTime();
+  if (!Number.isFinite(nowMs)) return null;
+  const state = parseIssueExecutionState(input.executionState);
+  const policyResult = issueExecutionPolicySchema.safeParse(input.executionPolicy);
+  const candidates: Array<{ monitor: IssueExecutionMonitorPolicy | IssueExecutionMonitorState; attempts: number }> = [];
+
+  if (policyResult.success && policyResult.data.monitor) {
+    candidates.push({ monitor: policyResult.data.monitor, attempts: state?.monitor?.attemptCount ?? 0 });
+  }
+  if (state?.monitor?.status === "scheduled") {
+    candidates.push({ monitor: state.monitor, attempts: state.monitor.attemptCount });
+  }
+
+  const deadlines = candidates.flatMap(({ monitor, attempts }) => {
+    if (!monitor.nextCheckAt) return [];
+    const nextCheckAt = new Date(monitor.nextCheckAt);
+    const nextCheckAtMs = nextCheckAt.getTime();
+    if (!Number.isFinite(nextCheckAtMs) || nextCheckAtMs <= nowMs) return [];
+    if (monitor.timeoutAt) {
+      const timeoutAtMs = new Date(monitor.timeoutAt).getTime();
+      if (!Number.isFinite(timeoutAtMs) || timeoutAtMs <= nowMs) return [];
+    }
+    if (monitor.maxAttempts != null && attempts >= monitor.maxAttempts) return [];
+    return [nextCheckAt];
+  });
+
+  return deadlines.sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

@@ -1,5 +1,6 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
+import { activeTypedIssueMonitorDeadline } from "../issue-execution-policy.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
 
@@ -192,20 +193,7 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
 }
 
 export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
-  const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
-  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
-  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
-
-  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
-  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
-  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
-
-  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
-  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
-  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
-  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
-
-  return true;
+  return activeTypedIssueMonitorDeadline(issue, now) !== null;
 }
 
 export function classifyIssueReviewPaths(
