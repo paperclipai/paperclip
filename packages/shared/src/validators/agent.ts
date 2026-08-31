@@ -60,12 +60,18 @@ export const createAgentInstructionsBundleSchema = z.object({
 const agentModelProfileConfigSchema = z.object({
   enabled: z.boolean().optional(),
   label: z.string().trim().min(1).optional(),
-  adapterConfig: adapterConfigSchema,
+  // Disabled profiles created before model-profile editing may not have an
+  // adapter payload yet. Keep them valid so unrelated runtime settings (such
+  // as debug capture) can be updated without fabricating model configuration.
+  adapterConfig: adapterConfigSchema.optional().default({}),
 }).strict();
 
 export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
+  }).strict().optional(),
+  debug: z.object({
+    providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
 }).catchall(z.unknown());
 
@@ -210,6 +216,9 @@ export const wakeAgentSchema = z.object({
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
+  debug: z.object({
+    providerTrace: z.literal("raw"),
+  }).strict().optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;

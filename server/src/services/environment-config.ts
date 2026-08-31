@@ -386,7 +386,11 @@ export async function collectEnvironmentSecretRefs(input: {
 }
 
 export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
-  const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
+  const {
+    provider: _provider,
+    streamRunLogs: _streamRunLogs,
+    ...driverConfig
+  } = config as Record<string, unknown>;
   return driverConfig;
 }
 

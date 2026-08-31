@@ -1426,6 +1426,42 @@ describe("renderPaperclipWakePrompt", () => {
     expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
+  it("renders answered questions after stale coalesced comments for legacy adapters", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "DOT-240",
+        title: "Plan a Node server",
+        status: "in_progress",
+      },
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+      questionResponse: {
+        interactionId: "interaction-answers",
+        summaryMarkdown: [
+          "Resolved questions and answers:",
+          "- What should the demo prove?: Minimal JSON API",
+          "- Which baseline?: JavaScript + ESM",
+        ].join("\n"),
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{
+        id: "stale-comment",
+        body: "The questions are still pending.",
+        authorType: "user",
+      }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Answered questions");
+    expect(prompt).toContain("- What should the demo prove?: Minimal JSON API");
+    expect(prompt).toContain("Continue from these answers now; do not wait for another response.");
+    expect(prompt.indexOf("The questions are still pending.")).toBeLessThan(
+      prompt.indexOf("## Answered questions"),
+    );
+  });
+
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {
     const payload = {
       reason: "issue_assigned",
@@ -1859,7 +1895,7 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).toContain("do not create a child merely because a plan was accepted");
     expect(prompt).not.toContain("Update the plan only");
   });
 

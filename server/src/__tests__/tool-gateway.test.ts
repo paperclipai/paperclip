@@ -638,14 +638,28 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(token.tokenPrefix).toMatch(/^pcgw_[a-f0-9]{8}$/);
 
       const app = createGatewayRouteApp(db, gateway);
+      const publicEndpoint = created.endpointPath;
+      const queryOnly = await request(app)
+        .post(`${publicEndpoint}?paperclip_capability=${encodeURIComponent(token.token)}`)
+        .send({ jsonrpc: "2.0", id: "query-only", method: "tools/list" })
+        .expect(401);
+      expect(queryOnly.body.error).toBe("Bearer token is required");
+
       const listed = await request(app)
-        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .post(publicEndpoint)
         .set("authorization", `Bearer ${token.token}`)
         .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
         .expect(200);
       const visibleToolNames = listed.body.result.tools.map((tool: { name: string }) => tool.name);
       expect(visibleToolNames).toContain(gatewayToolName);
       expect(visibleToolNames).not.toContain("mcp-remote-fixture:update_note");
+
+      const toolOnlyResources = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: "resources", method: "resources/list" })
+        .expect(200);
+      expect(toolOnlyResources.body.result.resources).toEqual([]);
 
       const called = await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
@@ -712,6 +726,105 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .send({ jsonrpc: "2.0", id: 6, method: "tools/list" })
         .expect(401);
       expect(revoked.body.error.data.reasonCode).toBe("gateway_token_revoked");
+    } finally {
+      await remote.close();
+    }
+  });
+
+  it("proxies namespaced resources and prompts only for fully assigned MCP connections", async () => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(async ({ body }) => {
+      const method = body?.method;
+      if (method === "resources/list") {
+        return { body: { jsonrpc: "2.0", id: body?.id, result: { resources: [{ uri: "notes://one", name: "Note one", mimeType: "text/plain" }] } } };
+      }
+      if (method === "resources/read") {
+        return { body: { jsonrpc: "2.0", id: body?.id, result: { contents: [{ uri: String((body?.params as Record<string, unknown>)?.uri), mimeType: "text/plain", text: "resource body" }] } } };
+      }
+      if (method === "prompts/list") {
+        return { body: { jsonrpc: "2.0", id: body?.id, result: { prompts: [{ name: "summarize", title: "Summarize note" }] } } };
+      }
+      if (method === "prompts/get") {
+        return { body: { jsonrpc: "2.0", id: body?.id, result: { description: "Summary prompt", messages: [{ role: "user", content: { type: "text", text: "Summarize it" } }] } } };
+      }
+      return { body: { jsonrpc: "2.0", id: body?.id, result: {} } };
+    });
+    try {
+      const assigned = await createRemoteMcpTool(db, company.id, {
+        url: remote.url,
+        applicationKey: "context-app",
+        connectionName: "Assigned context",
+        toolName: "search_notes",
+        riskLevel: "read",
+      });
+      await createRemoteMcpTool(db, company.id, {
+        url: remote.url,
+        applicationKey: "unassigned-context-app",
+        connectionName: "Unassigned context",
+        toolName: "private_search",
+        riskLevel: "read",
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `context-${randomUUID()}`,
+        name: `Context ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "connection",
+        effect: "include",
+        connectionId: assigned.connection.id,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "Context gateway", profileId: profile.id },
+      });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Native runner" },
+      });
+      const app = createGatewayRouteApp(db, gateway);
+
+      const resources = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "resources/list" })
+        .expect(200);
+      expect(resources.body.result.resources).toHaveLength(1);
+      expect(resources.body.result.resources[0]).toMatchObject({
+        uri: expect.stringMatching(new RegExp(`^paperclip-resource://${assigned.connection.id}/`)),
+        name: "Assigned context: Note one",
+      });
+      const resourceUri = resources.body.result.resources[0].uri as string;
+
+      const read = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 2, method: "resources/read", params: { uri: resourceUri } })
+        .expect(200);
+      expect(read.body.result.contents[0]).toMatchObject({ uri: resourceUri, text: "resource body" });
+
+      const prompts = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 3, method: "prompts/list" })
+        .expect(200);
+      expect(prompts.body.result.prompts).toHaveLength(1);
+      expect(prompts.body.result.prompts[0].title).toBe("Assigned context: Summarize note");
+      const promptName = prompts.body.result.prompts[0].name as string;
+
+      const wrapper = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "paperclip_get_prompt", arguments: { name: promptName } } })
+        .expect(200);
+      expect(wrapper.body.result.structuredContent).toMatchObject({ description: "Summary prompt" });
+      expect(remote.requests.filter((entry) => entry.body?.method === "resources/read")[0]?.body?.params).toEqual({ uri: "notes://one" });
+      expect(remote.requests.filter((entry) => entry.body?.method === "prompts/get")[0]?.body?.params).toEqual({ name: "summarize", arguments: {} });
     } finally {
       await remote.close();
     }
@@ -979,11 +1092,15 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const app = createGatewayRouteApp(db, gateway);
       const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
 
-      await request(app)
+      const initialized = await request(app)
         .post(endpoint)
         .set("authorization", `Bearer ${tokenA.token}`)
         .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
         .expect(200);
+      expect(initialized.body.result).toMatchObject({
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        _meta: { "paperclip/mcp-app-ui": "unsupported" },
+      });
       const setupLimited = await request(app)
         .post(endpoint)
         .set("authorization", `Bearer ${tokenA.token}`)

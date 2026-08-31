@@ -394,18 +394,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc:
     "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex through the Rust Paperclip runner and authenticated PRP transport.\n",
-  getConfigSchema: () => ({
-    fields: [
-      {
-        key: "provider",
-        label: "Provider",
-        type: "select",
-        default: "codex",
-        options: [{ value: "codex", label: "Codex" }],
-        hint: "Paperclip Runner currently supports only Codex app-server.",
-      },
-    ],
-  }),
+  getConfigSchema: getCodexConfigSchema,
   loginCapability: codexLoginCapability,
 };
 

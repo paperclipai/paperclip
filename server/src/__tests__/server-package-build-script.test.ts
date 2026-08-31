@@ -8,6 +8,12 @@ const packageJsonPath = fileURLToPath(
 const runnerShimPath = fileURLToPath(
   new URL("../vendor/paperclip-runner/index.ts", import.meta.url),
 );
+const evidenceClassifierPath = fileURLToPath(
+  new URL("../services/native-runtime/evidence-classifier.ts", import.meta.url),
+);
+const workspaceDiffReprojectionPath = fileURLToPath(
+  new URL("../services/provider-trace-workspace-diff-reprojection.ts", import.meta.url),
+);
 
 describe("server package build script", () => {
   it("builds the compiled package entry during prepack", () => {
@@ -65,5 +71,17 @@ describe("server package build script", () => {
     expect(shim).not.toContain(
       'export * from "@paperclipai/paperclip-runner"',
     );
+  });
+
+  it("routes source-mode runtime imports through the runner shim", () => {
+    for (const consumerPath of [
+      evidenceClassifierPath,
+      workspaceDiffReprojectionPath,
+    ]) {
+      const consumer = readFileSync(consumerPath, "utf8");
+
+      expect(consumer).toContain('vendor/paperclip-runner/index.js"');
+      expect(consumer).not.toContain('from "@paperclipai/paperclip-runner"');
+    }
   });
 });

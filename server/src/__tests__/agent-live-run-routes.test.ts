@@ -14,6 +14,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
+  getRun: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -29,13 +30,33 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
-  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
+  redactForRun: vi.fn(
+    async (_companyId: string, _runId: string, value: unknown) => value,
+  ),
 }));
+
+const mockProviderTraceStore = vi.hoisted(() => ({
+  inspect: vi.fn(),
+  getByRun: vi.fn(),
+  readExactEntries: vi.fn(),
+  revealFrame: vi.fn(),
+  download: vi.fn(),
+  remove: vi.fn(),
+  listMetadataForRuns: vi.fn(),
+}));
+const mockWorkspaceDiffReprojection = vi.hoisted(() => ({
+  project: vi.fn(),
+  persist: vi.fn(),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockQueueRuntimeRequestResolution = vi.hoisted(() => vi.fn());
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual("../routes/authz.js"),
+  );
 
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
@@ -57,6 +78,25 @@ function registerModuleMocks() {
     createRunSecretRedactionRegistry: () => mockRunSecretRedactionRegistry,
   }));
 
+  vi.doMock("../services/provider-trace-store.js", () => ({
+    providerTraceStore: () => mockProviderTraceStore,
+  }));
+
+  vi.doMock("../services/provider-trace-workspace-diff-reprojection.js", () => ({
+    projectCodexWorkspaceDiffsFromTrace: mockWorkspaceDiffReprojection.project,
+    persistReprojectedWorkspaceDiffs: mockWorkspaceDiffReprojection.persist,
+  }));
+
+  vi.doMock("../realtime/runner-prp-ws.js", async () => {
+    const actual = await vi.importActual<typeof import("../realtime/runner-prp-ws.js")>(
+      "../realtime/runner-prp-ws.js",
+    );
+    return {
+      ...actual,
+      queueRunnerPrpRuntimeRequestResolution: mockQueueRuntimeRequestResolution,
+    };
+  });
+
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
@@ -77,7 +117,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
     issueService: () => mockIssueService,
-    logActivity: vi.fn(),
+    logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
@@ -92,21 +132,28 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+async function createApp(
+  db: Record<string, unknown> = {},
+  actor: Record<string, unknown> = {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/agents.js")>(
+      "../routes/agents.js",
+    ),
+    vi.importActual<typeof import("../middleware/index.js")>(
+      "../middleware/index.js",
+    ),
   ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -118,7 +165,8 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
   const limit = vi.fn(async (value: number) => rows.slice(0, value));
   const orderedQuery = {
     limit,
-    then: (resolve: (value: Array<Record<string, unknown>>) => unknown) => Promise.resolve(rows).then(resolve),
+    then: (resolve: (value: Array<Record<string, unknown>>) => unknown) =>
+      Promise.resolve(rows).then(resolve),
   };
   const query = {
     from: vi.fn().mockReturnThis(),
@@ -135,11 +183,22 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
   };
 }
 
+function createRuntimeRequestDbStub(row: Record<string, unknown>) {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnThis(),
+    limit: vi.fn(async () => [row]),
+  };
+  return { select: vi.fn(() => query) };
+}
+
 async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
 ) {
-  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const { createServer } =
+    await vi.importActual<typeof import("node:http")>("node:http");
   const server = createServer(app);
   try {
     await new Promise<void>((resolve) => {
@@ -222,7 +281,9 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       issueId: "issue-1",
     });
-    mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(
+      null,
+    );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
@@ -245,17 +306,39 @@ describe("agent live run routes", () => {
       invocationSource: "on_demand",
       triggerDetail: "manual",
     });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "succeeded",
+    });
+    mockQueueRuntimeRequestResolution.mockReturnValue({
+      commandId: "command-resolution-1",
+    });
+    mockProviderTraceStore.inspect.mockResolvedValue({
+      trace: null,
+      entries: [],
+    });
+    mockProviderTraceStore.getByRun.mockResolvedValue(null);
+    mockProviderTraceStore.readExactEntries.mockResolvedValue([]);
+    mockWorkspaceDiffReprojection.project.mockReturnValue({ turns: [], skipReasons: [] });
+    mockWorkspaceDiffReprojection.persist.mockResolvedValue({
+      created: 0,
+      skipped: 0,
+      skipReasons: [],
+    });
   });
 
   it("returns a compact active run payload for issue polling", async () => {
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
-    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
+      "run-1",
+    );
     expect(res.body).toMatchObject({
       id: "run-1",
       status: "running",
@@ -303,14 +386,17 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
 
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).toHaveBeenCalledWith("agent-1");
+    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
+      "run-1",
+    );
+    expect(
+      mockHeartbeatService.getActiveRunIssueSummaryForAgent,
+    ).toHaveBeenCalledWith("agent-1");
     expect(res.body).toMatchObject({
       id: "run-1",
       issueId: "issue-1",
@@ -330,9 +416,8 @@ describe("agent live run routes", () => {
       lastEventAt: new Date("2026-04-10T09:30:06.000Z"),
     }));
 
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -350,22 +435,26 @@ describe("agent live run routes", () => {
   });
 
   it("uses narrow run log metadata lookups for log polling", async () => {
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get(
+        "/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64",
+      ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
-      id: "run-1",
-      companyId: "company-1",
-      logStore: "local_file",
-      logRef: "logs/run-1.ndjson",
-    }, {
-      offset: 12,
-      limitBytes: 64,
-    });
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith(
+      {
+        id: "run-1",
+        companyId: "company-1",
+        logStore: "local_file",
+        logRef: "logs/run-1.ndjson",
+      },
+      {
+        offset: 12,
+        limitBytes: 64,
+      },
+    );
     expect(res.body).toEqual({
       runId: "run-1",
       store: "local_file",
@@ -384,7 +473,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
-      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      createdAt: new Date(
+        `2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ),
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
@@ -403,15 +494,16 @@ describe("agent live run routes", () => {
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
-    const res = await requestApp(
-      await createApp(db),
-      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/live-runs"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
-    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
+    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
+      50,
+    );
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {
@@ -423,7 +515,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
-      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      createdAt: new Date(
+        `2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ),
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
@@ -442,9 +536,10 @@ describe("agent live run routes", () => {
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
-    const res = await requestApp(
-      await createApp(db),
-      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?limit=0&minCount=0"),
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get(
+        "/api/companies/company-1/live-runs?limit=0&minCount=0",
+      ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -461,7 +556,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
-      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      createdAt: new Date(
+        `2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ),
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
@@ -482,7 +579,9 @@ describe("agent live run routes", () => {
     const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
     const db = {
       select: vi.fn().mockImplementation(() => {
-        const limitFn = vi.fn(async (value: number) => liveRows.slice(0, value));
+        const limitFn = vi.fn(async (value: number) =>
+          liveRows.slice(0, value),
+        );
         const orderedQuery = {
           limit: limitFn,
           then: (resolve: (value: typeof liveRows) => unknown) =>
@@ -499,9 +598,8 @@ describe("agent live run routes", () => {
       }),
     };
 
-    const res = await requestApp(
-      await createApp(db),
-      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/live-runs"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -518,7 +616,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
-      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      createdAt: new Date(
+        `2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ),
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
@@ -543,7 +643,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       startedAt: new Date("2026-04-09T09:30:00.000Z"),
       finishedAt: new Date("2026-04-09T09:35:00.000Z"),
-      createdAt: new Date(`2026-04-09T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      createdAt: new Date(
+        `2026-04-09T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ),
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
@@ -581,9 +683,8 @@ describe("agent live run routes", () => {
       }),
     };
 
-    const res = await requestApp(
-      await createApp(db),
-      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?minCount=4"),
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/live-runs?minCount=4"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -592,10 +693,11 @@ describe("agent live run routes", () => {
   });
 
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl)
-        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(
+          `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
+        )
         .send({
           reason: "issue_assigned",
           payload: {
@@ -633,10 +735,11 @@ describe("agent live run routes", () => {
   });
 
   it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl)
-        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(
+          `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
+        )
         .send({}),
     );
 
@@ -651,5 +754,397 @@ describe("agent live run routes", () => {
         actorId: "local-board",
       },
     });
+  });
+
+  it("allows implicit local administrators to opt one manual run into raw provider tracing", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(
+          `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
+        )
+        .send({ debug: { providerTrace: "raw" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      routeAgentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({
+          debug: { providerTrace: "raw" },
+          providerTraceRequestedBy: "local-board",
+        }),
+      }),
+    );
+  });
+
+  it("marks traced re-runs as explicit resumes so terminal issue context can execute", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "rerun_with_provider_trace",
+          payload: { issueId, taskId: issueId, taskKey: issueId },
+          debug: { providerTrace: "raw" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      routeAgentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({
+          resumeIntent: true,
+          debug: { providerTrace: "raw" },
+        }),
+      }),
+    );
+  });
+
+  it("rejects raw provider tracing for ordinary board members", async () => {
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "board",
+          userId: "member-user",
+          companyIds: ["company-1"],
+          source: "session",
+          isInstanceAdmin: false,
+        },
+      ),
+      (baseUrl) =>
+        request(baseUrl)
+          .post(
+            `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
+          )
+          .send({ debug: { providerTrace: "raw" } }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not let an ordinary member downgrade a persisted approval into a question", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "running",
+      runtimeMode: "native",
+    });
+    const db = createRuntimeRequestDbStub({
+      eventType: "runtime_request.created",
+      payload: {
+        prpEvent: {
+          schema: "paperclip.prp.event.v1",
+          eventType: "runtime_request.created",
+          sourceKind: "runner",
+          runId: "run-1",
+          turnId: "canonical-turn",
+          payload: {
+            request: {
+              requestId: "approval-1",
+              requestKind: "command_approval",
+              turnId: "canonical-turn",
+              status: "pending",
+            },
+          },
+        },
+      },
+    });
+    const app = await createApp(db, {
+      type: "board",
+      userId: "ordinary-member",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .send({
+        requestKind: "runtime",
+        turnId: "attacker-turn",
+        resolution: { action: "accept" },
+      }));
+
+    expect(res.status).toBe(403);
+    expect(mockQueueRuntimeRequestResolution).not.toHaveBeenCalled();
+  });
+
+  it("queues an admin resolution with canonical request and actor bindings", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "running",
+      runtimeMode: "native",
+    });
+    const db = createRuntimeRequestDbStub({
+      eventType: "runtime_request.created",
+      payload: {
+        prpEvent: {
+          schema: "paperclip.prp.event.v1",
+          eventType: "runtime_request.created",
+          sourceKind: "runner",
+          runId: "run-1",
+          turnId: "canonical-turn",
+          payload: {
+            request: {
+              requestId: "approval-1",
+              requestKind: "permission_approval",
+              turnId: "canonical-turn",
+              status: "pending",
+            },
+          },
+        },
+      },
+    });
+    const app = await createApp(db, {
+      type: "board",
+      userId: "instance-admin",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .send({
+        requestKind: "user_input",
+        turnId: "attacker-turn",
+        resolution: { action: "accept" },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockQueueRuntimeRequestResolution).toHaveBeenCalledWith({
+      companyId: "company-1",
+      runId: "run-1",
+      pendingRequest: {
+        companyId: "company-1",
+        runId: "run-1",
+        requestId: "approval-1",
+        requestKind: "permission_approval",
+        turnId: "canonical-turn",
+        resolverPolicy: "instance_admin",
+      },
+      actor: {
+        type: "user",
+        userId: "instance-admin",
+        isInstanceAdmin: true,
+      },
+      resolution: { action: "accept" },
+    });
+  });
+
+  it.each([
+    ["get", "/api/companies/company-1/provider-traces?runIds=run-1"],
+    ["get", "/api/heartbeat-runs/run-1/provider-trace"],
+    ["post", "/api/heartbeat-runs/run-1/provider-trace/frames/1/reveal"],
+    ["get", "/api/heartbeat-runs/run-1/provider-trace/download"],
+    ["delete", "/api/heartbeat-runs/run-1/provider-trace"],
+  ] as const)(
+    "requires instance administration to %s %s",
+    async (method, path) => {
+      const app = await createApp(
+        {},
+        {
+          type: "board",
+          userId: "member-user",
+          companyIds: ["company-1"],
+          source: "session",
+          isInstanceAdmin: false,
+        },
+      );
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)[method](path),
+      );
+
+      expect(res.status).toBe(403);
+      expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lists trace status metadata without exposing payload contents", async () => {
+    mockProviderTraceStore.listMetadataForRuns.mockResolvedValueOnce([
+      {
+        schema: "paperclip.provider_trace_metadata.v1",
+        id: "trace-1",
+        runId: "run-1",
+        companyId: "company-1",
+        status: "complete",
+        provider: "codex",
+        frameCount: 70,
+        byteCount: 4096,
+        digest: `sha256:${"a".repeat(64)}`,
+        reason: null,
+        requestedBy: "local-board",
+        createdAt: new Date("2026-08-22T12:00:00.000Z"),
+        expiresAt: new Date("2026-08-23T12:00:00.000Z"),
+        deletedAt: null,
+      },
+    ]);
+
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get(
+        "/api/companies/company-1/provider-traces?runIds=run-1",
+      ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProviderTraceStore.listMetadataForRuns).toHaveBeenCalledWith(
+      "company-1",
+      ["run-1"],
+    );
+    expect(res.body[0]).not.toHaveProperty("rawBase64");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "provider_trace.metadata_listed",
+        details: expect.objectContaining({ payloadLogged: false }),
+      }),
+    );
+  });
+
+  it("returns only the redacted inspection view and audits the access", async () => {
+    mockProviderTraceStore.inspect.mockResolvedValue({
+      trace: { id: "trace-1", status: "complete" },
+      entries: [
+        {
+          kind: "frame",
+          frameId: 1,
+          parsed: { token: "[withheld]" },
+          withheldPaths: ["token"],
+        },
+      ],
+    });
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/heartbeat-runs/run-1/provider-trace"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.entries[0]).not.toHaveProperty("rawBase64");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "provider_trace.redacted_viewed",
+        details: { traceId: "trace-1", rawPayloadRevealed: false },
+      }),
+    );
+  });
+
+  it("lets a board member reproject only retained workspace diffs", async () => {
+    mockProviderTraceStore.getByRun.mockResolvedValue({
+      id: "trace-1",
+      status: "complete",
+      deletedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    mockProviderTraceStore.readExactEntries.mockResolvedValue([
+      { kind: "frame", frameId: 1 },
+    ]);
+    const projection = { turns: [{ turnId: "turn-1" }], skipReasons: [] };
+    mockWorkspaceDiffReprojection.project.mockReturnValue(projection);
+    mockWorkspaceDiffReprojection.persist.mockResolvedValue({
+      created: 1,
+      skipped: 0,
+      skipReasons: [],
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).post(
+        "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+      ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ created: 1, skipped: 0, skipReasons: [] });
+    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        traceId: "trace-1",
+        runId: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        projection,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "provider_trace.workspace_diffs_reprojected",
+        details: expect.objectContaining({ providerActionsReplayed: 0 }),
+      }),
+    );
+  });
+
+  it.each([
+    ["unavailable", null, "trace_unavailable"],
+    [
+      "expired",
+      {
+        id: "trace-1",
+        status: "complete",
+        deletedAt: null,
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+      "trace_expired",
+    ],
+    [
+      "incomplete",
+      {
+        id: "trace-1",
+        status: "incomplete",
+        deletedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      "trace_incomplete",
+    ],
+  ] as const)(
+    "does not write when a retained trace is %s",
+    async (_label, trace, reason) => {
+      mockProviderTraceStore.getByRun.mockResolvedValue(trace);
+
+      const res = await requestApp(await createApp(), (baseUrl) =>
+        request(baseUrl).post(
+          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+        ),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toEqual({
+        created: 0,
+        skipped: 1,
+        skipReasons: [{ reason }],
+      });
+      expect(mockProviderTraceStore.readExactEntries).not.toHaveBeenCalled();
+      expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects workspace-diff reprojection from an agent actor", async () => {
+    const res = await requestApp(
+      await createApp(
+        {},
+        {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          runId: "run-1",
+          source: "agent_key",
+        },
+      ),
+      (baseUrl) =>
+        request(baseUrl).post(
+          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+        ),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
   });
 });

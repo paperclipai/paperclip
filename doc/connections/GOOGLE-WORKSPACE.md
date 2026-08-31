@@ -20,7 +20,7 @@ Workspace Search.
 
 Google's hosted Workspace MCP servers are Developer Preview services. The app
 cards remain independent even when several services use the same customer-owned
-Google OAuth client or the same Paperclip ID broker deployment.
+Google OAuth client or the same Paperclip Cloud broker deployment.
 
 ## Developer Preview enrollment
 
@@ -63,8 +63,8 @@ Google makes Workspace MCP generally available.
 The setup flow asks for the capability first. It then offers the authentication
 methods available for that capability:
 
-- **Connect with Paperclip** uses the Paperclip ID broker when that exact
-  profile is advertised by `GET /api/connect/capabilities`.
+- **Connect with Paperclip** uses the Paperclip Cloud broker when that exact
+  profile is advertised by `GET https://my.paperclip.app/v1/connector/capabilities`.
 - **Use your own Google OAuth app** uses customer-supplied OAuth credentials and
   the app definition's exact reviewed scopes.
 - **Use the Paperclip robot account** remains an additional Google Sheets-only
@@ -78,7 +78,10 @@ changing the underlying Google principal.
 
 The Paperclip-managed method signs every broker request with one explicit
 profile. The broker binds that profile into sessions, one-time claims, sealed
-token envelopes, refresh, and revocation.
+token envelopes, and refresh. Per-profile removal is local-only for managed
+Google grants. Google's revocation endpoint can invalidate all grants for the
+same user and managed client, so Paperclip does not call it while removing one
+Workspace profile.
 
 | App | Read profile | Write profile |
 | --- | --- | --- |
@@ -92,25 +95,32 @@ token envelopes, refresh, and revocation.
 | People | `people.read` | — |
 | Workspace Search | `workspace-search.read` | — |
 
-An older signed request without a profile remains compatible and resolves only
-to `gmail.draft`. New clients always send a profile.
+Every new signed request includes a profile. The Cloud broker rejects a request
+whose provider, profile, or exact scope set does not match its closed registry.
 
 ## Instance configuration
 
 All Paperclip-managed Google methods use the existing enrolled-instance keys:
 
 ```dotenv
-PAPERCLIP_ID_CONNECTOR_BASE_URL=https://id.paperclip.app
-PAPERCLIP_ID_CONNECTOR_ENVIRONMENT=production
-PAPERCLIP_ID_CONNECTOR_INSTANCE_ID=inst_example
-PAPERCLIP_ID_CONNECTOR_SIGN_PRIVATE_KEY=...
-PAPERCLIP_ID_CONNECTOR_SEAL_PRIVATE_KEY=...
+PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=https://my.paperclip.app
+PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT=production
+PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID=inst_example
+PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY=...
+PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY=...
 ```
 
 No per-app client secret is stored on the Paperclip instance for the managed
 path. For customer-owned OAuth, the setup flow collects that customer's Google
 OAuth client ID and secret and stores them through the normal instance-vault
 path.
+
+Cloud-hosted stacks receive these values through the existing per-stack secret
+delivery path. A self-hosted instance creates its keys during enrollment and
+stores them with owner-only permissions in the instance's ignored secret
+directory. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
+Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
+reconnect legacy grants before their old access tokens expire.
 
 The gallery requests the broker capability document with a short cache. A
 Paperclip-managed method is omitted unless its exact profile is enabled at the

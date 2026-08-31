@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
@@ -47,13 +47,22 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { paperclipIdGoogleConnectorCapabilitiesFromEnv } from "../services/paperclip-id-gmail-connector.js";
+import {
+  isPaperclipCloudConnectorStrategy,
+  paperclipCloudConnectorCapabilitiesFromEnv,
+} from "../services/paperclip-cloud-connector.js";
+import {
+  completePaperclipCloudConnectorEnrollment,
+  loadPaperclipCloudConnectorIdentity,
+  startPaperclipCloudConnectorEnrollment,
+} from "../services/paperclip-cloud-connector-enrollment.js";
+import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -336,9 +345,13 @@ export function toolAccessRoutes(
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
     return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
-  }
+}
 
-  /**
+function connectorEnrollmentPrincipal(req: Request): string {
+  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+}
+
+/**
    * A failed first authorization is still an incomplete setup, not an app
    * configuration task. Send it back to the same exact draft so the operator
    * can retry the missing checkpoint. Reauthorization of an already-active
@@ -662,7 +675,7 @@ export function toolAccessRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const googleConnectorProfiles = new Set(await paperclipIdGoogleConnectorCapabilitiesFromEnv());
+    const googleConnectorProfiles = new Set(await paperclipCloudConnectorCapabilitiesFromEnv());
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
@@ -681,7 +694,7 @@ export function toolAccessRoutes(
       },
       apps: APP_STORE_DEFINITIONS.map((app) => {
         const methods = app.methods.filter((method) =>
-          method.oauthStrategy !== "paperclip_id_connector"
+          !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
           || Boolean(method.connectorProfile && googleConnectorProfiles.has(method.connectorProfile as never))
         );
         return {
@@ -689,7 +702,7 @@ export function toolAccessRoutes(
           methods,
           ownershipAvailability: {
             ...DEFAULT_OWNERSHIP_AVAILABILITY,
-            platform_shared: methods.some((method) => method.oauthStrategy === "paperclip_id_connector"),
+            platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
           },
         };
       }),
@@ -826,7 +839,76 @@ export function toolAccessRoutes(
     res.json(result);
   });
 
-  router.get("/tools/oauth/paperclip-id/callback", async (req, res) => {
+  router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
+    assertBoard(req);
+    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus());
+  });
+
+  router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
+    assertInstanceAdmin(req);
+    const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : "";
+    if (!companyId) throw badRequest("Paperclip Cloud enrollment requires a company");
+    assertCompanyAccess(req, companyId);
+    const origin = new URL(oauthRedirectUri(req)).origin;
+    let status;
+    try {
+      status = await startPaperclipCloudConnectorEnrollment({
+        origin,
+        companyId,
+        initiatedBy: connectorEnrollmentPrincipal(req),
+        label: typeof req.body?.label === "string" ? req.body.label : undefined,
+      });
+    } catch {
+      throw unprocessable("Paperclip Cloud enrollment could not be started", {
+        code: "paperclip_cloud_connector_enrollment_failed",
+      });
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "paperclip_cloud_connector.enrollment_started",
+      entityType: "connector_instance",
+      entityId: status.instanceId ?? "pending",
+      details: { environment: status.environment, status: status.status },
+    });
+    res.status(201).json(status);
+  });
+
+  router.get("/tools/oauth/cloud-connector/enrollment-callback", async (req, res) => {
+    assertInstanceAdmin(req);
+    const enrollmentId = typeof req.query.enrollment_id === "string" ? req.query.enrollment_id : "";
+    const approvalCode = typeof req.query.approval_code === "string" ? req.query.approval_code : "";
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    if (!enrollmentId || !approvalCode || !state) throw badRequest("Invalid Paperclip Cloud enrollment callback");
+    const pending = loadPaperclipCloudConnectorIdentity()?.pending;
+    if (pending?.companyId && !hasCompanyAccess(req, pending.companyId)) {
+      throw notFound("Paperclip Cloud enrollment not found");
+    }
+    if (pending?.initiatedBy && pending.initiatedBy !== connectorEnrollmentPrincipal(req)) {
+      throw notFound("Paperclip Cloud enrollment not found");
+    }
+    let status;
+    try {
+      status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
+    } catch {
+      throw badRequest("Invalid or expired Paperclip Cloud enrollment callback");
+    }
+    if (pending?.companyId) {
+      await logActivity(db, {
+        companyId: pending.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "paperclip_cloud_connector.enrollment_completed",
+        entityType: "connector_instance",
+        entityId: status.instanceId ?? enrollmentId,
+        details: { environment: status.environment, status: status.status },
+      });
+    }
+    res.redirect(303, "/apps/connections?cloud_connector=enrolled");
+  });
+
+  const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {
     assertBoard(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const claimId = typeof req.query.claim_id === "string" ? req.query.claim_id : null;
@@ -844,7 +926,7 @@ export function toolAccessRoutes(
     }
     const acceptsHtml = req.get("accept")?.includes("text/html") === true;
     try {
-      const result = await svc.completePaperclipIdGmailCallback({
+      const result = await svc.completePaperclipCloudConnectorCallback({
         state,
         claimId,
         error,
@@ -911,7 +993,9 @@ export function toolAccessRoutes(
         typeof details?.code === "string" ? details.code : null,
       ));
     }
-  });
+  };
+  router.get("/tools/oauth/cloud-connector/callback", handlePaperclipCloudConnectorCallback);
+  router.get("/tools/oauth/paperclip-id/callback", handlePaperclipCloudConnectorCallback);
 
   router.get("/tools/vercel-connect/callback", async (req, res) => {
     assertBoard(req);

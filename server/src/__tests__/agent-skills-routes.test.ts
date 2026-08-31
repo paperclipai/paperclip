@@ -838,6 +838,19 @@ describe.sequential("agent skill routes", () => {
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
   });
 
+  it("rejects the reserved legacy Paperclip skill for paperclip_runner", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("paperclip_runner"));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("legacy Paperclip operational skill");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockAdapter.syncSkills).not.toHaveBeenCalled();
+  });
+
   it("syncs skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
       env: {

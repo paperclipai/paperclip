@@ -37,7 +37,7 @@ export const heartbeatRunEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    runSeqIdx: index("heartbeat_run_events_run_seq_idx").on(table.runId, table.seq),
+    runSeqUq: uniqueIndex("heartbeat_run_events_run_seq_uq").on(table.runId, table.seq),
     runSourceEventUq: uniqueIndex("heartbeat_run_events_run_source_event_uq")
       .on(table.runId, table.sourceEventId)
       .where(sql`${table.sourceEventId} is not null`),

@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { agents, completionContracts, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  completionContracts,
+  heartbeatRuns,
+  issues,
+} from "@paperclipai/db";
 import {
   DurablePrpControlPlane,
   type PaperclipSemanticToolDefinition,
@@ -107,11 +112,17 @@ function validateInput(input: PrepareRunnerPrpSessionInput): void {
 }
 
 function completionCriterionIds(value: unknown): string[] | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   const criteria = (value as Record<string, unknown>).criteria;
   if (!Array.isArray(criteria)) return null;
   const ids = criteria.map((criterion) => {
-    if (typeof criterion !== "object" || criterion === null || Array.isArray(criterion)) return null;
+    if (
+      typeof criterion !== "object" ||
+      criterion === null ||
+      Array.isArray(criterion)
+    )
+      return null;
     const id = (criterion as Record<string, unknown>).id;
     return typeof id === "string" && id.length > 0 ? id : null;
   });
@@ -198,7 +209,8 @@ export function runnerPrpCoordinator(
         binding.run.driverKind !== "codex" ||
         !binding.run.completionContractId ||
         !binding.run.completionContractSha256 ||
-        binding.completionContract.canonicalSha256 !== binding.run.completionContractSha256 ||
+        binding.completionContract.canonicalSha256 !==
+          binding.run.completionContractSha256 ||
         binding.issue.assigneeAgentId !== input.agentId ||
         binding.issue.executionRunId !== input.runId ||
         ["paused", "terminated", "pending_approval", "error"].includes(
@@ -243,9 +255,11 @@ export function runnerPrpCoordinator(
       };
       let completedRun: CompletedRun | null = null;
       let resolveTerminal!: (value: CompletedRun) => void;
-      const terminalEvent = new Promise<CompletedRun>((resolveTerminalPromise) => {
-        resolveTerminal = resolveTerminalPromise;
-      });
+      const terminalEvent = new Promise<CompletedRun>(
+        (resolveTerminalPromise) => {
+          resolveTerminal = resolveTerminalPromise;
+        },
+      );
       const authority = new DurablePrpControlPlane({
         stateDirectory: resolve(stateRoot, input.runId),
         identity: {
@@ -343,7 +357,11 @@ export function runnerPrpCoordinator(
         },
         waitForTerminal: async (timeoutMs = 60 * 60 * 1_000) => {
           if (released) throw new Error("runner_prp_session_released");
-          if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 24 * 60 * 60 * 1_000) {
+          if (
+            !Number.isInteger(timeoutMs) ||
+            timeoutMs < 1_000 ||
+            timeoutMs > 24 * 60 * 60 * 1_000
+          ) {
             throw new Error("runner_prp_terminal_timeout_invalid");
           }
           if (completedRun) return completedRun;

@@ -128,9 +128,85 @@ for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
 
-This document also holds two local instrumentation contracts: the sandbox
-startup trace spans, and the sandbox duplex transport instrumentation. Both
-sections follow below.
+This document also holds three local instrumentation contracts: native runner
+traces, sandbox startup traces, and sandbox duplex transport instrumentation.
+Those sections follow below.
+
+## Native Runner Trace Spans
+
+Paperclip Runner task runs emit a single foldable OpenTelemetry trace. This is
+the native-run trace schema version `2`. `task.run` is the only full-run root;
+every other native span carries a real OpenTelemetry parent context rather than
+only a descriptive `parentName` field.
+
+The canonical lifecycle is:
+
+```text
+task.run
+├── heartbeat.queue
+├── task.prepare
+│   ├── environment.startup
+│   │   ├── environment.acquire
+│   │   └── environment.workspace.realize
+│   ├── heartbeat.prepare_before_environment
+│   ├── heartbeat.prepare_after_environment
+│   └── native.coordinator.claim
+├── native.session.execute
+│   ├── runner.session.startup
+│   │   ├── runner.transport.connect
+│   │   │   └── runner.artifact.prepare
+│   │   ├── runner.transport.activation
+│   │   ├── runner.transport.ready
+│   │   ├── runner.runtime.stage
+│   │   │   └── stage.sync
+│   │   │       ├── stage.asset.home
+│   │   │       │   └── session.checkpoint.restore
+│   │   │       ├── stage.asset.runtime_context
+│   │   │       └── stage.asset.ca_bundle
+│   │   ├── runner.session.bootstrap | runner.session.resume
+│   │   └── runner.turn.submit
+│   └── agent.turn
+│       ├── provider.turn.queue
+│       └── provider.time_to_first_agent_event
+└── task.settle
+    ├── native.result.finalize
+    └── session.checkpoint.persist
+```
+
+The tree shows stable semantic groups, not an exhaustive leaf list. Existing
+artifact discovery and verification, process launch, PRP/websocket, ingress,
+sandbox lease, harness-state, provider, duplex, and `sandbox.exec` spans remain
+under the closest group. This keeps detailed diagnosis available while letting
+a trace UI collapse the run into preparation, runner startup, agent work, and
+settlement. A repeated operation creates another span with the same semantic
+name; attempts are not encoded into span names.
+
+`runner.session.startup` ends at the first durable `turn.submitted` event. A
+fresh provider session records `runner.session.bootstrap`; an exact recovered
+session records `runner.session.resume`. `agent.turn` begins at
+`turn.submitted` and ends at the provider terminal event. `task.settle` begins
+at that terminal event and remains open through finalization and checkpoint
+persistence, so settlement work does not appear to outlive its parent.
+
+The active native scope is also published through the existing asynchronous
+runtime-parent seam. Provider execution, plugin, websocket/duplex, daemon, and
+sandbox spans therefore inherit the correct branch even when their callbacks
+run in another service layer. With no active native scope, those existing seams
+retain their documented fallback behavior.
+
+The root carries only a hashed run id, runtime label, schema version, wall time,
+and outcome. Native child attributes use the bounded
+`paperclip.native.span.` prefix and a closed key allowlist; values are limited
+to finite numbers, booleans, or short strings. Commands, arguments, environment
+values, paths, output, credentials, and raw identifiers are discarded by the
+trace helper. `task.run.measured` remains in the local run log for compatibility
+but is not exported as a second full-width OTel span.
+Persisted `run.performance.span` events retain the v1 run-log schema and include
+`traceSchemaVersion: 2` so local tooling can distinguish the hierarchy.
+
+Like every span in this document, native-run spans are opt-in. When
+`OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the tracer remains a no-op; the local
+run-log copy is unaffected.
 
 ## Sentry Error Monitoring
 
@@ -378,30 +454,30 @@ absent, never a misleading `0`.
 
 ### Spans
 
-| Span | Scope | Parent |
-| --- | --- | --- |
-| `sandbox.startup` | The one root span for a sandbox bring-up. | none (root) |
-| `workspace.resolve` | Workspace resolution step. | `sandbox.startup` |
-| `codex-home.seed` | Managed-home seed step. | `sandbox.startup` |
-| `skills.reconcile` | Skills reconcile step. | `sandbox.startup` |
-| `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
-| `snapshot.git` | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`). | `stage.sync` |
-| `snapshot.baseline` | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore. | `stage.sync` |
-| `stage.workspace` | One inbound workspace stage task inside `stage.sync`. It packs and uploads the workspace. | `stage.sync` |
-| `stage.asset.<key>` | One inbound asset stage task inside `stage.sync`. It packs and uploads one managed-home asset. The `<key>` segment is the asset key. | `stage.sync` |
-| `stage.project.<id>` | One inbound referenced-project stage task inside `stage.sync`. It uploads one referenced project. The `<id>` segment is the project id. | `stage.sync` |
-| `pack` | Host-side workspace tarball build inside the `stage.workspace` task. | `stage.workspace` |
-| `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
-| `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
-| `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
-| `sandbox.syncBack` | The settlement sync-back that restores the managed home at teardown. | the active run span |
-| `restore.workspace` | One outbound workspace restore task at teardown. It reads the sandbox workspace back and merges it into the host workspace. | `sandbox.syncBack` |
-| `restore.asset.<key>` | One outbound asset restore task at teardown. It reads one asset back to its host store. The `<key>` segment is the asset key. | `sandbox.syncBack` |
-| `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
-| `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
-| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
-| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span |
-| `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
+| Span                                  | Scope                                                                                                                                                      | Parent                          |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `sandbox.startup`                     | The one root span for a sandbox bring-up.                                                                                                                  | none (root)                     |
+| `workspace.resolve`                   | Workspace resolution step.                                                                                                                                 | `sandbox.startup`               |
+| `codex-home.seed`                     | Managed-home seed step.                                                                                                                                    | `sandbox.startup`               |
+| `skills.reconcile`                    | Skills reconcile step.                                                                                                                                     | `sandbox.startup`               |
+| `stage.sync`                          | Workspace stage-sync step.                                                                                                                                 | `sandbox.startup`               |
+| `snapshot.git`                        | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`).                                              | `stage.sync`                    |
+| `snapshot.baseline`                   | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore.                                                                      | `stage.sync`                    |
+| `stage.workspace`                     | One inbound workspace stage task inside `stage.sync`. It packs and uploads the workspace.                                                                  | `stage.sync`                    |
+| `stage.asset.<key>`                   | One inbound asset stage task inside `stage.sync`. It packs and uploads one managed-home asset. The `<key>` segment is the asset key.                       | `stage.sync`                    |
+| `stage.project.<id>`                  | One inbound referenced-project stage task inside `stage.sync`. It uploads one referenced project. The `<id>` segment is the project id.                    | `stage.sync`                    |
+| `pack`                                | Host-side workspace tarball build inside the `stage.workspace` task.                                                                                       | `stage.workspace`               |
+| `bridge.paperclip`                    | Paperclip bridge start step.                                                                                                                               | `sandbox.startup`               |
+| `bridge.process-session`              | Process-session bridge start step.                                                                                                                         | `sandbox.startup`               |
+| `acp.handshake`                       | ACP session handshake step.                                                                                                                                | `sandbox.startup`               |
+| `sandbox.syncBack`                    | The settlement sync-back that restores the managed home at teardown.                                                                                       | the active run span             |
+| `restore.workspace`                   | One outbound workspace restore task at teardown. It reads the sandbox workspace back and merges it into the host workspace.                                | `sandbox.syncBack`              |
+| `restore.asset.<key>`                 | One outbound asset restore task at teardown. It reads one asset back to its host store. The `<key>` segment is the asset key.                              | `sandbox.syncBack`              |
+| `sandbox.agentSession.sendInput`      | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec.                                                                     | the active run span             |
+| `sandbox.agentSession.pollOutput`     | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs).                                                                       | the active run span             |
+| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it.                                                                      | the active run span             |
+| `sandbox.agentProcess`                | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span             |
+| `sandbox.exec`                        | One host-to-sandbox execution.                                                                                                                             | the active step or wrapper span |
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
 span that runs the execution, so each execution nests under its step. Within
@@ -451,31 +527,31 @@ The `paperclip.sandbox.startup.outcome` attribute uses a closed value set:
 
 The `sandbox.startup` root span uses this closed attribute allowlist.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.root.wall_ms` | number | no | The root-span wall time of the whole bring-up. |
-| `paperclip.sandbox.startup.root.work_ms` | number | no | The sum of the step wall times. |
-| `paperclip.sandbox.startup.root.diff_ms` | number | no | `work_ms − wall_ms`; the overlap the parallel steps saved. |
-| `paperclip.sandbox.startup.provider` | string | yes | The normalized provider family. |
-| `paperclip.sandbox.startup.cold_start` | boolean | yes | Whether the bring-up is a cold start. |
-| `paperclip.sandbox.startup.region` | string | yes | The clamped region label. |
-| `paperclip.sandbox.startup.image_id` | string | yes | The hashed image id. |
-| `paperclip.sandbox.startup.sandbox_id` | string | yes | The hashed sandbox id. |
-| `paperclip.sandbox.startup.lease_id` | string | yes | The hashed lease id. |
+| Attribute                                | Type    | Optional | Meaning                                                    |
+| ---------------------------------------- | ------- | -------- | ---------------------------------------------------------- |
+| `paperclip.sandbox.startup.root.wall_ms` | number  | no       | The root-span wall time of the whole bring-up.             |
+| `paperclip.sandbox.startup.root.work_ms` | number  | no       | The sum of the step wall times.                            |
+| `paperclip.sandbox.startup.root.diff_ms` | number  | no       | `work_ms − wall_ms`; the overlap the parallel steps saved. |
+| `paperclip.sandbox.startup.provider`     | string  | yes      | The normalized provider family.                            |
+| `paperclip.sandbox.startup.cold_start`   | boolean | yes      | Whether the bring-up is a cold start.                      |
+| `paperclip.sandbox.startup.region`       | string  | yes      | The clamped region label.                                  |
+| `paperclip.sandbox.startup.image_id`     | string  | yes      | The hashed image id.                                       |
+| `paperclip.sandbox.startup.sandbox_id`   | string  | yes      | The hashed sandbox id.                                     |
+| `paperclip.sandbox.startup.lease_id`     | string  | yes      | The hashed lease id.                                       |
 
 ### Step span attributes
 
 Each bring-up step span uses this closed attribute allowlist. The step name
 rides the span name, so no `step` attribute repeats it.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.step.wall_ms` | number | no | The wall time of the step. |
-| `paperclip.sandbox.startup.outcome` | string | no | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.provider` | string | yes | The normalized provider family. |
-| `paperclip.sandbox.startup.batch` | string | yes | A shared tag that marks two parallel steps as one batch. |
-| `paperclip.sandbox.startup.handshake.create_runtime.wall_ms` | number | yes | The create-runtime sub-time of the `acp.handshake` step. |
-| `paperclip.sandbox.startup.handshake.ensure_session.wall_ms` | number | yes | The ensure-session sub-time of the `acp.handshake` step. |
+| Attribute                                                    | Type   | Optional | Meaning                                                  |
+| ------------------------------------------------------------ | ------ | -------- | -------------------------------------------------------- |
+| `paperclip.sandbox.startup.step.wall_ms`                     | number | no       | The wall time of the step.                               |
+| `paperclip.sandbox.startup.outcome`                          | string | no       | The step outcome (`ok`, `skipped`, or `failed`).         |
+| `paperclip.sandbox.startup.provider`                         | string | yes      | The normalized provider family.                          |
+| `paperclip.sandbox.startup.batch`                            | string | yes      | A shared tag that marks two parallel steps as one batch. |
+| `paperclip.sandbox.startup.handshake.create_runtime.wall_ms` | number | yes      | The create-runtime sub-time of the `acp.handshake` step. |
+| `paperclip.sandbox.startup.handshake.ensure_session.wall_ms` | number | yes      | The ensure-session sub-time of the `acp.handshake` step. |
 
 The round-trip count and the provider durations no longer ride a step span. The
 per-execution `sandbox.exec` child spans carry that detail.
@@ -485,18 +561,18 @@ per-execution `sandbox.exec` child spans carry that detail.
 The `sandbox.exec` span uses this closed attribute allowlist. Paperclip omits a
 numeric attribute when the provider does not report the value.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
-| `paperclip.sandbox.startup.exec.command` | string | no | The clamped `argv[0]` command label. |
-| `paperclip.sandbox.startup.exec.exit_code` | number | yes | The numeric process exit code. |
-| `paperclip.sandbox.startup.exec.wall_ms` | number | no | The host-measured wall time of the execution. |
-| `paperclip.sandbox.startup.exec.wait_before_ms` | number | yes | The provider handle-fetch wait before the execution ran. |
-| `paperclip.sandbox.startup.exec.sandbox_ms` | number | yes | The in-sandbox run time of the execution. |
-| `paperclip.sandbox.startup.exec.network_ms` | number | yes | The transport time the host adds; `wall_ms − wait_before_ms − sandbox_ms`. |
-| `paperclip.sandbox.startup.exec.critical_path` | boolean | no | Whether the execution sits on the startup critical path. |
-| `paperclip.sandbox.startup.exec.cache_hit` | boolean | yes | Whether the provider served the sandbox handle from its warm cache. |
-| `paperclip.sandbox.startup.outcome` | string | no | The execution outcome (`ok` or `failed`). |
+| Attribute                                       | Type    | Optional | Meaning                                                                    |
+| ----------------------------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
+| `paperclip.sandbox.startup.provider`            | string  | no       | The normalized provider family.                                            |
+| `paperclip.sandbox.startup.exec.command`        | string  | no       | The clamped `argv[0]` command label.                                       |
+| `paperclip.sandbox.startup.exec.exit_code`      | number  | yes      | The numeric process exit code.                                             |
+| `paperclip.sandbox.startup.exec.wall_ms`        | number  | no       | The host-measured wall time of the execution.                              |
+| `paperclip.sandbox.startup.exec.wait_before_ms` | number  | yes      | The provider handle-fetch wait before the execution ran.                   |
+| `paperclip.sandbox.startup.exec.sandbox_ms`     | number  | yes      | The in-sandbox run time of the execution.                                  |
+| `paperclip.sandbox.startup.exec.network_ms`     | number  | yes      | The transport time the host adds; `wall_ms − wait_before_ms − sandbox_ms`. |
+| `paperclip.sandbox.startup.exec.critical_path`  | boolean | no       | Whether the execution sits on the startup critical path.                   |
+| `paperclip.sandbox.startup.exec.cache_hit`      | boolean | yes      | Whether the provider served the sandbox handle from its warm cache.        |
+| `paperclip.sandbox.startup.outcome`             | string  | no       | The execution outcome (`ok` or `failed`).                                  |
 
 The plugin decides the cache hit at the sandbox-handle lookup. The span no
 longer infers a cache hit from `wait_before_ms == 0`. Paperclip omits the
@@ -517,18 +593,18 @@ every field of a worker-sent span as untrusted input. The host re-clamps the
 span name and every attribute at one boundary, the `span.record` host handler,
 before it records the span.
 
-| Span | Scope | Parent |
-| --- | --- | --- |
-| `sandbox.daytona.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
-| `sandbox.daytona.transfer` | The transfer step: an upload to the sandbox (inbound) or a download from the sandbox (outbound). The `paperclip.sandbox.startup.transfer.direction` attribute records the direction. | the active sync task span (`stage.*` inbound, `restore.*` under `sandbox.syncBack` outbound) |
-| `sandbox.daytona.ensureDirectory` | The `mkdir -p` step that ensures a directory exists before a write. | the active startup step span |
-| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use. | the active startup step span |
-| `sandbox.daytona.promote` | The atomic move of a staged temp onto its target via a pinned dir handle. | the active startup step span |
-| `sandbox.daytona.extractTarball` | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball. | the active startup step span |
-| `sandbox.daytona.postUploadCommand` | One caller-supplied post-upload command. | the active startup step span |
-| `sandbox.daytona.session.open` | The create of the one persistent session for a lease, on the first in-run command. | the active run span |
-| `sandbox.daytona.session.close` | The delete of that persistent session on lease release. | the active run span |
-| `sandbox.daytona.other` | Any span name outside the known set. | the active startup step span |
+| Span                                 | Scope                                                                                                                                                                                | Parent                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `sandbox.daytona.pack`               | The host-local pack step that builds the upload tarball. It makes no sandbox round trip.                                                                                             | the active startup step span                                                                 |
+| `sandbox.daytona.transfer`           | The transfer step: an upload to the sandbox (inbound) or a download from the sandbox (outbound). The `paperclip.sandbox.startup.transfer.direction` attribute records the direction. | the active sync task span (`stage.*` inbound, `restore.*` under `sandbox.syncBack` outbound) |
+| `sandbox.daytona.ensureDirectory`    | The `mkdir -p` step that ensures a directory exists before a write.                                                                                                                  | the active startup step span                                                                 |
+| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use.                                                                                                         | the active startup step span                                                                 |
+| `sandbox.daytona.promote`            | The atomic move of a staged temp onto its target via a pinned dir handle.                                                                                                            | the active startup step span                                                                 |
+| `sandbox.daytona.extractTarball`     | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball.                                                                                         | the active startup step span                                                                 |
+| `sandbox.daytona.postUploadCommand`  | One caller-supplied post-upload command.                                                                                                                                             | the active startup step span                                                                 |
+| `sandbox.daytona.session.open`       | The create of the one persistent session for a lease, on the first in-run command.                                                                                                   | the active run span                                                                          |
+| `sandbox.daytona.session.close`      | The delete of that persistent session on lease release.                                                                                                                              | the active run span                                                                          |
+| `sandbox.daytona.other`              | Any span name outside the known set.                                                                                                                                                 | the active startup step span                                                                 |
 
 The host clamps the span name to the closed set of leaf names above (`pack`,
 `transfer`, `ensureDirectory`, `checkSymlinkEscape`, `promote`, `extractTarball`,
@@ -543,14 +619,14 @@ drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
 the attributes that the producer sends for one span.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
-| `paperclip.sandbox.startup.outcome` | string | yes | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span. |
-| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span. |
-| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
-| `paperclip.sandbox.startup.transfer.direction` | string | yes | The transfer direction (`inbound` or `outbound`). It rides the `sandbox.daytona.transfer` span. |
+| Attribute                                        | Type   | Optional | Meaning                                                                                                   |
+| ------------------------------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
+| `paperclip.sandbox.startup.provider`             | string | no       | The normalized provider family.                                                                           |
+| `paperclip.sandbox.startup.outcome`              | string | yes      | The step outcome (`ok`, `skipped`, or `failed`).                                                          |
+| `paperclip.sandbox.startup.pack.wall_ms`         | number | yes      | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span.                      |
+| `paperclip.sandbox.startup.transfer.wall_ms`     | number | yes      | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span.                         |
+| `paperclip.sandbox.startup.transfer.guard.count` | number | yes      | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
+| `paperclip.sandbox.startup.transfer.direction`   | string | yes      | The transfer direction (`inbound` or `outbound`). It rides the `sandbox.daytona.transfer` span.           |
 
 The `span.record` host handler enforces the allowlist. It re-maps `provider`
 through the provider-family normalizer. It keeps `outcome` only when the value
@@ -610,25 +686,25 @@ field.
 
 ### Spans
 
-| Span | Scope | Latency |
-| --- | --- | --- |
-| `sandbox.duplex.channel_open` | One duplex channel-open attempt. The `outcome` dimension is `ok` when the channel opened and readiness passed, or `error` when the open or readiness failed. | none |
-| `sandbox.duplex.request` | One duplex request the broker forwarded to the host. | The request latency in milliseconds. |
+| Span                          | Scope                                                                                                                                                        | Latency                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| `sandbox.duplex.channel_open` | One duplex channel-open attempt. The `outcome` dimension is `ok` when the channel opened and readiness passed, or `error` when the open or readiness failed. | none                                 |
+| `sandbox.duplex.request`      | One duplex request the broker forwarded to the host.                                                                                                         | The request latency in milliseconds. |
 
 ### Event
 
-| Event | Scope |
-| --- | --- |
+| Event                      | Scope                                                                                                                                                                 |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox.duplex.transport` | The host emits it at each transport boundary: a ready duplex channel, a fallback to the file bridge, and a terminal channel loss. Its dimensions record the boundary. |
 
 ### Counters
 
-| Counter | Scope |
-| --- | --- |
-| `sandbox_duplex_channel_open_total` | One successful duplex channel open. |
-| `sandbox_duplex_fallback_total` | One fallback to the file bridge. The `fallback_reason` dimension records the cause. |
-| `sandbox_duplex_loss_total` | One terminal duplex channel loss. The `loss_class` dimension records the phase. |
-| `sandbox_duplex_session_leak_total` | One leaked provider session at teardown. |
+| Counter                             | Scope                                                                               |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
+| `sandbox_duplex_channel_open_total` | One successful duplex channel open.                                                 |
+| `sandbox_duplex_fallback_total`     | One fallback to the file bridge. The `fallback_reason` dimension records the cause. |
+| `sandbox_duplex_loss_total`         | One terminal duplex channel loss. The `loss_class` dimension records the phase.     |
+| `sandbox_duplex_session_leak_total` | One leaked provider session at teardown.                                            |
 
 ### Dimension keys
 

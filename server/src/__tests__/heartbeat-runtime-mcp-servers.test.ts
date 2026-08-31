@@ -58,7 +58,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await tempDb?.cleanup();
   });
 
-  it("provisions one gateway per installed connection and mints short-lived run tokens", async () => {
+  it("provisions one aggregate gateway and filters degraded access without blocking direct adapters", async () => {
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -133,17 +133,21 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
 
     expect(first).toHaveLength(1);
     expect(first[0]).toMatchObject({
-      name: "Installed MCP",
-      connectionId: installedConnection!.id,
+      name: "paperclip-assigned",
+      connectionId: expect.stringMatching(/^assignment:[a-f0-9]{64}$/),
       url: expect.stringMatching(/^https:\/\/paperclip\.example\.test\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
       token: expect.stringMatching(/^pcgw_/),
     });
-    expect(first.some((server) => server.connectionId === uninstalledConnection!.id)).toBe(false);
+    expect(JSON.stringify(first)).not.toContain(uninstalledConnection!.id);
     expect(second).toHaveLength(1);
+    expect(second[0]!.connectionId).toBe(first[0]!.connectionId);
 
     const gateways = await db.select().from(toolMcpGateways);
     expect(gateways).toHaveLength(1);
-    expect(gateways[0]!.metadata).toMatchObject({ managedRuntimeConnectionId: installedConnection!.id });
+    expect(gateways[0]!.metadata).toMatchObject({
+      nativeRuntimeAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
+      agentId: agent!.id,
+    });
     const tokens = await db.select().from(toolMcpGatewayTokens);
     expect(tokens).toHaveLength(2);
     for (const token of tokens) {
@@ -153,6 +157,13 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
+
+    await db.update(toolConnections)
+      .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
+      .where(eq(toolConnections.id, installedConnection!.id));
+    await expect(
+      buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() }),
+    ).resolves.toEqual([]);
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
