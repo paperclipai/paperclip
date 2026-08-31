@@ -2627,7 +2627,23 @@ rl.on("line", (line) => {
       name: "HTTP status",
       reasonCode: "remote_http_status",
       status: 502,
+      expectedHttpStatus: 503,
       response: () => ({ status: 503, body: { error: "unavailable" } }),
+    },
+    {
+      // Mirrors 1MCP's real Streamable HTTP session-churn signal observed live
+      // against ai-1mcp: `statusCode=404 reason="Session not found. Send an
+      // initialize request first to create a new session."`. executeRemoteHttpTool
+      // retries this specific status (safe: a 404 means the server never routed
+      // the call to the tool, so no side effect could have fired), but a server
+      // that 404s every request — including `initialize` itself — still exhausts
+      // retries and surfaces the same controlled error, just after 3 attempts
+      // instead of 1.
+      name: "persistent session-not-found (404) across every retry",
+      reasonCode: "remote_http_status",
+      status: 502,
+      expectedHttpStatus: 404,
+      response: () => ({ status: 404, body: { error: "session not found" } }),
     },
     {
       name: "invalid JSON",
@@ -2714,7 +2730,7 @@ rl.on("line", (line) => {
         });
         if (scenario.reasonCode === "remote_http_status") {
           expect(failureAudit.details).toMatchObject({
-            execution: { response: { httpStatus: 503 } },
+            execution: { response: { httpStatus: scenario.expectedHttpStatus } },
           });
         }
       } finally {
@@ -2722,6 +2738,62 @@ rl.on("line", (line) => {
       }
     });
   }
+
+  it("retries a remote MCP tool call after a transient 1MCP session-not-found (404), recovering with a fresh initialize handshake", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    let toolCallAttempts = 0;
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      if (fakeRequest.body?.method !== "tools/call") {
+        return { body: { jsonrpc: "2.0", id: fakeRequest.body?.id ?? null, result: {} } };
+      }
+      toolCallAttempts += 1;
+      if (toolCallAttempts === 1) {
+        // The exact signal observed live against ai-1mcp for a churned session.
+        return {
+          status: 404,
+          body: { jsonrpc: "2.0", id: fakeRequest.body.id, error: { code: -32001, message: "Session not found" } },
+        };
+      }
+      const params = fakeRequest.body.params as Record<string, unknown>;
+      const args = params.arguments as Record<string, unknown>;
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body.id,
+          result: { content: [{ type: "text", text: `stored ${String(args.key)}=${String(args.value)}` }] },
+        },
+      };
+    });
+    try {
+      await createRemoteMcpTool(db, company.id, { applicationKey: "kv-session-churn", toolName: "kv_set", url: fake.url });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "stored alpha=one" },
+      });
+      // Failed attempt's initialize + failed tools/call, then a fresh initialize +
+      // succeeding tools/call.
+      expect(toolCallAttempts).toBe(2);
+
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({ status: "succeeded", toolName: connectedTool!.name });
+    } finally {
+      await fake.close();
+    }
+  });
 
   it("times out a remote MCP call whose `initialize` handshake hangs, instead of dispatching tools/call", async () => {
     const company = await createCompany(db);

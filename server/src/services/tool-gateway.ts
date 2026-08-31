@@ -2998,7 +2998,40 @@ export function createToolGatewayService(
     };
   }
 
+  // 1MCP's Streamable HTTP transport churns sessions under load (see remoteTools'
+  // comment in tool-access.ts). A 404 on `tools/call` is the MCP spec's defined
+  // signal that the server never found the session — meaning the downstream tool
+  // was never invoked, so retrying with a fresh `initialize` handshake is safe
+  // even for non-idempotent tools (Discord sends, GitHub writes, etc.). This is
+  // the actual tool-execution path (unlike remoteTools' tools/list catalog
+  // refresh), so retries are scoped to exactly that one unambiguous signal
+  // instead of retrying blindly — any other failure (a JSON-RPC error, a timeout)
+  // may mean the call already reached the tool, and retrying it could double-fire
+  // a side effect.
   async function executeRemoteHttpTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+    ms: number,
+    invocationId: string,
+    callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
+  ): Promise<RemoteHttpExecutionResult> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await executeRemoteHttpToolOnce(session, tool, parameters, ms, invocationId, callerHeaders);
+      } catch (error) {
+        lastError = error;
+        const status = error instanceof ToolGatewayHttpError ? error.details.status : undefined;
+        if (status !== 404 || attempt >= maxAttempts) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 750));
+      }
+    }
+    throw lastError;
+  }
+
+  async function executeRemoteHttpToolOnce(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     parameters: unknown,
