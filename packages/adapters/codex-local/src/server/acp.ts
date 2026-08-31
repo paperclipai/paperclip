@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type {
   AdapterBillingType,
@@ -16,8 +18,10 @@ import {
 import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  overrideAdapterExecutionTargetRemoteCwd,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
@@ -41,15 +45,51 @@ import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  codexHomeHasUsableAuth,
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import {
+  classifyCodexProbeAuth,
+  snapshotDurableCodexProbeAuth,
+} from "./codex-probe-auth.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
 const MIN_ACP_NODE_VERSION = "24.11.0";
+const CODEX_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
+const CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES = [
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "CODEX_AUTH_JSON",
+  "_PAPERCLIP_CODEX_AUTH_JSON",
+] as const;
+const CODEX_ACP_PROBE_AUTH_ENV_KEYS = new Set<string>(
+  CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES,
+);
+const CODEX_ACP_PROBE_HOME_STAGE_SCRIPT = [
+  "set -eu",
+  "umask 077",
+  `node -e '${[
+    'const fs=require("node:fs")',
+    'const path=require("node:path")',
+    'const home=process.env.CODEX_HOME',
+    'if(!home)throw new Error("missing probe home")',
+    'const parent=path.dirname(home)',
+    'fs.mkdirSync(parent,{recursive:true,mode:0o700})',
+    'fs.chmodSync(parent,0o700)',
+    'const parentStat=fs.lstatSync(parent)',
+    'if(!parentStat.isDirectory()||parentStat.isSymbolicLink())throw new Error("invalid probe parent")',
+    'fs.mkdirSync(home,{mode:0o700})',
+    'const homeStat=fs.lstatSync(home)',
+    'if(!homeStat.isDirectory()||homeStat.isSymbolicLink())throw new Error("invalid probe home")',
+    'const payload=JSON.parse(fs.readFileSync(0,"utf8"))',
+    'if(typeof payload.authJson==="string")fs.writeFileSync(path.join(home,"auth.json"),Buffer.from(payload.authJson,"base64"),{mode:0o600,flag:"wx"})',
+  ].join(";")}'`,
+].join("; ");
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -484,10 +524,508 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+type CodexAcpLiveProbeExecutor = (
+  ctx: AdapterExecutionContext,
+) => Promise<AdapterExecutionResult>;
+
+type CodexAcpLiveProbeOptions = {
+  execute?: CodexAcpLiveProbeExecutor;
+  createExecutor?: (options: CodexAcpExecutorOptions) => CodexAcpLiveProbeExecutor;
+};
+
+function buildCodexAcpAuthRequiredChecks(targetIsSandbox: boolean): AdapterEnvironmentCheck[] {
+  const checks: AdapterEnvironmentCheck[] = [
+    {
+      code: "codex_hello_probe_auth_required",
+      level: "warn",
+      message: "Codex is available, but authentication is not ready.",
+      hint: "Configure Codex authentication in the selected environment and retry the live test.",
+    },
+  ];
+  if (targetIsSandbox) {
+    checks.push({
+      code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+      level: "warn",
+      message: "This environment has no ready authentication for this adapter.",
+      hint: "Provide credentials for this adapter, or start login in the environment.",
+    });
+  }
+  return checks;
+}
+
+function classifyCodexAcpLiveProbeResult(
+  result: AdapterExecutionResult,
+  targetIsSandbox: boolean,
+): AdapterEnvironmentCheck[] {
+  const resultJson = parseObject(result.resultJson);
+  if (isNonEmpty(resultJson.workspaceRestoreFailure)) {
+    return [{
+      code: "codex_hello_probe_cleanup_failed",
+      level: "error",
+      message: "Codex replied, but environment cleanup did not complete safely.",
+      hint: "Repair Codex authentication in the selected environment, then retry the live test.",
+    }];
+  }
+
+  if (result.timedOut) {
+    return [{
+      code: "codex_hello_probe_timed_out",
+      level: "warn",
+      message: "Codex hello probe timed out.",
+      hint: "Retry the live test after verifying Codex can reach its model provider.",
+    }];
+  }
+
+  const summary = result.summary?.trim() ?? "";
+  if ((result.exitCode ?? 1) === 0) {
+    const hasHello = summary === "Hello.";
+    return [{
+      code: hasHello ? "codex_hello_probe_passed" : "codex_hello_probe_unexpected_output",
+      level: hasHello ? "info" : "warn",
+      message: hasHello
+        ? "Codex hello probe succeeded."
+        : "Codex probe ran but did not return `hello` as expected.",
+      ...(hasHello ? { detail: "Hello." } : {}),
+      ...(!hasHello ? { hint: "Retry the live test before hiring this agent." } : {}),
+    }];
+  }
+
+  const classifiedError = firstNonEmptyString(
+    result.errorCode,
+    result.errorFamily,
+    resultJson.errorFamily,
+  );
+  if (
+    classifiedError === "acpx_auth_required" ||
+    classifiedError?.startsWith("refresh_token_")
+  ) {
+    return buildCodexAcpAuthRequiredChecks(targetIsSandbox);
+  }
+
+  const stopReason = asString(resultJson.stopReason, "");
+  const authEvidence = [result.errorMessage ?? "", summary, stopReason].join("\n");
+  if (CODEX_AUTH_REQUIRED_RE.test(authEvidence)) {
+    return buildCodexAcpAuthRequiredChecks(targetIsSandbox);
+  }
+  return [{
+    code: "codex_hello_probe_failed",
+    level: "error",
+    message: "Codex hello probe failed.",
+    hint: "Verify the selected Codex model, authentication, and execution environment, then retry.",
+  }];
+}
+
+function isCodexAcpCleanupFailureLog(
+  stream: "stdout" | "stderr",
+  chunk: string,
+): boolean {
+  if (stream !== "stderr") return false;
+  return (
+    (chunk.includes('[paperclip] ACPX teardown step "') && chunk.includes('" failed:')) ||
+    chunk.includes("[paperclip] Failed to remove staged Codex home ") ||
+    chunk.includes("[paperclip] Codex ACP teardown restore/copy-back failed:")
+  );
+}
+
+function codexAcpProbeFailedCheck(): AdapterEnvironmentCheck[] {
+  return [{
+    code: "codex_hello_probe_failed",
+    level: "error",
+    message: "Codex hello probe failed.",
+    hint: "Verify the selected Codex model, authentication, and execution environment, then retry.",
+  }];
+}
+
+function codexAcpProbeCleanupFailedCheck(): AdapterEnvironmentCheck[] {
+  return [{
+    code: "codex_hello_probe_cleanup_failed",
+    level: "error",
+    message: "Codex replied, but environment cleanup did not complete safely.",
+    hint: "Retry the live test after checking the selected environment's runtime health.",
+  }];
+}
+
+function stripCodexAcpProbeAuthEnv(env: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" &&
+        !CODEX_ACP_PROBE_AUTH_ENV_KEYS.has(entry[0].toUpperCase()),
+    ),
+  );
+}
+
+async function materializeCodexAcpProbeHome(input: {
+  probeRoot: string;
+  runId: string;
+  companyId: string;
+  config: Record<string, unknown>;
+  targetIsSandbox: boolean;
+}): Promise<{
+  probeHome: string;
+}> {
+  const configEnv = parseObject(input.config.env);
+  const configuredCodexHome = isNonEmpty(configEnv.CODEX_HOME)
+    ? configEnv.CODEX_HOME
+    : null;
+  const readiness = await evaluateCodexCredentialReadiness({
+    env: process.env,
+    companyId: input.companyId,
+    configuredCodexHome,
+    configuredApiKey: null,
+  });
+  const sourceHome = readiness.managed &&
+      !(await codexHomeHasUsableAuth(readiness.effectiveHome))
+    ? readiness.sharedSourceHome
+    : readiness.effectiveHome;
+  const configuredAuthJson = firstNonEmptyString(
+    configEnv.CODEX_AUTH_JSON,
+    configEnv._PAPERCLIP_CODEX_AUTH_JSON,
+  );
+  const configDefinesApiKey =
+    Object.prototype.hasOwnProperty.call(configEnv, "OPENAI_API_KEY") ||
+    Object.prototype.hasOwnProperty.call(configEnv, "CODEX_API_KEY");
+  const configuredApiKey = firstNonEmptyString(
+    configEnv.OPENAI_API_KEY,
+    configEnv.CODEX_API_KEY,
+  );
+  const hostApiKey = input.targetIsSandbox || configDefinesApiKey
+    ? null
+    : firstNonEmptyString(process.env.OPENAI_API_KEY, process.env.CODEX_API_KEY);
+  const apiKey = configuredApiKey ?? hostApiKey;
+  const authJson = configuredAuthJson ?? (
+    apiKey ? JSON.stringify({ OPENAI_API_KEY: apiKey }) : null
+  );
+  if (authJson && classifyCodexProbeAuth(Buffer.from(authJson, "utf8")) !== "api_key") {
+    throw new Error("codex_probe_nonpersistent_subscription_auth_unsupported");
+  }
+  const durableSnapshot = authJson
+    ? null
+    : await snapshotDurableCodexProbeAuth(sourceHome).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+  if (durableSnapshot?.kind === "unsupported") {
+    throw new Error("codex_probe_auth_format_unsupported");
+  }
+  if (durableSnapshot?.kind === "subscription") {
+    if (input.targetIsSandbox) {
+      // A sandbox can rotate a refresh token before the result is copied back.
+      // A host crash in that interval would destroy the only usable token, so
+      // subscription-backed probes stay local until the runner offers a
+      // transactional credential channel. Local probes use the durable home
+      // directly, making any Codex rotation durable at the write boundary.
+      throw new Error("codex_probe_remote_subscription_auth_unsupported");
+    }
+    // The probe executor disables all Paperclip skill preparation before it
+    // points Codex at this durable home. That leaves refresh-token rotation on
+    // its crash-durable path without reconciling or rewriting operator skills.
+    return { probeHome: sourceHome };
+  }
+  const probeHome = path.join(input.probeRoot, "codex-home");
+  try {
+    // The probe home starts empty. Copying the operator home would also copy
+    // config.toml, which can contain MCP bearer headers and tool definitions.
+    // Authentication is the only state this bounded proof needs.
+    await fs.mkdir(probeHome, { mode: 0o700 });
+  } catch {
+    throw new Error("codex_probe_home_materialization_failed");
+  }
+
+  if (authJson) {
+    const authPath = path.join(probeHome, "auth.json");
+    await fs.rm(authPath, { force: true });
+    await fs.writeFile(authPath, authJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await fs.chmod(authPath, 0o600);
+  } else if (durableSnapshot) {
+    const authPath = path.join(probeHome, "auth.json");
+    await fs.rm(authPath, { force: true });
+    await fs.writeFile(authPath, durableSnapshot.bytes, { mode: 0o600, flag: "wx" });
+    await fs.chmod(authPath, 0o600);
+  }
+  await fs.chmod(probeHome, 0o700);
+  return { probeHome };
+}
+
+async function prepareCodexAcpProbeRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  // The credential home was staged separately over stdin so credential bytes
+  // never enter the generic archive uploader's command text. This callback
+  // stages only the workspace and preserves the already-bound remote home.
+  return { stagedRuntime: await input.stage([]) };
+}
+
+async function stageCodexAcpRemoteProbeHome(input: {
+  ctx: AdapterEnvironmentTestContext;
+  runId: string;
+  localProbeHome: string;
+  remoteProbeHome: string;
+}): Promise<void> {
+  // Never forward config.toml: it can contain MCP Authorization headers. The
+  // bounded proof receives only auth.json; model/runtime settings travel via
+  // the non-secret run config built below.
+  const authJson = await fs.readFile(path.join(input.localProbeHome, "auth.json")).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  const stageTarget = overrideAdapterExecutionTargetRemoteCwd(input.ctx.executionTarget, "/tmp");
+  const staged = await runAdapterExecutionTargetProcess(
+    `${input.runId}-auth-stage`,
+    stageTarget,
+    "sh",
+    ["-c", CODEX_ACP_PROBE_HOME_STAGE_SCRIPT],
+    {
+      cwd: "/tmp",
+      env: { CODEX_HOME: input.remoteProbeHome },
+      denyEnvironmentKeys: CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES,
+      stdin: JSON.stringify({
+        authJson: authJson?.toString("base64") ?? null,
+      }),
+      timeoutSec: 15,
+      graceSec: 5,
+      onLog: async () => {},
+    },
+  );
+  if (!adapterProcessSucceeded(staged)) {
+    throw new Error("codex_probe_auth_stage_failed");
+  }
+}
+
+function adapterProcessSucceeded(result: {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+}): boolean {
+  return !result.timedOut && result.signal === null && result.exitCode === 0;
+}
+
+async function removeAndVerifyCodexAcpRemoteProbeRoot(input: {
+  ctx: AdapterEnvironmentTestContext;
+  runId: string;
+  remoteProbeRoot: string;
+}): Promise<boolean> {
+  const cleanupTarget = overrideAdapterExecutionTargetRemoteCwd(
+    input.ctx.executionTarget,
+    "/tmp",
+  );
+  let succeeded = true;
+  try {
+    const removal = await runAdapterExecutionTargetProcess(
+      `${input.runId}-cleanup`,
+      cleanupTarget,
+      "rm",
+      ["-rf", "--", input.remoteProbeRoot],
+      {
+        cwd: "/tmp",
+        env: {},
+        denyEnvironmentKeys: CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES,
+        timeoutSec: 15,
+        graceSec: 5,
+        onLog: async () => {},
+      },
+    );
+    if (!adapterProcessSucceeded(removal)) succeeded = false;
+  } catch {
+    succeeded = false;
+  }
+  try {
+    const verification = await runAdapterExecutionTargetProcess(
+      `${input.runId}-cleanup-verify`,
+      cleanupTarget,
+      "sh",
+      ["-c", '[ ! -e "$1" ] && [ ! -L "$1" ]', "sh", input.remoteProbeRoot],
+      {
+        cwd: "/tmp",
+        env: {},
+        denyEnvironmentKeys: CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES,
+        timeoutSec: 15,
+        graceSec: 5,
+        onLog: async () => {},
+      },
+    );
+    if (!adapterProcessSucceeded(verification)) succeeded = false;
+  } catch {
+    succeeded = false;
+  }
+  return succeeded;
+}
+
+/** Run one bounded ACP turn without exposing provider output in diagnostics. */
+export async function probeCodexAcpLiveReply(
+  ctx: AdapterEnvironmentTestContext,
+  config: Record<string, unknown>,
+  options: CodexAcpLiveProbeOptions = {},
+): Promise<AdapterEnvironmentCheck[]> {
+  const runId = `codex-acp-envtest-${randomUUID()}`;
+  let probeRoot: string;
+  try {
+    probeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-acp-envtest-"));
+  } catch {
+    return codexAcpProbeFailedCheck();
+  }
+  const workspaceDir = path.join(probeRoot, "workspace");
+  const warmHandles: NonNullable<AcpxEngineExecutorOptions["warmHandles"]> = new Map();
+  const stagedRuntimes: NonNullable<AcpxEngineExecutorOptions["stagedRuntimes"]> = new Map();
+  const stagingLocks: NonNullable<AcpxEngineExecutorOptions["stagingLocks"]> = new Map();
+  const {
+    paperclipRuntimeSkills: _paperclipRuntimeSkills,
+    paperclipSkillSync: _paperclipSkillSync,
+    agentCommand: _agentCommand,
+    acpAgentCommand: _acpAgentCommand,
+    ...probeBaseConfig
+  } = config;
+  const targetIsSandbox =
+    ctx.executionTarget?.kind === "remote" && ctx.executionTarget.transport === "sandbox";
+  const remoteProbeRoot = targetIsSandbox
+    ? path.posix.join("/tmp", `paperclip-codex-acp-envtest-${runId}`)
+    : null;
+  const probeExecutionTarget = remoteProbeRoot
+    ? overrideAdapterExecutionTargetRemoteCwd(ctx.executionTarget, remoteProbeRoot)
+    : ctx.executionTarget;
+  let probeAuth: {
+    probeHome: string;
+  } | null = null;
+  let activeProbeHome: string | null = null;
+  let checks = codexAcpProbeFailedCheck();
+  let cleanupFailed = false;
+  try {
+    await fs.mkdir(workspaceDir, { recursive: true });
+    probeAuth = await materializeCodexAcpProbeHome({
+      probeRoot,
+      runId,
+      companyId: ctx.companyId,
+      config: probeBaseConfig,
+      targetIsSandbox,
+    });
+    activeProbeHome = probeAuth.probeHome;
+    if (remoteProbeRoot) {
+      activeProbeHome = path.posix.join(remoteProbeRoot, "codex-home");
+      await stageCodexAcpRemoteProbeHome({
+        ctx,
+        runId,
+        localProbeHome: probeAuth.probeHome,
+        remoteProbeHome: activeProbeHome,
+      });
+    }
+    const probeConfig = {
+      ...probeBaseConfig,
+      env: {
+        ...stripCodexAcpProbeAuthEnv(parseObject(probeBaseConfig.env)),
+        CODEX_HOME: activeProbeHome,
+      },
+      engine: "acp",
+      mode: "oneshot",
+      permissionMode: "deny-all",
+      nonInteractivePermissions: "fail",
+      warmHandleIdleMs: 0,
+      cwd: workspaceDir,
+      stateDir: path.join(probeRoot, "state"),
+      timeoutSec: targetIsSandbox ? 90 : 45,
+      instructionsFilePath: "",
+      bootstrapPromptTemplate: "",
+      promptTemplate: "Reply with exactly Hello. Do not use tools.",
+    };
+    const execute = options.execute ?? (options.createExecutor ?? createCodexAcpExecutor)({
+      warmHandles,
+      stagedRuntimes,
+      stagingLocks,
+      denyEnvironmentKeys: CODEX_ACP_PROBE_AUTH_ENV_KEY_NAMES,
+      // A local subscription probe must use the durable auth home directly so
+      // token rotation survives a host crash. Do not let this read-only proof
+      // reconcile skills or write the managed-skill manifest in that home.
+      skipRuntimeSkillPreparation: true,
+      prepareRemoteManagedHome: prepareCodexAcpProbeRemoteManagedHome,
+      onTeardownFailure: () => {
+        cleanupFailed = true;
+      },
+    });
+    const result = await execute({
+      runId,
+      agent: {
+        id: runId,
+        companyId: ctx.companyId,
+        name: "Codex connection test",
+        adapterType: ctx.adapterType,
+        adapterConfig: probeConfig,
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: probeConfig,
+      // The proof never grants Paperclip API authority. A non-secret, invalid
+      // run-local token satisfies the bridge transport contract while any
+      // accidental Paperclip tool call remains unauthorized.
+      authToken: runId,
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_workspace",
+          workspaceId: runId,
+        },
+      },
+      executionTarget: probeExecutionTarget,
+      onLog: async (stream, chunk) => {
+        if (isCodexAcpCleanupFailureLog(stream, chunk)) cleanupFailed = true;
+      },
+    });
+    checks = classifyCodexAcpLiveProbeResult(result, targetIsSandbox);
+  } catch {
+    checks = codexAcpProbeFailedCheck();
+  } finally {
+    for (const entry of warmHandles.values()) {
+      if (entry.cleanupTimer) clearTimeout(entry.cleanupTimer);
+      try {
+        await entry.runtime.close({
+          handle: entry.handle,
+          reason: "paperclip environment test cleanup",
+          discardPersistentState: true,
+        });
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    warmHandles.clear();
+    for (const entry of stagedRuntimes.values()) {
+      try {
+        await entry.dispose?.();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    stagedRuntimes.clear();
+    stagingLocks.clear();
+    if (remoteProbeRoot) {
+      const removed = await removeAndVerifyCodexAcpRemoteProbeRoot({
+        ctx,
+        runId,
+        remoteProbeRoot,
+      });
+      if (!removed) cleanupFailed = true;
+    }
+    try {
+      await fs.rm(probeRoot, { recursive: true, force: true });
+      if (await fs.lstat(probeRoot).catch(() => null)) cleanupFailed = true;
+    } catch {
+      cleanupFailed = true;
+    }
+  }
+  if (cleanupFailed) {
+    return codexAcpProbeCleanupFailedCheck();
+  }
+  return checks;
+}
+
+type CodexAcpEnvironmentTestOptions = {
+  liveProbe?: (
+    ctx: AdapterEnvironmentTestContext,
+    config: Record<string, unknown>,
+  ) => Promise<AdapterEnvironmentCheck[]>;
+};
+
 export async function testCodexAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
+  options: CodexAcpEnvironmentTestOptions = {},
 ): Promise<AdapterEnvironmentTestResult> {
-  const checks: AdapterEnvironmentCheck[] = [];
+  let checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
@@ -507,22 +1045,42 @@ export async function testCodexAcpEnvironment(
       message: "Codex ACP will run against the remote execution environment.",
       hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
+    if (!targetIsSandbox) {
+      checks.push({
+        code: "codex_acp_remote_target_unsupported",
+        level: "error",
+        message: "Codex ACP live testing supports local and sandbox environments only.",
+        hint: "Use the Codex CLI engine for this remote environment, or select a sandbox environment with a process-session runner.",
+      });
+    } else if (!sandboxTargetHasProcessSessionBridge(target)) {
+      checks.push({
+        code: "codex_acp_sandbox_runner_missing",
+        level: "error",
+        message: "This sandbox cannot run a live Codex ACP session.",
+        hint: "Select a sandbox environment with a bidirectional process-session runner.",
+      });
+    }
   }
 
   const cwd = asString(config.cwd, process.cwd());
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    if (target?.kind === "remote") {
+      if (!target.remoteCwd.trim() || !path.posix.isAbsolute(target.remoteCwd)) {
+        throw new Error("invalid_remote_cwd");
+      }
+    } else {
+      await fs.mkdir(cwd, { recursive: true });
+    }
     checks.push({
       code: "codex_acp_cwd_valid",
       level: "info",
-      message: `Working directory is valid: ${cwd}`,
+      message: "Working directory is valid.",
     });
-  } catch (err) {
+  } catch {
     checks.push({
       code: "codex_acp_cwd_invalid",
       level: "error",
-      message: err instanceof Error ? err.message : "Invalid working directory",
-      detail: cwd,
+      message: "Working directory is invalid or inaccessible.",
     });
   }
 
@@ -537,31 +1095,45 @@ export async function testCodexAcpEnvironment(
       : `Run Codex ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
   });
 
-  const command = await resolveCodexAcpCommandForTarget(config, target);
-  const commandResolvable = await commandIsResolvable(command, {
-    config,
-    executionTarget: ctx.executionTarget,
-  });
-  checks.push({
-    code: commandResolvable ? "codex_acp_command_resolvable" : "codex_acp_command_missing",
-    level: commandResolvable ? "info" : "error",
-    message: commandResolvable
-      ? `Codex ACP server command is executable: ${command}`
-      : `Codex ACP server command is not available: ${command}`,
-    hint: commandResolvable
-      ? undefined
-      : "Install dependencies so @agentclientprotocol/codex-acp is present, or set agentCommand to a valid Codex ACP server command.",
-  });
+  const configuredAgentCommand = firstNonEmptyString(
+    config.agentCommand,
+    config.acpAgentCommand,
+  );
+  if (configuredAgentCommand) {
+    checks.push({
+      code: "codex_acp_custom_command_unsupported_for_live_proof",
+      level: "error",
+      message: "Codex ACP live proof requires the canonical Codex ACP command.",
+      hint: "Remove the custom ACP agent command and retry the live test.",
+    });
+  } else {
+    const command = await resolveCodexAcpCommandForTarget(config, target);
+    const commandResolvable = await commandIsResolvable(command, {
+      config,
+      executionTarget: ctx.executionTarget,
+    });
+    checks.push({
+      code: commandResolvable ? "codex_acp_command_resolvable" : "codex_acp_command_missing",
+      level: commandResolvable ? "info" : "error",
+      message: commandResolvable
+        ? "Codex ACP server command is executable."
+        : "Codex ACP server command is not available.",
+      hint: commandResolvable
+        ? undefined
+        : "Install dependencies so @agentclientprotocol/codex-acp is present.",
+    });
+  }
 
   const envConfig = parseObject(config.env);
   if (!targetIsRemote) {
-    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const configApiKey = firstNonEmptyString(envConfig.OPENAI_API_KEY, envConfig.CODEX_API_KEY) ?? null;
+    const configDefinesApiKey =
+      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY") ||
+      Object.prototype.hasOwnProperty.call(envConfig, "CODEX_API_KEY");
     const hostApiKey =
-      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+      configDefinesApiKey
         ? null
-        : isNonEmpty(process.env.OPENAI_API_KEY)
-        ? process.env.OPENAI_API_KEY
-        : null;
+        : firstNonEmptyString(process.env.OPENAI_API_KEY, process.env.CODEX_API_KEY) ?? null;
     const configuredApiKey = configApiKey ?? hostApiKey;
     const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
     const credentialReadiness = await evaluateCodexCredentialReadiness({
@@ -575,22 +1147,19 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: "codex_acp_openai_api_key_detected",
         level: "info",
-        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+        message: "An API key is set for Codex ACP authentication.",
       });
     } else if (credentialReadiness.ready && !credentialReadiness.managed) {
       checks.push({
         code: "codex_acp_external_home_configured",
         level: "info",
         message: "Codex ACP will use an externally managed CODEX_HOME.",
-        detail: credentialReadiness.effectiveHome,
       });
     } else if (credentialReadiness.ready) {
       checks.push({
         code: "codex_acp_native_auth_detected",
         level: "info",
         message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
       });
     } else {
       checks.push({
@@ -601,10 +1170,9 @@ export async function testCodexAcpEnvironment(
       });
     }
   } else if (targetIsSandbox) {
-    // The ACP Test does not probe the sandbox, so it predicts readiness from the
-    // credentials the Paperclip server can seed into the sandbox. The host
-    // environment is not seeded, so only the adapter config key counts here.
-    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    // Predict readiness from credentials Paperclip can seed, but let the live
+    // sandbox turn decide because the selected environment may provide its own auth.
+    const configApiKey = firstNonEmptyString(envConfig.OPENAI_API_KEY, envConfig.CODEX_API_KEY) ?? null;
     const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
     const credentialReadiness = await evaluateCodexCredentialReadiness({
       env: process.env,
@@ -625,16 +1193,29 @@ export async function testCodexAcpEnvironment(
     }
   }
 
-  const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
-  const warmHandleIdleMs = asNumber(
-    config.warmHandleIdleMs ?? config.acpWarmHandleIdleMs,
-    DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
-  );
+  const canRunLiveProbe = !checks.some((check) => check.level === "error");
+  if (canRunLiveProbe) {
+    const liveChecks = await (options.liveProbe ?? probeCodexAcpLiveReply)(ctx, config);
+    if (
+      liveChecks.some(
+        (check) => check.code === "codex_hello_probe_passed" && check.level === "info",
+      )
+    ) {
+      const predictiveAuthWarnings = new Set([
+        "codex_acp_credentials_missing",
+        ADAPTER_AUTH_MISSING_CHECK_CODE,
+      ]);
+      const retainedChecks = checks.filter((check) => !predictiveAuthWarnings.has(check.code));
+      checks = [...retainedChecks, ...liveChecks];
+    } else {
+      checks.push(...liveChecks);
+    }
+  }
+
   checks.push({
     code: "codex_acp_runtime_scaffold",
     level: "info",
     message: "Codex ACP runtime execution is available through the shared ACP engine.",
-    detail: `mode=${mode}; warmHandleIdleMs=${warmHandleIdleMs}`,
   });
 
   return {

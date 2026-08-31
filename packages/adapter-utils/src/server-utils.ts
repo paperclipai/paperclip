@@ -3358,15 +3358,41 @@ export async function runChildProcess(
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
+    /** Case-insensitive keys to remove only from the inherited host environment before spawn. */
+    omitInheritedEnvKeys?: readonly string[];
+    /** Case-insensitive keys to remove from inherited and explicit child environments. */
+    denyEnvironmentKeys?: readonly string[];
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
+    const filterEnvironment = (
+      env: NodeJS.ProcessEnv,
+      keys: readonly string[] | undefined,
+    ): Record<string, string> => {
+      const denied = new Set(
+        (keys ?? [])
+          .map((key) => key.trim())
+          .filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+          .map((key) => key.toUpperCase()),
+      );
+      return Object.fromEntries(
+        Object.entries(env).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[1] === "string" && !denied.has(entry[0].toUpperCase()),
+        ),
+      );
+    };
+    const inheritedEnv = filterEnvironment(
+      sanitizeInheritedPaperclipEnv(process.env),
+      opts.omitInheritedEnvKeys,
+    );
+    const explicitEnv = filterEnvironment(opts.env, opts.denyEnvironmentKeys);
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
+      ...inheritedEnv,
+      ...explicitEnv,
     };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
@@ -3384,17 +3410,23 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
-    const mergedEnv = ensurePathInEnv(rawMerged);
+    const mergedEnv = filterEnvironment(
+      ensurePathInEnv(rawMerged),
+      opts.denyEnvironmentKeys,
+    );
     if (opts.localProcessSandbox?.homeDir) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;
     }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
-      remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteEnv: opts.remoteExecution ? explicitEnv : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
-        const childEnv = { ...mergedEnv, ...target.env };
+        const childEnv = filterEnvironment(
+          { ...mergedEnv, ...target.env },
+          opts.denyEnvironmentKeys,
+        );
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }

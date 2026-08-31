@@ -166,6 +166,9 @@ async function runExecutor(
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
+    omitInheritedEnvKeys?: readonly string[];
+    denyEnvironmentKeys?: readonly string[];
+    skipRuntimeSkillPreparation?: boolean;
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
   } = {},
 ) {
@@ -176,6 +179,9 @@ async function runExecutor(
   const logs: Array<{ stream: string; text: string }> = [];
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
   const execute = createAcpxEngineExecutor({
+    omitInheritedEnvKeys: options.omitInheritedEnvKeys,
+    denyEnvironmentKeys: options.denyEnvironmentKeys,
+    skipRuntimeSkillPreparation: options.skipRuntimeSkillPreparation,
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
@@ -1406,6 +1412,87 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it("omits selected ambient provider credentials without mutating process.env", async () => {
+    const root = await makeTempRoot();
+    const inheritedKey = "OPENAI_API_KEY";
+    const previous = process.env[inheritedKey];
+    process.env[inheritedKey] = "ambient-provider-secret";
+    try {
+      const { sessionInputs } = await runExecutor(
+        {
+          agent: "codex",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: path.join(root, "codex-home") },
+          paperclipRuntimeSkills: [],
+          paperclipSkillSync: { desiredSkills: [] },
+        },
+        { omitInheritedEnvKeys: ["openai_api_key"] },
+      );
+
+      const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(process.env[inheritedKey]).toBe("ambient-provider-secret");
+    } finally {
+      if (previous === undefined) delete process.env[inheritedKey];
+      else process.env[inheritedKey] = previous;
+    }
+  });
+
+  it("keeps explicit ACP configuration for an omitted inherited key", async () => {
+    const root = await makeTempRoot();
+    const inheritedKey = "OPENAI_API_KEY";
+    const previous = process.env[inheritedKey];
+    process.env[inheritedKey] = "ambient-provider-secret";
+    try {
+      const { sessionInputs } = await runExecutor(
+        {
+          agent: "codex",
+          stateDir: path.join(root, "state"),
+          env: {
+            CODEX_HOME: path.join(root, "codex-home"),
+            OPENAI_API_KEY: "explicit-config-secret",
+          },
+          paperclipRuntimeSkills: [],
+          paperclipSkillSync: { desiredSkills: [] },
+        },
+        { omitInheritedEnvKeys: [inheritedKey] },
+      );
+
+      const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+      expect(env.OPENAI_API_KEY).toBe("explicit-config-secret");
+      expect(process.env[inheritedKey]).toBe("ambient-provider-secret");
+    } finally {
+      if (previous === undefined) delete process.env[inheritedKey];
+      else process.env[inheritedKey] = previous;
+    }
+  });
+
+  it("skips Codex skill preparation without mutating a configured CODEX_HOME", async () => {
+    const root = await makeTempRoot();
+    const codexHome = path.join(root, "durable-codex-home");
+
+    const { events, result, sessionInputs } = await runExecutor(
+      {
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: codexHome },
+        paperclipRuntimeSkills: ["maintainer-skill"],
+        paperclipSkillSync: { desiredSkills: ["maintainer-skill"] },
+      },
+      { skipRuntimeSkillPreparation: true },
+    );
+
+    const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.CODEX_HOME).toBe(codexHome);
+    expect(await pathExists(codexHome)).toBe(false);
+    expect((result.sessionParams?.skills as { mode?: string } | undefined)?.mode).toBe("disabled");
+    const startupSteps = events
+      .filter((event) => event.eventType === "run.startup.step")
+      .map((event) => event.payload?.step);
+    expect(startupSteps).not.toContain("codex-home.seed");
+    expect(startupSteps).not.toContain("skills.reconcile");
+  });
+
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1920,6 +2007,93 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+  });
+
+  it("denies credentials after a remote login shell loads its profile", async () => {
+    const root = await makeTempRoot();
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    let sessionPayload: Record<string, unknown> | null = null;
+    const runner = createLocalSandboxRunner((input) => {
+      if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL !== "bridge") return;
+      const script = input.args?.[1] ?? "";
+      const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+      if (match) {
+        sessionPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<
+          string,
+          unknown
+        >;
+      }
+    });
+    const omittedKeys = [
+      "OPENAI_API_KEY",
+      "CODEX_API_KEY",
+      "CODEX_AUTH_JSON",
+      "_PAPERCLIP_CODEX_AUTH_JSON",
+    ] as const;
+    const profileEnv = {
+      openai_api_key: "profile-openai-secret",
+      CoDeX_ApI_Key: "profile-codex-secret",
+      codex_AUTH_json: "profile-auth-json-secret",
+      _paperclip_codex_auth_json: "profile-paperclip-auth-secret",
+    };
+    const previous = Object.fromEntries(omittedKeys.map((key) => [key, process.env[key]]));
+    for (const key of omittedKeys) process.env[key] = `profile-secret-${key}`;
+    try {
+      await runExecutor(
+        {
+          agent: "codex",
+          agentCommand: "env",
+          stateDir: path.join(root, "state"),
+          cwd: localCwd,
+          env: { CODEX_HOME: path.join(root, "codex-home") },
+          paperclipRuntimeSkills: [],
+          paperclipSkillSync: { desiredSkills: [] },
+        },
+        {
+          authToken: "profile-test-run-token",
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner,
+          },
+          denyEnvironmentKeys: omittedKeys,
+        },
+      );
+
+      const payload = sessionPayload as { args?: string[]; env?: Record<string, string> } | null;
+      expect(payload?.args?.[1]).toContain("_paperclip_env_dump=$(command env) || exit 126");
+      expect(payload?.args?.[1]).toContain("exec env");
+      for (const key of omittedKeys) expect(payload?.env?.[key]).toBeUndefined();
+
+      const launched = await runChildProcess(
+        "profile-env-omission",
+        "/bin/sh",
+        payload!.args!,
+        {
+          cwd: remoteCwd,
+          env: profileEnv,
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(launched.exitCode).toBe(0);
+      for (const [key, secret] of Object.entries(profileEnv)) {
+        expect(launched.stdout).not.toContain(`${key}=`);
+        expect(launched.stdout).not.toContain(secret);
+      }
+    } finally {
+      for (const key of omittedKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("keeps the session fingerprint stable when only the host spawn cwd changes", async () => {
@@ -5895,6 +6069,84 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     expect(result.errorCode).toBe("acpx_turn_failed");
     expect(result.errorMessage).toContain("turn upstream boom");
     expect(result.errorMessage).not.toContain("close boom");
+  });
+
+  it("reports only allowlisted teardown failure steps to an isolated caller", async () => {
+    const root = await makeTempRoot();
+    const teardownFailures: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      onTeardownFailure: (step) => {
+        teardownFailures.push(step);
+      },
+      createRuntime: () =>
+        ({
+          ensureSession: async () => okHandle,
+          startTurn: () => completedTurn(),
+          close: async () => {
+            throw new Error("sk-close-secret /private/runtime");
+          },
+        }) as never,
+    });
+
+    const result = await execute({
+      runId: "td-allowlisted-hook",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        cwd: root,
+        mode: "oneshot",
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(teardownFailures).toEqual(["runtime_close"]);
+    expect(JSON.stringify(teardownFailures)).not.toMatch(/sk-close-secret|private\/runtime/);
+  });
+
+  it("reports an allowlisted staged-runtime disposal failure", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    stubBridges();
+    const teardownFailures: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      onTeardownFailure: (step) => {
+        teardownFailures.push(step);
+      },
+      createRuntime: () =>
+        ({
+          ensureSession: async () => okHandle,
+          startTurn: () => throwingTurn(),
+          close: async () => {},
+        }) as never,
+      prepareRemoteManagedHome: async (input) => ({
+        stagedRuntime: await input.stage([]),
+        disposeStaged: async () => {
+          throw new Error("sk-dispose-secret user@example.test /private/staged");
+        },
+      }),
+    });
+
+    const result = await execute({
+      runId: "td-staged-dispose-hook",
+      ...remoteArgs(stateDir, localCwd, executionTarget),
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(teardownFailures).toContain("staged_runtime_dispose");
+    expect(JSON.stringify(teardownFailures)).not.toMatch(
+      /sk-dispose-secret|example\.test|private\/staged/,
+    );
   });
 
   it("test_flush_child_stderr_runs_on_every_exit_path", async () => {

@@ -3,6 +3,7 @@ import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  buildPostProfileEnvironmentScrubShell,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -266,6 +267,7 @@ describe("runAdapterExecutionTargetProcess", () => {
         timeoutSec: 5,
         graceSec: 1,
         onLog: async () => {},
+        omitInheritedEnvKeys: ["OPENAI_API_KEY"],
       },
     );
 
@@ -277,8 +279,251 @@ describe("runAdapterExecutionTargetProcess", () => {
         env: {
           SAFE_VALUE: "visible",
         },
+        omitInheritedEnvKeys: ["OPENAI_API_KEY"],
       }),
     );
+  });
+
+  it("preserves explicit remote configuration when only inherited keys are omitted", async () => {
+    const runner = {
+      execute: vi.fn(async (input: {
+        command: string;
+        args?: string[];
+        cwd: string;
+        env?: Record<string, string>;
+      }) => serverUtils.runChildProcess(
+        "explicit-remote-env",
+        input.command,
+        input.args ?? [],
+        {
+          cwd: input.cwd,
+          env: input.env ?? {},
+          omitInheritedEnvKeys: Object.keys(process.env),
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      )),
+    };
+
+    const result = await runAdapterExecutionTargetProcess(
+      "explicit-remote-env",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/tmp",
+        runner,
+      },
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.OPENAI_API_KEY ?? 'missing')"],
+      {
+        cwd: "/tmp",
+        env: { OPENAI_API_KEY: "explicit-config-secret" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        omitInheritedEnvKeys: ["OPENAI_API_KEY"],
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("explicit-config-secret");
+    expect(runner.execute.mock.calls[0]?.[0].command).toBe(process.execPath);
+  });
+
+  it("denies env names case-insensitively after sandbox profile injection", async () => {
+    const profileEnv = {
+      openai_api_key: "profile-openai-secret",
+      CoDeX_ApI_Key: "profile-codex-secret",
+      codex_AUTH_json: "profile-auth-json-secret",
+      _paperclip_codex_auth_json: "profile-paperclip-auth-secret",
+    };
+    const runner = {
+      execute: vi.fn(async (input: {
+        command: string;
+        args?: string[];
+        cwd: string;
+        env?: Record<string, string>;
+        stdin?: string;
+      }) => serverUtils.runChildProcess(
+        "profile-simulated-sandbox",
+        input.command,
+        input.args ?? [],
+        {
+          cwd: input.cwd,
+          env: { ...(input.env ?? {}), ...profileEnv, SAFE_VALUE: "visible" },
+          omitInheritedEnvKeys: Object.keys(process.env),
+          stdin: input.stdin,
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      )),
+    };
+
+    const result = await runAdapterExecutionTargetProcess(
+      "profile-simulated-sandbox",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/tmp",
+        runner,
+      },
+      "env",
+      [],
+      {
+        cwd: "/tmp",
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        denyEnvironmentKeys: [
+          "OPENAI_API_KEY",
+          "CODEX_API_KEY",
+          "CODEX_AUTH_JSON",
+          "_PAPERCLIP_CODEX_AUTH_JSON",
+        ],
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("SAFE_VALUE=visible");
+    for (const [key, secret] of Object.entries(profileEnv)) {
+      expect(result.stdout).not.toContain(`${key}=`);
+      expect(result.stdout).not.toContain(secret);
+    }
+    const launch = runner.execute.mock.calls[0]?.[0];
+    expect(launch?.command).toBe("sh");
+    expect(launch?.args?.join(" ")).not.toContain("profile-openai-secret");
+  });
+
+  it("keeps the post-profile scrub inside a sandbox run-log wrapper", async () => {
+    const wrapCommand = vi.fn((command: string, args: string[]) => ({ command, args }));
+    const runner = {
+      execute: vi.fn(async (_input: { command: string; args?: string[] }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const runLogTail = {
+      create: () => ({
+        wrapCommand,
+        start: () => {},
+        finish: async () => {},
+        abort: async () => {},
+      }),
+    };
+
+    await runAdapterExecutionTargetProcess(
+      "profile-scrub-with-tail",
+      {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/tmp",
+        runner,
+      },
+      "agent-cli",
+      ["--json"],
+      {
+        cwd: "/tmp",
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        denyEnvironmentKeys: ["OPENAI_API_KEY"],
+        runLogTail,
+      },
+    );
+
+    expect(wrapCommand).toHaveBeenCalledOnce();
+    const wrapped = wrapCommand.mock.results[0]?.value;
+    expect(wrapped?.command).toBe("sh");
+    expect(wrapped?.args).toEqual([
+      "-c",
+      expect.stringMatching(/unset .*paperclip_env_name.*exec 'agent-cli' '--json'/),
+    ]);
+    expect(runner.execute.mock.calls[0]?.[0]).toMatchObject(wrapped ?? {});
+  });
+
+  it("fails closed when the remote scrub cannot enumerate a restricted read-only PATH", async () => {
+    const shell = buildPostProfileEnvironmentScrubShell(
+      "printf 'TARGET_RAN'",
+      ["OPENAI_API_KEY"],
+    );
+    const result = await serverUtils.runChildProcess(
+      "profile-scrub-restricted-path",
+      "/bin/sh",
+      ["-c", `readonly PATH; export PATH; ${shell}`],
+      {
+        cwd: "/tmp",
+        env: { PATH: "/paperclip/definitely-missing" },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toContain("TARGET_RAN");
+  });
+
+  it("fails closed when a denied environment name is read-only", async () => {
+    const scrub = buildPostProfileEnvironmentScrubShell(
+      "printf 'TARGET_RAN'",
+      ["OPENAI_API_KEY"],
+    );
+    const result = await serverUtils.runChildProcess(
+      "profile-scrub-readonly-key",
+      "/bin/sh",
+      [
+        "-c",
+        `OPENAI_API_KEY=profile-secret; readonly OPENAI_API_KEY; export OPENAI_API_KEY; ${scrub}`,
+      ],
+      {
+        cwd: "/tmp",
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toContain("TARGET_RAN");
+  });
+
+  it("disables inherited xtrace before environment values are captured", async () => {
+    const shell = buildPostProfileEnvironmentScrubShell(
+      "/bin/sh -c 'if [ -n \"${OPENAI_API_KEY+x}\" ]; then exit 99; fi; printf \"TARGET_RAN\"'",
+      ["OPENAI_API_KEY"],
+    );
+    const result = await serverUtils.runChildProcess(
+      "profile-scrub-xtrace",
+      "/bin/sh",
+      ["-xc", shell],
+      {
+        cwd: "/tmp",
+        env: {
+          OPENAI_API_KEY: "denied-xtrace-secret",
+          UNRELATED_SECRET: "ambient-xtrace-secret",
+        },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("TARGET_RAN");
+    expect(result.stderr).not.toMatch(/denied-xtrace-secret|ambient-xtrace-secret/);
   });
 });
 

@@ -14,6 +14,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
+  buildPostProfileEnvironmentScrubShell,
   describeAdapterExecutionTarget,
   adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
@@ -250,6 +251,10 @@ export interface AcpxEngineBillingIdentity {
   billingType?: AdapterBillingType | null;
 }
 
+export type AcpxTeardownFailureStep =
+  | "runtime_close"
+  | "staged_runtime_dispose";
+
 /**
  * Per-adapter remote managed-home seed seam, injected by each adapter's ACP
  * wiring ({codex,claude,gemini}-local `acp.ts`). The adapter-specific
@@ -339,6 +344,23 @@ export interface AcpxRemoteManagedHomeResult {
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
+  /**
+   * Case-insensitive keys to omit from the ambient host environment before
+   * building a local ACP process launch environment. Explicit adapter config
+   * is preserved.
+   */
+  omitInheritedEnvKeys?: readonly string[];
+  /**
+   * Case-insensitive keys that must be absent from inherited environment,
+   * explicit adapter config, and remote login profiles.
+   */
+  denyEnvironmentKeys?: readonly string[];
+  /**
+   * Skip adapter runtime skill preparation entirely. This is intended for
+   * isolated capability probes that must use a preconfigured durable home
+   * without reconciling or materializing skills into it.
+   */
+  skipRuntimeSkillPreparation?: boolean;
   warmHandles?: Map<string, RuntimeCacheEntry>;
   /**
    * Per-session staged-runtime cache for the remote runner-backed lane (PR 3).
@@ -375,6 +397,12 @@ export interface AcpxEngineExecutorOptions {
   prepareRemoteManagedHome?: (
     input: AcpxRemoteManagedHomeContext,
   ) => Promise<AcpxRemoteManagedHomeResult>;
+  /**
+   * Observe teardown failures through a closed, adapter-safe step code. The
+   * callback never receives the caught error, command, path, or provider text.
+   * It is best-effort and cannot change the engine result or teardown flow.
+   */
+  onTeardownFailure?: (step: AcpxTeardownFailureStep) => void;
   /**
    * Observe the final per-resource disposition report the run records at the end
    * of the attempt (`finalized` vs `transferred`). The coordinator records it on
@@ -635,6 +663,8 @@ export function finalizeLaunchEnvironment(
     acpxAgent: string;
     inheritHostEnvironment: boolean;
     inheritedEnv?: NodeJS.ProcessEnv;
+    omitInheritedEnvKeys?: readonly string[];
+    denyEnvironmentKeys?: readonly string[];
     platform?: typeof process.platform;
   },
 ): LaunchEnvironment {
@@ -1956,6 +1986,11 @@ async function buildRuntime(input: {
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );
+  } else if (acpxAgent === "codex" && input.deps.skipRuntimeSkillPreparation) {
+    // A live capability probe may need the configured durable CODEX_HOME for
+    // subscription authentication. Do not inspect, create, reconcile, or
+    // materialize anything in that operator-owned home.
+    skillsIdentity = { mode: "disabled" };
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
     // The nested skills.reconcile boundary (step 3) is timed inside via the
@@ -2023,6 +2058,8 @@ async function buildRuntime(input: {
       agentCommandShell,
       resolveRuntimeEnv(env, acpxAgent, {
         inheritHostEnvironment: !useRemoteProcessSession,
+        omitInheritedEnvKeys: input.deps.omitInheritedEnvKeys,
+        denyEnvironmentKeys: input.deps.denyEnvironmentKeys,
       }),
     );
     if (normalized !== agentCommandShell) {
@@ -2268,7 +2305,13 @@ async function buildRuntime(input: {
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
+          args: [
+            "-lc",
+            buildRemoteAgentLaunchShell(
+              agentCommandShell,
+              input.deps.denyEnvironmentKeys,
+            ),
+          ],
           cwd: sessionCwd,
           env: launchEnv,
           timeoutSec,
@@ -2283,6 +2326,8 @@ async function buildRuntime(input: {
         finalizeLaunchEnvironment(env, contributions, {
           acpxAgent,
           inheritHostEnvironment: !useRemoteProcessSession,
+          omitInheritedEnvKeys: input.deps.omitInheritedEnvKeys,
+          denyEnvironmentKeys: input.deps.denyEnvironmentKeys,
         }).env,
       onPaperclipBridgeLog: () =>
         input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n"),
@@ -2335,6 +2380,8 @@ async function buildRuntime(input: {
       runtimeEnv = finalizeLaunchEnvironment(env, [], {
         acpxAgent,
         inheritHostEnvironment: !useRemoteProcessSession,
+        omitInheritedEnvKeys: input.deps.omitInheritedEnvKeys,
+        denyEnvironmentKeys: input.deps.denyEnvironmentKeys,
       }).env;
     }
   } catch (err) {
@@ -2368,6 +2415,8 @@ async function buildRuntime(input: {
       sessionKey,
       stagedRuntime,
       dispose: remoteStagingDispose,
+      onDisposeFailure: () =>
+        notifyTeardownFailure(input.deps.onTeardownFailure, "staged_runtime_dispose"),
     });
     sessionStagingLeaseRelease?.();
     await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
@@ -2501,10 +2550,19 @@ function resolveRuntimeEnv(
   options: {
     inheritHostEnvironment: boolean;
     inheritedEnv?: NodeJS.ProcessEnv;
+    omitInheritedEnvKeys?: readonly string[];
+    denyEnvironmentKeys?: readonly string[];
     platform?: typeof process.platform;
   },
 ): Record<string, string> {
-  const inheritedEnv = options.inheritedEnv ?? process.env;
+  const omittedKeys = new Set(
+    (options.omitInheritedEnvKeys ?? []).map((key) => key.toUpperCase()),
+  );
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(options.inheritedEnv ?? process.env).filter(
+      ([key]) => !omittedKeys.has(key.toUpperCase()),
+    ),
+  );
   const projectedHostEnv = projectAcpxInheritedHostEnvironment(
     inheritedEnv,
     acpxAgent,
@@ -2518,11 +2576,29 @@ function resolveRuntimeEnv(
     env,
     (options.platform ?? process.platform) === "win32",
   );
+  const deniedKeys = new Set(
+    (options.denyEnvironmentKeys ?? [])
+      .map((key) => key.trim())
+      .filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+      .map((key) => key.toUpperCase()),
+  );
   return Object.fromEntries(
     Object.entries(mergedEnv).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && !deniedKeys.has(entry[0].toUpperCase()),
     ),
   );
+}
+
+function buildRemoteAgentLaunchShell(
+  commandShell: string,
+  denyEnvironmentKeys: readonly string[] | undefined,
+): string {
+  // `sh -lc` may source a provider-controlled login profile before evaluating
+  // this script. Enumerate and scrub case-insensitive names after profile
+  // loading and immediately before exec so a denied credential cannot be
+  // reintroduced by that profile under alternate casing.
+  return buildPostProfileEnvironmentScrubShell(commandShell, denyEnvironmentKeys);
 }
 
 function mergeRuntimeEnvironment(
@@ -3317,6 +3393,7 @@ async function cleanupIdleStagedRuntimes(input: {
   locks: Map<string, Promise<unknown>>;
   now: () => number;
   idleMs: number;
+  onDisposeFailure?: () => void;
 }) {
   if (input.idleMs <= 0) return;
   const stale: Array<[string, StagedRuntimeCacheEntry]> = [];
@@ -3329,7 +3406,11 @@ async function cleanupIdleStagedRuntimes(input: {
       if (current !== entry) return;
       if (input.now() - current.lastUsedAt < input.idleMs) return;
       input.handles.delete(key);
-      if (entry.dispose) await entry.dispose().catch(() => {});
+      if (entry.dispose) {
+        await entry.dispose().catch(() => {
+          input.onDisposeFailure?.();
+        });
+      }
     });
     lease.release();
   }
@@ -3368,6 +3449,7 @@ function saveStagedRuntimeAfterCleanTurn(input: {
 async function discardStagedRuntime(input: {
   handles: Map<string, StagedRuntimeCacheEntry>;
   prepared: AcpxPreparedRuntime;
+  onDisposeFailure?: () => void;
 }): Promise<void> {
   const { handles, prepared } = input;
   await releaseStagedRuntimeEntry({
@@ -3375,6 +3457,7 @@ async function discardStagedRuntime(input: {
     sessionKey: prepared.sessionKey,
     stagedRuntime: prepared.stagedRuntime,
     dispose: prepared.remoteStagingDispose,
+    onDisposeFailure: input.onDisposeFailure,
   });
 }
 
@@ -3392,13 +3475,29 @@ async function releaseStagedRuntimeEntry(input: {
   sessionKey: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
   dispose: (() => Promise<void>) | null;
+  onDisposeFailure?: () => void;
 }): Promise<void> {
   const { handles, sessionKey, stagedRuntime, dispose } = input;
   const existing = handles.get(sessionKey);
   if (existing && stagedRuntime && existing.stagedRuntime === stagedRuntime) {
     handles.delete(sessionKey);
   }
-  if (dispose) await dispose().catch(() => {});
+  if (dispose) {
+    await dispose().catch(() => {
+      input.onDisposeFailure?.();
+    });
+  }
+}
+
+function notifyTeardownFailure(
+  callback: AcpxEngineExecutorOptions["onTeardownFailure"],
+  step: AcpxTeardownFailureStep,
+): void {
+  try {
+    callback?.(step);
+  } catch {
+    // A diagnostic observer cannot change teardown or the adapter result.
+  }
 }
 
 // Per-`sessionKey` async lease: chains each caller after the previous one so
@@ -3450,6 +3549,7 @@ async function closeWarmHandle(input: {
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
+  onCloseFailure?: () => void;
 }) {
   if (input.handles.get(input.key) === input.entry) {
     input.handles.delete(input.key);
@@ -3459,7 +3559,9 @@ async function closeWarmHandle(input: {
     handle: input.entry.handle,
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
-  }).catch(() => {});
+  }).catch(() => {
+    input.onCloseFailure?.();
+  });
   flushChildStderr(input.entry.childStderrState);
 }
 
@@ -3715,7 +3817,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       closeWarmEntry: async (entry) => {
         await entry.runtime
           .close({ handle: entry.handle, reason: "paperclip idle cleanup", discardPersistentState: false })
-          .catch(() => {});
+          .catch(() => {
+            notifyTeardownFailure(deps.onTeardownFailure, "runtime_close");
+          });
         flushChildStderr(entry.childStderrState);
       },
     });
@@ -3787,6 +3891,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         locks: stagingLocks,
         now,
         idleMs: warmIdleMs,
+        onDisposeFailure: () =>
+          notifyTeardownFailure(deps.onTeardownFailure, "staged_runtime_dispose"),
       });
       // The sum of the step wall times. The root span records it as `root.work_ms`
       // and the difference from its own wall time as `root.diff_ms` (the overlap
@@ -4127,14 +4233,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               reason: "paperclip late handshake cleanup",
               discardPersistentState: false,
             })
-            .catch(() =>
-              ctx
+            .catch(() => {
+              notifyTeardownFailure(deps.onTeardownFailure, "runtime_close");
+              return ctx
                 .onLog(
                   "stderr",
                   "[paperclip] ACPX handshake late close failed: acpx_handshake_late_close_failed\n",
                 )
-                .catch(() => {}),
-            );
+                .catch(() => {});
+            });
         };
         // The late rejection comes from inside the sandbox. It crosses the
         // sandbox-to-host trust boundary, so it must never reach the run log,
@@ -4957,12 +5064,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               entry: existing,
               reason: settlement.reason,
               discardPersistentState: settlement.discardPersistentState,
+              onCloseFailure: () =>
+                notifyTeardownFailure(deps.onTeardownFailure, "runtime_close"),
             });
             return;
           }
-          const onCloseError = settlement.recordCloseError
-            ? (closeErr: unknown) => recordTeardownError("runtime-close", closeErr)
-            : () => {};
+          const onCloseError = (closeErr: unknown) => {
+            notifyTeardownFailure(deps.onTeardownFailure, "runtime_close");
+            return settlement.recordCloseError
+              ? recordTeardownError("runtime-close", closeErr)
+              : undefined;
+          };
           await runtime
             .close({
               handle: settlement.handle,
@@ -4984,7 +5096,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
             return;
           }
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+          await discardStagedRuntime({
+            handles: stagedRuntimes,
+            prepared,
+            onDisposeFailure: () =>
+              notifyTeardownFailure(deps.onTeardownFailure, "staged_runtime_dispose"),
+          });
         }),
         // Stop both bridges in one allSettled.
         stopTransport: () => timedPhase("stop_transport", async () => {

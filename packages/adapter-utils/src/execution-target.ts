@@ -231,6 +231,13 @@ export interface AdapterExecutionTargetProcessOptions {
   cwd: string;
   env: Record<string, string>;
   stdin?: string;
+  /** Case-insensitive keys to remove only from the inherited host environment before spawn. */
+  omitInheritedEnvKeys?: readonly string[];
+  /**
+   * Case-insensitive keys that must be absent regardless of whether they came
+   * from host inheritance, explicit configuration, or a remote login profile.
+   */
+  denyEnvironmentKeys?: readonly string[];
   timeoutSec: number;
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -264,6 +271,89 @@ export interface AdapterExecutionTargetShellOptions {
   timeoutSec?: number;
   graceSec?: number;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}
+
+function normalizeOmittedEnvironmentKeys(keys: readonly string[] | undefined): string[] {
+  const normalized = new Map<string, string>();
+  for (const rawKey of keys ?? []) {
+    const key = rawKey.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    normalized.set(key.toUpperCase(), key);
+  }
+  return [...normalized.values()];
+}
+
+function caseInsensitiveShellPattern(key: string): string {
+  return [...key]
+    .map((character) => {
+      const lower = character.toLowerCase();
+      const upper = character.toUpperCase();
+      return lower === upper ? character : `[${lower}${upper}]`;
+    })
+    .join("");
+}
+
+function withoutEnvironmentKeys(
+  env: Record<string, string>,
+  keys: readonly string[] | undefined,
+): Record<string, string> {
+  const denied = new Set(normalizeOmittedEnvironmentKeys(keys).map((key) => key.toUpperCase()));
+  if (denied.size === 0) return { ...env };
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !denied.has(key.toUpperCase())),
+  );
+}
+
+/**
+ * Builds the command body evaluated after a remote provider's login profile.
+ * Environment names are enumerated without serializing their values and are
+ * matched case-insensitively before the requested command is exec'd.
+ */
+export function buildPostProfileEnvironmentScrubShell(
+  commandShell: string,
+  denyEnvironmentKeys: readonly string[] | undefined,
+): string {
+  const keys = normalizeOmittedEnvironmentKeys(denyEnvironmentKeys);
+  if (keys.length === 0) return `exec ${commandShell}`;
+  const patterns = keys.map(caseInsensitiveShellPattern).join("|");
+  return [
+    // A remote login profile may enable shell xtrace. Disable it before any
+    // assignment can capture environment values into the trace stream.
+    "set +x || exit 126",
+    "unset _paperclip_env_dump _paperclip_env_entry _paperclip_env_name _paperclip_saved_ifs || exit 126",
+    "_paperclip_env_dump=$(command env) || exit 126",
+    "_paperclip_saved_ifs=$IFS",
+    "IFS='\n' || exit 126",
+    "for _paperclip_env_entry in $_paperclip_env_dump",
+    "do case \"$_paperclip_env_entry\" in *=*) _paperclip_env_name=${_paperclip_env_entry%%=*} ;; *) continue ;; esac",
+    `case \"$_paperclip_env_name\" in ${patterns}) unset \"$_paperclip_env_name\" || exit 126 ;; esac`,
+    "done",
+    "IFS=$_paperclip_saved_ifs || exit 126",
+    "_paperclip_env_dump=$(command env) || exit 126",
+    "IFS='\n' || exit 126",
+    "for _paperclip_env_entry in $_paperclip_env_dump",
+    "do case \"$_paperclip_env_entry\" in *=*) _paperclip_env_name=${_paperclip_env_entry%%=*} ;; *) continue ;; esac",
+    `case \"$_paperclip_env_name\" in ${patterns}) exit 126 ;; esac`,
+    "done",
+    "IFS=$_paperclip_saved_ifs || exit 126",
+    "unset _paperclip_env_dump _paperclip_env_entry _paperclip_env_name _paperclip_saved_ifs || exit 126",
+    `exec ${commandShell}`,
+  ].join("; ");
+}
+
+function wrapRemoteProcessWithPostProfileEnvironmentScrub(
+  command: string,
+  args: string[],
+  denyEnvironmentKeys: readonly string[] | undefined,
+): { command: string; args: string[] } {
+  if (normalizeOmittedEnvironmentKeys(denyEnvironmentKeys).length === 0) {
+    return { command, args };
+  }
+  const commandShell = [command, ...args].map(shellQuote).join(" ");
+  return {
+    command: "sh",
+    args: ["-c", buildPostProfileEnvironmentScrubShell(commandShell, denyEnvironmentKeys)],
+  };
 }
 
 export interface AdapterExecutionTargetPaperclipBridgeHandle {
@@ -786,18 +876,31 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  const remoteProcess = target?.kind === "remote"
+    ? wrapRemoteProcessWithPostProfileEnvironmentScrub(
+        command,
+        args,
+        options.denyEnvironmentKeys,
+      )
+    : { command, args };
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
-    const env = sanitizeRemoteExecutionEnv(options.env);
+    const env = withoutEnvironmentKeys(
+      sanitizeRemoteExecutionEnv(options.env),
+      options.denyEnvironmentKeys,
+    );
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
       message: "Starting adapter in environment",
     });
     const runLogTail = options.runLogTail?.create() ?? null;
-    let execCommand = command;
-    let execArgs = args;
+    let execCommand = remoteProcess.command;
+    let execArgs = remoteProcess.args;
     if (runLogTail) {
-      ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(command, args));
+      ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(
+        remoteProcess.command,
+        remoteProcess.args,
+      ));
       runLogTail.start(options.onLog);
     }
     try {
@@ -836,13 +939,18 @@ export async function runAdapterExecutionTargetProcess(
 
   const env =
     target?.kind === "remote" && target.transport === "ssh"
-      ? sanitizeRemoteExecutionEnv(options.env)
-      : options.env;
+      ? withoutEnvironmentKeys(
+          sanitizeRemoteExecutionEnv(options.env),
+          options.denyEnvironmentKeys,
+        )
+      : withoutEnvironmentKeys(options.env, options.denyEnvironmentKeys);
 
-  return await runChildProcess(runId, command, args, {
+  return await runChildProcess(runId, remoteProcess.command, remoteProcess.args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
+    omitInheritedEnvKeys: options.omitInheritedEnvKeys,
+    denyEnvironmentKeys: options.denyEnvironmentKeys,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
     onLog: options.onLog,

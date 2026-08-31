@@ -89,6 +89,12 @@ import { FooterNav } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
+import { CodexLiveProofResult } from "./CodexLiveProofResult";
+import {
+  createCodexLiveProofScope,
+  evaluateCodexLiveProof,
+  getCodexLiveProofExpiryMs,
+} from "./codex-live-proof";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -479,10 +485,13 @@ function OnboardingWizardInner({
   const [command, setCommand] = useState((saved?.command as string) ?? "");
   const [args, setArgs] = useState((saved?.args as string) ?? "");
   const [url, setUrl] = useState((saved?.url as string) ?? "");
-  const [adapterEnvResult, setAdapterEnvResult] =
+  const [adapterEnvTestResult, setAdapterEnvTestResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
+  const [adapterEnvProofScope, setAdapterEnvProofScope] = useState<string | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
   const [adapterEnvLoading, setAdapterEnvLoading] = useState(false);
+  const adapterEnvRequestIdRef = useRef(0);
+  const [, forceCodexProofExpiryRender] = useState(0);
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
@@ -944,12 +953,37 @@ function OnboardingWizardInner({
 
   useEffect(() => {
     if (step !== 4) return;
-    setAdapterEnvResult(null);
+    adapterEnvRequestIdRef.current += 1;
+    setAdapterEnvTestResult(null);
+    setAdapterEnvProofScope(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+    setAdapterEnvLoading(false);
+  }, [step, createdCompanyId, adapterType, cwd, model, command, args, url]);
+
+  const currentCodexProofScope = createCodexLiveProofScope({
+    companyId: createdCompanyId,
+    adapterType,
+    adapterConfig: buildAdapterConfig(),
+    environmentId: resolvedLoginEnvironmentId,
+  });
+  const adapterEnvResult =
+    adapterType !== "codex_local" || adapterEnvProofScope === currentCodexProofScope
+      ? adapterEnvTestResult
+      : null;
+  useEffect(() => {
+    if (adapterType !== "codex_local") return;
+    const expiresAt = getCodexLiveProofExpiryMs(adapterEnvResult);
+    if (expiresAt === null) return;
+    const timeout = window.setTimeout(
+      () => forceCodexProofExpiryRender((revision) => revision + 1),
+      Math.max(0, expiresAt - Date.now() + 1),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [adapterType, adapterEnvResult]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
+  const codexLiveProof = evaluateCodexLiveProof(adapterEnvResult);
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
       (check) =>
@@ -1023,7 +1057,9 @@ function OnboardingWizardInner({
     setCommand("");
     setArgs("");
     setUrl("");
-    setAdapterEnvResult(null);
+    adapterEnvRequestIdRef.current += 1;
+    setAdapterEnvTestResult(null);
+    setAdapterEnvProofScope(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -1192,7 +1228,14 @@ function OnboardingWizardInner({
       );
       return null;
     }
+    const requestId = adapterEnvRequestIdRef.current + 1;
+    adapterEnvRequestIdRef.current = requestId;
+    const companyId = createdCompanyId;
+    const testedAdapterType = adapterType;
+    const adapterConfig = adapterConfigOverride ?? buildAdapterConfig();
     setAdapterEnvLoading(true);
+    setAdapterEnvTestResult(null);
+    setAdapterEnvProofScope(null);
     setAdapterEnvError(null);
     try {
       // Probe the environment a real run would use, so the Test matches a real
@@ -1206,8 +1249,8 @@ function OnboardingWizardInner({
       try {
         const [list, generalSettings, experimentalSettings] = await Promise.all([
           queryClient.ensureQueryData({
-            queryKey: queryKeys.environments.list(createdCompanyId),
-            queryFn: () => environmentsApi.list(createdCompanyId),
+            queryKey: queryKeys.environments.list(companyId),
+            queryFn: () => environmentsApi.list(companyId),
           }),
           queryClient.ensureQueryData({
             queryKey: queryKeys.instance.settings,
@@ -1222,9 +1265,11 @@ function OnboardingWizardInner({
         settings = generalSettings;
         managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
       } catch {
-        setAdapterEnvError(
-          "Could not load environment settings to determine which environment to test in. Retry the test.",
-        );
+        if (adapterEnvRequestIdRef.current === requestId) {
+          setAdapterEnvError(
+            "Could not load environment settings to determine which environment to test in. Retry the test.",
+          );
+        }
         return null;
       }
       // Mirror the server run-time resolution, including the managed-sandbox-only
@@ -1245,23 +1290,40 @@ function OnboardingWizardInner({
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const result = await agentsApi.testEnvironment(
-        createdCompanyId,
-        adapterType,
+        companyId,
+        testedAdapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          adapterConfig,
           environmentId,
         }
       );
-      setAdapterEnvResult(result);
+      if (adapterEnvRequestIdRef.current !== requestId) return null;
+      setAdapterEnvTestResult(result);
+      setAdapterEnvProofScope(
+        createCodexLiveProofScope({
+          companyId,
+          adapterType: testedAdapterType,
+          adapterConfig,
+          environmentId,
+        }),
+      );
       adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
-      setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
-      );
+      if (adapterEnvRequestIdRef.current === requestId) {
+        setAdapterEnvError(
+          testedAdapterType === "codex_local"
+            ? "Codex connection test failed. Retry after checking the selected environment."
+            : err instanceof Error
+              ? err.message
+              : "Adapter environment test failed"
+        );
+      }
       return null;
     } finally {
-      setAdapterEnvLoading(false);
+      if (adapterEnvRequestIdRef.current === requestId) {
+        setAdapterEnvLoading(false);
+      }
     }
   }
 
@@ -1520,7 +1582,29 @@ function OnboardingWizardInner({
           }
         : baseAdapterConfig;
 
-      if (isLocalAdapter) {
+      let provenCodexEnvironmentId: string | null = null;
+      if (adapterType === "codex_local") {
+        // Codex is the one onboarding adapter whose hire requires an explicit,
+        // fresh live LLM reply. `adapterEnvResult` is already filtered by the
+        // exact company, adapter config, and resolved environment scope above,
+        // so a changed or in-flight configuration fails closed here.
+        const currentProof = evaluateCodexLiveProof(adapterEnvResult);
+        if (!currentProof.valid) {
+          setError(currentProof.reason);
+          return;
+        }
+        // Pin the agent to the environment covered by that proof. Leaving the
+        // agent default unset would make its first run resolve the *current*
+        // instance default instead; an operator changing that default between
+        // Test and hire could therefore move the run to an untested target.
+        // A valid `adapterEnvResult` above is scoped to
+        // `resolvedLoginEnvironmentId`, so this is the exact tested id.
+        if (!resolvedLoginEnvironmentId) {
+          setError("Codex did not resolve an environment that can be bound to this agent.");
+          return;
+        }
+        provenCodexEnvironmentId = resolvedLoginEnvironmentId;
+      } else if (isLocalAdapter) {
         // A cached result is reusable only when it tested the same
         // configuration the hire below sends, and only when it does not
         // block the hire — see blocksAgentCreate. With the "Test now" card
@@ -1563,6 +1647,9 @@ function OnboardingWizardInner({
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,
+        ...(provenCodexEnvironmentId
+          ? { defaultEnvironmentId: provenCodexEnvironmentId }
+          : {}),
         ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
@@ -1694,7 +1781,12 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+      else if (
+        step === 4 &&
+        agentName.trim() &&
+        !missionUnresolvedForHire &&
+        (adapterType !== "codex_local" || codexLiveProof.valid)
+      )
         handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
@@ -2372,23 +2464,46 @@ function OnboardingWizardInner({
                       way to judge one — and the agent's model is changeable
                       later, where its work gives the choice meaning. */}
 
-                  {/* The environment check runs without being shown: Connect
-                      probes the adapter before hiring (see handleGiveHeartbeat)
-                      and blocks the hire on a fail. The idle card — probe
-                      explainer plus a "Test now" button — is gone from this
-                      step, so this block renders only when a probe has actually
-                      found something: the checks the blocking error tells the
-                      customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {/* Other local adapters keep the implicit Connect-time
+                      environment check. Codex requires a deliberate live LLM
+                      reply before Connect, so only that adapter restores the
+                      visible Test action and proof receipt. */}
+                  {isLocalAdapter &&
+                    (adapterType === "codex_local" ||
+                      adapterEnvError ||
+                      (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
-                      {adapterEnvError && (
-                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
-                          {adapterEnvError}
+                      {adapterType === "codex_local" && (
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-medium">Codex live connection</p>
+                            <p className="text-(length:--text-nano) text-muted-foreground">
+                              Runs the selected configuration and verifies a fresh Hello reply.
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-xs"
+                            disabled={adapterEnvLoading}
+                            onClick={() => void runAdapterEnvironmentTest()}
+                          >
+                            {adapterEnvLoading ? "Testing..." : "Test now"}
+                          </Button>
                         </div>
                       )}
 
-                      {adapterEnvResult &&
-                      adapterEnvResult.status === "pass" ? (
+                      {adapterEnvError && (
+                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
+                          {adapterType === "codex_local"
+                            ? "Codex connection test failed. Retry after checking the selected environment."
+                            : adapterEnvError}
+                        </div>
+                      )}
+
+                      {adapterType === "codex_local" ? (
+                        <CodexLiveProofResult result={adapterEnvResult} />
+                      ) : adapterEnvResult && adapterEnvResult.status === "pass" ? (
                         <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
                           {/* Use the shared status-chip helper with the done
                               status hue, so the pass banner derives its fill,
@@ -2433,7 +2548,9 @@ function OnboardingWizardInner({
                         </div>
                       )}
 
-                      {adapterEnvResult && adapterEnvResult.status === "fail" && (
+                      {adapterType !== "codex_local" &&
+                        adapterEnvResult &&
+                        adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--text-micro) space-y-1.5">
                           <p className="font-medium">Manual debug</p>
                           <p className="text-muted-foreground font-mono break-all">
@@ -2549,7 +2666,10 @@ function OnboardingWizardInner({
                     step === 3
                       ? !agentName.trim()
                       : step === 4
-                        ? loading || adapterEnvLoading || missionUnresolvedForHire
+                        ? loading ||
+                          adapterEnvLoading ||
+                          missionUnresolvedForHire ||
+                          (adapterType === "codex_local" && !codexLiveProof.valid)
                         : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
@@ -2624,7 +2744,8 @@ function OnboardingWizardInner({
                         !agentName.trim() ||
                         loading ||
                         adapterEnvLoading ||
-                        missionUnresolvedForHire
+                        missionUnresolvedForHire ||
+                        (adapterType === "codex_local" && !codexLiveProof.valid)
                       }
                       onClick={handleGiveHeartbeat}
                     >

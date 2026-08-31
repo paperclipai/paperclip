@@ -547,6 +547,90 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("omits selected inherited environment keys without mutating process.env", async () => {
+    const inheritedKey = "PAPERCLIP_TEST_OMITTED_INHERITED_SECRET";
+    const inheritedValue = process.env[inheritedKey];
+    process.env[inheritedKey] = "host-secret";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", `process.stdout.write(String(process.env.${inheritedKey} ?? "missing"))`],
+        {
+          cwd: process.cwd(),
+          env: {},
+          omitInheritedEnvKeys: [inheritedKey.toLowerCase()],
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("missing");
+      expect(process.env[inheritedKey]).toBe("host-secret");
+    } finally {
+      if (inheritedValue === undefined) delete process.env[inheritedKey];
+      else process.env[inheritedKey] = inheritedValue;
+    }
+  });
+
+  it("keeps explicit configuration for an omitted inherited key", async () => {
+    const inheritedKey = "PAPERCLIP_TEST_EXPLICIT_ENV_OVERRIDE";
+    const inheritedValue = process.env[inheritedKey];
+    process.env[inheritedKey] = "host-secret";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", `process.stdout.write(String(process.env.${inheritedKey} ?? "missing"))`],
+        {
+          cwd: process.cwd(),
+          env: { [inheritedKey]: "explicit-config" },
+          omitInheritedEnvKeys: [inheritedKey],
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("explicit-config");
+      expect(process.env[inheritedKey]).toBe("host-secret");
+    } finally {
+      if (inheritedValue === undefined) delete process.env[inheritedKey];
+      else process.env[inheritedKey] = inheritedValue;
+    }
+  });
+
+  it("denies selected environment keys from inherited and explicit sources", async () => {
+    const inheritedKey = "PAPERCLIP_TEST_DENIED_ENV_SECRET";
+    const inheritedValue = process.env[inheritedKey];
+    process.env[inheritedKey] = "host-secret";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", `process.stdout.write(String(process.env.${inheritedKey} ?? "missing"))`],
+        {
+          cwd: process.cwd(),
+          env: { [inheritedKey.toLowerCase()]: "explicit-secret" },
+          denyEnvironmentKeys: [inheritedKey],
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("missing");
+      expect(process.env[inheritedKey]).toBe("host-secret");
+    } finally {
+      if (inheritedValue === undefined) delete process.env[inheritedKey];
+      else process.env[inheritedKey] = inheritedValue;
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
