@@ -175,6 +175,20 @@ describe("redaction", () => {
     }
   });
 
+  it("redacts only the authorization credential when fields follow on the same line", () => {
+    const input = "Authorization: Bearer synthetic-bearer-value OPENAI_API_KEY=synthetic-api-key";
+
+    expect(sanitizeIssueCommentBody(input)).toBe(
+      `Authorization: Bearer ${REDACTED_EVENT_VALUE} OPENAI_API_KEY=${REDACTED_EVENT_VALUE}`,
+    );
+  });
+
+  it("redacts an unclassified authorization header value as a whole", () => {
+    expect(sanitizeIssueCommentBody("Authorization: Digest synthetic credential material")).toBe(
+      `Authorization: ${REDACTED_EVENT_VALUE}`,
+    );
+  });
+
   it("redacts a documented Coolify numeric API token without relying on context", () => {
     const token = "67|abcthisisa123dummytoken";
 

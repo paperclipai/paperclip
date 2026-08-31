@@ -48,7 +48,8 @@ const SECRET_ENV_ASSIGNMENT_RE = new RegExp(
 );
 const CONNECTION_STRING_RE =
   /\b(?:postgres(?:ql)?|mysql|redis(?:s)?|mongodb(?:\+srv)?):\/\/[^\s<>"'`]+/gi;
-const AUTHORIZATION_HEADER_RE = /(\bAuthorization\s*:\s*)[^\r\n]+/gi;
+const AUTHORIZATION_TOKEN_RE = /(\bAuthorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+/gi;
+const AUTHORIZATION_HEADER_RE = /(\bAuthorization\s*:\s*)(?!\s*(?:Bearer|Basic)\b)[^\r\n]+/gi;
 const GITHUB_FINE_GRAINED_TOKEN_RE = /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g;
 const COOLIFY_TOKEN_RE = /\bops_[A-Za-z0-9_-]{12,}\b/g;
 const COOLIFY_NUMERIC_TOKEN_RE = /\b\d+\|[A-Za-z0-9_-]{12,}\b/g;
@@ -203,6 +204,7 @@ export function redactSensitiveText(input: string): string {
             ? `${prefix}${quote}${REDACTED_EVENT_VALUE}${quote}`
             : `${prefix}${REDACTED_EVENT_VALUE}`,
       )
+      .replace(AUTHORIZATION_TOKEN_RE, `$1${REDACTED_EVENT_VALUE}`)
       .replace(AUTHORIZATION_HEADER_RE, `$1${REDACTED_EVENT_VALUE}`)
       .replace(CONNECTION_STRING_RE, REDACTED_EVENT_VALUE)
       .replace(GITHUB_FINE_GRAINED_TOKEN_RE, REDACTED_EVENT_VALUE)
