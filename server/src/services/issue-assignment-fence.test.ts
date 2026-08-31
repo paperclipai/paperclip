@@ -4,6 +4,7 @@ import {
   applyIssueAssignmentFenceTransition,
   assertIssueAssignmentFence,
   nativeSparkInvokabilityBlockReason,
+  nativeSparkReceiptProvenanceBlockReason,
 } from "./issue-assignment-fence.js";
 
 const SPILL_EXECUTOR_AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -28,6 +29,7 @@ function fencedIssue(overrides: Record<string, unknown> = {}) {
 
 function freshReceipt() {
   return {
+    runId: "33333333-3333-4333-8333-333333333333",
     agentId: NATIVE_SPARK_EXECUTOR_AGENT_ID,
     observedAt: RECEIPT_TIME.toISOString(),
     expiresAt: new Date(RECEIPT_TIME.getTime() + 5 * 60_000).toISOString(),
@@ -36,6 +38,26 @@ function freshReceipt() {
 }
 
 describe("native Spark assignment fence", () => {
+  it("requires durable native success provenance for a receipt", () => {
+    const base = {
+      runId: "33333333-3333-4333-8333-333333333333",
+      issueId: "44444444-4444-4444-8444-444444444444",
+      agentId: NATIVE_SPARK_EXECUTOR_AGENT_ID,
+      runtimeMode: "native" as const,
+      nativeIssueId: "44444444-4444-4444-8444-444444444444",
+      driverKind: "codex",
+      nativePhase: "completed",
+      status: "succeeded",
+      finishedAt: RECEIPT_TIME,
+      nativePhaseUpdatedAt: RECEIPT_TIME,
+    };
+    expect(nativeSparkReceiptProvenanceBlockReason({ ...base, status: "cancelled" }, RECEIPT_TIME)).toBe("run_not_succeeded");
+    expect(nativeSparkReceiptProvenanceBlockReason({ ...base, runtimeMode: "legacy" }, RECEIPT_TIME)).toBe("native_runtime_required");
+    expect(nativeSparkReceiptProvenanceBlockReason({ ...base, nativePhase: "failed" }, RECEIPT_TIME)).toBe("native_run_not_completed");
+    expect(nativeSparkReceiptProvenanceBlockReason(base, new Date(RECEIPT_TIME.getTime() + 5 * 60_001))).toBe("run_stale");
+    expect(nativeSparkReceiptProvenanceBlockReason(base, RECEIPT_TIME)).toBeNull();
+  });
+
   it("does not issue a receipt for idle Spark with a persisted error", () => {
     expect(nativeSparkInvokabilityBlockReason({
       status: "idle",
@@ -142,6 +164,17 @@ describe("native Spark assignment fence", () => {
     })).toThrow(/assignment fence/i);
   });
 
+  it("rejects a Spark run when the fenced issue is assigned to a user", () => {
+    expect(() => assertIssueAssignmentFence({
+      issue: fencedIssue({ assigneeUserId: "local-board" }),
+      nextAssigneeAgentId: NATIVE_SPARK_EXECUTOR_AGENT_ID,
+      nextAssigneeUserId: null,
+      nextStatus: "blocked",
+      assignmentIntent: "checkout",
+      now: RECEIPT_TIME,
+    })).toThrow(/user/i);
+  });
+
   it("allows only an explicit Spark assignment after a fresh receipt", () => {
     expect(() => assertIssueAssignmentFence({
       issue: fencedIssue({ executionState: { assignmentFenceReceipt: freshReceipt() } }),
@@ -170,6 +203,20 @@ describe("native Spark assignment fence", () => {
       assignmentIntent: "unchanged",
       now: new Date("2026-08-30T12:06:00.000Z"),
     })).not.toThrow();
+  });
+
+  it("rejects an unchanged Spark assignment without explicit authorization", () => {
+    expect(() => assertIssueAssignmentFence({
+      issue: fencedIssue({
+        status: "in_progress",
+        assigneeAgentId: NATIVE_SPARK_EXECUTOR_AGENT_ID,
+      }),
+      nextAssigneeAgentId: NATIVE_SPARK_EXECUTOR_AGENT_ID,
+      nextAssigneeUserId: null,
+      nextStatus: "in_progress",
+      assignmentIntent: "unchanged",
+      now: RECEIPT_TIME,
+    })).toThrow(/authorization/i);
   });
 
   it("does not let checkout establish Spark authorization", () => {

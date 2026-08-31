@@ -15,6 +15,7 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  nativeRunFinalizations,
   routineRuns,
   executionWorkspaces,
   issueApprovals,
@@ -97,10 +98,9 @@ import {
   assertIssueAssignmentFence,
   ASSIGNMENT_FENCE_RECEIPT_TTL_MS,
   getIssueAssignmentFence,
-  nativeSparkInvokabilityBlockReason,
+  nativeSparkReceiptProvenanceBlockReason,
   type IssueAssignmentFenceIntent,
 } from "./issue-assignment-fence.js";
-import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -5263,8 +5263,11 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, input.issueId))
@@ -6103,7 +6106,7 @@ export function issueService(db: Db) {
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
     },
 
-    recordAssignmentFenceReceipt: async (id: string, agentId: string) => {
+    recordAssignmentFenceReceipt: async (id: string, runId: string) => {
       const updated = await db.transaction(async (tx) => {
         const issue = await tx
           .select()
@@ -6115,43 +6118,62 @@ export function issueService(db: Db) {
 
         const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
         const fence = getIssueAssignmentFence(policy);
-        if (!fence || agentId !== fence.allowedAgentId) {
+        if (!fence) {
           throw conflict("Assignment fence receipt is only available for the native Spark Executor", {
             code: "issue_assignment_fence",
             reason: "native_spark_agent_required",
-            requestedAgentId: agentId,
+            runId,
           });
         }
 
-        const agent = await tx
+        const [run] = await tx
           .select()
-          .from(agents)
-          .where(and(eq(agents.id, agentId), eq(agents.companyId, issue.companyId)))
-          .then((rows: Array<typeof agents.$inferSelect>) => rows[0] ?? null);
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.nativeIssueId, issue.id),
+          ))
+          .for("update")
+          .limit(1);
+        const [finalization] = await tx
+          .select({ phase: nativeRunFinalizations.phase })
+          .from(nativeRunFinalizations)
+          .where(and(
+            eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, issue.companyId),
+            eq(nativeRunFinalizations.issueId, issue.id),
+          ))
+          .limit(1);
         const now = new Date();
-        const existingState = parseIssueExecutionState(issue.executionState);
-        assertIssueAssignmentFence({
-          issue: { ...issue, executionPolicy: policy, executionState: existingState },
-          nextAssigneeAgentId: issue.assigneeAgentId,
-          nextAssigneeUserId: issue.assigneeUserId,
-          nextStatus: issue.status,
-          assignmentIntent: "unknown",
+        const provenanceBlockReason = nativeSparkReceiptProvenanceBlockReason(
+          run
+            ? { ...run, issueId: issue.id }
+            : null,
           now,
-        });
-        const healthBlockReason = nativeSparkInvokabilityBlockReason(agent, now);
-        if (healthBlockReason) {
+        );
+        if (!run || !finalization || finalization.phase !== "completed" || provenanceBlockReason) {
           throw conflict("Native Spark Executor does not have a fresh clean invokability heartbeat", {
             code: "issue_assignment_fence",
-            reason: healthBlockReason,
-            agentId,
+            reason: finalization?.phase !== "completed"
+              ? "native_finalization_not_completed"
+              : provenanceBlockReason ?? "run_missing",
+            runId,
           });
         }
-        const invokability = await evaluateAgentInvokabilityFromDb(tx as unknown as Db, agent);
-        if (!invokability.invokable) {
-          throw conflict("Native Spark Executor is not currently invokable", {
+        const existingState = parseIssueExecutionState(issue.executionState);
+        if (issue.assigneeUserId || (issue.assigneeAgentId && issue.assigneeAgentId !== fence.allowedAgentId)) {
+          throw conflict("Assignment fence receipt cannot repair an incompatible assignment", {
             code: "issue_assignment_fence",
-            reason: invokability.reason,
-            agentId,
+            reason: "incompatible_assignment",
+            runId,
+          });
+        }
+        if (!issue.assigneeAgentId && issue.status !== "blocked") {
+          throw conflict("Assignment fence receipt requires a blocked unassigned issue", {
+            code: "issue_assignment_fence",
+            reason: "issue_must_remain_blocked",
+            runId,
           });
         }
 
@@ -6167,7 +6189,8 @@ export function issueService(db: Db) {
         const receiptState = {
           ...nextState,
           assignmentFenceReceipt: {
-            agentId,
+            runId,
+            agentId: fence.allowedAgentId,
             observedAt: now.toISOString(),
             expiresAt: new Date(now.getTime() + ASSIGNMENT_FENCE_RECEIPT_TTL_MS).toISOString(),
             source: "native" as const,
@@ -7214,6 +7237,33 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const createPolicy = normalizeIssueExecutionPolicy(data.executionPolicy ?? null);
+      if (getIssueAssignmentFence(createPolicy)) {
+        if (data.status !== undefined && data.status !== "blocked") {
+          throw conflict("Fenced issues must be created blocked and unassigned", {
+            code: "issue_assignment_fence",
+            reason: "issue_must_start_blocked",
+          });
+        }
+        if (data.assigneeAgentId || data.assigneeUserId) {
+          throw conflict("Fenced issues must be created blocked and unassigned", {
+            code: "issue_assignment_fence",
+            reason: "assignment_before_receipt_rejected",
+          });
+        }
+        const initialState = parseIssueExecutionState(data.executionState);
+        if (initialState?.assignmentFenceReceipt || initialState?.assignmentFenceAuthorization) {
+          throw conflict("Fenced issues cannot be created with a pre-seeded receipt or authorization", {
+            code: "issue_assignment_fence",
+            reason: "pre_receipt_state_rejected",
+          });
+        }
+        // A fence is a fail-closed policy: no runnable status is persisted
+        // until the dedicated receipt and explicit assignment transitions run.
+        issueData.status = "blocked";
+        issueData.assigneeAgentId = null;
+        issueData.assigneeUserId = null;
+      }
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
@@ -7816,6 +7866,26 @@ export function issueService(db: Db) {
         assignmentFenceIntent,
         ...issueData
       } = data;
+      const currentFence = getIssueAssignmentFence(
+        normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+      );
+      if (currentFence && issueData.executionPolicy !== undefined) {
+        const requestedFence = getIssueAssignmentFence(
+          normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+        );
+        if (!requestedFence) {
+          throw conflict("Assignment fences cannot be removed by an ordinary issue update", {
+            code: "issue_assignment_fence",
+            reason: "fence_revocation_requires_governed_path",
+          });
+        }
+      }
+      if (currentFence && issueData.executionState !== undefined) {
+        throw conflict("Assignment-fence receipt state is controlled by native run provenance", {
+          code: "issue_assignment_fence",
+          reason: "receipt_state_mutation_rejected",
+        });
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -8409,27 +8479,51 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // Lock and re-read the policy immediately before the assignment/status
+      // write. Route checks are advisory; direct service callers must receive
+      // the same fail-closed fence enforcement atomically.
+      const updated = await db.transaction(async (tx) => {
+        const locked = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!locked) return null;
+        assertIssueAssignmentFence({
+          issue: {
+            ...locked,
+            executionPolicy: normalizeIssueExecutionPolicy(locked.executionPolicy ?? null),
+            executionState: parseIssueExecutionState(locked.executionState),
+          },
+          nextAssigneeAgentId: agentId,
+          nextAssigneeUserId: null,
+          nextStatus: "in_progress",
+          assignmentIntent: "checkout",
+          now,
+        });
+        return tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -8441,14 +8535,30 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      assertIssueAssignmentFence({
+        issue: {
+          ...current,
+          executionPolicy: normalizeIssueExecutionPolicy(current.executionPolicy ?? null),
+          executionState: parseIssueExecutionState(current.executionState),
+        },
+        nextAssigneeAgentId: agentId,
+        nextAssigneeUserId: null,
+        nextStatus: "in_progress",
+        assignmentIntent: "checkout",
+        now,
+      });
 
       if (
         current.assigneeAgentId === agentId &&
@@ -8741,17 +8851,29 @@ export function issueService(db: Db) {
           }
         }
 
-        // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
-        const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
+        // A fenced issue may never be re-queued runnable or handed to a
+        // fallback. Releasing it returns it to the pre-receipt blocked state.
+        const existingPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+        const existingState = parseIssueExecutionState(existing.executionState);
+        const releaseStatus = getIssueAssignmentFence(existingPolicy)
+          ? "blocked"
+          : existing.status === "in_progress" ? "todo" : existing.status;
         assertIssueAssignmentFence({
           issue: {
             ...existing,
-            executionPolicy: normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
-            executionState: parseIssueExecutionState(existing.executionState),
+            executionPolicy: existingPolicy,
+            executionState: existingState,
           },
           nextAssigneeAgentId: null,
           nextAssigneeUserId: existing.assigneeUserId,
           nextStatus: releaseStatus,
+          assignmentIntent: "automatic",
+        });
+        const nextExecutionState = applyIssueAssignmentFenceTransition({
+          issue: { ...existing, executionPolicy: existingPolicy, executionState: existingState },
+          currentExecutionState: existingState,
+          nextAssigneeAgentId: null,
+          nextAssigneeUserId: existing.assigneeUserId,
           assignmentIntent: "automatic",
         });
         const updated = await tx
@@ -8763,6 +8885,9 @@ export function issueService(db: Db) {
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
+            ...(nextExecutionState !== undefined
+              ? { executionState: nextExecutionState as Record<string, unknown> | null }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(issues.id, id))
@@ -8793,18 +8918,31 @@ export function issueService(db: Db) {
           updatedAt: new Date(),
         };
         if (options.clearAssignee) {
+          const existingPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+          const existingState = parseIssueExecutionState(existing.executionState);
+          const fenced = Boolean(getIssueAssignmentFence(existingPolicy));
           assertIssueAssignmentFence({
             issue: {
               ...existing,
-              executionPolicy: normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
-              executionState: parseIssueExecutionState(existing.executionState),
+              executionPolicy: existingPolicy,
+              executionState: existingState,
             },
             nextAssigneeAgentId: null,
             nextAssigneeUserId: existing.assigneeUserId,
-            nextStatus: existing.status,
+            nextStatus: fenced ? "blocked" : existing.status,
             assignmentIntent: "automatic",
           });
           patch.assigneeAgentId = null;
+          if (fenced) {
+            patch.status = "blocked";
+            patch.executionState = applyIssueAssignmentFenceTransition({
+              issue: { ...existing, executionPolicy: existingPolicy, executionState: existingState },
+              currentExecutionState: existingState,
+              nextAssigneeAgentId: null,
+              nextAssigneeUserId: existing.assigneeUserId,
+              assignmentIntent: "automatic",
+            }) as Record<string, unknown> | null | undefined;
+          }
         }
 
         const updated = await tx

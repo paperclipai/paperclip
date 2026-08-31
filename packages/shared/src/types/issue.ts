@@ -703,6 +703,7 @@ export interface IssueAssignmentFence {
 }
 
 export interface IssueAssignmentFenceReceipt {
+  runId: string;
   agentId: string;
   observedAt: string;
   expiresAt: string;

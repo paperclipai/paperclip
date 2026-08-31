@@ -308,7 +308,8 @@ export const issueExecutionPolicySchema = z.object({
 });
 
 export const recordIssueAssignmentFenceReceiptSchema = z.object({
-  agentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
+  /** A completed native run is the durable receipt provenance. */
+  runId: z.string().uuid(),
 }).strict();
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -346,6 +347,7 @@ export const issueExecutionStateSchema = z.object({
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
   assignmentFenceReceipt: z.object({
+    runId: z.string().uuid(),
     agentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
     observedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),

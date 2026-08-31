@@ -11023,7 +11023,7 @@ export function issueRoutes(
       return;
     }
 
-    const updated = await svc.recordAssignmentFenceReceipt(id, req.body.agentId as string);
+    const updated = await svc.recordAssignmentFenceReceipt(id, req.body.runId as string);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: updated.companyId,
@@ -11035,7 +11035,7 @@ export function issueRoutes(
       action: "issue.assignment_fence_receipt_recorded",
       entityType: "issue",
       entityId: updated.id,
-      details: { agentId: req.body.agentId },
+      details: { runId: req.body.runId },
     });
     res.json(updated);
   });

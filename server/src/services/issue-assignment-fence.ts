@@ -18,6 +18,61 @@ export type NativeSparkHealthSnapshot = {
   lastHeartbeatAt?: Date | string | null;
 };
 
+/**
+ * The persisted run binding is the receipt's source of truth. Agent health is
+ * intentionally not used here: it is mutable status and can be stale, idle,
+ * or changed by cancellation without proving that this issue actually ran.
+ */
+export type NativeSparkReceiptProvenance = {
+  runId?: string | null;
+  issueId?: string | null;
+  agentId?: string | null;
+  runtimeMode?: string | null;
+  nativeIssueId?: string | null;
+  driverKind?: string | null;
+  nativePhase?: string | null;
+  status?: string | null;
+  finishedAt?: Date | string | null;
+  nativePhaseUpdatedAt?: Date | string | null;
+};
+
+export function nativeSparkReceiptProvenanceBlockReason(
+  run: NativeSparkReceiptProvenance | null | undefined,
+  now = new Date(),
+): string | null {
+  if (!run) return "run_missing";
+  if (run.status !== "succeeded") return "run_not_succeeded";
+  if (run.runtimeMode !== "native") return "native_runtime_required";
+  if (run.nativeIssueId == null || run.issueId == null || run.nativeIssueId !== run.issueId) {
+    return "native_issue_binding_missing";
+  }
+  if (run.agentId !== NATIVE_SPARK_EXECUTOR_AGENT_ID) return "native_spark_agent_required";
+  if (run.driverKind !== "codex") return "native_driver_required";
+  if (run.nativePhase !== "completed") return "native_run_not_completed";
+  if (!run.finishedAt || !run.nativePhaseUpdatedAt) return "run_completion_missing";
+
+  const finishedAt = run.finishedAt instanceof Date ? run.finishedAt : new Date(run.finishedAt);
+  const phaseUpdatedAt = run.nativePhaseUpdatedAt instanceof Date
+    ? run.nativePhaseUpdatedAt
+    : new Date(run.nativePhaseUpdatedAt);
+  // Freshness is anchored to the durable run completion, not the mutable
+  // phase/status heartbeat. A status mutation must not refresh a stale run.
+  const completionAt = finishedAt.getTime();
+  const phaseAgeMs = now.getTime() - phaseUpdatedAt.getTime();
+  const ageMs = now.getTime() - completionAt;
+  if (
+    !Number.isFinite(completionAt)
+    || !Number.isFinite(phaseAgeMs)
+    || phaseAgeMs < 0
+    || !Number.isFinite(ageMs)
+    || ageMs < 0
+    || ageMs > ASSIGNMENT_FENCE_RECEIPT_TTL_MS
+  ) {
+    return "run_stale";
+  }
+  return null;
+}
+
 export function nativeSparkInvokabilityBlockReason(
   snapshot: NativeSparkHealthSnapshot | null | undefined,
   now = new Date(),
@@ -75,6 +130,9 @@ function receiptIsFresh(
   if (!receipt || typeof receipt !== "object") return false;
   const candidate = receipt as Record<string, unknown>;
   if (
+    typeof candidate.runId !== "string"
+    || !candidate.runId
+    ||
     candidate.agentId !== NATIVE_SPARK_EXECUTOR_AGENT_ID
     || candidate.source !== "native"
     || typeof candidate.observedAt !== "string"
@@ -101,6 +159,9 @@ export function assertIssueAssignmentFence(input: AssignmentFenceInput): void {
   const fence = assignmentFenceFor(input.issue);
   if (!fence) return;
 
+  if (input.issue.assigneeUserId && input.nextAssigneeUserId !== input.issue.assigneeUserId) {
+    reject("user_assignment_rejected", input);
+  }
   if (input.nextAssigneeUserId) reject("user_assignment_rejected", input);
   if (input.nextAssigneeAgentId !== null && input.nextAssigneeAgentId !== fence.allowedAgentId) {
     reject("non_native_agent_rejected", input);
@@ -111,6 +172,13 @@ export function assertIssueAssignmentFence(input: AssignmentFenceInput): void {
     return;
   }
 
+  const state = input.issue.executionState && typeof input.issue.executionState === "object"
+    ? input.issue.executionState as Record<string, unknown>
+    : null;
+  const authorization = state?.assignmentFenceAuthorization;
+  const authorizationRecord = authorization && typeof authorization === "object"
+    ? authorization as Record<string, unknown>
+    : null;
   const now = input.now ?? new Date();
   if (
     input.assignmentIntent === "unchanged"
@@ -118,20 +186,20 @@ export function assertIssueAssignmentFence(input: AssignmentFenceInput): void {
     && input.issue.assigneeUserId === null
     && input.nextAssigneeAgentId === fence.allowedAgentId
     && input.nextAssigneeUserId === null
-  ) return;
-  const state = input.issue.executionState && typeof input.issue.executionState === "object"
-    ? input.issue.executionState as Record<string, unknown>
-    : null;
+  ) {
+    if (
+      authorizationRecord?.agentId !== fence.allowedAgentId
+      || authorizationRecord.source !== "explicit"
+    ) reject("explicit_assignment_authorization_required", input);
+    return;
+  }
   if (!receiptIsFresh(state?.assignmentFenceReceipt, now)) reject("fresh_native_receipt_required", input);
 
   if (input.assignmentIntent === "explicit") return;
   if (input.assignmentIntent !== "checkout") reject("explicit_assignment_required", input);
 
-  const authorization = state?.assignmentFenceAuthorization;
-  if (!authorization || typeof authorization !== "object") reject("explicit_assignment_authorization_required", input);
-  const authorizationRecord = authorization as Record<string, unknown>;
   if (
-    authorizationRecord.agentId !== fence.allowedAgentId
+    authorizationRecord?.agentId !== fence.allowedAgentId
     || authorizationRecord.source !== "explicit"
   ) reject("explicit_assignment_authorization_required", input);
   if (input.issue.assigneeAgentId !== fence.allowedAgentId) reject("checkout_cannot_establish_assignment", input);

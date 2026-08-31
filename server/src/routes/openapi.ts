@@ -30,6 +30,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  recordIssueAssignmentFenceReceiptSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -2587,6 +2588,18 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/assignment-fence/receipt",
+  tags: ["issues"],
+  summary: "Record a completed native Spark assignment-fence run",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(recordIssueAssignmentFenceReceiptSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
 
 registry.registerPath({
