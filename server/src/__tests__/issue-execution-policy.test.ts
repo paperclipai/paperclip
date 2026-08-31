@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
@@ -463,6 +464,86 @@ describe("issue execution policy transitions", () => {
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: qaAgentId },
       });
+    });
+
+    it("a full request-changes round trip mints a fresh lastDecisionId that survives the resubmit, and a second round trip mints a different one again", () => {
+      // Guards the invariant the board decision-card UI relies on
+      // (IssueExecutionDecisionCard's decisionKey) to tell "still the round I
+      // was editing" apart from "a fresh round after the assignee's fix
+      // landed" when a single-stage policy reuses the same currentStageId
+      // every cycle. lastDecisionId is only stamped by the route layer
+      // (server/src/routes/issues.ts) when a transition actually records a
+      // decision -- replicated here since this test exercises the service
+      // layer directly.
+      function stampRouteLevelDecisionId(transition: { patch: Record<string, unknown>; decision?: unknown }) {
+        const decisionId = transition.decision ? randomUUID() : null;
+        if (decisionId) {
+          transition.patch.executionState = {
+            ...(transition.patch.executionState as Record<string, unknown>),
+            lastDecisionId: decisionId,
+          };
+        }
+        return decisionId;
+      }
+
+      const round0State: IssueExecutionState = {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        reviewRequest: null,
+        monitor: null,
+      };
+
+      const round1 = applyIssueExecutionPolicyTransition({
+        issue: { status: "in_review", assigneeAgentId: qaAgentId, assigneeUserId: null, executionPolicy: policy, executionState: round0State },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Needs another pass",
+      });
+      const decision1Id = stampRouteLevelDecisionId(round1);
+      const round1State = round1.patch.executionState as IssueExecutionState;
+      expect(decision1Id).not.toBeNull();
+      expect(round1State.lastDecisionId).toBe(decision1Id);
+
+      const resubmit = applyIssueExecutionPolicyTransition({
+        issue: { status: "in_progress", assigneeAgentId: coderAgentId, assigneeUserId: null, executionPolicy: policy, executionState: round1State },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Fixed it",
+      });
+      const resubmitDecisionId = stampRouteLevelDecisionId(resubmit);
+      const round2State = resubmit.patch.executionState as IssueExecutionState;
+      // The resubmit itself is not a decision -- no fresh id is minted for
+      // it -- but the pending state it produces must still carry the prior
+      // decision's id forward, distinguishing it from round 0's null.
+      expect(resubmitDecisionId).toBeNull();
+      expect(round2State.status).toBe("pending");
+      expect(round2State.lastDecisionId).toBe(decision1Id);
+      expect(round2State.lastDecisionId).not.toBe(round0State.lastDecisionId);
+
+      const round3 = applyIssueExecutionPolicyTransition({
+        issue: { status: "in_review", assigneeAgentId: qaAgentId, assigneeUserId: null, executionPolicy: policy, executionState: round2State },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Still needs work",
+      });
+      const decision3Id = stampRouteLevelDecisionId(round3);
+      const round3State = round3.patch.executionState as IssueExecutionState;
+      expect(decision3Id).not.toBeNull();
+      expect(decision3Id).not.toBe(decision1Id);
+      expect(round3State.lastDecisionId).toBe(decision3Id);
     });
   });
 
