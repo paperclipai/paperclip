@@ -25,10 +25,14 @@ describe("createInvalidationBatcher", () => {
     const batcher = createInvalidationBatcher(client, 300);
 
     for (let i = 0; i < 20; i++) batcher.schedule({ queryKey: ["dashboard", "c1"] });
-    expect(client.invalidateQueries).not.toHaveBeenCalled(); // nothing until flush
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dashboard", "c1"],
+      refetchType: "none",
+    });
 
     vi.advanceTimersByTime(300);
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
     expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["dashboard", "c1"] });
   });
 
@@ -41,8 +45,9 @@ describe("createInvalidationBatcher", () => {
     batcher.schedule({ queryKey: ["a"] }); // dup of first
     batcher.schedule({ queryKey: ["a"], refetchType: "inactive" }); // distinct variant
 
-    vi.advanceTimersByTime(300);
     expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(6);
   });
 
   it("never coalesces predicate-based invalidations", () => {
@@ -53,8 +58,9 @@ describe("createInvalidationBatcher", () => {
     batcher.schedule({ predicate: () => true });
     batcher.schedule({ predicate: () => false });
 
-    vi.advanceTimersByTime(300);
     expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it("schedule() resolves only after the flush has invalidated", async () => {
@@ -68,12 +74,12 @@ describe("createInvalidationBatcher", () => {
 
     await Promise.resolve();
     expect(resolved).toBe(false); // not yet — window still open
-    expect(client.invalidateQueries).not.toHaveBeenCalled();
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
 
     vi.advanceTimersByTime(300);
     await p;
     expect(resolved).toBe(true);
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
   });
 
   it("starts a fresh window after flushing", () => {
@@ -82,11 +88,11 @@ describe("createInvalidationBatcher", () => {
 
     batcher.schedule({ queryKey: ["a"] });
     vi.advanceTimersByTime(300);
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
 
     batcher.schedule({ queryKey: ["a"] });
     vi.advanceTimersByTime(300);
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it("dispose cancels a pending flush", () => {
@@ -96,7 +102,8 @@ describe("createInvalidationBatcher", () => {
     batcher.schedule({ queryKey: ["a"] });
     batcher.dispose();
     vi.advanceTimersByTime(1000);
-    expect(client.invalidateQueries).not.toHaveBeenCalled();
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["a"], refetchType: "none" });
   });
 
   it("flush() invalidates immediately", () => {
@@ -105,7 +112,7 @@ describe("createInvalidationBatcher", () => {
 
     batcher.schedule({ queryKey: ["a"] });
     batcher.flush();
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -133,9 +140,10 @@ describe("createCoalescingQueryClient", () => {
     // invalidateQueries is deferred through the batcher.
     void proxied.invalidateQueries({ queryKey: ["k"] });
     void proxied.invalidateQueries({ queryKey: ["k"] });
-    expect(realInvalidate).not.toHaveBeenCalled();
+    expect(realInvalidate).toHaveBeenCalledTimes(1);
+    expect(realInvalidate).toHaveBeenCalledWith({ queryKey: ["k"], refetchType: "none" });
 
     vi.advanceTimersByTime(300);
-    expect(realInvalidate).toHaveBeenCalledTimes(1);
+    expect(realInvalidate).toHaveBeenCalledTimes(2);
   });
 });

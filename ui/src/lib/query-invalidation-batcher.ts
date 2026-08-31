@@ -69,7 +69,14 @@ export function createInvalidationBatcher(
   };
 
   const schedule = (filters: InvalidateQueryFilters): Promise<void> => {
-    pending.set(serializeFilters(filters), filters);
+    const key = serializeFilters(filters);
+    if (!pending.has(key)) {
+      pending.set(key, filters);
+      // Mark matching queries stale synchronously so reads that finish before
+      // the trailing flush cannot overwrite state invalidated by a live event.
+      // Only the potentially expensive refetch remains coalesced.
+      void queryClient.invalidateQueries({ ...filters, refetchType: "none" });
+    }
     if (windowDeferred === null) {
       windowDeferred = createDeferred();
     }

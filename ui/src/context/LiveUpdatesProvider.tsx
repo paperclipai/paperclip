@@ -1038,6 +1038,9 @@ function invalidateActivityQueries(
         if (action?.startsWith("issue.thread_interaction_")) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
+        if (action === "issue.attachment_added" || action === "issue.attachment_removed") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref), ...invalidationOptions });
+        }
       }
     }
     return;

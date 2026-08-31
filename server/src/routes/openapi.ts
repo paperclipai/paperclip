@@ -2318,6 +2318,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/view",
+  tags: ["issues"],
+  summary: "Get the aggregate issue detail view",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 304: { description: "Not Modified" }, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/issues/{id}",
   tags: ["issues"],

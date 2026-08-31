@@ -16,6 +16,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  */
 
 const mockTransport = vi.hoisted(() => vi.fn(() => ({ write: vi.fn() })));
+const mockDestination = vi.hoisted(() => vi.fn(() => ({ write: vi.fn() })));
 const mockPino = vi.hoisted(() => {
   const fn = vi.fn(() => ({
     info: vi.fn(),
@@ -25,13 +26,8 @@ const mockPino = vi.hoisted(() => {
     child: vi.fn(),
   }));
   (fn as any).transport = mockTransport;
+  (fn as any).destination = mockDestination;
   return fn;
-});
-
-// Mock fs so the module-level mkdirSync call is a no-op in tests.
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdirSync: vi.fn() };
 });
 
 vi.mock("pino", () => ({
@@ -52,6 +48,7 @@ describe("logger translateTime respects TZ environment variable", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllEnvs();
+    vi.stubEnv("PAPERCLIP_LOG_DIR", "");
     vi.clearAllMocks();
   });
 
@@ -61,18 +58,42 @@ describe("logger translateTime respects TZ environment variable", () => {
 
     expect(mockTransport).toHaveBeenCalledOnce();
     const transport = mockTransport.mock.calls[0][0] as {
-      target: string;
-      options: Record<string, unknown>;
+      targets: Array<{ target: string; options: Record<string, unknown> }>;
     };
-    expect(transport.target).toBe("pino-pretty");
-    expect(transport.options.translateTime).toBe("SYS:HH:MM:ss");
+    expect(transport.targets[0].target).toBe("pino-pretty");
+    expect(transport.targets[0].options.translateTime).toBe("SYS:HH:MM:ss");
   });
 
-  it("does not construct a pretty transport in production", async () => {
+  it("persists production logs when file logging is configured", async () => {
+    const { readConfigFile } = await import("../config-file.js");
+    vi.mocked(readConfigFile).mockReturnValueOnce({
+      logging: { mode: "file", logDir: "/configured/logs" },
+    } as ReturnType<typeof readConfigFile>);
     vi.stubEnv("NODE_ENV", "production");
     await import("../middleware/logger.js");
 
     expect(mockTransport).not.toHaveBeenCalled();
+    expect(mockDestination).toHaveBeenCalledWith({
+      dest: "/configured/logs/server.log",
+      mkdir: true,
+      sync: false,
+    });
+    expect(mockPino).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "info" }),
+      expect.anything(),
+    );
+  });
+
+  it("keeps production cloud logging on stdout without a file destination", async () => {
+    const { readConfigFile } = await import("../config-file.js");
+    vi.mocked(readConfigFile).mockReturnValueOnce({
+      logging: { mode: "cloud", logDir: "/unused" },
+    } as ReturnType<typeof readConfigFile>);
+    vi.stubEnv("NODE_ENV", "production");
+    await import("../middleware/logger.js");
+
+    expect(mockTransport).not.toHaveBeenCalled();
+    expect(mockDestination).not.toHaveBeenCalled();
     expect(mockPino).toHaveBeenCalledWith(expect.objectContaining({ level: "info" }));
   });
 

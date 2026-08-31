@@ -1,9 +1,23 @@
+import path from "node:path";
 import pino from "pino";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
+import { readConfigFile } from "../config-file.js";
+import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive, stripSecretBearingUrlParts } from "./redact-sensitive.js";
+
+function resolveServerLogging(): { mode: "file" | "cloud"; logFile: string } {
+  const envLogDir = process.env.PAPERCLIP_LOG_DIR?.trim();
+  const fileLogging = readConfigFile()?.logging;
+  const mode = envLogDir ? "file" : (fileLogging?.mode ?? "file");
+  const logDir = resolveHomeAwarePath(
+    envLogDir || fileLogging?.logDir?.trim() || resolveDefaultLogsDir(),
+  );
+
+  return { mode, logFile: path.join(logDir, "server.log") };
+}
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -12,12 +26,33 @@ const sharedOpts = {
 };
 
 const isProduction = process.env.NODE_ENV === "production";
-export const logger = isProduction
-  ? pino({ level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info", redact: [...HTTP_LOG_REDACT_PATHS] })
-  : pino({ level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug", redact: [...HTTP_LOG_REDACT_PATHS] }, pino.transport({
+const logging = resolveServerLogging();
+const level = process.env.PAPERCLIP_LOG_LEVEL?.trim() || (isProduction ? "info" : "debug");
+const loggerOptions = { level, redact: [...HTTP_LOG_REDACT_PATHS] };
+
+export const logger = (() => {
+  if (isProduction) {
+    if (logging.mode === "cloud") return pino(loggerOptions);
+    return pino(loggerOptions, pino.destination({ dest: logging.logFile, mkdir: true, sync: false }));
+  }
+
+  const targets: pino.TransportTargetOptions[] = [
+    {
       target: "pino-pretty",
       options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-    }));
+      level,
+    },
+  ];
+  if (logging.mode === "file") {
+    targets.push({
+      target: "pino/file",
+      options: { destination: logging.logFile, mkdir: true },
+      level,
+    });
+  }
+
+  return pino(loggerOptions, pino.transport({ targets }));
+})();
 
 export function createHttpLogger(baseLogger: Logger) {
   return pinoHttp({

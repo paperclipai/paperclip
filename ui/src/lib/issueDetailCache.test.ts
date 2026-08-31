@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueComment } from "@paperclipai/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issuesApi } from "@/api/issues";
 import {
@@ -9,12 +9,27 @@ import {
   seedIssueDetailCache,
 } from "./issueDetailCache";
 import { queryKeys } from "./queryKeys";
+import { createCoalescingQueryClient, createInvalidationBatcher } from "./query-invalidation-batcher";
 
 vi.mock("@/api/issues", () => ({
   issuesApi: {
-    get: vi.fn(),
+    getView: vi.fn(),
   },
 }));
+
+function createIssueView(detail: Issue) {
+  return {
+    detail,
+    comments: [] as IssueComment[],
+    interactions: [],
+    attachments: [],
+    workProducts: [],
+    childIssues: [],
+    runs: [],
+    liveRuns: [],
+    activeRun: null,
+  };
+}
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -94,7 +109,7 @@ describe("issueDetailCache", () => {
 
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
     expect(getCachedIssueDetail(queryClient, issue.id)).toEqual(issue);
-    expect(issuesApi.get).not.toHaveBeenCalled();
+    expect(issuesApi.getView).not.toHaveBeenCalled();
   });
 
   it("does not seed partial issue snapshots during prefetch", async () => {
@@ -106,11 +121,11 @@ describe("issueDetailCache", () => {
       status: issue.status,
       priority: issue.priority,
     } as Issue;
-    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.getView).mockResolvedValue(createIssueView(issue));
 
     await prefetchIssueDetail(queryClient, issue.identifier!, { issue: partialIssue });
 
-    expect(issuesApi.get).toHaveBeenCalledWith(issue.identifier);
+    expect(issuesApi.getView).toHaveBeenCalledWith(issue.identifier);
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
   });
 
@@ -132,12 +147,61 @@ describe("issueDetailCache", () => {
 
   it("hydrates both cache aliases from a fetched issue detail response", async () => {
     const issue = createIssue();
-    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.getView).mockResolvedValue(createIssueView(issue));
 
     const result = await fetchIssueDetail(queryClient, issue.identifier!);
 
     expect(result).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
+  });
+
+  it("does not overwrite a collection with a queued live invalidation", async () => {
+    const issue = createIssue();
+    const commentsKey = queryKeys.issues.comments(issue.identifier!);
+    const cachedComment = { id: "live-comment" } as IssueComment;
+    const staleComment = { id: "aggregate-comment" } as IssueComment;
+    const cachedComments = { pages: [[cachedComment]], pageParams: [null] };
+    let resolveView!: (view: ReturnType<typeof createIssueView>) => void;
+    vi.mocked(issuesApi.getView).mockReturnValue(new Promise((resolve) => {
+      resolveView = resolve;
+    }));
+    queryClient.setQueryData(commentsKey, cachedComments);
+    const batcher = createInvalidationBatcher(queryClient, 300);
+    const liveUpdatesClient = createCoalescingQueryClient(queryClient, batcher);
+
+    const detailPromise = fetchIssueDetail(queryClient, issue.identifier!);
+    await Promise.resolve();
+    void liveUpdatesClient.invalidateQueries({ queryKey: commentsKey });
+    expect(queryClient.getQueryState(commentsKey)?.isInvalidated).toBe(true);
+    resolveView({ ...createIssueView(issue), comments: [staleComment] });
+    await detailPromise;
+
+    expect(queryClient.getQueryData(commentsKey)).toEqual(cachedComments);
+    expect(queryClient.getQueryState(commentsKey)?.isInvalidated).toBe(true);
+    batcher.dispose();
+  });
+
+  it("does not overwrite issue detail with a queued live invalidation", async () => {
+    const aggregateIssue = createIssue({ title: "Aggregate snapshot" });
+    const liveIssue = createIssue({ title: "Live snapshot" });
+    const detailKey = queryKeys.issues.detail(liveIssue.identifier!);
+    let resolveView!: (view: ReturnType<typeof createIssueView>) => void;
+    vi.mocked(issuesApi.getView).mockReturnValue(new Promise((resolve) => {
+      resolveView = resolve;
+    }));
+    queryClient.setQueryData(detailKey, liveIssue);
+    const batcher = createInvalidationBatcher(queryClient, 300);
+    const liveUpdatesClient = createCoalescingQueryClient(queryClient, batcher);
+
+    const detailPromise = fetchIssueDetail(queryClient, liveIssue.identifier!);
+    await Promise.resolve();
+    void liveUpdatesClient.invalidateQueries({ queryKey: detailKey });
+    expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true);
+    resolveView(createIssueView(aggregateIssue));
+
+    expect(await detailPromise).toEqual(liveIssue);
+    expect(queryClient.getQueryData(detailKey)).toEqual(liveIssue);
+    batcher.dispose();
   });
 });

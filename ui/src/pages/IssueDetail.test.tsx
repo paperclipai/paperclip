@@ -20,6 +20,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  getView: vi.fn(),
   list: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
@@ -1046,6 +1047,29 @@ describe("IssueDetail", () => {
     } as Response);
 
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getView.mockImplementation(async (...args: Parameters<typeof mockIssuesApi.get>) => {
+      const detail = await mockIssuesApi.get(...args);
+      const [comments, attachments, workProducts, childIssues, runs, liveRuns, activeRun] = await Promise.all([
+        mockIssuesApi.listComments(detail.id, { order: "desc", limit: 50 }),
+        mockIssuesApi.listAttachments(detail.id),
+        mockIssuesApi.listWorkProducts(detail.id),
+        mockIssuesApi.list(detail.companyId, { descendantOf: detail.id, includeBlockedBy: true }),
+        mockActivityApi.runsForIssue(detail.id),
+        mockHeartbeatsApi.liveRunsForIssue(detail.id),
+        mockHeartbeatsApi.activeRunForIssue(detail.id),
+      ]);
+      return {
+        detail,
+        comments,
+        interactions: [],
+        attachments,
+        workProducts,
+        childIssues,
+        runs,
+        liveRuns,
+        activeRun,
+      };
+    });
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);

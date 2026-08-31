@@ -113,6 +113,7 @@ import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
+  activityService,
   agentService,
   budgetService,
   companySkillService,
@@ -158,8 +159,8 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
-import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -2829,6 +2830,11 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
+  let activitySvc: ReturnType<typeof activityService> | null = null;
+  const getActivityService = () => {
+    activitySvc ??= activityService(db);
+    return activitySvc;
+  };
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
   const heartbeat = heartbeatService(db, {
@@ -2877,6 +2883,91 @@ export function issueRoutes(
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
     return memoizeIssueRead(req, id, () => svc.getById(id));
+  }
+
+  async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
+    const [
+      { project, goal },
+      ancestors,
+      mentionedProjectIds,
+      documentPayload,
+      relations,
+      blockerAttention,
+      reviewAttention,
+      productivityReview,
+      referenceSummary,
+      successfulRunHandoffStates,
+      scheduledRetry,
+      activeRecoveryAction,
+      linkedCases,
+      inboxArchiveFields,
+    ] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
+      svc.getAncestors(issue.id),
+      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
+      documentsSvc.getIssueDocumentPayload(issue),
+      svc.getRelationSummaries(issue.id),
+      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listReviewAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+      issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
+      svc.getCurrentScheduledRetry(issue.id),
+      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      listIssueLinkedCases(db, issue.companyId, issue.id),
+      inboxArchiveFieldsPromise,
+    ]);
+    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
+      recoveryActionsSvc,
+      issue.companyId,
+      relations,
+    );
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations,
+      recoveryActionsByRelationIssue,
+    );
+    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
+      issue,
+      trigger: "read_projection",
+      actor: getActorInfo(req),
+      activeRecoveryAction,
+    });
+    const [mentionedProjects, currentExecutionWorkspace, workProducts] = await Promise.all([
+      mentionedProjectIds.length > 0
+        ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+        : Promise.resolve([]),
+      issue.executionWorkspaceId
+        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+        : Promise.resolve(null),
+      workProductsSvc.listForIssue(issue.id),
+    ]);
+
+    return {
+      ...issue,
+      ...inboxArchiveFields,
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      ...(blockerAttention ? { blockerAttention } : {}),
+      ...(reviewAttention ? { reviewAttention } : {}),
+      productivityReview,
+      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      scheduledRetry,
+      activeRecoveryAction: revalidatedActiveRecoveryAction,
+      blockedBy: relationsWithRecoveryActions.blockedBy,
+      blocks: relationsWithRecoveryActions.blocks,
+      relatedWork: referenceSummary,
+      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      ...documentPayload,
+      project: compactIssueProject(project),
+      goal: goal ?? null,
+      mentionedProjects,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
+      workProducts,
+      linkedCases,
+    };
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -6681,85 +6772,43 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
-      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
-      : Promise.resolve({});
-    const [
-      { project, goal },
-      ancestors,
-      mentionedProjectIds,
-      documentPayload,
-      relations,
-      blockerAttention,
-      reviewAttention,
-      productivityReview,
-      referenceSummary,
-      successfulRunHandoffStates,
-      scheduledRetry,
-      activeRecoveryAction,
-      linkedCases,
-      inboxArchiveFields,
-    ] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
-      documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
-      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
-      svc.listReviewAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
-      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
-      issueReferencesSvc.listIssueReferenceSummary(issue.id),
-      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
-      svc.getCurrentScheduledRetry(issue.id),
-      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
-      listIssueLinkedCases(db, issue.companyId, issue.id),
-      inboxArchiveFieldsPromise,
-    ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
-    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
-      issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
-      activeRecoveryAction,
-    });
-    const mentionedProjects = mentionedProjectIds.length > 0
-      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
-      : [];
-    const currentExecutionWorkspace = issue.executionWorkspaceId
-      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : null;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.setHeader("Server-Timing", `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
+    res.json(await buildIssueDetailResponse(req, issue));
+  });
+
+  router.get("/issues/:id/view", async (req, res) => {
+    const requestStartedAt = performance.now();
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [detail, rawComments, interactions, attachments, rawChildIssues, runs] = await Promise.all([
+      buildIssueDetailResponse(req, issue),
+      svc.listComments(issue.id, { order: "desc", limit: 50 }),
+      issueThreadInteractionsSvc.listForIssue(issue.id),
+      svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
+      svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
+      getActivityService().runsForIssue(issue.companyId, issue.id),
+    ]);
+    const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
+      ? rawChildIssues
+      : await filterIssuesForActor(req, rawChildIssues);
+    const liveRuns = runs.filter((run) => run.status === "queued" || run.status === "running");
+    const activeRun = liveRuns.find((run) => run.runId === issue.executionRunId) ?? liveRuns[0] ?? null;
+    const comments = await runRedactions.redactForIssue(issue.companyId, issue.id, rawComments);
+
+    res.setHeader("Server-Timing", `paperclip_issue_view;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
     res.json({
-      ...issue,
-      ...inboxArchiveFields,
-      goalId: goal?.id ?? issue.goalId,
-      ancestors,
-      ...(blockerAttention ? { blockerAttention } : {}),
-      ...(reviewAttention ? { reviewAttention } : {}),
-      productivityReview,
-      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      scheduledRetry,
-      activeRecoveryAction: revalidatedActiveRecoveryAction,
-      blockedBy: relationsWithRecoveryActions.blockedBy,
-      blocks: relationsWithRecoveryActions.blocks,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
-      ...documentPayload,
-      project: compactIssueProject(project),
-      goal: goal ?? null,
-      mentionedProjects,
-      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
-      workProducts,
-      linkedCases,
+      detail,
+      comments,
+      interactions,
+      attachments,
+      workProducts: detail.workProducts,
+      childIssues,
+      runs,
+      liveRuns,
+      activeRun,
     });
   });
 

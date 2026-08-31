@@ -170,6 +170,9 @@ function registerModuleMocks() {
       decide: mockAccessDecide,
       hasPermission: vi.fn(async () => true),
     }),
+    activityService: () => ({
+      runsForIssue: vi.fn(async () => []),
+    }),
     agentService: () => ({
       getById: vi.fn(async () => ({ id: CREATED_AGENT_ID, companyId: "company-1", permissions: null })),
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
