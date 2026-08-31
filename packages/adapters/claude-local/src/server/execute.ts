@@ -73,6 +73,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  isClaudeOverloadedError,
 } from "./parse.js";
 import {
   materializeRemoteClaudeConfig,
@@ -95,6 +96,11 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+
+// OpenRouter exposes an Anthropic-compatible Messages API at this base URL. When
+// the 529 fallback fires we repoint the Claude CLI here by overriding
+// ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY for the retry (and subsequent turns).
+const OPENROUTER_ANTHROPIC_BASE_URL = "https://openrouter.ai/api/v1";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -426,6 +432,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const model = asString(config.model, "");
+  const openrouterApiKeyConfig = asString(config.openrouterApiKey, "").trim();
+  const openrouterFallbackActiveConfig = asBoolean(config.openrouterFallbackActive, false);
+  const resolveOpenRouterApiKey = (): string | null => {
+    if (openrouterApiKeyConfig) return openrouterApiKeyConfig;
+    const envKey = asString(process.env.OPENROUTER_API_KEY, "").trim();
+    return envKey.length > 0 ? envKey : null;
+  };
+  // Tracks whether this run is already routed to OpenRouter — either because a
+  // prior heartbeat persisted the flag (startup injection below) or because a
+  // 529 fallback fired mid-run. Guards against a fallback loop.
+  let openRouterFallbackActive = false;
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -474,6 +491,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
+  // Startup injection: if a prior heartbeat activated the OpenRouter fallback,
+  // start this turn on OpenRouter so we don't re-incur the Anthropic 529 first.
+  // Done before effectiveEnv/billingType are derived so billing reflects the
+  // API-key auth path.
+  if (openrouterFallbackActiveConfig) {
+    const key = resolveOpenRouterApiKey();
+    if (key) {
+      env.ANTHROPIC_API_KEY = key;
+      env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+      openRouterFallbackActive = true;
+      await onLog(
+        "stdout",
+        "[paperclip] openrouterFallbackActive is set; starting this turn on the OpenRouter endpoint.\n",
+      );
+    } else {
+      await onLog(
+        "stderr",
+        "[paperclip] openrouterFallbackActive is set but no OpenRouter API key is available; using Anthropic.\n",
+      );
+    }
+  }
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,
@@ -1249,6 +1287,117 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // Best-effort side effects that run exactly once, when a 529 fallback fires:
+  // alert the Founder on the active task and persist the runtime flag so the
+  // next heartbeat starts on OpenRouter. Neither failure blocks the completed
+  // OpenRouter retry from being returned.
+  const notifyOpenRouterFallback = async () => {
+    const apiBaseRaw = asString(env.PAPERCLIP_API_URL, "").trim();
+    const apiKey = asString(env.PAPERCLIP_API_KEY, "").trim();
+    const taskId = asString(env.PAPERCLIP_TASK_ID, "").trim();
+    if (!apiBaseRaw || !apiKey) {
+      await onLog(
+        "stderr",
+        "[paperclip] OpenRouter fallback: cannot reach Paperclip API to alert the Founder (missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY).\n",
+      );
+      return;
+    }
+    const apiBase = apiBaseRaw.replace(/\/+$/, "").replace(/\/api$/, "");
+    if (taskId) {
+      try {
+        const res = await fetch(`${apiBase}/api/issues/${taskId}/comments`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${apiKey}`,
+            "x-paperclip-run-id": runId,
+          },
+          body: JSON.stringify({
+            body: "Anthropic returned 529 Overloaded — switched to OpenRouter fallback to complete this task. No Founder action needed.",
+          }),
+        });
+        if (!res.ok) {
+          await onLog(
+            "stderr",
+            `[paperclip] OpenRouter fallback: Founder alert comment failed (HTTP ${res.status}).\n`,
+          );
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await onLog("stderr", `[paperclip] OpenRouter fallback: Founder alert comment errored: ${reason}\n`);
+      }
+    }
+    try {
+      const res = await fetch(`${apiBase}/api/agents/${agent.id}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        // Merge patch (replaceAdapterConfig defaults false) — only flips this key.
+        body: JSON.stringify({ adapterConfig: { openrouterFallbackActive: true } }),
+      });
+      if (!res.ok) {
+        await onLog(
+          "stderr",
+          `[paperclip] OpenRouter fallback: failed to persist openrouterFallbackActive (HTTP ${res.status}); the next heartbeat may re-detect the 529.\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] OpenRouter fallback: failed to persist openrouterFallbackActive: ${reason}\n`,
+      );
+    }
+  };
+
+  const finalizeAttempt = async (
+    attempt: Awaited<ReturnType<typeof runAttempt>>,
+    resumeSessionId: string | null,
+    opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
+  ): Promise<AdapterExecutionResult> => {
+    const result = toAdapterResult(attempt, opts);
+    // Only an Anthropic 529 Overloaded is recoverable via OpenRouter, and only
+    // when we are not already on OpenRouter (guards against a fallback loop).
+    if (openRouterFallbackActive || result.errorFamily !== "transient_upstream") {
+      return result;
+    }
+    const overloaded = isClaudeOverloadedError({
+      parsed: attempt.parsed,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: result.errorMessage,
+    });
+    if (!overloaded) return result;
+    const key = resolveOpenRouterApiKey();
+    // No key: leave the unchanged transient_upstream result in place (AC #2).
+    if (!key) return result;
+    await onLog("stdout", "[paperclip] Anthropic 529 detected; retrying via OpenRouter fallback.\n");
+    env.ANTHROPIC_API_KEY = key;
+    env.ANTHROPIC_BASE_URL = OPENROUTER_ANTHROPIC_BASE_URL;
+    openRouterFallbackActive = true;
+    const retryAttempt = await runAttempt(resumeSessionId);
+    const retryResult = toAdapterResult(retryAttempt, opts);
+    // Only claim completion + persist the flag when the OpenRouter retry
+    // actually succeeded. If it also failed (e.g. OpenRouter is down or the
+    // Claude model id is not accepted by OpenRouter), returning the failed
+    // result is correct — but persisting openrouterFallbackActive would lock
+    // later heartbeats onto a provider that just failed, and the "no Founder
+    // action needed" alert would be untrue.
+    const retrySucceeded =
+      (retryResult.exitCode ?? 1) === 0 && !retryResult.timedOut && !retryResult.errorCode;
+    if (retrySucceeded) {
+      await notifyOpenRouterFallback();
+    } else {
+      await onLog(
+        "stderr",
+        "[paperclip] OpenRouter fallback retry did not succeed; leaving openrouterFallbackActive unset and not posting a completion alert.\n",
+      );
+    }
+    return retryResult;
+  };
+
   try {
     const initial = await runAttempt(sessionId ?? null);
     const sessionErrorKind =
@@ -1297,10 +1446,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      return await finalizeAttempt(retry, null, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return await finalizeAttempt(initial, sessionId ?? null, {
+      fallbackSessionId: runtimeSessionId || runtime.sessionId,
+    });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();

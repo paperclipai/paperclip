@@ -68,6 +68,19 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Defaults to 0, which closes the ACP process after each run while retaining persistent session state.",
         meta: acpVisible,
       },
+      {
+        key: "openrouterApiKey",
+        label: "OpenRouter API key (529 fallback)",
+        type: "text",
+        hint: "When set, an Anthropic 529 Overloaded automatically retries the turn against OpenRouter's Anthropic-compatible endpoint. Falls back to the OPENROUTER_API_KEY environment variable when blank.",
+      },
+      {
+        key: "openrouterFallbackActive",
+        label: "OpenRouter fallback active",
+        type: "toggle",
+        default: false,
+        hint: "Runtime flag set automatically after a 529 fallback fires, so subsequent heartbeats start on OpenRouter. Cleared manually once Anthropic capacity recovers.",
+      },
     ],
   };
 }
