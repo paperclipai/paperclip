@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "slug": "stripe",
+  "name": "Stripe",
+  "description": "Connect Stripe's provider-hosted MCP server.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/stripe.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.stripe.com/*"
+  ],
+  "docsUrl": "https://docs.stripe.com/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.stripe.com"
+      },
+      "guidanceMd": "Connect Stripe in the browser. A Stripe account; the server is public preview and payment actions require explicit approval.",
+      "riskTier": "S4",
+      "label": "Sign in with Stripe",
+      "consoleLinks": {
+        "docs": "https://docs.stripe.com/mcp"
+      },
+      "warnings": [
+        "A Stripe account; the server is public preview and payment actions require explicit approval.",
+        "Financial or destructive actions must be explicitly approved before execution."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.stripe.com"
+      },
+      "guidanceMd": "Use a customer-created Stripe key. A Stripe account; the server is public preview and payment actions require explicit approval.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Stripe API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sk_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://docs.stripe.com/mcp",
+        "docs": "https://docs.stripe.com/mcp"
+      },
+      "warnings": [
+        "A Stripe account; the server is public preview and payment actions require explicit approval.",
+        "Financial or destructive actions must be explicitly approved before execution."
+      ]
+    }
+  ]
+}

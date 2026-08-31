@@ -50,10 +50,18 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableManagedSandboxOnly: {
-    title: "Managed Sandbox Only",
+  enableNativeRunner: {
+    title: "Paperclip Runner",
     description:
-      "Hide the local environment and run all agents in the platform-managed sandbox environment.",
+      "Allow new Codex agents to use the experimental Rust Paperclip Runner transport.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableManagedSandboxOnly: {
+    title: "Managed Environment Only",
+    description:
+      "Hide the local environment and run all agents in the platform-managed environment.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

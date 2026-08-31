@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
@@ -47,7 +47,7 @@ import {
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -56,6 +56,22 @@ import {
   badRequest,
   tooManyRequests
 } from "../errors.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
+
+/**
+ * Floor: when the hosting operator hides the Instance Access surface
+ * (`instance.access` in PAPERCLIP_HIDDEN_SETTINGS), instance-admin user
+ * management is rejected alongside it — user administration then belongs to
+ * the operator's own control plane. Applies to the Access page's reads too;
+ * invite and company-membership routes are company-scoped and stay open.
+ */
+function assertAccessAdminVisible() {
+  if (getHiddenSettings().has("instance.access")) {
+    throw forbidden("Instance user administration is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
+    });
+  }
+}
 import {
   createInviteRateLimiter,
   type InviteRateLimiter,
@@ -104,11 +120,6 @@ const INVITE_TOKEN_ENTROPY_BYTES = 32;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
-
-type MemberGrantPayload = {
-  permissionKey: PermissionKey;
-  scope?: Record<string, unknown> | null;
-};
 
 export function createInviteToken() {
   const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
@@ -1080,14 +1091,13 @@ function toInviteSummaryResponse(
     | string
     | {
       name: string | null;
-      brandColor: string | null;
       logoUrl: string | null;
     }
     | null = null,
   authPublicBaseUrl?: string
 ) {
   const companyInfo = typeof company === "string"
-    ? { name: company, brandColor: null, logoUrl: null }
+    ? { name: company, logoUrl: null }
     : company;
   const baseUrl = resolveBaseUrl(req, authPublicBaseUrl);
   const invitePath = `/invite/${token}`;
@@ -1100,7 +1110,6 @@ function toInviteSummaryResponse(
     companyId: invite.companyId,
     companyName: companyInfo?.name ?? null,
     companyLogoUrl: companyInfo?.logoUrl ?? null,
-    companyBrandColor: companyInfo?.brandColor ?? null,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     humanRole: extractInviteHumanRole(invite),
@@ -3180,17 +3189,15 @@ export function accessRoutes(
     inviteToken: string | null = null,
   ): Promise<{
     name: string | null;
-    brandColor: string | null;
     logoAssetId: string | null;
     logoUrl: string | null;
   }> {
     if (!companyId) {
-      return { name: null, brandColor: null, logoAssetId: null, logoUrl: null };
+      return { name: null, logoAssetId: null, logoUrl: null };
     }
     const company = await db
       .select({
         name: companies.name,
-        brandColor: companies.brandColor,
         logoAssetId: companyLogos.assetId,
       })
       .from(companies)
@@ -3222,7 +3229,6 @@ export function accessRoutes(
 
     return {
       name: company?.name ?? null,
-      brandColor: company?.brandColor ?? null,
       logoAssetId: company?.logoAssetId ?? null,
       logoUrl,
     };
@@ -4480,69 +4486,7 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        return tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: new Date(),
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-      });
+      const updated = await access.updateMember(companyId, memberId, req.body);
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {
@@ -4577,98 +4521,16 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        const now = new Date();
-        const updatedMember = await tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: now,
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-
-        await tx
-          .delete(principalPermissionGrants)
-          .where(
-            and(
-              eq(principalPermissionGrants.companyId, companyId),
-              eq(principalPermissionGrants.principalType, existing.principalType),
-              eq(principalPermissionGrants.principalId, existing.principalId),
-            ),
-          );
-
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
-        if (grants.length > 0) {
-          await tx.insert(principalPermissionGrants).values(
-            grants.map((grant) => ({
-              companyId,
-              principalType: existing.principalType,
-              principalId: existing.principalId,
-              permissionKey: grant.permissionKey,
-              scope: grant.scope ?? null,
-              grantedByUserId: req.actor.userId ?? null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          );
-        }
-
-        return updatedMember;
-      });
+      const updated = await access.updateMemberAndPermissions(
+        companyId,
+        memberId,
+        {
+          membershipRole: req.body.membershipRole,
+          status: req.body.status,
+          grants: req.body.grants ?? [],
+        },
+        req.actor.userId ?? null,
+      );
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {
@@ -4774,6 +4636,7 @@ export function accessRoutes(
     "/admin/users/:userId/promote-instance-admin",
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       const result = await access.promoteInstanceAdmin(userId);
       res.status(201).json(result);
@@ -4782,6 +4645,7 @@ export function accessRoutes(
 
   router.get("/admin/users", async (req, res) => {
     await assertInstanceAdmin(req);
+    assertAccessAdminVisible();
     const query = searchAdminUsersQuerySchema.parse(req.query);
     const needle = query.query.trim().toLowerCase();
     const users = await db
@@ -4844,6 +4708,7 @@ export function accessRoutes(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       const removed = await access.demoteInstanceAdmin(userId);
       if (!removed) throw notFound("Instance admin role not found");
@@ -4853,6 +4718,7 @@ export function accessRoutes(
 
   router.get("/admin/users/:userId/company-access", async (req, res) => {
     await assertInstanceAdmin(req);
+    assertAccessAdminVisible();
     const userId = req.params.userId as string;
     res.json(await loadUserCompanyAccessResponse(db, access, userId));
   });
@@ -4862,6 +4728,7 @@ export function accessRoutes(
     validate(updateUserCompanyAccessSchema),
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       await access.setUserCompanyAccess(
         userId,

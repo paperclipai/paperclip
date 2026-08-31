@@ -172,6 +172,7 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -198,12 +199,15 @@ import {
   createToolApplicationSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
+  createConnectionGrantDelegationSchema,
   connectionTokenRequestSchema,
   startConnectionAuthorizationSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
+  finalizeOAuthAccessSchema,
   finishToolAppSchema,
   reconnectToolAppSchema,
+  startToolOAuthSchema,
   updateToolConnectionSchema,
   putToolConnectionInstallsSchema,
   toolConnectionTestCallSchema,
@@ -225,6 +229,10 @@ import {
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
+  completeConnectionIntentSchema,
+  connectionRequestInputSchema,
+  connectionsSearchInputSchema,
+  declineConnectionIntentSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
   claudeSetupTokenSessionResponseSchema,
@@ -232,6 +240,7 @@ import {
   claudeSetupTokenSessionOwnerResponseSchema,
   claudeSetupTokenCompletionResponseSchema,
   claudeOAuthTokenStatusResponseSchema,
+  startAdapterAuthSessionRequestSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -255,148 +264,183 @@ type OpenApiPathRegistration = {
   [key: string]: unknown;
 };
 
-const zodTypeName = (schema: z.ZodTypeAny) => schema._def.typeName as string;
+// Zod 4 stores each schema definition on `_def` with a lowercase `type`
+// discriminator and moves the wrapped members onto that def. This loose view
+// lets the converter read those members, because Zod 4 does not export a
+// public type for every internal def shape.
+type ZodDefAny = Record<string, unknown> & { type: string };
+
+const zodDef = (schema: z.ZodTypeAny): ZodDefAny => schema._def as unknown as ZodDefAny;
+const zodTypeName = (schema: z.ZodTypeAny): string => zodDef(schema).type;
 
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
-  const typeName = zodTypeName(schema);
-  if (typeName === "ZodOptional" || typeName === "ZodDefault" || typeName === "ZodCatch") {
-    return unwrapSchema(schema._def.innerType);
+  const def = zodDef(schema);
+  if (def.type === "optional" || def.type === "default" || def.type === "catch") {
+    return unwrapSchema(def.innerType as z.ZodTypeAny);
   }
-  if (typeName === "ZodEffects") {
-    return unwrapSchema(schema._def.schema);
+  // A `.transform()` or `.pipe()` becomes a pipe. Read the input schema so the
+  // published contract describes the value a client sends.
+  if (def.type === "pipe") {
+    return unwrapSchema(def.in as z.ZodTypeAny);
   }
   return schema;
 }
 
 function isOptionalSchema(schema: z.ZodTypeAny): boolean {
-  const typeName = zodTypeName(schema);
-  if (typeName === "ZodOptional" || typeName === "ZodDefault" || typeName === "ZodCatch") {
+  const def = zodDef(schema);
+  if (def.type === "optional" || def.type === "default" || def.type === "catch") {
     return true;
   }
-  if (typeName === "ZodEffects") {
-    return isOptionalSchema(schema._def.schema);
+  if (def.type === "pipe") {
+    return isOptionalSchema(def.in as z.ZodTypeAny);
   }
-  if (typeName === "ZodNullable") {
-    return isOptionalSchema(schema._def.innerType);
+  if (def.type === "nullable") {
+    return isOptionalSchema(def.innerType as z.ZodTypeAny);
   }
   return false;
 }
 
-function applyStringChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
+// Zod 4 stores each check as an object with a `_zod.def` that carries a `check`
+// name and the check members. Read that def to describe the constraint.
+function checkDef(check: unknown): Record<string, unknown> | undefined {
+  return (check as { _zod?: { def?: Record<string, unknown> } })._zod?.def;
+}
+
+function applyStringChecks(jsonSchema: JsonSchema, checks: ReadonlyArray<unknown>) {
   for (const check of checks) {
-    if (check.kind === "min") jsonSchema.minLength = check.value;
-    if (check.kind === "max") jsonSchema.maxLength = check.value;
-    if (check.kind === "email") jsonSchema.format = "email";
-    if (check.kind === "url") jsonSchema.format = "uri";
-    if (check.kind === "uuid") jsonSchema.format = "uuid";
-    if (check.kind === "datetime") jsonSchema.format = "date-time";
-    if (check.kind === "regex" && check.regex instanceof RegExp) {
-      jsonSchema.pattern = check.regex.source;
+    const def = checkDef(check);
+    if (!def) continue;
+    if (def.check === "min_length") jsonSchema.minLength = def.minimum;
+    else if (def.check === "max_length") jsonSchema.maxLength = def.maximum;
+    else if (def.check === "string_format") {
+      if (def.format === "email") jsonSchema.format = "email";
+      else if (def.format === "url") jsonSchema.format = "uri";
+      // Zod 3 `.uuid()` maps to `.guid()` in zod 4 to keep the loose UUID
+      // format. Publish both as the OpenAPI `uuid` format so the spec does not
+      // change.
+      else if (def.format === "uuid" || def.format === "guid") jsonSchema.format = "uuid";
+      else if (def.format === "datetime") jsonSchema.format = "date-time";
+      // Zod 4 stores a `.regex()` pattern as a `RegExp`; publish its source.
+      else if (def.format === "regex") {
+        if (def.pattern instanceof RegExp) jsonSchema.pattern = def.pattern.source;
+        else if (typeof def.pattern === "string") jsonSchema.pattern = def.pattern;
+      }
     }
   }
 }
 
-function applyNumberChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
+function applyNumberChecks(jsonSchema: JsonSchema, checks: ReadonlyArray<unknown>) {
   for (const check of checks) {
-    if (check.kind === "int") jsonSchema.type = "integer";
-    if (check.kind === "min") {
-      jsonSchema.minimum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMinimum = true;
-    }
-    if (check.kind === "max") {
-      jsonSchema.maximum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMaximum = true;
+    const def = checkDef(check);
+    if (!def) continue;
+    // `.int()` records a number-format check such as `safeint`.
+    if (def.check === "number_format") {
+      if (typeof def.format === "string" && def.format.includes("int")) {
+        jsonSchema.type = "integer";
+      }
+    } else if (def.check === "greater_than") {
+      jsonSchema.minimum = def.value;
+      if (!def.inclusive) jsonSchema.exclusiveMinimum = true;
+    } else if (def.check === "less_than") {
+      jsonSchema.maximum = def.value;
+      if (!def.inclusive) jsonSchema.exclusiveMaximum = true;
     }
   }
 }
 
 function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   const unwrapped = unwrapSchema(schema);
-  const typeName = zodTypeName(unwrapped);
+  const def = zodDef(unwrapped);
+  const typeName = def.type;
 
-  if (typeName === "ZodString") {
+  if (typeName === "string") {
     const jsonSchema: JsonSchema = { type: "string" };
-    applyStringChecks(jsonSchema, unwrapped._def.checks ?? []);
+    applyStringChecks(jsonSchema, (def.checks as unknown[]) ?? []);
     return jsonSchema;
   }
 
-  if (typeName === "ZodNumber") {
+  if (typeName === "number") {
     const jsonSchema: JsonSchema = { type: "number" };
-    applyNumberChecks(jsonSchema, unwrapped._def.checks ?? []);
+    applyNumberChecks(jsonSchema, (def.checks as unknown[]) ?? []);
     return jsonSchema;
   }
 
-  if (typeName === "ZodBoolean") return { type: "boolean" };
-  if (typeName === "ZodDate") return { type: "string", format: "date-time" };
-  if (typeName === "ZodAny" || typeName === "ZodUnknown") return {};
+  if (typeName === "boolean") return { type: "boolean" };
+  if (typeName === "date") return { type: "string", format: "date-time" };
+  if (typeName === "any" || typeName === "unknown") return {};
 
-  if (typeName === "ZodLiteral") {
-    const value = unwrapped._def.value;
-    return { type: typeof value, enum: [value] };
+  if (typeName === "literal") {
+    const values = def.values as unknown[];
+    return { type: typeof values[0], enum: values };
   }
 
-  if (typeName === "ZodEnum") {
-    return { type: "string", enum: unwrapped._def.values };
-  }
-
-  if (typeName === "ZodNativeEnum") {
-    const values = Object.values(unwrapped._def.values).filter(
-      (value) => typeof value === "string" || typeof value === "number",
+  // Zod 4 merges string enums and native enums into one `enum` type and stores
+  // the members on `entries`. A pure string enum keeps `type: "string"`; a
+  // native enum can hold numbers, so it publishes the values without a type.
+  if (typeName === "enum") {
+    const values = Array.from(
+      new Set(
+        Object.values(def.entries as Record<string, unknown>).filter(
+          (value) => typeof value === "string" || typeof value === "number",
+        ),
+      ),
     );
-    return { enum: Array.from(new Set(values)) };
+    if (values.every((value) => typeof value === "string")) {
+      return { type: "string", enum: values };
+    }
+    return { enum: values };
   }
 
-  if (typeName === "ZodArray") {
-    return { type: "array", items: zodToOpenApiSchema(unwrapped._def.type) };
+  if (typeName === "array") {
+    return { type: "array", items: zodToOpenApiSchema(def.element as z.ZodTypeAny) };
   }
 
-  if (typeName === "ZodRecord") {
+  if (typeName === "record") {
     return {
       type: "object",
-      additionalProperties: zodToOpenApiSchema(unwrapped._def.valueType),
+      additionalProperties: zodToOpenApiSchema(def.valueType as z.ZodTypeAny),
     };
   }
 
-  if (typeName === "ZodNullable") {
-    return { ...zodToOpenApiSchema(unwrapped._def.innerType), nullable: true };
+  if (typeName === "nullable") {
+    return { ...zodToOpenApiSchema(def.innerType as z.ZodTypeAny), nullable: true };
   }
 
-  if (typeName === "ZodUnion") {
-    return { oneOf: unwrapped._def.options.map((option: z.ZodTypeAny) => zodToOpenApiSchema(option)) };
-  }
-
-  if (typeName === "ZodDiscriminatedUnion") {
+  // Zod 4 represents a plain union and a discriminated union as one `union`
+  // type with the members on `options`.
+  if (typeName === "union") {
     return {
-      oneOf: Array.from(unwrapped._def.options.values()).map((option) =>
-        zodToOpenApiSchema(option as z.ZodTypeAny),
-      ),
+      oneOf: (def.options as z.ZodTypeAny[]).map((option) => zodToOpenApiSchema(option)),
     };
   }
 
-  if (typeName === "ZodIntersection") {
+  if (typeName === "intersection") {
     return {
       allOf: [
-        zodToOpenApiSchema(unwrapped._def.left),
-        zodToOpenApiSchema(unwrapped._def.right),
+        zodToOpenApiSchema(def.left as z.ZodTypeAny),
+        zodToOpenApiSchema(def.right as z.ZodTypeAny),
       ],
     };
   }
 
-  if (typeName === "ZodObject") {
-    const shape = unwrapped._def.shape();
+  if (typeName === "object") {
+    const shape = def.shape as Record<string, z.ZodTypeAny>;
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
     for (const [key, value] of Object.entries(shape)) {
-      const propertySchema = value as z.ZodTypeAny;
-      properties[key] = zodToOpenApiSchema(propertySchema);
-      if (!isOptionalSchema(propertySchema)) required.push(key);
+      properties[key] = zodToOpenApiSchema(value);
+      if (!isOptionalSchema(value)) required.push(key);
     }
     const jsonSchema: JsonSchema = { type: "object", properties };
     if (required.length > 0) jsonSchema.required = required;
-    // A `.strict()` Zod object forbids an unknown key. Publish that constraint
-    // as `additionalProperties: false`, so a client, a gateway, or a handler
-    // that treats the contract as authoritative rejects an extra property too.
-    if (unwrapped._def.unknownKeys === "strict") jsonSchema.additionalProperties = false;
+    // A `.strict()` Zod object forbids an unknown key. Zod 4 records that as a
+    // `never` catchall. Publish the constraint as `additionalProperties: false`,
+    // so a client, a gateway, or a handler that treats the contract as
+    // authoritative rejects an extra property too.
+    const catchall = def.catchall as z.ZodTypeAny | undefined;
+    if (catchall && zodDef(catchall).type === "never") {
+      jsonSchema.additionalProperties = false;
+    }
     return jsonSchema;
   }
 
@@ -445,13 +489,13 @@ function normalizeResponses(responses: Record<string, OpenApiResponse> = {}) {
 
 function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query") {
   const objectSchema = unwrapSchema(schema);
-  if (zodTypeName(objectSchema) !== "ZodObject") return [];
-  const shape = objectSchema._def.shape();
+  if (zodTypeName(objectSchema) !== "object") return [];
+  const shape = zodDef(objectSchema).shape as Record<string, z.ZodTypeAny>;
   return Object.entries(shape).map(([name, value]) => ({
     name,
     in: location,
-    required: location === "path" ? true : !isOptionalSchema(value as z.ZodTypeAny),
-    schema: zodToOpenApiSchema(value as z.ZodTypeAny),
+    required: location === "path" ? true : !isOptionalSchema(value),
+    schema: zodToOpenApiSchema(value),
   }));
 }
 
@@ -511,7 +555,7 @@ const ErrorSchema = registry.register(
 );
 
 const responses = {
-  ok: (schema: z.ZodTypeAny = z.record(z.unknown())) => ({
+  ok: (schema: z.ZodTypeAny = z.record(z.string(), z.unknown())) => ({
     description: "Success",
     content: { "application/json": { schema } },
   }),
@@ -534,6 +578,14 @@ const responses = {
   },
   conflict: {
     description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  payloadTooLarge: {
+    description: "Payload too large",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  unsupportedMediaType: {
+    description: "Unsupported media type",
     content: { "application/json": { schema: ErrorSchema } },
   },
   unprocessable: {
@@ -592,18 +644,19 @@ const importRequestBody = (schema: z.ZodTypeAny) => ({
 const r = responses;
 
 const externalObjectSummariesBodySchema = z.object({
-  issueIds: z.array(z.string().uuid()).max(1000),
+  issueIds: z.array(z.string().guid()).max(1000),
 }).strict();
 
 const refreshExternalObjectsBodySchema = z.object({
-  objectIds: z.array(z.string().uuid()).max(50).optional(),
+  objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 
-// The start route reads the body directly, so document the accepted fields
-// here. A sandbox environment is required. The time-to-live is optional.
-const startAdapterLoginSessionSchema = z.object({
-  environmentId: z.string().min(1),
-  ttlSeconds: z.number().optional(),
+// The route enforces the shared strict request schema. The route spine
+// injects the adapter type from the path, so the client body never carries
+// it; derive the documented body from the shared schema and omit that field,
+// so the documented body cannot drift from the route again.
+const startAdapterLoginSessionSchema = startAdapterAuthSessionRequestSchema.omit({
+  adapterType: true,
 });
 
 const environmentCustomImageCompanyQuerySchema = z.object({
@@ -645,9 +698,9 @@ const workTimelineQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   userId: z.string().optional(),
-  goalId: z.string().uuid().optional(),
-  projectId: z.string().uuid().optional(),
-  issueId: z.string().uuid().optional(),
+  goalId: z.string().guid().optional(),
+  projectId: z.string().guid().optional(),
+  issueId: z.string().guid().optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
 }).strict();
@@ -701,7 +754,7 @@ const workTimelineResponseSchema = z.object({
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
-  const shape: z.ZodRawShape = {};
+  const shape: Record<string, z.ZodTypeAny> = {};
   for (const name of names) {
     shape[name] = z.string();
   }
@@ -737,6 +790,7 @@ function registerCurrentRoute(input: {
 
 type OpenApiAuthLevel =
   | "public"
+  | "runtime_tools"
   | "authenticated"
   | "board"
   | "instance_admin";
@@ -744,6 +798,7 @@ type OpenApiAuthLevel =
 const BOARD_SESSION_AUTH_SCHEME = "BoardSessionAuth";
 const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
+const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -758,6 +813,17 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
   ...BOARD_SECURITY,
   securityRequirement(AGENT_BEARER_AUTH_SCHEME),
 ];
+
+const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
+  securityRequirement(RUNTIME_TOOLS_BEARER_AUTH_SCHEME),
+];
+
+const RUNTIME_TOOLS_OPERATIONS = new Set([
+  "GET /mcp/runtime-tools",
+  "POST /mcp/runtime-tools",
+  "POST /runtime-tools/connections/search",
+  "POST /runtime-tools/connections/request",
+]);
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
@@ -852,7 +918,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "GET /api/companies/{companyId}/tools/gallery",
+  "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
   "POST /api/companies/{companyId}/tools/apps/connect",
+  "POST /api/companies/{companyId}/tools/apps/{connectionId}/finalize-oauth-access",
   "POST /api/companies/{companyId}/tools/apps/{connectionId}/finish",
   "GET /api/companies/{companyId}/tools/apps/attention",
   "GET /api/companies/{companyId}/tools/action-requests",
@@ -869,6 +937,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}",
   "GET /api/tool-connections/{connectionId}/grants",
   "POST /api/tool-connections/{connectionId}/grants/installations",
+  "POST /api/tool-connections/{connectionId}/grants/{grantId}/delegations",
+  "DELETE /api/tool-connections/{connectionId}/grants/{grantId}/delegations/{delegationId}",
   "DELETE /api/tool-connections/{connectionId}/grants/{grantId}",
   "GET /api/tool-connections/{connectionId}/usage",
   "PATCH /api/tool-connections/{connectionId}",
@@ -885,6 +955,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
+  "GET /api/tools/vercel-connect/callback",
+  "GET /api/connection-intents/{interactionId}/setup-options",
+  "POST /api/connection-intents/{interactionId}/phase",
+  "POST /api/connection-intents/{interactionId}/complete",
+  "POST /api/connection-intents/{interactionId}/decline",
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
   "GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
@@ -1020,6 +1095,7 @@ function isBoardOnlyOperation(method: string, path: string) {
 function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (isBoardOnlyOperation(method, path)) return "board";
   return "authenticated";
@@ -1059,6 +1135,13 @@ function applyDocumentFixups(document: any): any {
       description:
         "Agent API key or Paperclip-issued local agent JWT presented in the Authorization bearer header.",
     },
+    [RUNTIME_TOOLS_BEARER_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Heartbeat-bound runtime tools token",
+      description:
+        "Short-lived token bound to an active heartbeat run and presented in the Authorization bearer header.",
+    },
   };
   document.security = AUTHENTICATED_SECURITY;
 
@@ -1067,6 +1150,8 @@ function applyDocumentFixups(document: any): any {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
+      } else if (authLevel === "runtime_tools") {
+        operation.security = RUNTIME_TOOLS_SECURITY;
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1078,6 +1163,8 @@ function applyDocumentFixups(document: any): any {
           ? { actor: "board", instanceAdmin: true }
           : authLevel === "board"
             ? { actor: "board" }
+            : authLevel === "runtime_tools"
+              ? { actor: "runtime_tools", heartbeatBound: true }
             : authLevel === "authenticated"
               ? { actor: "board_or_agent" }
               : { actor: "public" };
@@ -1705,7 +1792,7 @@ registry.registerPath({
 
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(z.object({
-    secretRef: z.string().uuid(),
+    secretRef: z.string().guid(),
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
@@ -1727,10 +1814,10 @@ const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("binding"),
-    secretId: z.string().uuid().optional(),
+    secretId: z.string().guid().optional(),
     sourceConfigPath: z.string().min(1).optional(),
-    secretProposalId: z.string().uuid().optional(),
-    targetAgentId: z.string().uuid().optional(),
+    secretProposalId: z.string().guid().optional(),
+    targetAgentId: z.string().guid().optional(),
     configPath: z.string().min(1),
     justification: z.string().min(1),
   }),
@@ -1752,7 +1839,7 @@ const approveSecretProposalSchema = z.object({
   overrides: z.object({
     name: z.string().min(1).optional(),
     description: z.string().optional().nullable(),
-    providerConfigId: z.string().uuid().optional().nullable(),
+    providerConfigId: z.string().guid().optional().nullable(),
   }).optional(),
 });
 
@@ -1780,7 +1867,7 @@ registry.registerPath({
   path: "/api/agents/me/secret-proposals/{id}",
   tags: ["secrets"],
   summary: "Withdraw a pending secret proposal",
-  request: { params: z.object({ id: z.string().uuid() }) },
+  request: { params: z.object({ id: z.string().guid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
@@ -2143,6 +2230,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/auth-signal",
+  tags: ["adapters"],
+  summary: "Read the cheap host-local authentication signal for an adapter type",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    query: z.object({ environmentId: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
   tags: ["adapters"],
@@ -2206,7 +2305,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createIssueSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2227,7 +2326,7 @@ registry.registerPath({
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueSchema.partial()),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2316,6 +2415,25 @@ registry.registerPath({
     body: jsonBody(createIssueWorkProductSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/work-products/{workProductId}/review-document",
+  tags: ["issues"],
+  summary: "Ensure the review document for a Markdown work product",
+  request: { params: z.object({ id: z.string(), workProductId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    413: r.payloadTooLarge,
+    415: r.unsupportedMediaType,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
@@ -2842,7 +2960,7 @@ registry.registerPath({
     params: z.object({ id: z.string() }),
     body: jsonBody(runRoutineSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2999,7 +3117,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "List company secret proposals for board review",
   request: {
-    params: z.object({ companyId: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid() }),
     query: z.object({ status: z.enum(["pending", "approved", "rejected", "withdrawn", "expired"]).optional() }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
@@ -3011,7 +3129,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "Approve and execute a secret proposal as the approving board user",
   request: {
-    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid(), id: z.string().guid() }),
     body: jsonBody(approveSecretProposalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
@@ -3023,7 +3141,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "Reject a pending secret proposal and dependent bindings",
   request: {
-    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid(), id: z.string().guid() }),
     body: jsonBody(rejectSecretProposalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
@@ -3396,9 +3514,9 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
-      agentId: z.string().uuid().optional(),
+      agentId: z.string().guid().optional(),
       responsibleUserId: z.string().min(1).optional(),
-      runId: z.string().uuid().optional(),
+      runId: z.string().guid().optional(),
       entityType: z.string().min(1).optional(),
       entityId: z.string().min(1).optional(),
       action: z.string().min(1).optional(),
@@ -3420,9 +3538,9 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
-      agentId: z.string().uuid().optional(),
+      agentId: z.string().guid().optional(),
       responsibleUserId: z.string().min(1).optional(),
-      runId: z.string().uuid().optional(),
+      runId: z.string().guid().optional(),
       entityType: z.string().min(1).optional(),
       entityId: z.string().min(1).optional(),
       action: z.string().min(1).optional(),
@@ -3457,8 +3575,8 @@ registry.registerPath({
       action: z.string().min(1),
       entityType: z.string().min(1),
       entityId: z.string().min(1),
-      agentId: z.string().uuid().optional().nullable(),
-      details: z.record(z.unknown()).optional().nullable(),
+      agentId: z.string().guid().optional().nullable(),
+      details: z.record(z.string(), z.unknown()).optional().nullable(),
     })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
@@ -3823,9 +3941,9 @@ registerCurrentRoute({
   summary: "List decisions",
   query: z.object({
     status: z.enum(["open", "decided", "expired", "cancelled"]).optional(),
-    bundleId: z.string().uuid().optional(),
-    targetIssueId: z.string().uuid().optional(),
-    originAgentId: z.string().uuid().optional(),
+    bundleId: z.string().guid().optional(),
+    targetIssueId: z.string().guid().optional(),
+    originAgentId: z.string().guid().optional(),
     limit: z.coerce.number().int().positive().max(100).optional(),
   }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
@@ -3838,7 +3956,7 @@ registerCurrentRoute({
   summary: "Get decision telemetry grouped by rule key",
   query: z.object({
     groupBy: z.literal("ruleKey"),
-    originAgentId: z.string().uuid().optional(),
+    originAgentId: z.string().guid().optional(),
     since: z.string().datetime().optional(),
   }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
@@ -3893,8 +4011,8 @@ registerCurrentRoute({
   summary: "Capture a decision training example",
   body: z.object({
     sourceKind: decisionTrainingSourceKindSchema,
-    sourceId: z.string().uuid(),
-    issueId: z.string().uuid(),
+    sourceId: z.string().guid(),
+    issueId: z.string().guid(),
     notes: z.string().max(100_000).default(""),
   }).strict(),
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
@@ -3907,8 +4025,8 @@ registerCurrentRoute({
   summary: "Preview a decision training snapshot",
   body: z.object({
     sourceKind: decisionTrainingSourceKindSchema,
-    sourceId: z.string().uuid(),
-    issueId: z.string().uuid(),
+    sourceId: z.string().guid(),
+    issueId: z.string().guid(),
   }).strict(),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
@@ -3919,7 +4037,7 @@ registerCurrentRoute({
   tags: ["decision-training"],
   summary: "List decision training examples",
   query: z.object({
-    project: z.string().uuid().optional(),
+    project: z.string().guid().optional(),
     kind: decisionTrainingSourceKindSchema.optional(),
     author: z.string().optional(),
     q: z.string().max(500).optional(),
@@ -4082,6 +4200,31 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Start a task drain, so new run admission holds until active runs finish",
+  request: { body: jsonBody(startTaskDrainRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "End a task drain and restore run admission",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
@@ -4747,7 +4890,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Create child issues",
   request: { params: z.object({ id: z.string() }), body: jsonBody(createChildIssueSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -5786,7 +5929,7 @@ registry.registerPath({
   request: {
     body: jsonBody(z.object({
       tool: z.string(),
-      parameters: z.record(z.unknown()).optional(),
+      parameters: z.record(z.string(), z.unknown()).optional(),
       runContext: z.object({
         agentId: z.string(),
         runId: z.string(),
@@ -5895,7 +6038,7 @@ registry.registerPath({
   summary: "Set company-scoped plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.unknown()) })),
+    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.string(), z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -5907,7 +6050,7 @@ registry.registerPath({
   summary: "Test company-scoped plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.unknown()) })),
+    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.string(), z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -5969,7 +6112,7 @@ registry.registerPath({
     body: jsonBody(z.object({
       key: z.string(),
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -5985,7 +6128,7 @@ registry.registerPath({
     body: jsonBody(z.object({
       key: z.string(),
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6000,7 +6143,7 @@ registry.registerPath({
     params: z.object({ pluginId: z.string(), key: z.string() }),
     body: jsonBody(z.object({
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6015,7 +6158,7 @@ registry.registerPath({
     params: z.object({ pluginId: z.string(), key: z.string() }),
     body: jsonBody(z.object({
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6783,7 +6926,7 @@ for (const route of [
     path: route[1],
     tags: ["skills"],
     summary: route[2],
-    ...(route[0] === "post" ? { body: z.record(z.unknown()).optional() } : {}),
+    ...(route[0] === "post" ? { body: z.record(z.string(), z.unknown()).optional() } : {}),
   });
 }
 
@@ -6857,7 +7000,7 @@ registerCurrentRoute({
   summary: "Promote quarantined low-trust output",
   body: z.object({
     sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
-    sourceArtifactId: z.string().uuid(),
+    sourceArtifactId: z.string().guid(),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(8_000),
   }),
@@ -7038,6 +7181,79 @@ for (const route of [
   });
 }
 
+// --- Connection intents ------------------------------------------------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/mcp/runtime-tools",
+  tags: ["connection-intents"],
+  summary: "Inspect the heartbeat-bound runtime tools MCP endpoint",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/mcp/runtime-tools",
+  tags: ["connection-intents"],
+  summary: "Call the heartbeat-bound runtime tools MCP endpoint",
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/connections/search",
+  tags: ["connection-intents"],
+  summary: "Search connections available to the active heartbeat run",
+  body: connectionsSearchInputSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/connections/request",
+  tags: ["connection-intents"],
+  summary: "Request a connection for the active heartbeat run",
+  body: connectionRequestInputSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/connection-intents/{interactionId}/setup-options",
+  tags: ["connection-intents"],
+  summary: "Get setup options for an addressed connection request",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/phase",
+  tags: ["connection-intents"],
+  summary: "Update the setup phase for an addressed connection request",
+  body: z.object({
+    phase: z.enum(["requested", "authorizing", "needs_retry"]),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/complete",
+  tags: ["connection-intents"],
+  summary: "Complete an addressed connection request",
+  body: completeConnectionIntentSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/decline",
+  tags: ["connection-intents"],
+  summary: "Decline an addressed connection request",
+  body: declineConnectionIntentSchema,
+});
+
 // --- Tool access -------------------------------------------------------------
 
 registerCurrentRoute({
@@ -7045,6 +7261,13 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/gallery",
   tags: ["tool-access"],
   summary: "List tool app gallery entries",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
+  tags: ["tool-access"],
+  summary: "Inspect a curated app's public MCP and OAuth metadata without credentials or registration",
 });
 
 registerCurrentRoute({
@@ -7062,6 +7285,15 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Finish a gallery app connection and profile setup",
   body: finishToolAppSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/apps/{connectionId}/finalize-oauth-access",
+  tags: ["tool-access"],
+  summary: "Choose personal or company-wide access after OAuth sign-in",
+  body: finalizeOAuthAccessSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
@@ -7188,6 +7420,22 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/delegations",
+  tags: ["tool-access"],
+  summary: "Delegate a personal tool connection grant to an agent",
+  body: createConnectionGrantDelegationSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/delegations/{delegationId}",
+  tags: ["tool-access"],
+  summary: "Revoke a personal tool connection grant delegation",
+});
+
+registerCurrentRoute({
   method: "delete",
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
@@ -7199,6 +7447,41 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/usage",
   tags: ["tool-access"],
   summary: "Get tool connection usage",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/members",
+  tags: ["tool-access"],
+  summary: "Replace the member audience of a tool connection grant",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/services",
+  tags: ["tool-access"],
+  summary: "List the broker services behind a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/connect",
+  tags: ["tool-access"],
+  summary: "Start a broker service connection for a toolkit",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/status",
+  tags: ["tool-access"],
+  summary: "Poll the connection status of a broker service",
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}",
+  tags: ["tool-access"],
+  summary: "Disconnect a broker service from a tool connection",
 });
 
 registerCurrentRoute({
@@ -7297,6 +7580,7 @@ registerCurrentRoute({
   path: "/api/tools/oauth/{connectionId}/start",
   tags: ["tool-access"],
   summary: "Start OAuth sign-in for a tool connection",
+  body: startToolOAuthSchema,
 });
 
 registerCurrentRoute({
@@ -7304,6 +7588,20 @@ registerCurrentRoute({
   path: "/api/tools/oauth/callback",
   tags: ["tool-access"],
   summary: "Handle a tool app OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/paperclip-id/callback",
+  tags: ["tool-access"],
+  summary: "Handle a brokered Paperclip ID OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/vercel-connect/callback",
+  tags: ["tool-access"],
+  summary: "Handle a managed Vercel Connect OAuth callback",
 });
 
 registerCurrentRoute({
@@ -7573,7 +7871,7 @@ const toolGatewaySessionSchema = z.object({
 
 const toolGatewayCallSchema = z.object({
   tool: z.string(),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
   timeoutMs: z.number().int().positive().optional(),
   approvedActionRequestId: z.string().optional(),
   idempotencyKey: z.string().optional(),
@@ -7586,7 +7884,7 @@ const toolGatewayCompanyBodySchema = z.object({
   companyId: z.string(),
 }).passthrough();
 
-const mcpGatewayProtocolSchema = z.record(z.unknown());
+const mcpGatewayProtocolSchema = z.record(z.string(), z.unknown());
 
 registerCurrentRoute({
   method: "get",

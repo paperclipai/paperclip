@@ -18,7 +18,6 @@ import {
  * exactly that failing condition.
  */
 
-const MISSION = "Verify the first-task launch survives the wizard handoff.";
 const FIRST_TASK_TITLE = "Paperclip onboarding";
 
 /**
@@ -70,21 +69,19 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   if (await startBtn.count()) await startBtn.first().click();
 
   // Step 0: front door (skipped when the wizard opens on the create path).
-  const frontDoor = page.getByText("Build a new company");
+  const frontDoor = page.getByText("Build a new organization");
   if (await frontDoor.count()) await frontDoor.first().click();
 
   // Step 1: company name.
-  await page.getByPlaceholder("Acme Corp").fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.getByPlaceholder("e.g. Northwind Labs").fill(companyName);
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
-  // Step 2: mission (direct path default).
-  await page.getByPlaceholder("What is your team trying to achieve?").fill(MISSION);
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
+  // Step 1's "Next" creates the company; the mission step no longer runs.
 
-  // Step 3: lead name (prefilled) → Next.
-  await page.waitForSelector('input[placeholder="Chief of staff"]', {
-    timeout: 15_000,
-  });
+  // Step 3: name the agent. The role picker is gone — the arc asks for a
+  // name and hires under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill("Ada");
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 4: adapter (claude_local default); heartbeat is intercepted.

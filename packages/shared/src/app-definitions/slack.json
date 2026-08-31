@@ -8,7 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=slack.com&sz=128"
+    "logoUrl": "/brands/apps/slack.png"
   },
   "urlPatterns": [
     "https://mcp.slack.com/*"
@@ -19,8 +19,7 @@
       "transport": "mcp_remote",
       "auth": "oauth",
       "ownershipModes": [
-        "customer",
-        "dcr"
+        "customer"
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {

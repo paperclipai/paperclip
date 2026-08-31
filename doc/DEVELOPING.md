@@ -12,7 +12,7 @@ Current implementation status:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24.11+
 - pnpm 9+
 
 ## Dependency Lockfile Policy
@@ -42,6 +42,23 @@ This starts:
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
+
+To run against a separate local state root, pass `--data-dir`. The dev runner
+translates it to an isolated `PAPERCLIP_HOME` before migration checks or server
+startup, so embedded PostgreSQL and other default instance state live under that
+directory:
+
+```sh
+pnpm dev --data-dir ./tmp/paperclip-dev
+```
+
+Pass the same option to the service-management commands so they use the
+isolated runtime-service registry:
+
+```sh
+pnpm dev:list --data-dir ./tmp/paperclip-dev
+pnpm dev:stop --data-dir ./tmp/paperclip-dev
+```
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
@@ -693,6 +710,8 @@ eval "$(npx paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+An issue can pin its isolated worktree to an exact pre-existing branch instead of a template-derived one — the contract PR-preparation tasks use. Set the issue's `executionWorkspaceSettings` to `{ "mode": "isolated_workspace", "workspaceStrategy": { "type": "git_worktree", "existingBranch": "<branch>" } }`. The validator requires isolated mode plus a `git_worktree` strategy and rejects `branchTemplate` alongside `existingBranch`. At dispatch the runtime attaches (never creates, renames, fast-forwards, or resets) that branch: it reuses a registered worktree that already has the branch checked out (including legacy `.worktrees/` paths), otherwise it attaches the branch under the managed worktree parent. A missing branch, an occupied worktree path on another branch, or a non-worktree strategy fails closed with a `workspace_validation_failed` error instead of falling back to the shared checkout or a derived branch, and an inherited `reuse_existing` workspace binding on a different branch is ignored in favor of realizing the pinned branch.
+
 Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
 
 Managed runtime control actions (`start`, `stop`, `restart`, and job `run`) are mutually exclusive per execution workspace. An overlapping control is rejected with `409 workspace_runtime_control_in_progress` instead of racing the active operation, and authorization is still checked first, so the conflict never widens who may control a workspace.
@@ -716,6 +735,8 @@ For Tailscale HTTPS exposure, readiness includes stable listener-ownership check
 
 In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, so listener containment does not break remote hot reload.
 
+When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
@@ -736,6 +757,15 @@ packages/skills-catalog/
 Server and CLI import the generated manifest; they do not crawl repository
 paths at request time. Root `skills/` remains reserved for Paperclip runtime
 skills and is not part of the catalog.
+
+Skill-capable legacy local adapters always select the bundled
+`paperclipai/paperclip/paperclip` operational skill when it is present in the
+runtime inventory. This applies to existing agents without a stored skill
+preference and to explicit empty optional-skill selections. The operational
+skill supplies the control-plane workflow that those adapters need for
+heartbeats. Other runtime skills remain controlled by
+`paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
+this legacy default because its protocol supplies the control-plane contract.
 
 Validate the catalog without writing the manifest:
 
@@ -924,6 +954,22 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
+## Internal Connection Token Brokers
+
+Connection token exchanges carry a resolved parent credential, so their URLs
+are public-only by default even in local/private deployments. To intentionally
+use an internal broker, configure an exact hostname allowlist:
+
+```sh
+PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS=broker.internal.example,10.0.0.42
+```
+
+Entries are comma- or whitespace-separated exact hostnames (no wildcards). The
+host configured by `PAPERCLIP_PAGES_API_URL` is included automatically. Every
+broker hostname is resolved once and the request is pinned to the approved
+address; IPv4 and IPv6 link-local destinations remain denied even when their
+host is allowlisted.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:
@@ -1007,6 +1053,38 @@ Optional auth flags (for authenticated mode):
 
 - `PAPERCLIP_AUTH_HEADER` (for example `Bearer ...`)
 - `PAPERCLIP_COOKIE` (session cookie header value)
+
+## PostHog MCP Live Smoke Test
+
+The PostHog smoke targets an already-running authenticated Paperclip instance.
+It is deliberately separate from `pnpm test` and `pnpm test:e2e` because it
+uses a live vendor OAuth flow and creates a short-lived connection plus one
+fresh-run proof issue.
+
+```sh
+INTEGRATIONS_POSTHOG_PAPERCLIP_E2E_EMAIL=operator@example.test \
+INTEGRATIONS_POSTHOG_PAPERCLIP_DEV_LOGIN_PASSWORD='<environment-delivered>' \
+INTEGRATIONS_POSTHOG_POSTHOG_PROJECT_ID=483530 \
+pnpm smoke:posthog-live https://paperclip.example.test
+```
+
+The command fails before browser launch unless all three integration bindings
+are present, and never prints their values. A Paperclip heartbeat derives the
+target origin from its injected `PAPERCLIP_API_URL`; the positional URL (or
+`--base-url <url>`) selects the running instance for a manual invocation. It
+creates no trace, video, or HAR, begins
+screenshots only after OAuth returns to Paperclip, enables read actions only,
+installs the connection on `CodexCoderPro` only, runs `project-get` with `{}`
+from the board Test panel and a fresh agent run, then removes the connection.
+Sanitized JSON and PNG evidence defaults to `PAPERCLIP_RUN_SCRATCH_DIR` when the
+command runs in a heartbeat; set `POSTHOG_EVIDENCE_DIR` for a different output
+directory.
+
+Run the focused harness checks without contacting Paperclip or PostHog:
+
+```sh
+node --test scripts/smoke/posthog-live.test.mjs
+```
 
 ## OpenClaw Docker UI One-Command Script
 

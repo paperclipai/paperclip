@@ -529,4 +529,112 @@ describe("IssueRow", () => {
       root.unmount();
     });
   });
+
+  describe("recovery chip liveness", () => {
+    const NOW = new Date("2026-08-18T12:00:00.000Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function at(offsetMs: number) {
+      return new Date(NOW.getTime() + offsetMs).toISOString();
+    }
+
+    function recoveryIssue(retryAt: string, scheduledRetry: Issue["scheduledRetry"] = null): Issue {
+      return createIssue({
+        status: "in_progress",
+        scheduledRetry,
+        activeRecoveryAction: {
+          id: "action-1",
+          companyId: "company-1",
+          sourceIssueId: "issue-1",
+          recoveryIssueId: null,
+          kind: "deliberate_wait_without_target",
+          status: "active",
+          ownerType: "agent",
+          ownerAgentId: "agent-owner",
+          ownerUserId: null,
+          previousOwnerAgentId: "agent-owner",
+          returnOwnerAgentId: "agent-owner",
+          cause: "deliberate_wait_without_target",
+          fingerprint: "fp",
+          evidence: {},
+          nextAction: "Record a real next step.",
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: "agent-owner",
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt,
+            scheduledRunId: "run-2",
+          },
+          monitorPolicy: null,
+          attemptCount: 1,
+          maxAttempts: 5,
+          timeoutAt: retryAt,
+          lastAttemptAt: retryAt,
+          outcome: null,
+          resolutionNote: null,
+          resolvedAt: null,
+          createdAt: at(-10 * 60_000),
+          updatedAt: at(-10 * 60_000),
+        },
+      });
+    }
+
+    function renderChip(issue: Issue): HTMLElement | null {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<IssueRow issue={issue} />);
+      });
+      const chip = container.querySelector<HTMLElement>(
+        "[data-testid='issue-row-recovery-indicator']",
+      );
+      const snapshot = chip?.cloneNode(true) as HTMLElement | null;
+      act(() => {
+        root.unmount();
+      });
+      return snapshot;
+    }
+
+    it("stays calm while the next attempt is still ahead", () => {
+      const chip = renderChip(recoveryIssue(at(3 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("next try in 3m");
+    });
+
+    it("warns once the stored attempt came due and never ran", () => {
+      // The inbox chip must reach the same verdict as the source card, so a parent scanning
+      // the inbox is not told recovery is running when nothing is.
+      const chip = renderChip(recoveryIssue(at(-5 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("needed");
+      const label = chip?.getAttribute("aria-label") ?? "";
+      expect(label).toContain("Recovery needed");
+      expect(label).toContain("retry missed 5m ago");
+      expect(label).not.toContain("next try");
+    });
+
+    it("stays calm when the overdue attempt is a verified live run", () => {
+      const chip = renderChip(
+        recoveryIssue(at(-5 * 60_000), {
+          runId: "run-2",
+          status: "running",
+          agentId: "agent-owner",
+          agentName: "CodexCoder",
+          retryOfRunId: null,
+          scheduledRetryAt: at(-5 * 60_000),
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: null,
+        }),
+      );
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("attempt running now");
+    });
+  });
 });

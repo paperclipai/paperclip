@@ -22,9 +22,13 @@ context and server-side ownership checks.
 
 ## Required Security Decisions
 
-1. **Credentials live only in `company_secrets`.** Connections store secret refs
-   and redacted metadata. Raw OAuth access tokens, refresh tokens, API keys, app
-   private keys, webhook secrets, and remote MCP bearer tokens must not live in
+1. **Every connection has exactly one durable credential authority.** The
+   default is `company_secrets`: connections store secret refs and redacted
+   metadata. A reviewed remote MCP connection may explicitly use Vercel Connect;
+   then Vercel stores the durable provider credential and Paperclip stores only
+   an external connector ref plus allow-listed grant metadata. Mixed vault and
+   external refs are invalid. Raw OAuth access tokens, refresh tokens, API keys,
+   app private keys, webhook secrets, and runtime bearers must not live in
    connection config, plugin config, issue comments, activity logs, exports, or
    agent-visible payloads.
 2. **Connection operations are company-scoped and brokered by Paperclip.**
@@ -48,7 +52,13 @@ context and server-side ownership checks.
 8. **External content is untrusted.** Provider responses, chat messages,
    documents, webhook payloads, and remote MCP outputs may contain prompt
    injection and must not widen grants or bypass approvals.
-
+9. **Link-local egress is always denied.** Operator-configured remote MCP and
+   OAuth URLs may reach intentional loopback, RFC 1918, or IPv6 ULA services in
+   local/private deployments, but never IPv4 `169.254.0.0/16` or IPv6
+   `fe80::/10`. Every hostname is resolved once and pinned; DNS answers, the
+   connected socket peer, and every redirect are mediated before request bytes
+   are written. Public deployments continue to deny the broader private and
+   reserved address set.
 ## Protected Assets
 
 - OAuth tokens, refresh tokens, app-installation tokens, API keys, webhook
@@ -107,13 +117,28 @@ Required controls:
   scopes, creator, connection, and redirect URI. Use PKCE when supported.
 - OAuth callbacks reject missing, expired, replayed, mismatched-state, and
   mismatched-redirect requests.
+- Vercel Connect callbacks reuse the same one-time company/actor/session-bound
+  state rules. Subject identifiers are derived server-side from instance,
+  company, connection, grant kind, and user; browser and agent input can never
+  supply them.
+- Vercel connector metadata is validated against the reviewed app method before
+  persistence. Only connector id/UID, service/type, principal mode, reviewed
+  scopes/header placement, and allow-listed issuance metadata may be stored.
 - API-key and app-installation flows write secret material to `company_secrets`
   first, then persist only refs and redacted account metadata on the connection.
 - Create/update routes validate same-company ownership for every referenced
   secret, app, connection, agent, user, project, routine, and issue.
+- Create/update routes validate every configured token-broker exchange URL
+  against the private-host policy before persisting the connection. Minting
+  repeats the check and pins the approved address before transmitting the
+  parent credential, covering legacy rows and DNS rebinding.
 - Health and auth failures transition failure-closed: `missing_secret`,
   `degraded`, `failed`, `auth_required`, or disabled equivalents.
 - Error payloads and logs redact provider responses that may contain credentials.
+- Vercel access/OIDC credentials are deployment bootstrap authority and never a
+  company secret or provider bearer. Missing bootstrap authority fails existing
+  external connections closed; disabling new setup does not silently migrate or
+  disable already-created connections.
 
 ### Profile, Binding, And Policy Changes
 
@@ -161,6 +186,8 @@ Required controls at call time:
 - Actor belongs to the connection's company.
 - Connection is enabled and in a usable status.
 - Secret refs resolve to usable, non-revoked secret versions.
+- External credential refs resolve to a current grant and a just-in-time token;
+  a resource-server `401` may evict and force one token refresh, but never loop.
 - Effective profile exposes the requested catalog entry.
 - Policies allow the exact request or require an action request.
 - Tool/action risk does not exceed the allowed path.
@@ -245,6 +272,9 @@ Revocation and failure-closed behavior:
   missing secret ref block execution immediately.
 - Queued sync/webhook work after revocation logs and does not mutate.
 - Health checks on invalid credentials do not leak provider secret material.
+- Vercel revocation or missing authorization marks the grant
+  `needs_reauthorization`, blocks execution, and creates the existing
+  authorization interaction only when a responsible user can repair it.
 
 OAuth and callback integrity:
 

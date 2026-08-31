@@ -430,6 +430,10 @@ export function ProjectDetail() {
     [pluginDetailSlots],
   );
   const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
+  // The slots query is disabled until the project's company resolves, and a
+  // disabled query reports isLoading=false — so "not loading" alone cannot
+  // distinguish "contribution unavailable" from "not asked yet" on cold loads.
+  const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
   const workspaceTabProjectId = project?.id ?? null;
   const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
@@ -510,7 +514,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -673,7 +677,10 @@ export function ProjectDetail() {
     },
   });
 
-  if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {
+  if (pluginTabFromSearch && !activePluginTab && !error) {
+    if (!pluginTabDecisionLoaded) {
+      return <PageSkeleton variant="detail" />;
+    }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 

@@ -18,6 +18,7 @@ import {
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import { isLiveIssueRun } from "./liveIssueIds";
+import { findUIAdapter } from "../adapters/registry";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -39,6 +40,7 @@ export interface IssueChatComment extends IssueComment {
 
 export interface IssueChatLinkedRun {
   runId: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType?: string;
@@ -86,6 +88,19 @@ export interface IssueChatTranscriptEntry {
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+
+// Adapters whose backends stream verbosely can declare a wider window via
+// their UI adapter module (transcriptPresentation.maxVisibleEntries); every
+// adapter without a declaration keeps the long-standing 30-entry window.
+// Resolved through the registry so shared code never branches on adapter
+// identities.
+function issueChatTranscriptMaxVisibleEntries(adapterType: string | null | undefined): number {
+  if (!adapterType) return ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES;
+  return (
+    findUIAdapter(adapterType)?.transcriptPresentation?.maxVisibleEntries ??
+    ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES
+  );
+}
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -258,6 +273,30 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
     if (diff !== 0) return diff;
     return a.id.localeCompare(b.id);
   });
+}
+
+function dedupeInteractionsById(
+  interactions: readonly IssueThreadInteraction[],
+): IssueThreadInteraction[] {
+  const byId = new Map<string, IssueThreadInteraction>();
+  for (const interaction of interactions) {
+    const previous = byId.get(interaction.id);
+    if (!previous) {
+      byId.set(interaction.id, interaction);
+      continue;
+    }
+    const previousUpdatedAt = toTimestamp(previous.updatedAt);
+    const nextUpdatedAt = toTimestamp(interaction.updatedAt);
+    if (
+      nextUpdatedAt > previousUpdatedAt
+      || (nextUpdatedAt === previousUpdatedAt
+        && previous.status === "pending"
+        && interaction.status !== "pending")
+    ) {
+      byId.set(interaction.id, interaction);
+    }
+  }
+  return [...byId.values()];
 }
 
 export function latestSameRunHandoffTimestamp(args: {
@@ -789,7 +828,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -1006,7 +1045,7 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
@@ -1091,7 +1130,11 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const interaction of sortByCreated(interactions)) {
+  // A live-event cache patch and the polling response can briefly contain the
+  // same interaction. Collapse by id before constructing messages, preferring
+  // the newest/terminal snapshot so a resolved connection card updates in its
+  // existing thread slot instead of flashing a duplicate beside itself.
+  for (const interaction of sortByCreated(dedupeInteractionsById(interactions))) {
     // A card IssueThreadInteractionCard never renders — a degenerate
     // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
     // stale sibling superseded by a newer question (PAP-437) — is skipped here so

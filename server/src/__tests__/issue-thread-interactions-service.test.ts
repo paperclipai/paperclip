@@ -123,6 +123,118 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   }
 
+  it("creates idempotent, human-addressed connection intents and supersedes older runs", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Connection intent");
+    const agentId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Researcher",
+      role: "researcher",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: firstRunId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "user-board",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: secondRunId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "user-board",
+        contextSnapshot: { issueId },
+      },
+    ]);
+    const payload = {
+      version: 1 as const,
+      serviceSlug: "notion",
+      serviceName: "Notion",
+      serviceLogoUrl: null,
+      requestingAgentId: agentId,
+      requestingAgentName: "Researcher",
+      phase: "requested" as const,
+    };
+    const first = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: firstRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${firstRunId}:notion`,
+      },
+    );
+    expect(first).toMatchObject({
+      kind: "connection_intent",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      addresseeUserId: "user-board",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload,
+    });
+    const repeated = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: firstRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${firstRunId}:notion`,
+      },
+    );
+    expect(repeated.id).toBe(first.id);
+
+    const newer = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: secondRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${secondRunId}:notion`,
+      },
+    );
+    const superseded = await interactionsSvc.getById(first.id);
+    expect(superseded).toMatchObject({
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded",
+        supersededByInteractionId: newer.id,
+      },
+    });
+
+    const [expiredByComment] = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+      { id: issueId, companyId },
+      {
+        id: randomUUID(),
+        createdAt: new Date(Date.now() + 1_000),
+        authorUserId: "user-board",
+        createdByRunId: null,
+      },
+      { userId: "user-board" },
+    );
+    expect(expiredByComment).toMatchObject({
+      id: newer.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "expired",
+        reason: "Superseded by a newer user comment",
+      },
+    });
+  });
+
   it("persists addressees without allowing them to bypass human-only governance", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
     const creatorAgentId = randomUUID();

@@ -725,8 +725,17 @@ export interface PluginSyncFileMapping {
   kind: "file" | "directory";
   /**
    * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
-   * When set, providers MUST create the target with this mode with no
-   * world-readable window (create-with-mode or chmod-before-bytes, never after).
+   * The target MUST carry this mode when the transfer completes.
+   *
+   * For a transfer to a host target, providers MUST apply the mode with no
+   * world-readable window: create the target with the mode, or apply the mode
+   * before the bytes arrive at the target path. A host file sits outside the
+   * sandbox boundary, so an open window shows the bytes to other host
+   * processes.
+   *
+   * For a transfer to a sandbox target, providers MAY apply the mode after
+   * they write the bytes. The sandbox is the trust boundary, so a short window
+   * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
   /** Glob patterns to exclude when `kind` is `"directory"`. */
@@ -972,7 +981,7 @@ export interface PluginRenderCloseEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Setup-token login pseudo-terminal (PTY) worker methods.
+// Login pseudo-terminal (PTY) worker methods.
 // ---------------------------------------------------------------------------
 // The host drives one live Claude `setup-token` login pseudo-terminal inside a
 // sandbox provider worker. The host owns the route. It mints an opaque host
@@ -985,11 +994,19 @@ export interface PluginRenderCloseEvent {
 // output and exit as notifications, never as a reply, so the host binds them by
 // the worker session identifier while the route is open.
 
+/**
+ * The closed set of login command identities. The host resolves the key from the
+ * trusted adapter type and carries it in the open request. The worker maps the
+ * key to a compile-time command. The open request carries no command string, so a
+ * caller cannot select or override the command.
+ */
+export type PluginLoginCommandKey = "claude" | "codex" | "grok";
+
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
-export interface PluginSetupTokenPtyOpenParams {
+export interface PluginLoginPtyOpenParams {
   /** The host-owned opaque route identifier. The worker registers the terminal by it. */
   hostRouteId: string;
-  /** The environment driver key, for the worker sandbox scope. */
+  /** The environment driver key, for the worker sandbox scope. It routes the worker; it confers no command authority. */
   driverKey: string;
   /** The company that owns the login session. */
   companyId: string;
@@ -997,18 +1014,27 @@ export interface PluginSetupTokenPtyOpenParams {
   environmentId: string;
   /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
   providerLeaseId: string;
-  /** The fixed login command. The worker runs only this command on the terminal. */
-  command: string;
+  /**
+   * The host-resolved fixed command identity. The worker maps it to a
+   * compile-time command. The open request carries no command string.
+   */
+  loginCommandKey: PluginLoginCommandKey;
+  /**
+   * The server-controlled, validated session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`. The worker revalidates the shape
+   * before it touches the filesystem.
+   */
+  sessionHome: string;
 }
 
 /** The open reply. It returns the worker session identifier for output binding only. */
-export interface PluginSetupTokenPtyOpenResult {
+export interface PluginLoginPtyOpenResult {
   /** The worker session identifier. It binds the output and the exit notification only. */
   workerSessionId: string;
 }
 
 /** The input request. It carries the worker session identifier and the raw input bytes. */
-export interface PluginSetupTokenPtyInputParams {
+export interface PluginLoginPtyInputParams {
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw input bytes to write to the terminal. */
@@ -1016,13 +1042,13 @@ export interface PluginSetupTokenPtyInputParams {
 }
 
 /** The stop request. It carries the worker session identifier. */
-export interface PluginSetupTokenPtyStopParams {
+export interface PluginLoginPtyStopParams {
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
 
 /** The close request. The host route identifier is the authoritative key. */
-export interface PluginSetupTokenPtyCloseParams {
+export interface PluginLoginPtyCloseParams {
   /**
    * The host-owned opaque route identifier. This is the authoritative close key,
    * so the host closes the terminal even when no worker session identifier
@@ -1038,13 +1064,13 @@ export interface PluginSetupTokenPtyCloseParams {
 }
 
 /** The close reply. It acknowledges the close and carries the same host route identifier. */
-export interface PluginSetupTokenPtyCloseResult {
+export interface PluginLoginPtyCloseResult {
   /** The close acknowledgement. It carries the same host route identifier the close sent. */
   hostRouteId: string;
 }
 
 /** The worker→host pseudo-terminal output notification parameters. Modeled on `execute.log`. */
-export interface PluginSetupTokenPtyOutputParams {
+export interface PluginLoginPtyOutputParams {
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw terminal output bytes. */
@@ -1052,7 +1078,7 @@ export interface PluginSetupTokenPtyOutputParams {
 }
 
 /** The worker→host pseudo-terminal exit notification parameters. */
-export interface PluginSetupTokenPtyExitParams {
+export interface PluginLoginPtyExitParams {
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
@@ -1061,10 +1087,10 @@ export interface PluginSetupTokenPtyExitParams {
 
 /**
  * One live login pseudo-terminal session in the worker. The worker opener returns
- * it. The shape matches the sandbox provider setup-token pseudo-terminal session,
+ * it. The shape matches the sandbox provider login pseudo-terminal session,
  * so a provider passes its session with no adapter.
  */
-export interface PluginSetupTokenPtyWorkerSession {
+export interface PluginLoginPtyWorkerSession {
   /** Registers the one output listener. The session streams each raw chunk in order. */
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
@@ -1078,9 +1104,53 @@ export interface PluginSetupTokenPtyWorkerSession {
 }
 
 /** The worker→host notification method for one pseudo-terminal output chunk. */
-export const SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION = "setupTokenPty.output";
+export const LOGIN_PTY_OUTPUT_NOTIFICATION = "loginPty.output";
 /** The worker→host notification method for one pseudo-terminal exit. */
-export const SETUP_TOKEN_PTY_EXIT_NOTIFICATION = "setupTokenPty.exit";
+export const LOGIN_PTY_EXIT_NOTIFICATION = "loginPty.exit";
+
+// ---------------------------------------------------------------------------
+// Byte-safe duplex channel wire representation.
+// ---------------------------------------------------------------------------
+// A JSON-RPC message travels as one line of JSON text (see `serializeMessage`
+// below). JSON has no binary type, so a raw byte chunk cannot cross this hop
+// unchanged. `ChannelBytesWireValue` is the one JSON-safe encoding this
+// protocol uses for a duplex channel chunk: a base64 string.
+//
+// Every layer above this hop carries the chunk as `Uint8Array`. This includes
+// the plugin context, the worker RPC host's public duplex methods, and the
+// host-side plugin worker manager. Only the JSON-RPC message itself holds the
+// base64 form, and only for the one hop between the host process and the
+// worker process.
+//
+// This base64 form is not the sandbox provider channel's wire format. That
+// channel carries raw bytes with no base64 armor: a live measurement of the
+// provider transport proved that every byte value survives it unchanged.
+//
+// HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+
+/** The wire-safe JSON-RPC form of one duplex channel byte chunk: a base64 string. */
+export type ChannelBytesWireValue = string;
+
+/** Encodes raw channel bytes into the wire-safe JSON-RPC representation. */
+export function encodeChannelBytes(bytes: Uint8Array): ChannelBytesWireValue {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+}
+
+/**
+ * Decodes the wire-safe JSON-RPC representation back to raw channel bytes.
+ * Returns `null` for a value that is not a well-formed base64 string, so a
+ * caller on the trust boundary treats a malformed frame as a protocol error
+ * instead of silently substituting the empty byte array.
+ */
+export function decodeChannelBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  // `Buffer.from(str, "base64")` silently drops an invalid character instead
+  // of throwing, so re-encode the decoded bytes and compare. A well-formed
+  // base64 string round-trips to itself; a malformed one does not.
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
 
 // ---------------------------------------------------------------------------
 // Generic duplex channel worker methods.
@@ -1088,7 +1158,7 @@ export const SETUP_TOKEN_PTY_EXIT_NOTIFICATION = "setupTokenPty.exit";
 // The host drives one persistent duplex channel inside a sandbox provider
 // worker. The channel replaces the file transport of the sandbox callback bridge
 // with one live bidirectional stream. These messages are generic. They model the
-// setup-token pseudo-terminal contract above, but they carry no login command
+// login pseudo-terminal contract above, but they carry no login command
 // allowlist. The host owns the route. It mints an opaque host route identifier,
 // carries that identifier in the open request, and keys the close on that
 // identifier. The worker registers the channel under the host route identifier
@@ -1119,22 +1189,28 @@ export interface PluginDuplexChannelOpenParams {
   command: readonly string[];
 }
 
-/** The open reply. It returns the worker session identifier for data binding only. */
+/** The open reply. It echoes the host route identifier and returns the worker session identifier. */
 export interface PluginDuplexChannelOpenResult {
+  /** The host route identifier the open request carried. The worker echoes it, so the host binds the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier. It binds the data and the exit notification only. */
   workerSessionId: string;
 }
 
-/** The write request. It carries the worker session identifier and the raw input bytes. */
+/** The write request. It carries the exact route pair and the raw input bytes. */
 export interface PluginDuplexChannelWriteParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
-  /** The raw input bytes to write to the channel. */
-  data: string;
+  /** The raw input bytes to write to the channel, in the {@link ChannelBytesWireValue} wire form. */
+  data: ChannelBytesWireValue;
 }
 
-/** The stop request. It carries the worker session identifier. */
+/** The stop request. It carries the exact route pair. */
 export interface PluginDuplexChannelStopParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
@@ -1155,26 +1231,42 @@ export interface PluginDuplexChannelCloseParams {
   workerSessionId?: string;
 }
 
-/** The close reply. It acknowledges the close and carries the same host route identifier. */
+/** The close reply. It acknowledges the close and echoes the route identifiers. */
 export interface PluginDuplexChannelCloseResult {
   /** The close acknowledgement. It carries the same host route identifier the close sent. */
   hostRouteId: string;
+  /**
+   * The bound worker session identifier. The worker echoes it on a bound close,
+   * so the host verifies the exact pair. It is absent on a pre-bind route-only
+   * close, where no session bound yet.
+   */
+  workerSessionId?: string;
 }
 
 /** The worker→host duplex channel data notification parameters. */
 export interface PluginDuplexChannelDataParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
-  /** The raw channel output bytes. */
-  chunk: string;
+  /** The raw channel output bytes, in the {@link ChannelBytesWireValue} wire form. */
+  chunk: ChannelBytesWireValue;
 }
 
 /** The worker→host duplex channel exit notification parameters. */
 export interface PluginDuplexChannelExitParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
   exitCode: number | null;
+  /**
+   * True when the provider transport closed with no exit data, so the exit is a
+   * reason-less transport close, not a process exit. Absent or false marks a real
+   * process exit. The host maps a transport close to a distinct loss reason.
+   */
+  transportClosed?: boolean;
 }
 
 /** The worker→host notification method for one duplex channel data chunk. */
@@ -1287,18 +1379,18 @@ export interface HostToWorkerMethods {
     result: PluginEnvironmentDeleteTemplateResult,
   ];
   /** Open one live login pseudo-terminal keyed by a host-owned route identifier. */
-  setupTokenPtyOpen: [
-    params: PluginSetupTokenPtyOpenParams,
-    result: PluginSetupTokenPtyOpenResult,
+  loginPtyOpen: [
+    params: PluginLoginPtyOpenParams,
+    result: PluginLoginPtyOpenResult,
   ];
   /** Write delayed input to a live login pseudo-terminal, keyed by the worker session identifier. */
-  setupTokenPtyInput: [params: PluginSetupTokenPtyInputParams, result: void];
+  loginPtyInput: [params: PluginLoginPtyInputParams, result: void];
   /** Stop a live login pseudo-terminal child, keyed by the worker session identifier. */
-  setupTokenPtyStop: [params: PluginSetupTokenPtyStopParams, result: void];
+  loginPtyStop: [params: PluginLoginPtyStopParams, result: void];
   /** Close a live login pseudo-terminal by the host route identifier and return a bound acknowledgement. */
-  setupTokenPtyClose: [
-    params: PluginSetupTokenPtyCloseParams,
-    result: PluginSetupTokenPtyCloseResult,
+  loginPtyClose: [
+    params: PluginLoginPtyCloseParams,
+    result: PluginLoginPtyCloseResult,
   ];
   /** Open one persistent duplex channel keyed by a host-owned route identifier. */
   duplexChannelOpen: [
@@ -1355,10 +1447,10 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentCaptureTemplate",
   "environmentCancelInteractiveSetup",
   "environmentDeleteTemplate",
-  "setupTokenPtyOpen",
-  "setupTokenPtyInput",
-  "setupTokenPtyStop",
-  "setupTokenPtyClose",
+  "loginPtyOpen",
+  "loginPtyInput",
+  "loginPtyStop",
+  "loginPtyClose",
   "duplexChannelOpen",
   "duplexChannelWrite",
   "duplexChannelStop",

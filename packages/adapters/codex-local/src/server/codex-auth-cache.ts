@@ -220,6 +220,8 @@ export async function writeCodexAuthCacheEntry(input: {
   sandboxAuthBytes: Buffer;
   cacheEntryPath: string;
   log: (line: string) => void | Promise<void>;
+  /** Environment for the merge lock root. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }): Promise<WriteCodexAuthCacheEntryOutcome> {
   const outcome = await writeCredentialSeedOrNewer({
     sourceBytes: input.sandboxAuthBytes,
@@ -231,6 +233,7 @@ export async function writeCodexAuthCacheEntry(input: {
       "[paperclip] Codex auth cache: kept the cache slot (source is not a strictly-newer same-identity subscription credential).",
     tempPrefix: "auth.json.cache-source",
     errorLabel: "codex auth cache",
+    env: input.env,
   });
   return outcome === "written" ? "written" : "kept-slot";
 }
@@ -258,6 +261,7 @@ export async function selectVendCredential(
   sharedHomeAuthPath: string,
   resolveCacheEntryPath: (accountId: string) => string,
   log: (line: string) => void | Promise<void>,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<VendCodexAuthOutcome> {
   const hostBytes = await readFile(sharedHomeAuthPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
@@ -322,7 +326,7 @@ export async function selectVendCredential(
       await handle.close().catch(() => undefined);
       await rm(stagedTempPath, { force: true }).catch(() => undefined);
     }
-  });
+  }, env);
 }
 
 /**
@@ -345,9 +349,13 @@ export async function clearCodexAuthCacheEntry(
     throw error;
   });
   if (!existing) return;
-  await withDirectoryMergeLock(entryDir, async () => {
-    await rm(entryDir, { recursive: true, force: true });
-  });
+  await withDirectoryMergeLock(
+    entryDir,
+    async () => {
+      await rm(entryDir, { recursive: true, force: true });
+    },
+    env,
+  );
 }
 
 /**

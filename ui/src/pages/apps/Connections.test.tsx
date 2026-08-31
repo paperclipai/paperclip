@@ -11,6 +11,7 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
+const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -22,7 +23,14 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
-    archiveConnection: (connectionId: string) => archiveConnectionMock(connectionId),
+    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
+      archiveConnectionMock(connectionId, options),
+  },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
   },
 }));
 
@@ -103,6 +111,7 @@ function connection(overrides: Record<string, unknown>) {
     healthStatus: "healthy",
     healthCheckedAt: null,
     lastError: null,
+    credentialPolicy: "shared",
     enabled: true,
     lastUsedAt: null,
     createdByAgentId: null,
@@ -154,6 +163,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     listProfilesMock.mockResolvedValue({ profiles: [] });
+    listUserDirectoryMock.mockResolvedValue({ users: [] });
     archiveConnectionMock.mockResolvedValue(connection({ id: "c-deleted", status: "archived" }));
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -206,7 +216,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
   });
 
-  it("rolls up multi-connection status, attention count, actions, and navigation by application", async () => {
+  it("renders every account with its owner, status, actions, and direct edit navigation", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [
         application({ id: "app-github", name: "GitHub" }),
@@ -216,7 +226,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     listConnectionsMock.mockResolvedValue({
       connections: [
-        connection({ id: "c-connected", applicationId: "app-github", name: "GitHub", healthStatus: "healthy" }),
+        connection({
+          id: "c-connected",
+          applicationId: "app-github",
+          name: "GitHub",
+          healthStatus: "healthy",
+          createdByUserId: "user-1",
+          credentialPolicy: "per_user",
+        }),
         connection({
           id: "c-attention",
           applicationId: "app-slack",
@@ -253,6 +270,18 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
         profile("c-attention-2", ["b", "c"]),
       ],
     });
+    listUserDirectoryMock.mockResolvedValue({
+      users: [{
+        principalId: "user-1",
+        status: "active",
+        user: {
+          id: "user-1",
+          name: "Dotta",
+          email: "dotta@example.com",
+          image: "https://example.com/dotta.png",
+        },
+      }],
+    });
 
     await renderApps();
 
@@ -262,41 +291,50 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     // 2. Attention + Paused rows keep their explanatory hint.
     expect(text).toContain("The key stopped working");
     expect(text).toContain("Paused — agents can");
-    // 3. Filter chips and attention banner are application-counted, not connection-counted.
-    expect(text).toContain("All (3)");
+    // 3. Every account has its own filterable row and health signal.
+    expect(text).toContain("All (4)");
     expect(text).toContain("Needs attention (1)");
-    expect(text).toContain("1 app needs attention");
+    expect(text).toContain("1 connection needs attention");
     // 3. New header columns are present.
     const headers = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
-    expect(headers).toEqual(["App", "Status", "Actions", "Last used", ""]);
-    // 4. Actions column reflects enabled catalog entries rolled up by application; missing profile => 0 on.
+    expect(headers).toEqual(["Connection", "Type", "Connected by", "Status", "Actions", "Last used", ""]);
+    expect(text).toContain("Personal");
+    expect(text).toContain("Company");
+    // 4. Actions column reflects enabled catalog entries per account; missing profile => 0 on.
     expect(text).toContain("3 on");
     expect(text).toContain("0 on");
     // 5. Last used renders a relative timestamp when present, dash when absent.
     expect(text).toContain("—");
-    // 6. Multi-connection app appears once and opens its provider landing page.
-    expect(Array.from(container.querySelectorAll("tbody tr")).filter((tr) => tr.textContent?.includes("Slack"))).toHaveLength(1);
+    // 6. Multi-account apps appear once per connection and edit the selected account directly.
+    expect(Array.from(container.querySelectorAll("tbody tr")).filter((tr) => tr.textContent?.includes("Slack"))).toHaveLength(2);
     const slackRow = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
       tr.textContent?.includes("Slack"),
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-slack/setup");
-    // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Open.
-    const rowButtonLabel = (name: string) =>
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention/setup");
+    // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Edit.
+    const rowButtonLabel = (name: string, exact = false) =>
       Array.from(container.querySelectorAll("tbody tr"))
-        .find((tr) => tr.textContent?.includes(name))
+        .find((tr) => exact ? tr.textContent?.includes(name) && !tr.textContent?.includes("Slack Team") : tr.textContent?.includes(name))
         ?.querySelector("td:last-child button")?.textContent;
-    expect(rowButtonLabel("GitHub")).toBe("Open");
-    expect(rowButtonLabel("Slack")).toBe("Reconnect");
-    expect(rowButtonLabel("Notion")).toBe("Open");
+    expect(rowButtonLabel("GitHub")).toBe("Edit");
+    expect(rowButtonLabel("Slack", true)).toBe("Reconnect");
+    expect(rowButtonLabel("Notion")).toBe("Edit");
+    // 8. Generic connection names inherit the originating user's first name.
+    expect(text).toContain("Dotta’s GitHub");
+    expect(text).toContain("Slack for the company");
+    expect(text).toContain("Slack Team for the company");
+    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
+    // Custom account labels remain untouched.
+    expect(text).toContain("Slack Team");
   });
 
   // F6 (PAP-13254 §4): the row highlight and the Status pill derive from ONE
   // health signal, so they can never disagree. A healthy connection stays
-  // "Healthy" / "Open" and is not amber-highlighted, even if the broader
+  // "Healthy" / "Edit" and is not amber-highlighted, even if the broader
   // attention endpoint would once have flagged it (quarantine/new-tools review
   // now live on the app detail + Review door, not the Connections highlight).
-  it("keeps a healthy app un-highlighted and Open — pill and highlight agree (F6)", async () => {
+  it("keeps a healthy app un-highlighted and editable — pill and highlight agree (F6)", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [application({ id: "app-github", name: "GitHub" })],
     });
@@ -326,9 +364,9 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
     expect(row?.className).not.toContain("amber");
     const button = row?.querySelector("td:last-child button");
-    expect(button?.textContent).toBe("Open");
+    expect(button?.textContent).toBe("Edit");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy/setup");
   });
 
   it("deletes a connection only after trash-can confirmation", async () => {
@@ -342,7 +380,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub connection"]',
+      'button[aria-label="Delete GitHub for the company connection"]',
     );
     expect(deleteButton).toBeTruthy();
 
@@ -364,14 +402,59 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github", {
+      confirmComposioChildren: false,
+    });
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
-        body: "GitHub is no longer available to agents. You can connect it again later.",
+        body: "GitHub is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.",
         tone: "success",
       }),
     );
+  });
+
+  it("confirms that deleting a Composio parent removes its child services", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-composio", name: "Composio" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({
+          id: "composio-parent",
+          applicationId: "app-composio",
+          name: "Composio",
+          config: { sourceTemplateKey: "composio" },
+        }),
+        connection({
+          id: "composio-github",
+          applicationId: "app-composio",
+          name: "GitHub (via Composio)",
+          config: { provider: "composio", parentConnectionId: "composio-parent", toolkitSlug: "github" },
+        }),
+      ],
+    });
+
+    await renderApps();
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete Composio for the company connection"]',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("This also removes 1 connected service");
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("composio-parent", {
+      confirmComposioChildren: true,
+    });
   });
 
   it("reports the remaining active connections after deleting one", async () => {
@@ -388,7 +471,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub connection"]',
+      'button[aria-label="Delete GitHub for the company connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -406,7 +489,9 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary");
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary", {
+      confirmComposioChildren: false,
+    });
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
@@ -436,13 +521,16 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub connection"]',
+      'button[aria-label="Delete GitHub for the company connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(document.body.textContent).toContain("Agents will lose access immediately.");
+    expect(document.body.textContent).toContain(
+      "The saved credentials are deleted and agents lose access immediately.",
+    );
+    expect(document.body.textContent).toContain("needs a new sign-in or key");
     expect(document.body.textContent).not.toContain("Agents can still use GitHub");
 
     const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
@@ -455,7 +543,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
 
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: "GitHub is no longer available to agents. You can connect it again later.",
+        body: "GitHub is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.",
       }),
     );
   });

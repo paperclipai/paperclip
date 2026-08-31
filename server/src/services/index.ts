@@ -23,6 +23,7 @@ export {
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { artifactReviewDocumentService } from "./artifact-review-documents.js";
 export { statusCardService } from "./status-cards.js";
 export { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 export { documentAnnotationService } from "./document-annotations.js";
@@ -90,6 +91,13 @@ export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 export { createSecretProposalsService } from "./secret-proposals.js";
 export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export {
+  createVercelConnectClient,
+  vercelConnectIntegrationStatus,
+  VercelConnectClientError,
+  type VercelConnectClient,
+} from "./vercel-connect.js";
+export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";

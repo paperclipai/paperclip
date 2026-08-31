@@ -2,7 +2,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
+import {
+  createDuplexRouteSlotController,
+  createPluginWorkerHandle,
+} from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DUPLEX_CHANNEL_WORKER_ENTRYPOINT = path.join(
@@ -37,10 +40,10 @@ function makeDuplexHandle(extra?: Record<string, unknown>) {
 // The test directive rides in `providerLeaseId`, an opaque field the manager
 // forwards to the worker unchanged. The duplex channel is generic, so the
 // command is a plain fixed string with no allowlist.
-function duplexOpenInput(directive: unknown) {
+function duplexOpenInput(directive: unknown, companyId = "company-1") {
   return {
     driverKey: "daytona",
-    companyId: "company-1",
+    companyId,
     environmentId: "env-1",
     providerLeaseId: JSON.stringify(directive),
     command: "bridge-callback",
@@ -48,28 +51,51 @@ function duplexOpenInput(directive: unknown) {
 }
 
 describe("plugin worker manager duplex channel route", () => {
-  it("delivers data only for the exact bound worker session id and drops a mismatch", async () => {
+  it("fails closed and retires the worker on a forged worker session id", async () => {
     const handle = makeDuplexHandle();
     try {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           workerSessionId: "ws-A",
-          data: [
-            { chunk: "good-1" },
-            { chunk: "forged", sid: "ws-EVIL" },
-            { chunk: "good-2" },
-          ],
-          exitCode: 0,
+          // The frame carries the bound host route id but a forged worker session
+          // id, so its pair matches no live route.
+          data: [{ chunk: "forged", sid: "ws-EVIL" }],
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
-      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
-      // The forged notification carries a wrong worker session id, so the host
-      // drops it. Only the two bound chunks reach the listener, in order.
-      expect(chunks).toEqual(["good-1", "good-2"]);
-      await session.close();
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      // The forged pair is an ownership violation. The host reaches no listener and
+      // retires the worker, so the wait settles with the fixed non-secret null exit.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("fails closed and retires the worker on a forged host route id", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // The frame carries the bound worker session id but a forged host route
+          // id, so its pair matches no live route.
+          data: [{ chunk: "forged", rid: "duplex-route-forged" }],
+        }),
+      );
+      const chunks: string[] = [];
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -83,8 +109,11 @@ describe("plugin worker manager duplex channel route", () => {
         duplexOpenInput({ workerSessionId: "ws-A", echoInput: true }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
-      session.write("callback-payload");
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      session.write(new TextEncoder().encode("callback-payload"));
       // The worker echoes the input as one data notification for the bound
       // session, so the listener receives it.
       await vi.waitFor(() => expect(chunks).toContain("echo:callback-payload"));
@@ -107,7 +136,10 @@ describe("plugin worker manager duplex channel route", () => {
       // attaches. The drain then delivers them in order.
       await new Promise((resolve) => setTimeout(resolve, 60));
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       await vi.waitFor(() => expect(chunks.length).toBe(3));
       expect(chunks).toEqual(["one", "two", "three"]);
       await session.close();
@@ -132,11 +164,39 @@ describe("plugin worker manager duplex channel route", () => {
       // does not escape the worker stdout notification handler. The later chunk
       // still routes and the route still settles.
       session.onData((chunk) => {
-        chunks.push(chunk);
-        if (chunk === "boom") throw new Error("listener failure");
+        const text = new TextDecoder().decode(chunk);
+        chunks.push(text);
+        if (text === "boom") throw new Error("listener failure");
       });
       await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
       expect(chunks).toEqual(["ok-1", "boom", "ok-2"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("carries a transport-close exit through to the wait result", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [{ chunk: "one" }],
+          // The worker reports a reason-less transport close with no exit code.
+          transportClosed: true,
+        }),
+      );
+      const chunks: string[] = [];
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      // The discriminator survives the worker exit notification, so the host wait
+      // resolves with the transport-close mark and no exit code.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null, transportClosed: true });
+      expect(chunks).toEqual(["one"]);
       await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
@@ -161,8 +221,9 @@ describe("plugin worker manager duplex channel route", () => {
       // still routes.
       expect(() =>
         session.onData((chunk) => {
-          chunks.push(chunk);
-          if (chunk === "boom") throw new Error("listener failure");
+          const text = new TextDecoder().decode(chunk);
+          chunks.push(text);
+          if (text === "boom") throw new Error("listener failure");
         }),
       ).not.toThrow();
       expect(chunks).toEqual(["one", "boom", "three"]);
@@ -185,7 +246,10 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       // The duplicate open reply never rebinds or reopens the route, so the
       // session runs normally on the one bind.
       await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
@@ -213,20 +277,79 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
-  it("permits one active duplex channel per worker", async () => {
+  it("routes two concurrent cross-company duplex routes by the exact pair with no cross-talk", async () => {
     const handle = makeDuplexHandle();
     try {
       await handle.start();
-      const first = await handle.openDuplexChannel(duplexOpenInput({ mode: "normal" }));
-      // A second open while the first route is not closed rejects with one fixed
-      // non-secret error before it reaches the worker.
+      const routeA = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-A", data: [{ chunk: "a-1" }], exitCode: 0 }, "company-A"),
+      );
+      const routeB = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }, "company-B"),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(new TextDecoder().decode(chunk)));
+      routeB.onData((chunk) => bChunks.push(new TextDecoder().decode(chunk)));
+      await expect(routeA.wait()).resolves.toEqual({ exitCode: 0 });
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // The host routes each frame by the exact pair, so each route receives only
+      // its own data. Neither route sees the other's chunk.
+      expect(aChunks).toEqual(["a-1"]);
+      expect(bChunks).toEqual(["b-1"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("reports an explicit route-busy result when the aggregate ceiling is full", async () => {
+    // A process-scoped ceiling of one slot. The manager injects one shared
+    // controller into every worker; the test injects a small one directly.
+    const handle = makeDuplexHandle({ duplexRouteSlots: createDuplexRouteSlotController(1) });
+    try {
+      await handle.start();
+      const first = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-A" }));
+      // The ceiling is full, so the second open rejects with the fixed route-busy
+      // error before it reaches the worker. An active channel never downgrades.
       await expect(
-        handle.openDuplexChannel(duplexOpenInput({ mode: "normal" })),
+        handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-B" })),
       ).rejects.toThrow("DUPLEX_CHANNEL_ROUTE_BUSY");
+      // Closing the first route releases its slot, so a later open is admitted.
       await first.close();
-      // After the first route closes and the worker acknowledges the close, a new
-      // open is admitted.
-      const second = await handle.openDuplexChannel(duplexOpenInput({ mode: "normal" }));
+      const third = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-C" }));
+      await third.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a late frame for a tombstoned pair and keeps the worker for a new open", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const first = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-A", emitAfterCloseChunk: "after-close" }),
+      );
+      const chunks: string[] = [];
+      first.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      // Close the route. The host installs the tombstone atomically before the slot
+      // frees. The worker then emits one late frame for the closed pair.
+      await first.close();
+      // Give the late frame time to arrive. The host drops it, so it reaches no
+      // listener and does not retire the worker.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(chunks).toEqual([]);
+      // The worker is still alive: a new open on the same worker succeeds and
+      // delivers its own data.
+      const second = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }),
+      );
+      const secondChunks: string[] = [];
+      second.onData((chunk) => secondChunks.push(new TextDecoder().decode(chunk)));
+      await expect(second.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(secondChunks).toEqual(["b-1"]);
       await second.close();
     } finally {
       await handle.stop().catch(() => undefined);
@@ -291,10 +414,62 @@ describe("plugin worker manager duplex channel route", () => {
       const waitResult = session.wait();
       // The worker never replies to a write, so each write stays pending. The
       // third write passes the pending-request bound and the route ends.
-      session.write("one");
-      session.write("two");
-      session.write("three");
+      session.write(new TextEncoder().encode("one"));
+      session.write(new TextEncoder().encode("two"));
+      session.write(new TextEncoder().encode("three"));
       await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when the pending host-to-worker write bytes pass the route bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPendingWriteBytes: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ mode: "no-write-reply", workerSessionId: "ws-A" }),
+      );
+      const waitResult = session.wait();
+      // The worker never replies to a write, so each write's bytes stay charged
+      // against the route. The second write brings the cumulative bytes past
+      // the 10-byte bound and ends the route.
+      session.write(new TextEncoder().encode("aaaaa")); // 5 bytes → 5, under the bound
+      session.write(new TextEncoder().encode("bbbbbb")); // 6 bytes → 11 > 10, ends the route
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("returns the pending write bytes to the route bound after a failed write", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPendingWriteBytes: 10, openTimeoutMs: 100 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ mode: "no-write-reply", workerSessionId: "ws-A" }),
+      );
+      let routeEnded = false;
+      session.wait().then(() => {
+        routeEnded = true;
+      });
+      // The worker never replies, so each write's own request times out and
+      // rejects. The rejection must release this write's charged bytes, the
+      // same as a reply would. Wait past the first write's timeout before the
+      // second write sends.
+      session.write(new TextEncoder().encode("12345678")); // 8 bytes, under the 10-byte bound
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // If the first write's bytes had not released on its timeout, this
+      // second 8-byte write would bring the route to 16 bytes, past the
+      // 10-byte bound, and end the route at once, synchronously, in this call.
+      session.write(new TextEncoder().encode("87654321"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(routeEnded).toBe(false);
+      await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -312,7 +487,7 @@ describe("plugin worker manager duplex channel route", () => {
       const waitResult = session.wait();
       // One write is larger than the size bound, so the host rejects it and ends
       // the route before it reaches the worker.
-      session.write("this-write-is-too-large");
+      session.write(new TextEncoder().encode("this-write-is-too-large"));
       await expect(waitResult).resolves.toEqual({ exitCode: null });
     } finally {
       await handle.stop().catch(() => undefined);
@@ -360,7 +535,10 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       // A listener is bound, so the host forwards each chunk until the cumulative
       // bytes pass the cap. The third chunk passes the cap, so the host drops it
       // and ends the route. The listener never receives data past the cap.
@@ -389,8 +567,42 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drains a buffered valid chunk to a listener that binds after the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // "€" is three bytes in UTF-8. The first chunk is 3 bytes (≤ 4), so the
+          // host counts and buffers it. The second chunk brings the total to 6
+          // bytes (> 4), so the host ends the route.
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      // Wait so both data frames arrive and the route ends on the byte cap before
+      // a listener binds. The first chunk is a valid buffered frame. The host must
+      // keep it, so the late listener drains it. This proves the host does not
+      // drop a buffered valid chunk when the route ends before a listener binds.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      const chunks: string[] = [];
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       expect(chunks).toEqual(["€"]);
     } finally {
       await handle.stop().catch(() => undefined);
@@ -450,7 +662,10 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       // A listener is bound. One inbound chunk is larger than the per-chunk
       // limit, so the host ends the route at once and never forwards the chunk.
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
@@ -481,7 +696,10 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
       expect(chunks).toEqual(["batched-one", "batched-two"]);
       await session.close();
@@ -507,6 +725,175 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when batched pre-bind frames pass the frame count bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 2 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the three data frames with the open reply, so all
+          // three frames arrive before the route binds. No listener attaches, so
+          // the replay buffers them. The third frame passes the frame-count bound
+          // and the route ends. The pre-open hold must not drop the third frame
+          // before the buffered bound can end the route.
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when the pre-bind hold bytes pass the route input bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedChars: 10 },
+    });
+    try {
+      await handle.start();
+      // The worker batches the three data frames with the open reply, so all
+      // three frames arrive before the route binds and land in the pre-bind
+      // hold, not the post-bind buffered queue. The frame-count bound stays
+      // far above three frames, so only the byte bound can end the route
+      // here: this proves the hold itself counts bytes, not only frames. The
+      // hold ends the route before the bind completes, so the open call
+      // itself fails, the same way a malformed open reply fails it.
+      await expect(
+        handle.openDuplexChannel(
+          duplexOpenInput({
+            batchWithOpenReply: true,
+            data: [
+              { chunk: "aaaaa" }, // total 5 → held
+              { chunk: "bbbbb" }, // total 10 → held
+              { chunk: "ccccc" }, // total 15 > 10 → end the route in the hold
+            ],
+          }),
+        ),
+      ).rejects.toThrow("DUPLEX_CHANNEL_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route on the frame count bound even when a caller raises that bound well past the module default", async () => {
+    // Regression test: the pre-open hold ceiling must track
+    // maxDuplexChannelPreBindFrames, not a fixed value. A fixed ceiling at or
+    // below this bound would drop the 13th frame in the hold before the replay
+    // ever applies the buffered bound to it, and the route would never end.
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 12 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: Array.from({ length: 13 }, (_, i) => ({ chunk: String(i) })),
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route on the frame count bound even when an exit notification arrives before the overflow data frame", async () => {
+    // Regression test: an exit notification must never share the pre-open hold's
+    // capacity with data frames. The worker here batches exactly
+    // maxPreBindBufferedFrames valid data frames (no violation), then its exit,
+    // then one more data frame that should trip the buffered-frame bound. If the
+    // exit consumed a hold slot, that last data frame would be dropped by the
+    // hold before the replay ever applies the buffered bound to it, and the
+    // route would end normally on the exit (exitCode: 0) instead of on the
+    // bound (exitCode: null).
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 3 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+          exitCode: 0,
+          dataAfterExit: [{ chunk: "overflow" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a batched pre-bind chunk that a later listener drains before the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the two data frames with the open reply, so both
+          // frames arrive before the route binds and before a listener attaches.
+          // "€" is three bytes in UTF-8. The first chunk (3 bytes ≤ 4) buffers.
+          // The second chunk brings the total to 6 bytes (> 4), so the route ends.
+          // The route end must not discard the buffered first chunk. The listener
+          // attaches after the open resolves and drains the first chunk.
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      const chunks: string[] = [];
+      // The session streams raw `Uint8Array` chunks. Decode each one back to
+      // text, so the assertion below compares the plain-text payload the
+      // fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Byte fidelity across the worker remote-procedure-call hop.
+  // -------------------------------------------------------------------------
+
+  it("test_worker_channel_preserves_all_byte_values", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-A", echoInput: true }),
+      );
+      const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+      const received: Uint8Array[] = [];
+      session.onData((chunk) => received.push(chunk));
+
+      session.write(allByteValues);
+
+      // The fixture echoes the write as one data notification, prefixed with the
+      // five ASCII bytes "echo:". It builds the echo on the decoded byte buffer,
+      // not a string, so the round trip through the base64 JSON-RPC wire form
+      // (`ChannelBytesWireValue`) carries every one of the 256 byte values
+      // unchanged, including the byte value zero, which a UTF-8 string hop would
+      // not preserve reliably end to end.
+      await vi.waitFor(() => expect(received.length).toBe(1));
+      const echoPrefix = new TextEncoder().encode("echo:");
+      const echoed = received[0]!;
+      expect(echoed.byteLength).toBe(echoPrefix.byteLength + allByteValues.byteLength);
+      expect(echoed.subarray(0, echoPrefix.byteLength)).toEqual(echoPrefix);
+      expect(echoed.subarray(echoPrefix.byteLength)).toEqual(allByteValues);
+      await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }

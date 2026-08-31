@@ -60,3 +60,57 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
 }
+
+function paperclipRunnerProvider(value: unknown): "codex" | "opencode" {
+  return value === "opencode" ? "opencode" : "codex";
+}
+
+function openCodePermissionMode(value: unknown): "allow" | "ask" | "deny" {
+  return value === "ask" || value === "deny" ? value : "allow";
+}
+
+/** Build a provider profile accepted by the experimental Rust runner. */
+export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
+  const config = buildCodexLocalConfig(v);
+  for (const unsupportedKey of [
+    "engine",
+    "agentCommand",
+    "mode",
+    "nonInteractivePermissions",
+    "stateDir",
+    "warmHandleIdleMs",
+    "dangerouslyBypassApprovalsAndSandbox",
+    "dangerouslyBypassSandbox",
+    "instructionsFilePath",
+    "modelReasoningEffort",
+    "search",
+    "fastMode",
+    "command",
+    "extraArgs",
+  ]) {
+    delete config[unsupportedKey];
+  }
+  const schemaValues = v.adapterSchemaValues ?? {};
+  const provider = paperclipRunnerProvider(schemaValues.provider);
+  if (provider === "codex") {
+    return { ...config, provider };
+  }
+
+  const lifecycleMode = schemaValues.lifecycleMode === "warm" ? "warm" : "per_turn";
+  const configuredIdleTimeoutMs = schemaValues.idleTimeoutMs;
+  const idleTimeoutMs = typeof configuredIdleTimeoutMs === "number"
+    && Number.isSafeInteger(configuredIdleTimeoutMs)
+    && configuredIdleTimeoutMs > 0
+    ? configuredIdleTimeoutMs
+    : 300_000;
+  return {
+    ...config,
+    provider,
+    model: v.model || "openrouter/deepseek/deepseek-v4-flash-0731",
+    opencodePermissionMode: openCodePermissionMode(
+      schemaValues.opencodePermissionMode,
+    ),
+    lifecycleMode,
+    ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
+  };
+}

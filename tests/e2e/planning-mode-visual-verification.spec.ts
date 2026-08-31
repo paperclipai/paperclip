@@ -4,7 +4,8 @@ import {
   instrumentNavLog,
 } from "./helpers/onboarding-landing";
 
-const AGENT_NAME = "Chief of staff";
+/** The name the CEO role fills in — see AGENT_ROLE_LABELS. */
+const AGENT_NAME = "CEO";
 const TASK_TITLE = "Paperclip onboarding";
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
@@ -47,30 +48,31 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto("/onboarding");
-  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
+  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Organization|Add Agent/ });
   if (await startBtn.count()) await startBtn.first().click();
 
-  const createCard = page.getByRole("button", { name: /Build a new company/ });
+  const createCard = page.getByRole("button", { name: /Build a new organization/ });
   if (await createCard.count()) await createCard.first().click();
 
-  await expect(page.getByRole("heading", { name: "Name your organization" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Define your mission" })).toBeVisible({ timeout: 30_000 });
-  await page
-    .getByPlaceholder("What is your team trying to achieve?")
-    .fill("Capture planning mode visual evidence for the graduated task UI.");
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
+  // Naming the company creates it and goes straight to the agent step.
 
-  await page.waitForSelector('input[placeholder="Chief of staff"]', { timeout: 30_000 });
-  await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
+  // The agent step asks for a name and nothing else; the name is what gates
+  // "Next", and the hire is filed under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
+  // The review step names the agent rather than the step.
+  await expect(
+    page.getByRole("heading", { name: "Let's get started..." }),
+  ).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
   // The wizard now drops the user straight onto the first task's detail page,
   // and must not bounce through the dashboard (PAP-404).
@@ -135,7 +137,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(issuePath);
   await page.getByTestId("task-chat-composer-mode").click();
-  await page.getByRole("menuitem", { name: /Agent mode/ }).click();
+  await page.getByRole("menuitem", { name: /Auto mode/ }).click();
   await expect(page.getByTestId("task-chat-composer-mode")).toHaveAttribute("data-pending-work-mode", "standard");
   await page.screenshot({
     path: `${screenshotDir}/desktop-standard-toggle-${timestamp}.png`,

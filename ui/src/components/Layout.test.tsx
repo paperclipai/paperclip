@@ -467,7 +467,9 @@ describe("Layout", () => {
     expect(selectorText).toContain("export");
     expect(selectorText).toContain("import");
     expect(selectorText).toContain("members");
-    expect(selectorText).toContain("invites");
+    // Invites live on a tab of the Members page now, so the selector no
+    // longer carries a standalone entry for them.
+    expect(selectorText).not.toContain("invites");
     expect(selectorText).toContain("secrets");
     expect(selectorText).toContain("profile");
     expect(selectorText).toContain("environments");
@@ -642,7 +644,7 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+  it.each(["browse", "connections", "vercel-connect", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
     currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({

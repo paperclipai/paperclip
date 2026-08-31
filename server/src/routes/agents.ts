@@ -32,6 +32,7 @@ import {
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
+  type AgentAdapterType,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -60,9 +61,11 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
+import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -78,6 +81,8 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
+import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -121,6 +126,7 @@ import {
   type SetupTokenSessionScope,
   type SetupTokenSessionState,
   type SetupTokenSessionDescriptor,
+  SETUP_TOKEN_ADAPTER_TYPE,
 } from "../services/setup-token-session.js";
 import type {
   DeploymentMode,
@@ -141,14 +147,23 @@ import {
   promoteDeviceLoginCredential,
 } from "@paperclipai/adapter-codex-local/server";
 import {
+  checkStagedGrokCredentialReadiness,
+  promoteGrokDeviceLoginCredential,
+} from "@paperclipai/adapter-grok-local/server";
+import {
   AdapterAuthSessionConflictError,
-  createCodexDeviceLoginService,
+  createDeviceLoginService,
+  createWorkerBoundLoginPtyOpener,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
-} from "../services/codex-device-login-service.js";
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+  type CredentialPromotion,
+} from "../services/device-login-service.js";
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
@@ -276,6 +291,7 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    kimi_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -486,70 +502,137 @@ export function agentRoutes(
   // process owns one instance, so the in-memory prompt and the cancellation
   // controllers persist across requests.
   const adapterLoginStore = createDbAdapterAuthSessionStore(db);
-  const adapterLoginService = createCodexDeviceLoginService({
+  const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
-    runtime: createProductionLoginSessionRuntime({ db, environmentRuntime }),
-    // The mandatory credential promotion. A successful login authenticates only
-    // after this promotion validates the exact staged credential, runs an
-    // independent readiness check, confirms the session still holds the sole
-    // active claim, and writes the credential into the company scope. A rejected
-    // or unready credential fails the session and writes nothing.
-    promotion: {
-      async promote(authBytes, context) {
-        // Hold the promotion critical-section lock across the ownership check and
-        // the credential write. The reaper takes the same lock before it reclaims
-        // a stale `promoting` row. So a reclaim never interleaves with a live
-        // write: the reaper either wins the lock first and the ownership check
-        // then reads a reclaimed row and writes nothing, or the write finishes
-        // first under the lock and the reaper reclaims only after it completes. A
-        // read-only fence is not enough, because the filesystem write can start
-        // after the fence; the lock spans the whole section.
-        const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
-          context.companyId,
-          context.startedByUserId,
-          context.adapterType,
-          () =>
-            promoteDeviceLoginCredential({
-              authBytes,
-              companyId: context.companyId,
-              userInitiated: true,
-              checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
-              isSoleActiveOwner: async () => {
-                // The partial unique index allows one active row per company and
-                // adapter. So a `promoting` row for this session is the sole
-                // active owner of the company credential slot. The read runs
-                // inside the lock, so it observes a reaper reclaim that committed
-                // before this section acquired the lock.
-                const row = await adapterLoginStore.get(context.sessionId);
-                return row?.status === "promoting" && row.companyId === context.companyId;
-              },
-              log: (line) => {
-                // The promotion lines carry no token bytes and no raw account id,
-                // so it is safe to log them with the session identifier.
-                logger.info({ sessionId: context.sessionId }, line);
-              },
-            }),
-        );
-        // A resolved promotion is not necessarily an accepted promotion. In
-        // particular, a reaper/expiry race can revoke this session's sole
-        // ownership between the service transition and Decision H. Fail closed:
-        // only a credential write or a deliberate safe keep can authenticate.
-        if (outcome === "kept_foreign_identity") {
-          // The login produced a different account than the one the company
-          // credential home already holds. The promotion never clobbers an
-          // occupied home, so this login installed nothing durable, and the
-          // identity-anchored vend can never select it: a later run keeps the
-          // existing account. Fail the session, so the operator never sees a
-          // false `authenticated` for an account the system will not use.
-          throw new Error(
-            "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+    runtime: createProductionLoginSessionRuntime({
+      db,
+      environmentRuntime,
+      // Re-check the provider login pseudo-terminal capability from current
+      // runtime state immediately before the provider lease. The route gate ran
+      // earlier, so a managed reconciliation can rebind the environment to an
+      // unsupported provider between the gate and the acquire; this fails closed
+      // before the lease and the pseudo-terminal.
+      assertProviderSupportsLoginPty: (environmentId) =>
+        assertCodexLoginProviderCapability(environmentId),
+      // Wire the live Codex pseudo-terminal opener through the plugin worker
+      // manager route. The opener sets the sandbox `CODEX_HOME` to the same
+      // server-controlled session home the descriptor-bound credential read
+      // opens. When no worker manager is bound, the runtime keeps its fail-closed
+      // opener and the login fails closed.
+      openLivePtySession: options.pluginWorkerManager
+        ? createWorkerBoundLoginPtyOpener({
+            workerManager: options.pluginWorkerManager,
+            log: (line) => logger.info(line),
+          })
+        : undefined,
+    }),
+    // The mandatory credential promotion, keyed by adapter type. A successful
+    // login authenticates only after the promotion for its own adapter type
+    // validates the exact staged credential, runs an independent readiness
+    // check, confirms the session still holds the sole active claim, and
+    // writes the credential into the company scope. A rejected or unready
+    // credential fails the session and writes nothing. Keying by adapter type
+    // keeps a `grok_local` login from ever running the Codex promotion (and
+    // vice versa): each entry closes over its own readiness check and its own
+    // promotion function.
+    promotionByAdapterType: {
+      codex_local: {
+        async promote(authBytes, context) {
+          // Hold the promotion critical-section lock across the ownership check and
+          // the credential write. The reaper takes the same lock before it reclaims
+          // a stale `promoting` row. So a reclaim never interleaves with a live
+          // write: the reaper either wins the lock first and the ownership check
+          // then reads a reclaimed row and writes nothing, or the write finishes
+          // first under the lock and the reaper reclaims only after it completes. A
+          // read-only fence is not enough, because the filesystem write can start
+          // after the fence; the lock spans the whole section.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  // The partial unique index allows one active row per company and
+                  // adapter. So a `promoting` row for this session is the sole
+                  // active owner of the company credential slot. The read runs
+                  // inside the lock, so it observes a reaper reclaim that committed
+                  // before this section acquired the lock.
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no raw account id,
+                  // so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
           );
-        }
-        if (outcome !== "promoted" && outcome !== "kept") {
-          throw new Error(`device-login credential promotion rejected: ${outcome}`);
-        }
+          // A resolved promotion is not necessarily an accepted promotion. In
+          // particular, a reaper/expiry race can revoke this session's sole
+          // ownership between the service transition and Decision H. Fail closed:
+          // only a credential write or a deliberate safe keep can authenticate.
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. The promotion never clobbers an
+            // occupied home, so this login installed nothing durable, and the
+            // identity-anchored vend can never select it: a later run keeps the
+            // existing account. Fail the session, so the operator never sees a
+            // false `authenticated` for an account the system will not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted" && outcome !== "kept") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
       },
-    },
+      grok_local: {
+        async promote(authBytes, context) {
+          // The same promotion critical-section lock as the Codex entry above,
+          // keyed by the same `(companyId, startedByUserId, adapterType)` tuple,
+          // so a Grok reclaim and a Grok write never interleave.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteGrokDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedGrokCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no personal
+                  // field, so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
+          );
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. Fail the session, so the operator
+            // never sees a false `authenticated` for an account the system will
+            // not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
+      },
+    } satisfies Partial<Record<AgentAdapterType, CredentialPromotion>>,
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
       // and no lease identifier, so it is safe to log.
@@ -637,8 +720,8 @@ export function agentRoutes(
       };
     }
 
-    const environment = await environmentsSvc.getById(input.environmentId);
-    if (!environment) {
+    const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
+    if (!requestedEnvironment) {
       return {
         executionTarget: null,
         environmentName: null,
@@ -651,6 +734,40 @@ export function agentRoutes(
         ],
         release: noopRelease,
       };
+    }
+
+    // Managed-sandbox-only policy: redirect a Test that would run on the local
+    // host onto the platform-managed sandbox, the same as a real run does
+    // (resolveExecutionWorkspaceEnvironmentId in heartbeat). Without this
+    // redirect the Test probes the local host while the run executes in the
+    // managed sandbox, so a passing Test validates the wrong execution target.
+    // With no active managed sandbox the Test fails closed — never local.
+    let environment = requestedEnvironment;
+    if (requestedEnvironment.driver === "local") {
+      const managedSandboxOnly =
+        (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+      if (managedSandboxOnly) {
+        const managedSandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(
+          input.companyId,
+        );
+        if (!managedSandboxEnvironment) {
+          return {
+            executionTarget: null,
+            environmentName: requestedEnvironment.name,
+            fallbackChecks: [
+              {
+                code: "managed_sandbox_unavailable",
+                level: "error",
+                message:
+                  "This instance runs agents only in its platform-managed sandbox, but no active managed sandbox environment exists. The test did not run.",
+                hint: "Restore the managed sandbox environment, then test again.",
+              },
+            ],
+            release: noopRelease,
+          };
+        }
+        environment = managedSandboxEnvironment;
+      }
     }
 
     if (environment.driver === "local") {
@@ -746,6 +863,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Re-check the company binding atomically at lease time. The route
+        // guard already rejected a foreign environment, but the binding could
+        // change between the guard check and the lease acquire. This closes
+        // that check-to-lease race so a foreign sandbox never gets a lease.
+        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -852,7 +974,7 @@ export function agentRoutes(
           {
             code: "environment_target_failed",
             level: "error",
-            message: `Could not resolve a sandbox execution target for "${environment.name}".`,
+            message: `Could not resolve an execution target for "${environment.name}".`,
             detail: err instanceof Error ? err.message : String(err),
           },
         ],
@@ -944,9 +1066,9 @@ export function agentRoutes(
     return {
       code: "sandbox_test_identity",
       level: "info",
-      message: `Sandbox test identity for "${input.environmentName}".`,
+      message: `Environment test identity for "${input.environmentName}".`,
       detail: detailParts.join("; "),
-      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed sandbox snapshots.",
+      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed environment snapshots.",
     };
   }
 
@@ -1174,13 +1296,25 @@ export function agentRoutes(
     return findActiveServerAdapter(type)?.loginCapability ?? null;
   }
 
-  // The device-login route drives a login over the streamed exec channel. It
-  // serves any adapter whose registry login capability declares that transport.
-  // The guard reads the capability, not the adapter name, so a new adapter with
-  // the same transport passes with no code change. It rejects an adapter with no
-  // matching capability with a fixed 400.
-  function assertStreamedExecLoginAdapter(type: string): void {
-    if (getRegistryLoginCapability(type)?.sandboxTransport !== "streamed_exec") {
+  // The device-login route drives a login that shows a one-time code on a real
+  // pseudo-terminal. It serves an adapter whose registry login capability
+  // declares the displayed-code panel mode and whose trusted adapter type maps
+  // to a login command key. The guard reads the panel mode and the command map,
+  // not the adapter name, so a new adapter that satisfies both passes with no
+  // guard code change. It rejects an adapter with no matching capability, and an
+  // adapter with no mapped command key, with the same fixed 400.
+  //
+  // The command-map check keeps admission consistent with the closed command
+  // map. The login opener resolves the command key from the same map. An adapter
+  // that declares the displayed-code capability but has no mapped key would pass
+  // the panel-mode check, then fail at command resolution after the route
+  // creates session state. The guard rejects it before any session or lease side
+  // effect.
+  function assertDeviceLoginAdapter(type: string): void {
+    if (getRegistryLoginCapability(type)?.panelMode !== "displayed_code") {
+      throw badRequest(`Adapter "${type}" does not support a device login.`);
+    }
+    if (!isLoginCommandSupportedAdapterType(type)) {
       throw badRequest(`Adapter "${type}" does not support a device login.`);
     }
   }
@@ -1230,14 +1364,15 @@ export function agentRoutes(
   }
 
   /**
-   * Fails closed when the environment provider does not advertise the Claude
-   * setup-token login capability. It resolves the effective provider from the
-   * environment config, then reads the static capability from the provider
-   * plugin manifest. It never checks the provider by name. A missing plugin, a
-   * non-plugin provider, and a provider without the flag all fail closed with
-   * the fixed, typed error, so no session row, lease, or pseudo-terminal starts.
+   * Reports whether the environment provider advertises the login pseudo-terminal
+   * capability. It resolves the effective provider from the current environment
+   * config, then reads the static capability from the provider plugin manifest. It
+   * never checks the provider by name. A missing provider, a missing plugin, a
+   * non-plugin provider, and a provider without the flag all return false. Both
+   * login flows share this resolver, so both gates read the same current
+   * capability.
    */
-  async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
+  async function resolveProviderSupportsLoginPty(environmentId: string): Promise<boolean> {
     const environment = await environmentsSvc.getById(environmentId);
     const config =
       environment?.config && typeof environment.config === "object"
@@ -1247,9 +1382,35 @@ export function agentRoutes(
     const resolved = provider
       ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
       : null;
-    if (!resolved?.driver.supportsLoginPty) {
+    return resolved?.driver.supportsLoginPty === true;
+  }
+
+  /**
+   * Fails closed when the environment provider does not advertise the login
+   * pseudo-terminal capability that the Claude setup-token login needs. It reads
+   * the current provider capability. It fails closed with the fixed, typed error,
+   * so no session row, lease, or pseudo-terminal starts.
+   */
+  async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
+    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
       throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
         code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
+      });
+    }
+  }
+
+  /**
+   * Fails closed when the environment provider does not advertise the login
+   * pseudo-terminal capability that the Codex device login needs. It reads the
+   * current provider capability. The Codex route runs it before any session or
+   * lease state, and the lease-acquisition path runs it again from current runtime
+   * state before the provider lease. It fails closed with the fixed, typed error,
+   * so no session row, lease, or pseudo-terminal starts.
+   */
+  async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
+    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
+      throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
+        code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }
@@ -1462,8 +1623,17 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  function assertSelectableAdapterType(type: string | null | undefined): string {
+  async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
     const adapterType = assertKnownAdapterType(type);
+    if (adapterType === "paperclip_runner") {
+      const experimental = await instanceSettings.getExperimental();
+      if (experimental.enableNativeRunner !== true) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
     const disabled = new Set(getDisabledAdapterTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
@@ -1850,6 +2020,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "kimi_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_KIMI_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
@@ -2024,6 +2198,22 @@ export function agentRoutes(
     );
   }
 
+  async function assertCanResumeAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") return;
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
@@ -2086,6 +2276,34 @@ export function agentRoutes(
       entries: [],
       warnings: ["This adapter does not implement skill sync yet."],
     };
+  }
+
+  // The default CEO instructions assume the core paperclip skills (board
+  // coordination, planning, hiring, memory). Union them into every
+  // skills-capable CEO hire/create so a fresh CEO never starts with an empty
+  // desired-skill set that contradicts its own instructions. Optional role
+  // skills remain removable afterwards. Legacy adapters separately guarantee
+  // the Paperclip operational skill as a runtime invariant.
+  function defaultRoleSkillSelections(
+    role: string | null | undefined,
+    adapterType: string,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (role !== "ceo") return undefined;
+    const adapter = findActiveServerAdapter(adapterType);
+    if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
+    return PAPERCLIP_CORE_SKILL_KEYS.map((key) => ({ key, versionId: null }));
+  }
+
+  function withDefaultRoleSkillSelections(
+    requested: AgentDesiredSkillEntry[] | undefined,
+    defaults: AgentDesiredSkillEntry[] | undefined,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (!defaults) return requested;
+    if (!requested) return defaults;
+    const merged = new Map(defaults.map((entry) => [entry.key, entry]));
+    // An explicit request wins over a default for the same key (version pins).
+    for (const entry of requested) merged.set(entry.key, entry);
+    return Array.from(merged.values());
   }
 
   function normalizeDesiredSkillSelections(
@@ -2340,6 +2558,39 @@ export function agentRoutes(
     res.json(detected);
   });
 
+  // The environment drivers the adapter Test route accepts. A local, SSH, or
+  // sandbox environment can host a probe; a plugin environment cannot.
+  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
+
+  // The fail-closed tenant-binding guard for the adapter Test route. A caller
+  // may name any instance environment by id, so the route must reject an
+  // environment that binds to another company before it resolves secrets,
+  // merges env, resolves the target, leases a sandbox, or runs the adapter
+  // test. The guard checks the company binding BEFORE it validates the status
+  // or the driver, so it never reveals the status or the driver of a foreign
+  // environment. A same-company or an instance-global environment then gets the
+  // shared driver and status validation.
+  async function assertAdapterTestEnvironmentForCompany(
+    companyId: string,
+    environmentId: string,
+  ): Promise<void> {
+    const environment = await environmentsSvc.getById(environmentId);
+    if (!environment) {
+      // A missing environment leaks no tenant state. The execution-context
+      // resolver surfaces the existing environment_not_found check.
+      return;
+    }
+    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
+      throw forbidden("The selected environment belongs to another company.", {
+        code: "environment_company_mismatch",
+      });
+    }
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -2356,6 +2607,11 @@ export function agentRoutes(
         typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
           ? (req.body.environmentId as string)
           : null;
+      // Fail closed on a foreign environment before any secret resolution, env
+      // merge, target resolution, sandbox lease, or adapter test runs.
+      if (requestedEnvironmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
@@ -2494,6 +2750,126 @@ export function agentRoutes(
     },
   );
 
+  // The claude_local branch of the auth-signal read. It checks two host-local
+  // sources for a usable Claude Code OAuth token: the resolved envVars of the
+  // caller's selected environment, and the caller's own stored Claude login. It
+  // returns "present" the moment either source holds a non-empty token, so it
+  // never resolves more than the one env key it needs.
+  async function evaluateClaudeAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      const environmentEnv = Object.fromEntries(
+        Object.entries(parseObject(environment?.envVars)).filter(
+          ([key]) => !isForbiddenConfigEnvKey(key),
+        ),
+      );
+      const tokenBinding = environmentEnv.CLAUDE_CODE_OAUTH_TOKEN;
+      if (tokenBinding !== undefined) {
+        const resolution = await secretsSvc.resolveEnvBindings(
+          companyId,
+          { CLAUDE_CODE_OAUTH_TOKEN: tokenBinding },
+          buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+        );
+        if (asNonEmptyString(resolution.env.CLAUDE_CODE_OAUTH_TOKEN)) {
+          return "present";
+        }
+      }
+    }
+    const ownerUserId = req.actor.userId;
+    if (ownerUserId) {
+      const stored = await secretsSvc.readClaudeOAuthUserSecretStatus(companyId, ownerUserId);
+      if (stored) return "present";
+    }
+    return "absent";
+  }
+
+  // The codex_local branch of the auth-signal read. The host filesystem check
+  // (`evaluateCodexCredentialReadiness` against `process.env`) describes only
+  // the Paperclip host, so it is authoritative for the null-environment and
+  // "local" driver cases, where the host is the execution target. For a
+  // non-local environment (a sandbox), the host's own credential state says
+  // nothing about that sandbox, so the route checks the environment's own
+  // OPENAI_API_KEY binding instead and otherwise reports "unknown" -- never
+  // "present" from a host login the sandbox does not share.
+  async function evaluateCodexAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const apiKeyBinding = environmentEnv.OPENAI_API_KEY;
+        if (apiKeyBinding !== undefined) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            { OPENAI_API_KEY: apiKeyBinding },
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (asNonEmptyString(resolution.env.OPENAI_API_KEY)) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId,
+      configuredCodexHome: null,
+      configuredApiKey: null,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
+  // The cheap host-local authentication signal for one adapter type. The route
+  // reads host-local state only: a stored Claude login, a resolved environment
+  // env var, or the local Codex credential readiness check. It leases no
+  // sandbox, starts no shell command, and starts no model request. The two
+  // access gates below run before any read, so a caller who cannot create
+  // agents for the company and a foreign environment both fail closed before
+  // the route touches a credential source.
+  router.get(
+    "/companies/:companyId/adapters/:type/auth-signal",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      await assertCanCreateAgentsForCompany(req, companyId);
+      const environmentId = asNonEmptyString(req.query.environmentId);
+      if (environmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
+      }
+      res.setHeader("Cache-Control", "no-store");
+
+      let status: AdapterAuthSignal = "unknown";
+      try {
+        if (type === "claude_local") {
+          status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
+        } else if (type === "codex_local") {
+          status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        }
+      } catch {
+        // A failed read is never a claim that the credential is absent. Report
+        // the neutral "unknown" signal instead, so the wizard falls back to
+        // showing the login panel.
+        status = "unknown";
+      }
+
+      const body: AdapterAuthSignalResponse = { status };
+      res.json(body);
+    },
+  );
+
   // Start a company-scoped adapter device login. The create form has no agent
   // identifier, so the route keys on the company and the adapter. The owner
   // helper requires a board actor with the configuration permission, and it
@@ -2514,11 +2890,19 @@ export function agentRoutes(
         req,
         res,
         deriveOwner: () => assertCanManageAdapterLogin(req, companyId),
-        guardBeforeValidate: () => assertStreamedExecLoginAdapter(type),
+        guardBeforeValidate: () => assertDeviceLoginAdapter(type),
         requestSchema: startAdapterAuthSessionRequestSchema,
         invalidRequestError: "The device login start request is invalid.",
         requestOverrides: { adapterType: type },
-        assertSandbox: (data) => assertSandboxLoginEnvironment(companyId, data.environmentId),
+        assertSandbox: async (data) => {
+          // The device login runs on a real pseudo-terminal, so it needs a
+          // provider that advertises the login pseudo-terminal capability. Gate
+          // the route on the current provider capability before any session or
+          // lease state. The lease-acquisition path re-checks it from current
+          // runtime state before the provider lease.
+          await assertSandboxLoginEnvironment(companyId, data.environmentId);
+          await assertCodexLoginProviderCapability(data.environmentId);
+        },
       });
       if (!resolved) return;
       const { ownerUserId: startedByUserId, data } = resolved;
@@ -2567,7 +2951,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertStreamedExecLoginAdapter(type);
+      assertDeviceLoginAdapter(type);
 
       const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
       if (!owner) {
@@ -2587,7 +2971,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertStreamedExecLoginAdapter(type);
+      assertDeviceLoginAdapter(type);
 
       // Scope the cancel to this company, adapter, and owner. A non-owner and a
       // cross-company caller both receive a 404 and cannot cancel a session.
@@ -3142,7 +3526,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
+    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
@@ -3164,7 +3548,10 @@ export function agentRoutes(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      withDefaultRoleSkillSelections(
+        normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+        defaultRoleSkillSelections(hireInput.role, hireInput.adapterType),
+      ),
       "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -3358,7 +3745,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
+    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
@@ -3380,7 +3767,10 @@ export function agentRoutes(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      withDefaultRoleSkillSelections(
+        normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+        defaultRoleSkillSelections(createInput.role, createInput.adapterType),
+      ),
       "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -3792,12 +4182,12 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? (() => {
-        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
-        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
-      })()
+    const nextAdapterType = hasOwn(patchData, "adapterType")
+      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
+    const requestedAdapterType = nextAdapterType === existing.adapterType
+      ? nextAdapterType
+      : await assertSelectableAdapterType(nextAdapterType);
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -3956,12 +4346,12 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
     }
+    await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
@@ -3974,10 +4364,14 @@ export function agentRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
@@ -4552,9 +4946,6 @@ export function agentRoutes(
   // Each route writes its full path as a plain string literal, so the static
   // OpenAPI coverage test can read the path from the source text.
 
-  // The company-and-environment login serves only the Claude adapter.
-  const CLAUDE_SETUP_TOKEN_ADAPTER_TYPE = "claude_local";
-
   // Maps the internal session state to the public login status. The public union
   // carries no server-only state, so the route never returns the internal
   // `submitting` or `stored` state to a client.
@@ -4610,7 +5001,7 @@ export function agentRoutes(
   const companySetupTokenKey = (companyId: string, ownerUserId: string) => ({
     companyId,
     ownerUserId,
-    adapterType: CLAUDE_SETUP_TOKEN_ADAPTER_TYPE,
+    adapterType: SETUP_TOKEN_ADAPTER_TYPE,
   });
 
   // The stored Claude OAuth token status read. It returns
@@ -4671,15 +5062,24 @@ export function agentRoutes(
       guardAfterValidate: (data) => {
         // The setup-token route drives a login on a pseudo-terminal and records a
         // stored session identifier on success. It serves any adapter whose
-        // registry login capability declares that transport and that claim. The
-        // guard reads the capability, not the adapter name, so a new adapter with
-        // the same capability passes with no code change. It rejects an adapter
-        // with no matching capability with a fixed 400.
+        // registry login capability records that completion claim. The guard reads
+        // the capability, not the adapter name, so a new adapter with the same
+        // claim passes with no code change. It rejects an adapter with no matching
+        // capability with a fixed 400.
         const capability = getRegistryLoginCapability(data.adapterType);
-        if (
-          capability?.sandboxTransport !== "pseudo_terminal" ||
-          capability.completionClaim !== "storedSessionId"
-        ) {
+        if (capability?.completionClaim !== "storedSessionId") {
+          res.status(400).json({ error: "This adapter does not support a setup-token login." });
+          return true;
+        }
+        // The five follow-up routes and the restart reaper both read only the
+        // one pinned adapter type. A capability match alone is not enough: an
+        // adapter that declares `storedSessionId` but is not the served type
+        // would pass the check above, then create a session that no follow-up
+        // route and no reaper scan can reach. Reject that case here, before any
+        // sandbox assertion, lease, durable row, or pseudo-terminal, with the
+        // same fixed 400 as the capability check above, so the response
+        // discloses no difference between the two rejection reasons.
+        if (data.adapterType !== SETUP_TOKEN_ADAPTER_TYPE) {
           res.status(400).json({ error: "This adapter does not support a setup-token login." });
           return true;
         }
@@ -4898,6 +5298,7 @@ export function agentRoutes(
 
     const columns = {
       id: heartbeatRuns.id,
+      runtimeMode: heartbeatRuns.runtimeMode,
       companyId: heartbeatRuns.companyId,
       status: heartbeatRuns.status,
       invocationSource: heartbeatRuns.invocationSource,
@@ -5123,6 +5524,7 @@ export function agentRoutes(
     const liveRuns = await db
       .select({
         id: heartbeatRuns.id,
+        runtimeMode: heartbeatRuns.runtimeMode,
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,

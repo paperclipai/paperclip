@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "slug": "clickhouse",
+  "name": "ClickHouse",
+  "description": "Connect ClickHouse's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/clickhouse.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.clickhouse.cloud/*"
+  ],
+  "docsUrl": "https://clickhouse.com/blog/announcing-managed-clickstack-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.clickhouse.cloud/clickstack"
+      },
+      "guidanceMd": "Connect ClickHouse in the browser. A ClickHouse Cloud ClickStack service and its service ID.",
+      "riskTier": "S4",
+      "label": "Sign in with ClickHouse",
+      "consoleLinks": {
+        "docs": "https://clickhouse.com/blog/announcing-managed-clickstack-mcp-server"
+      },
+      "warnings": [
+        "A ClickHouse Cloud ClickStack service and its service ID."
+      ],
+      "tenantFields": [
+        {
+          "key": "serviceId",
+          "label": "ClickHouse Cloud service ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "11e1031f-9a13-4cac-9bc7-d4ec9286ec17",
+          "helperMd": "Copy the service ID from ClickStack → Team Settings → API & Agents.",
+          "transport": {
+            "location": "header",
+            "name": "x-service-id"
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "service"
+      ]
+    }
+  ]
+}

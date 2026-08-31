@@ -62,6 +62,7 @@ vi.mock("../components/MarkdownEditor", () => ({
   }) => {
     markdownEditorRenderMock({
       value,
+      onChange,
       contentClassName,
       hasImageUploadHandler: Boolean(imageUploadHandler),
     });
@@ -301,6 +302,7 @@ describe("PromptsTab instruction editor", () => {
     }));
 
     await act(async () => {
+      editor.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       setNativeValue(editor, "# Updated");
     });
     await waitFor(() => {
@@ -319,6 +321,75 @@ describe("PromptsTab instruction editor", () => {
         "company-1",
       );
     });
+  });
+
+  it("ignores rich-editor mount normalization until the user interacts", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    const onDirtyChange = vi.fn();
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [summary]),
+      { "AGENTS.md": makeDetail(summary, "# Current") },
+      { onDirtyChange },
+    );
+
+    const editorProps = await waitFor(() => {
+      const latest = markdownEditorRenderMock.mock.calls.at(-1)?.[0] as
+        | { onChange?: (value: string) => void }
+        | undefined;
+      expect(latest?.onChange).toEqual(expect.any(Function));
+      return latest!;
+    });
+
+    await act(async () => {
+      editorProps.onChange?.("# Current\n");
+    });
+    await flushReact();
+
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expect(saveAction).toBeNull();
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("releases dirty state and save controls when the instructions tab unmounts", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    const onDirtyChange = vi.fn();
+    const onSavingChange = vi.fn();
+    let cancelAction: (() => void) | null = null;
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [summary]),
+      { "AGENTS.md": makeDetail(summary, "# Current") },
+      {
+        onDirtyChange,
+        onSavingChange,
+        onSaveActionChange: (next) => { saveAction = next; },
+        onCancelActionChange: (next) => { cancelAction = next; },
+      },
+    );
+
+    const editor = await waitFor(() => {
+      const candidate = container.querySelector<HTMLTextAreaElement>('[data-testid="markdown-editor"]');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    await act(async () => {
+      editor.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      setNativeValue(editor, "# Updated");
+    });
+    await waitFor(() => {
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      expect(saveAction).toEqual(expect.any(Function));
+      expect(cancelAction).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(onSavingChange).toHaveBeenLastCalledWith(false);
+    expect(saveAction).toBeNull();
+    expect(cancelAction).toBeNull();
   });
 
   it("uses the Markdown editor for pending new .md files before server metadata exists", async () => {

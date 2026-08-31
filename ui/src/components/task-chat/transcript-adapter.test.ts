@@ -162,6 +162,73 @@ describe("transcriptToTaskChatItems tool_call updates", () => {
   });
 });
 
+describe("transcriptToTaskChatItems native usage", () => {
+  it("renders runner usage without inventing a context-window size", () => {
+    const items = transcriptToTaskChatItems([{
+      kind: "result",
+      ts: TS,
+      text: "",
+      inputTokens: 40,
+      outputTokens: 10,
+      cachedTokens: 5,
+      costUsd: 0.02,
+      subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    }], { runId: "native-run", running: true });
+
+    expect(items).toEqual([{
+      id: "native-run:usage:0",
+      kind: "usage",
+      usage: {
+        used: 55,
+        size: 0,
+        inputTokens: 40,
+        outputTokens: 10,
+        costUsd: 0.02,
+      },
+    }]);
+  });
+
+  it("renders cumulative-only runner session usage", () => {
+    const items = transcriptToTaskChatItems([{
+      kind: "result",
+      ts: TS,
+      text: "",
+      inputTokens: 80,
+      outputTokens: 20,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "paperclip_runner_session_usage",
+      isError: false,
+      errors: [],
+    }], { runId: "native-run", running: true });
+
+    expect(items).toEqual([expect.objectContaining({
+      kind: "usage",
+      label: "Provider session total",
+      detail: expect.stringContaining("cumulative usage"),
+      usage: expect.objectContaining({ used: 100, inputTokens: 80, outputTokens: 20 }),
+    })]);
+  });
+
+  it("does not change direct-adapter result presentation", () => {
+    const items = transcriptToTaskChatItems([{
+      kind: "result",
+      ts: TS,
+      text: "done",
+      inputTokens: 40,
+      outputTokens: 10,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "success",
+      isError: false,
+      errors: [],
+    }], { runId: "legacy-run", running: true });
+    expect(items).toEqual([]);
+  });
+});
+
 describe("buildTurnSummary tool counting", () => {
   function statusEntry(toolUseId: string | undefined, status: string): TranscriptEntry {
     return {
@@ -192,6 +259,33 @@ describe("buildTurnSummary tool counting", () => {
       toolCall("Read"),
     ];
     expect(buildTurnSummary(entries).toolCount).toBe(3);
+  });
+
+  it("keeps session-cumulative runner usage out of run summaries", () => {
+    const runUsage = {
+      kind: "result",
+      ts: TS,
+      subtype: "paperclip_runner_usage",
+      inputTokens: 40,
+      outputTokens: 10,
+    } as TranscriptEntry;
+    const sessionUsage = {
+      kind: "result",
+      ts: TS,
+      subtype: "paperclip_runner_session_usage",
+      inputTokens: 800,
+      outputTokens: 200,
+    } as TranscriptEntry;
+
+    expect(buildTurnSummary([runUsage, sessionUsage]).tokensLabel).toBe(
+      "50 tokens",
+    );
+    expect(
+      buildMergedTurnSummary([
+        { entries: [runUsage] },
+        { entries: [sessionUsage] },
+      ]).tokensLabel,
+    ).toBe("50 tokens");
   });
 });
 

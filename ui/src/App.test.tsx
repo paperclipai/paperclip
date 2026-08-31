@@ -115,9 +115,9 @@ describe("CloudAccessGate", () => {
     });
 
     const root = renderGate(container);
-    await waitForText(container, "No company access");
+    await waitForText(container, "No organization access");
 
-    expect(container.textContent).toContain("No company access");
+    expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
     unmountRoot(root);
@@ -141,7 +141,7 @@ describe("CloudAccessGate", () => {
     await waitForText(container, "Outlet content");
 
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("No company access");
+    expect(container.textContent).not.toContain("No organization access");
 
     unmountRoot(root);
   });
@@ -249,8 +249,28 @@ describe("Apps routes", () => {
     expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
     expect(appSource).toContain('<Route path="apps/browse" element={<Navigate to="/apps" replace />} />');
     expect(appSource).toContain('<Route path="apps/connections" element={<Connections />} />');
+    expect(appSource).toContain('<Route path="apps/byo" element={<AppsConnect byoOnly />} />');
+    expect(appSource).toContain('path="apps/vercel-connect"');
+    expect(appSource).toContain('<AppsConnectEntryRoute credentialSource="vercel_connect" />');
+    expect(appSource).toContain('<AppsConnect credentialSource={credentialSource} />');
     expect(appSource).toContain('<Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />');
     expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/gateways" element={<GatewaysList />} />');
+  });
+
+  it("redirects legacy Rules and Health links to the remaining developer surfaces", () => {
+    expect(appSource).toContain('if (tab === "runtime") return "/apps/connections";');
+    expect(appSource).toContain('if (tab === "policies") return "/apps/advanced/profiles";');
+  });
+});
+
+describe("Retired settings routes", () => {
+  it("redirects the removed heartbeats page to the settings root instead of dropping the route", () => {
+    expect(appSource).toContain(
+      '<Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />',
+    );
+    expect(appSource).not.toContain("<InstanceSettings");
+    expect(appSource).not.toContain('"./pages/InstanceSettings"');
   });
 });
 

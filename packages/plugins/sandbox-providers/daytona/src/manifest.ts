@@ -50,6 +50,10 @@ const manifest: PaperclipPluginManifestV1 = {
       // over a raw pseudo-terminal. Declare the opt-in capability so the host may
       // select the duplex transport. The host resolves it `true` only when the
       // worker also verifies the `duplexChannelOpen` handler.
+      //
+      // Daytona is the first provider that runs the HTTP/2 transport over this
+      // channel. HTTP/2 is the preferred transport. `queue_v1` is the
+      // soft-deprecated fallback.
       sandboxCapabilities: {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
@@ -67,7 +71,11 @@ const manifest: PaperclipPluginManifestV1 = {
       supportsTemplateDelete: true,
       // Daytona hosts an interactive login on a real pseudo-terminal. It is the
       // only bundled provider that implements the login pseudo-terminal methods,
-      // so it advertises the capability.
+      // so it advertises the capability. The session home helpers and the
+      // credential reader run on node, and the sandbox already runs node for the
+      // Paperclip bridge. So the login has no extra runtime prerequisite, and the
+      // advertised capability matches the runtime contract for every configured
+      // image or snapshot.
       supportsLoginPty: true,
       configSchema: {
         type: "object",

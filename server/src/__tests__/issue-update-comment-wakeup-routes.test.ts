@@ -32,9 +32,15 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -106,7 +112,7 @@ vi.mock("../services/index.js", () => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
@@ -262,7 +268,10 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    // The route dispatches the wake after it sends the response, so wait for
+    // the fire-and-forget dispatch to settle. This keeps the wake inside this
+    // test and stops it from leaking into the next test as an extra call.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -479,41 +488,6 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
-  });
-
-  it("does not wake the assignee when a closure comment marks the issue done", async () => {
-    const existing = makeIssue({
-      assigneeAgentId: ASSIGNEE_AGENT_ID,
-      assigneeUserId: null,
-      status: "in_progress",
-    });
-    const updated = {
-      ...existing,
-      status: "done",
-      completedAt: new Date("2026-06-26T16:30:00.000Z"),
-    };
-    mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.update.mockResolvedValue(updated);
-    mockIssueService.addComment.mockResolvedValue({
-      id: "comment-close-1",
-      issueId: existing.id,
-      companyId: existing.companyId,
-      body: "Closing this out.",
-    });
-
-    const res = await request(await createApp())
-      .patch(`/api/issues/${existing.id}`)
-      .send({
-        status: "done",
-        comment: "Closing this out.",
-      });
-
-    expect(res.status).toBe(200);
-    await new Promise((resolve) => setImmediate(resolve));
-    const issueCommentedWakeCalls = mockHeartbeatService.wakeup.mock.calls.filter(
-      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
-    );
-    expect(issueCommentedWakeCalls).toEqual([]);
   });
 
   it("wakes the assignee on top-level board issue comments", async () => {

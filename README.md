@@ -67,7 +67,7 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 
 ## Paperclip is right for you if
 
-- ✅ You want to build **autonomous AI companies**
+- ✅ You want to build **autonomous AI organizations**
 - ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
 - ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
 - ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
@@ -106,7 +106,7 @@ Any agent, any runtime, one org chart. If it can receive a heartbeat, it's hired
 </td>
 <td align="center" width="33%">
 <h3>🎯 Goal Alignment</h3>
-Every task traces back to the company mission. Agents know <em>what</em> to do and <em>why</em>.
+Every task traces back to the organization mission. Agents know <em>what</em> to do and <em>why</em>.
 </td>
 <td align="center" width="33%">
 <h3>💓 Heartbeats</h3>
@@ -119,8 +119,8 @@ Agents wake on a schedule, check work, and act. Delegation flows up and down the
 Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
 </td>
 <td align="center">
-<h3>🏢 Multi-Company</h3>
-One deployment, many companies. Complete data isolation. One control plane for your portfolio.
+<h3>🏢 Multi-Organization</h3>
+One deployment, many organizations. Complete data isolation. One control plane for your portfolio.
 </td>
 <td align="center">
 <h3>🎫 Ticket System</h3>
@@ -170,7 +170,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
+| **True multi-organization isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
 
 <br/>
 
@@ -311,7 +311,7 @@ fi
 bash install.sh
 ```
 
-The installer ensures Node.js 20 or newer is available, installs a managed
+The installer ensures Node.js 24.11 or newer is available, installs a managed
 Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
 can also install Paperclip as a background service on supported Linux and
 macOS systems. The checksum detects transfer or publishing mistakes, but it is
@@ -376,7 +376,7 @@ pnpm dev
 
 This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+> **Requirements:** Node.js 24.11+, pnpm 9.15+
 
 <br/>
 
@@ -467,7 +467,9 @@ Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-p
 
 ## Observability
 
-Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (traces only). It activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and supports `grpc`, `http/protobuf`, and `http/json` via the standard `OTEL_EXPORTER_OTLP_PROTOCOL` env var. The `@opentelemetry/*` packages are optional peer dependencies — install them only if you want tracing. See [doc/observability.md](doc/observability.md) for install commands and the full env-var reference.
+Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (traces only). It activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and supports `grpc`, `http/protobuf`, and `http/json` via the standard `OTEL_EXPORTER_OTLP_PROTOCOL` env var. `@opentelemetry/api` is a normal server dependency; the SDK, auto-instrumentation, and exporter packages are optional peer dependencies — install them only if you want tracing. See [doc/observability.md](doc/observability.md) for install commands and the full env-var reference.
+
+Paperclip also ships with opt-in Sentry error monitoring for the server and the browser. Set `SENTRY_DSN` to activate it — the server and the browser then report to the same Sentry project. The supported server SDK version is `@sentry/node@10.71.0`; it is an optional peer dependency for the server, so install it only if you want error monitoring. The browser SDK, `@sentry/browser`, is pinned to the same exact version. See [doc/observability.md](doc/observability.md#sentry-error-monitoring) for the install command, the privacy settings, and the full default capture set.
 
 ## Telemetry
 

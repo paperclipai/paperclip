@@ -381,6 +381,39 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
   assert.equal(ensureCallsAfterSecond.length, 1);
 });
 
+test("runtime provisioning omits the source override when the base config exists", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
+  const worktreeCwd = makeTempDir("paperclip-provision-runtime-base-config-");
+  fs.mkdirSync(path.join(worktreeCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(worktreeCwd, ".paperclip", "config.json"), "{}\n");
+
+  const result = runRuntimeProvision(baseCwd, worktreeCwd);
+
+  assert.equal(result.status, 0, result.stderr);
+  const ensureCall = readCliInvocations(baseCwd).find(
+    (args) => args[0] === "worktree" && args[1] === "ensure-seeded",
+  );
+  assert.ok(ensureCall, "expected the runtime provisioner to invoke ensure-seeded");
+  assert.ok(!ensureCall.includes("--from-config"));
+});
+
+test("runtime provisioning guards every optional source-config expansion for Bash 3.2", () => {
+  const source = fs.readFileSync(runtimeScript, "utf8");
+  const ensureSeededLines = source
+    .split("\n")
+    .filter((line) => line.includes("worktree ensure-seeded --config"));
+
+  assert.equal(ensureSeededLines.length, 3);
+  for (const line of ensureSeededLines) {
+    assert.ok(
+      line.includes('${source_config_args[@]+"${source_config_args[@]}"}'),
+      `expected Bash 3.2-compatible optional array expansion in: ${line}`,
+    );
+  }
+});
+
 test("runtime provisioning seeds a worktree config that has no seed markers", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   const worktreeCwd = makeTempDir("paperclip-provision-runtime-unmarked-config-");
@@ -458,4 +491,36 @@ test("runtime provisioning does not trust a truncated verified manifest", () => 
       .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded").length,
     1,
   );
+});
+
+/**
+ * pnpm 9.15.4 calls the deprecated url.parse() once per `pnpm install`
+ * (see toNerfDart in the pnpm bundle), which Node 24 reports as DEP0169.
+ * Each `pnpm install` call site must silence that one warning code, and must
+ * append the flag to any NODE_OPTIONS value the environment already set
+ * instead of overwriting it.
+ */
+test("every pnpm install call site silences DEP0169 without overwriting NODE_OPTIONS", () => {
+  const disableWarningFlag = "--disable-warning=DEP0169";
+  const appendsToExistingNodeOptions = /NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/;
+
+  const provisionSource = fs.readFileSync(script, "utf8");
+  const repairCallSites = provisionSource.match(/env -u NODE_ENV CI=true NODE_OPTIONS="\$repair_node_options" "\$\{repair_cmd\[@\]\}"/g) ?? [];
+  assert.equal(repairCallSites.length, 2, "expected the repair pnpm install to carry the flag at both call sites (locked and unlocked)");
+  assert.match(provisionSource, /local repair_node_options="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/);
+  assert.match(provisionSource, appendsToExistingNodeOptions);
+  assert.match(provisionSource, /NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169" pnpm install --prod=false "\$@"/);
+
+  const runtimeSource = fs.readFileSync(runtimeScript, "utf8");
+  const runtimeRepairCallSites = runtimeSource.match(/env -u NODE_ENV CI=true NODE_OPTIONS="\$repair_node_options" "\$\{repair_cmd\[@\]\}"/g) ?? [];
+  assert.equal(runtimeRepairCallSites.length, 2, "expected the repair pnpm install to carry the flag at both call sites (locked and unlocked)");
+  assert.match(runtimeSource, /local repair_node_options="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/);
+
+  // No other warning code is suppressed anywhere in either script.
+  for (const source of [provisionSource, runtimeSource]) {
+    const disableWarningMatches = source.match(/--disable-warning=[^\s"]+/g) ?? [];
+    for (const match of disableWarningMatches) {
+      assert.equal(match, disableWarningFlag);
+    }
+  }
 });

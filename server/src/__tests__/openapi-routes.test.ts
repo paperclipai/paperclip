@@ -26,6 +26,7 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  "connection-intents.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "decision-queues.ts": "/api",
@@ -106,6 +107,12 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
+  if (
+    file === "connection-intents.ts"
+    && (routePath.startsWith("/mcp/") || routePath.startsWith("/runtime-tools/"))
+  ) {
     return routePath;
   }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
@@ -211,6 +218,11 @@ describe("openapi routes", () => {
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
     expect(
+      Object.keys(
+        res.body.paths["/api/issues/{id}/work-products/{workProductId}/review-document"].post.responses,
+      ).sort(),
+    ).toEqual(["200", "201", "401", "403", "404", "409", "413", "415", "422"]);
+    expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
     const createInteraction = res.body.paths["/api/issues/{id}/interactions"].post;
@@ -295,6 +307,7 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
+    expect(spec.paths["/api/routines/{id}/run"].post.responses["422"]).toBeDefined();
   });
 
   it("publishes the Claude browser-code grammar and strict setup-token response shapes", () => {

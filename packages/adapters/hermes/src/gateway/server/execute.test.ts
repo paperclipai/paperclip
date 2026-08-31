@@ -94,6 +94,36 @@ describe("execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("reports dispatch before starting the remote run create request", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const onDispatch = vi.fn();
+    ctx.onDispatch = onDispatch;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        expect(onDispatch).toHaveBeenCalledTimes(1);
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("constructs POST /v1/runs with auth, idempotency, and Hermes session headers", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

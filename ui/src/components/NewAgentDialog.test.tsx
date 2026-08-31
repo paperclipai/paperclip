@@ -160,7 +160,7 @@ describe("NewAgentDialog", () => {
     });
 
     expect(container.textContent).toContain("Generate a one-time onboarding prompt");
-    expect(container.textContent).not.toContain("Company Invites");
+    expect(container.textContent).not.toContain("Organization Invites");
 
     const generateButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Generate onboarding prompt",

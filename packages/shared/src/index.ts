@@ -1,6 +1,26 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
+  CONNECTION_INTENT_AGENT_GUIDANCE,
+  CONNECTION_REQUEST_TOOL_DESCRIPTION,
+  CONNECTION_RUNTIME_TOOL_NAMES,
+  CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
+} from "./connection-intent-guidance.js";
+export {
+  nativeFinalizationResultSchema,
+  nativeFinalizationResultV1Schema,
+  nativeReportedWorkDispositionSchema,
+  type NativeFinalizationResultInput,
+} from "./validators/native-finalization.js";
+export {
+  NATIVE_FINALIZATION_SCHEMA,
+  type NativeFinalizationResult,
+  type NativeFinalizationResultV1,
+  type NativeReportedWorkDisposition,
+  type NativeRuntimeMode,
+  type NativeRunTerminalState,
+} from "./types/native-finalization.js";
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,
@@ -22,6 +42,27 @@ export {
 } from "./validators/decision.js";
 
 export { decisionEffectTargetIssueIds } from "./types/decision.js";
+
+export type {
+  ConnectionAvailabilityState,
+  ConnectionSearchResultItem,
+  ConnectionsSearchResult,
+  ConnectionRequestResult,
+  ConnectionIntentSetupOptions,
+  CompleteConnectionIntentInput,
+  DeclineConnectionIntentInput,
+} from "./types/connection-intent.js";
+
+export {
+  connectionsSearchInputSchema,
+  connectionRequestInputSchema,
+  completeConnectionIntentSchema,
+  declineConnectionIntentSchema,
+  type ConnectionsSearchInput,
+  type ConnectionRequestInput,
+  type CompleteConnectionIntent,
+  type DeclineConnectionIntent,
+} from "./validators/connection-intent.js";
 
 export type {
   DecisionEffectStaleness,
@@ -84,6 +125,19 @@ export {
   type ResponsibleUserSource,
   type OriginatingActor,
 } from "./issue-attribution.js";
+export {
+  ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX,
+  MARKDOWN_ATTACHMENT_CONTENT_TYPES,
+  MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
+  artifactReviewDocumentKey,
+  getAttachmentArtifactWorkProductMetadata,
+  getMarkdownWorkProductAttachmentMetadata,
+  isArtifactReviewDocumentKey,
+  isMarkdownArtifactWorkProduct,
+  isMarkdownAttachmentContent,
+  workProductIdFromArtifactReviewDocumentKey,
+  type AttachmentArtifactWorkProductLike,
+} from "./markdown-work-products.js";
 export {
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
@@ -234,15 +288,37 @@ export {
   type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
+  APP_STORE_DEFINITIONS,
+  APP_STORE_HIDDEN_SLUGS,
   CONNECTABLE_APP_DEFINITIONS,
+  CONNECTABLE_APP_SLUGS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
+  appAcceptsCustomerOAuthClient,
+  appSupportsCatalogSetup,
+  appSupportsAutomaticOAuth,
+  connectionMethodAcceptsCustomerOAuthClient,
+  connectionMethodRequiresConfiguration,
+  connectionMethodSupportsCatalogSetup,
+  connectionMethodSupportsAutomaticOAuth,
   credentialConfigPath,
   getAppDefinitionForUrl,
+  getAppStoreDefinition,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getConnectableAppDefinition,
+  getRecommendedConnectionMethod,
+  isConnectableAppSlug,
+  isAppStoreVisibleSlug,
   recommendedDefaultsForApp,
+  resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export * from "./google-workspace-connectors.js";
+export {
+  BLOCKED_MCP_PROVIDERS,
+  SELF_SERVE_MCP_CANDIDATES,
+  SELF_SERVE_MCP_RESEARCH,
+} from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
@@ -251,9 +327,32 @@ export {
   type HumanizableConnection,
 } from "./humanize-connection.js";
 export {
+  MCP_CONFIG_HELP_INSTRUCTIONS,
+  MCP_CONFIG_HELP_PROMPT,
+} from "./mcp-config-help-prompt.js";
+export {
+  MCP_REMOTE_HEADER_LIMITS,
+  checkMcpRemoteHeaderName,
+  checkMcpRemoteHeaderValue,
+  isSafeMcpRemoteHeaderName,
+  isSafeMcpRemoteHeaderValue,
+  mcpRemoteHeaderNameFromConfigPath,
+  mcpRemoteHeaderRejectionMessage,
+  type McpRemoteHeaderCheck,
+  type McpRemoteHeaderRejection,
+} from "./mcp-remote-headers.js";
+export {
+  checkOAuthEndpointUrl,
+  isSafeOAuthEndpointUrl,
+  oauthEndpointDisplayHost,
+  oauthEndpointUrlRejectionMessage,
+  type OAuthEndpointKind,
+  type OAuthEndpointUrlCheck,
+  type OAuthEndpointUrlOptions,
+  type OAuthEndpointUrlRejection,
+} from "./oauth-endpoint-url.js";
+export {
   COMPANY_STATUSES,
-  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
   BIND_MODES,
@@ -301,6 +400,7 @@ export {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   ISSUE_SURFACE_VISIBILITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
+  ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
@@ -655,6 +755,7 @@ export type {
   WriteSummarySlotResponse,
   Environment,
   EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteReusableLeaseHolder,
   EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,
@@ -810,6 +911,8 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignal,
+  AdapterAuthSignalResponse,
   AdapterAuthSessionStatus,
   AdapterAuthSessionInternalStatus,
   AdapterAuthSessionFailure,
@@ -903,8 +1006,6 @@ export type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-  WorkspaceRealizationSyncStrategy,
-  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   SharedWorkspaceConcurrency,
@@ -1040,6 +1141,9 @@ export type {
   SuggestTasksResult,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsQuestion,
+  PaperclipQuestionSetOption,
+  PaperclipQuestionSetQuestion,
+  PaperclipQuestionSetPayload,
   AskUserQuestionsPayload,
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
@@ -1050,6 +1154,10 @@ export type {
   RequestConfirmationResult,
   RequestConfirmationToolActionPayload,
   RequestConfirmationToolActionResult,
+  RequestConfirmationConnectionAuthorizationPayload,
+  ConnectionIntentPhase,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
   RequestConfirmationSecretProposalPayload,
   RequestConfirmationSecretProposalResult,
   RequestCheckboxConfirmationOption,
@@ -1072,6 +1180,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestItemVerdictsInteraction,
+  ConnectionIntentInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -1244,7 +1353,11 @@ export type {
   SecretProposalView,
   ApproveSecretProposalInput,
   RejectSecretProposalInput,
+  ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  ToolAppMetadataPreflightAttempt,
+  ToolAppMetadataPreflightResult,
+  ToolOAuthClientRegistrationSource,
   ToolOAuthStartResult,
   ToolActionRequest,
   ToolAccessDecision,
@@ -1286,10 +1399,17 @@ export type {
   ToolCatalogEntryKind,
   ToolConnectionHealthStatus,
   ToolConnectionAuthKind,
+  ToolConnectionCredentialSource,
+  ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
+  VercelConnectCredentialReference,
+  VercelConnectCredentialSummary,
+  VercelConnectGrantReference,
+  VercelConnectGrantSummary,
+  VercelConnectPrincipalMode,
   ToolCatalogEntryStatus,
   ToolAppAttentionItem,
   ToolAppAttentionReason,
@@ -1310,9 +1430,19 @@ export type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
+  ToolConnectionRemovalResult,
+  ToolConnectionRemovalSummary,
+  ConnectionAudienceMember,
   ConnectionGrant,
+  ConnectionGrantCapabilities,
+  ConnectionGrantDelegation,
   ConnectionGrantKind,
+  ConnectionGrantMember,
+  ConnectionGrantMemberSubjectType,
+  ConnectionGrantsResponse,
   ConnectionGrantStatus,
+  ToolConnectionCapabilities,
+  ToolConnectionCreateCapabilities,
   ConnectionTokenScope,
   ConnectionTokenRequest,
   ConnectionTokenAttribution,
@@ -1611,6 +1741,12 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  MAX_TASK_DRAIN_TTL_MS,
+  startTaskDrainRequestSchema,
+  type StartTaskDrainRequest,
+} from "./validators/instance.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -1793,12 +1929,16 @@ export {
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionContinuationPolicySchema,
+  connectionIntentPhaseSchema,
+  connectionIntentPayloadSchema,
+  connectionIntentResultSchema,
   suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultCreatedTaskSchema,
   suggestTasksResultSchema,
   askUserQuestionsQuestionOptionSchema,
   askUserQuestionsQuestionSchema,
+  paperclipQuestionSetPayloadSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
@@ -2004,15 +2144,24 @@ export {
   connectionTokenRequestSchema,
   connectionTokenSubjectSchema,
   startConnectionAuthorizationSchema,
+  createConnectionGrantDelegationSchema,
+  replaceConnectionGrantMembersSchema,
   toolConnectionTestCallSchema,
   toolPolicyTestRequestSchema,
   importMcpJsonSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   connectToolAppSchema,
+  GENERIC_MCP_AUTH_MODES,
+  genericMcpAuthModeSchema,
+  genericMcpOAuthClientSchema,
+  type GenericMcpAuthMode,
+  type GenericMcpOAuthClient,
   reconnectToolAppSchema,
   createToolApplicationSchema,
   finishToolAppSchema,
+  finalizeOAuthAccessSchema,
+  startToolOAuthSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
   createToolMcpGatewaySchema,
@@ -2075,6 +2224,8 @@ export {
   type CreateToolActionRequest,
   type CreateToolApplication,
   type FinishToolApp,
+  type FinalizeOAuthAccess,
+  type StartToolOAuth,
   type UpdateToolApplication,
   type CreateToolConnection,
   type CreateToolMcpGateway,
@@ -2085,6 +2236,8 @@ export {
   type PutToolConnectionInstalls,
   type UpdateToolMcpGateway,
   type ConnectionTokenRequestInput,
+  type CreateConnectionGrantDelegation,
+  type ReplaceConnectionGrantMembersInput,
   type ImportMcpJson,
   type ToolPolicyTestRequestInput,
   type CreateToolInvocation,
@@ -2115,7 +2268,10 @@ export {
   createCostEventSchema,
   createFinanceEventSchema,
   updateBudgetSchema,
+  ASSET_NAMESPACE_MAX_LENGTH,
+  ASSET_NAMESPACE_RULE,
   createAssetImageMetadataSchema,
+  sanitizeAssetNamespace,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,
@@ -2471,6 +2627,39 @@ export {
   type FeatureTier,
   type InstanceFeatureKey,
 } from "./feature-catalog.js";
+export {
+  HIDEABLE_COMPANY_PAGES,
+  HIDEABLE_COMPANY_SECTIONS,
+  HIDEABLE_GENERAL_SECTIONS,
+  HIDEABLE_INSTANCE_PAGES,
+  HIDEABLE_SETTING_KEYS,
+  SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
+  UI_ONLY_GENERAL_SECTIONS,
+  experimentalSettingKey,
+  hidesCompanyPage,
+  hidesCompanySection,
+  hidesExperimentalSetting,
+  hidesGeneralSection,
+  hidesInstancePage,
+  parseHiddenSettingsList,
+  type HideableCompanyPage,
+  type HideableCompanySection,
+  type HideableExperimentalSetting,
+  type HideableGeneralSection,
+  type HideableInstancePage,
+  type HideableSettingKey,
+  type ParsedHiddenSettings,
+} from "./settings-visibility.js";
+export {
+  DEFAULTABLE_GENERAL_SETTINGS,
+  SETTING_DEFAULTS_ENV_KEY,
+  applyOperatorGeneralDefaults,
+  parseSettingDefaults,
+  stripOperatorGeneralEchoes,
+  type DefaultableGeneralSetting,
+  type OperatorSettingDefaults,
+  type ParsedSettingDefaults,
+} from "./setting-defaults.js";
 
 // --- Runtime exposure (opt-in Tailscale HTTPS for managed branch runtimes) ---
 // PAP-17049 plan, PAP-17050 threat-model verdict. Contract shared across DB,

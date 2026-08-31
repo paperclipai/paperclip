@@ -47,15 +47,46 @@ const mockGoalsApi = vi.hoisted(() => ({
 }));
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
-  testEnvironment: vi.fn(async () => ({
-    adapterType: "claude_local",
-    status: "pass" as const,
-    checks: [],
-    testedAt: new Date().toISOString(),
-  })),
+  testEnvironment: vi.fn(
+    async (): Promise<import("@paperclipai/shared").AdapterEnvironmentTestResult> => ({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    }),
+  ),
   hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
+  // No default implementation: the top-level `beforeEach` sets the "no
+  // stored value" 404 rejection, using the real `ApiError` class the code
+  // under test checks with `instanceof`.
+  getClaudeOAuthTokenStatus: vi.fn(),
+  getAdapterAuthSignal: vi.fn(
+    async (): Promise<import("@paperclipai/shared").AdapterAuthSignalResponse> => ({
+      status: "present",
+    }),
+  ),
+}));
+// The adapter registry mock below always returns this function, so a test
+// can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
+// without a real adapter package.
+const mockAdapterBuild = vi.hoisted(() => ({
+  buildAdapterConfig: vi.fn(() => ({}) as Record<string, unknown>),
+}));
+// The Connect path loads environment settings before probing; without these
+// the probe dies on "Could not load environment settings" and the hire never
+// runs — which reads as a mysterious 0-call assertion, not an error.
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [] as Array<Record<string, unknown>>),
+  capabilities: vi.fn(
+    async (): Promise<import("@paperclipai/shared").EnvironmentCapabilities> =>
+      (await import("@paperclipai/shared")).getEnvironmentCapabilities([]),
+  ),
+}));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -93,9 +124,11 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
+vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
-  getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
+  getUIAdapter: () => ({ buildAdapterConfig: mockAdapterBuild.buildAdapterConfig }),
 }));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
@@ -106,6 +139,9 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     description: "",
     icon: () => null,
   }),
+  getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
@@ -114,13 +150,21 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
   // makes it undefined and the call throws.
   useAdapterRegistryLoaded: () => true,
 }));
+// Adapters with a declared login capability, mirroring the real registry
+// closely enough for the login-panel gate: `claude_local` and `codex_local`
+// both support a sandbox login. Every other type has none, matching the
+// real `useAdapterCapabilities` fallback for an unlisted type.
+const ADAPTERS_WITH_LOGIN = new Set(["claude_local", "codex_local"]);
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => () => ({
+  useAdapterCapabilities: () => (type: string) => ({
     supportsInstructionsBundle: false,
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
     supportsModelProfiles: false,
+    login: ADAPTERS_WITH_LOGIN.has(type)
+      ? { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const }
+      : undefined,
   }),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
@@ -130,10 +174,22 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
+import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** React tracks input value on the DOM node; set it the way React will see. */
+function setControlledValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 async function flushReact() {
   await act(async () => {
@@ -176,6 +232,29 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompaniesApi.list.mockResolvedValue([]);
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
+    mockAdapterBuild.buildAdapterConfig.mockReset();
+    mockAdapterBuild.buildAdapterConfig.mockReturnValue({});
+    // Default: no stored Claude login for the owner. The route returns a
+    // fixed 404 for a missing value, so the client treats a real `ApiError`
+    // with that status as "no stored value" rather than a hard failure.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
+    // Reset to each mock's original default. `mockResolvedValue` /
+    // `mockReturnValue` overrides a mock's implementation permanently — it
+    // is not undone by `afterEach`'s `vi.clearAllMocks()`, which only clears
+    // call history — so a test that customizes one of these must not leak
+    // its override into the next test.
+    mockAgentsApi.testEnvironment.mockReset();
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "claude_local",
+      status: "pass" as const,
+      checks: [],
+      testedAt: new Date().toISOString(),
+    });
+    mockAgentsApi.hire.mockReset();
+    mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
     mockCompaniesApi.create.mockResolvedValue({
       id: "created",
       name: "Created Co",
@@ -193,6 +272,644 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  describe("step 2, which is two screens wearing one number", () => {
+    // The create path's step 2 was the mission question and is skipped now. The
+    // grow path's step 2 is "tell us about your team", whose answers seed the
+    // lead agent — a different screen that happens to share the number, and one
+    // nothing covered until skipping the first nearly took it along.
+
+    async function openStepOne(path: "create" | "grow") {
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: path, companyName: "Initech" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+
+      const { root, queryClient } = render();
+      const renderTree = () =>
+        act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+      await renderTree();
+      await flushReact();
+      return { root, renderTree };
+    }
+
+    async function clickByText(match: (text: string) => boolean) {
+      const el = [...document.body.querySelectorAll("button")].find((b) =>
+        match(b.textContent?.trim() ?? ""),
+      )!;
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+    }
+
+    it("keeps the grow path's questionnaire", async () => {
+      const { root } = await openStepOne("grow");
+      await clickByText((t) => t.startsWith("Continue"));
+
+      expect(document.body.textContent).toContain("Tell us about your team");
+      expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("skips it on the create path, creating the company on the way", async () => {
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Continue"));
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+      expect(document.body.textContent).toContain("Create your first agent");
+      expect(document.body.textContent).not.toContain("Define your mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows no environment-check card on the model step, and no Mission row on review", async () => {
+      // Round-3 walk feedback: the adapter environment check still runs —
+      // Connect probes before hiring and blocks on a fail — but its idle card
+      // (explainer plus "Test now") is gone. And the review checklist lost its
+      // "Mission" row: onboarding stopped asking, so the row could only ever
+      // render unchecked. Both asserted against positive anchors so an
+      // unrendered step cannot pass as an absence.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Continue"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      // Step 3 → 4 needs an agent name — the one field the step has now.
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(document.body.textContent).toContain("Connect a model");
+      expect(document.body.textContent).not.toContain("Adapter environment check");
+      expect(document.body.textContent).not.toContain("Test now");
+
+      // Through Connect to Review, so the Mission-row assertion runs against
+      // the checklist that actually renders it — stopping at the model step
+      // would let a Mission regression pass unseen.
+      await clickByText((t) => t.startsWith("Connect"));
+      // The review step is the heading and the woken agent, nothing else: the
+      // checklist that restated the walk in three rows is gone, and with it
+      // the Mission row that could only render unchecked.
+      expect(document.body.textContent).toContain("Let's get started...");
+      expect(document.body.textContent).toContain("Ada is ready to work!");
+      expect(document.body.textContent).not.toContain("Organization name");
+      expect(document.body.textContent).not.toContain("Model connected");
+      expect(document.body.textContent).not.toContain("Mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires from a legacy draft that saved an empty role", async () => {
+      // `agentRole: ""` was this field's default before the arc stopped asking
+      // for a role, so every draft saved by an earlier build carries it. `??`
+      // would pass the empty string straight through to the hire's silent
+      // return — the same no-op the default exists to prevent, arriving
+      // through a restored draft instead of a fresh one.
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech", agentRole: "" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+
+      const { root, queryClient } = render();
+      const renderTree = () =>
+        act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+      await renderTree();
+      await flushReact();
+
+      const clickText = async (match: (t: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickText((t) => t.startsWith("Next"));
+      await clickText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      // The mock is declared with no parameters, so index the call rather than
+      // destructuring a zero-length tuple type.
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      expect((hireArgs[1] as { role: string }).role).toBe("general");
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires one agent when Connect fires twice in one breath", async () => {
+      // The Connect handler re-runs a cached failed probe now that "Test now"
+      // is gone — so two overlapping submissions could both pass the fresh
+      // probe and both hire. `loading` cannot stop the second caller: it is
+      // state, unwritten while the first call is still awaiting. The ref
+      // guard must make the second submission a no-op.
+      let resolveHire: (v: { agent: { id: string }; approval: null }) => void = () => {};
+      mockAgentsApi.hire.mockReturnValue(
+        new Promise((resolve) => {
+          resolveHire = resolve;
+        }),
+      );
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Connect a model");
+
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await act(async () => resolveHire({ agent: { id: "agent-1" }, approval: null }));
+      await flushReact();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+    });
+
+    it("creates one company for one keystroke, modifier or not", async () => {
+      // The name field handles Enter itself and does not check for a modifier,
+      // so Cmd+Enter in that field reaches the field's handler *and* the
+      // wizard's step-level one. Both would start creating. The step-level
+      // `loading` guard cannot stop it — `setLoading(true)` has not landed
+      // while the same event is still bubbling — so the second caller reads a
+      // value the first has not written. Two companies, one keystroke.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="e.g. Northwind Labs"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        nameInput.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+        );
+      });
+      await flushReact();
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
+    it("creates one company however many times Enter repeats", async () => {
+      // Holding Enter down fires keydown repeatedly. Each one is a separate
+      // event, so `defaultPrevented` says nothing about the others, and neither
+      // `loading` nor `createdCompanyId` has been written by the time the next
+      // arrives — the first is state, the second is not set until the request
+      // it guards resolves. Only a ref written before the request goes out is
+      // visible to the caller behind it.
+      let resolveCreate: (c: { id: string; issuePrefix: string }) => void = () => {};
+      mockCompaniesApi.create.mockReturnValue(
+        new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="e.g. Northwind Labs"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        for (let i = 0; i < 4; i++) {
+          nameInput.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+          );
+        }
+      });
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+
+      await act(async () => resolveCreate({ id: "company-new", issuePrefix: "INI" }));
+      await flushReact();
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends Back to the screen the run actually came from", async () => {
+      // A create run reached the agent step from step 1, so Back owes it step 1 —
+      // not the mission screen it never saw.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Continue"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await clickByText((t) => t.includes("Back"));
+
+      expect(document.body.textContent).toContain("What is the name of your organization?");
+      expect(document.body.textContent).not.toContain("Define your mission");
+
+      await act(async () => root.unmount());
+    });
+  });
+
+  describe("hire gate: adapter authentication (claude_local, the default onboarding adapter)", () => {
+    /** Drives the wizard to the Connect step, agent name already filled in. */
+    async function openConnectStep() {
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      const clickByText = async (match: (text: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickByText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Connect a model");
+
+      return { root, clickByText };
+    }
+
+    it("blocks the hire on a warn result that holds adapter_auth_missing, and shows the returned checks", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn" as const,
+        checks: [
+          {
+            code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+            level: "warn" as const,
+            message: "No stored Claude login was found for this agent.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "No stored Claude login was found for this agent.",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("still hires on a warn result that carries no adapter_auth_missing check", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn" as const,
+        checks: [
+          {
+            code: "claude_anthropic_api_key_overrides_subscription",
+            level: "warn" as const,
+            message: "ANTHROPIC_API_KEY overrides the subscription login.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("does not open the create path on a cached warn result that holds adapter_auth_missing", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn" as const,
+        checks: [
+          {
+            code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+            level: "warn" as const,
+            message: "No stored Claude login was found for this agent.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+      // A second Connect must not treat the first (cached) blocking result as
+      // reusable — it re-probes, and the create path stays closed.
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends the fixed Claude binding and applyStoredClaudeLogin when a stored login exists", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      const hireBody = hireArgs[1] as {
+        adapterConfig: { env?: Record<string, unknown> };
+        applyStoredClaudeLogin?: boolean;
+      };
+      expect(hireBody.applyStoredClaudeLogin).toBe(true);
+      expect(hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
+        type: "user_secret_ref",
+        key: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        version: "latest",
+        required: true,
+      });
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends no binding and no flag when the Claude status route returns 404", async () => {
+      // The default `beforeEach` mock already rejects with a 404 `ApiError`,
+      // matching "no stored value" — asserted explicitly here to pin the
+      // scenario this test is named for.
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      const hireBody = hireArgs[1] as {
+        adapterConfig: { env?: Record<string, unknown> };
+        applyStoredClaudeLogin?: boolean;
+      };
+      expect(hireBody.applyStoredClaudeLogin).toBeUndefined();
+      expect(hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends no binding when the adapter configuration holds a non-empty ANTHROPIC_API_KEY", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      mockAdapterBuild.buildAdapterConfig.mockReturnValue({
+        env: { ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-configured" } },
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      // The status route must not even be asked — the conflict is decided
+      // from the adapter configuration alone, before any network round trip.
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).not.toHaveBeenCalled();
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      const hireBody = hireArgs[1] as {
+        adapterConfig: { env?: Record<string, unknown> };
+        applyStoredClaudeLogin?: boolean;
+      };
+      expect(hireBody.applyStoredClaudeLogin).toBeUndefined();
+      expect(hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
+
+      await act(async () => root.unmount());
+    });
+
+    it("carries no token value in the hire payload", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      const hireBody = hireArgs[1] as { adapterConfig: { env?: Record<string, unknown> } };
+      const binding = hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY] as
+        | { type: string }
+        | undefined;
+      // A reference, never a value: no `value` field, no `secretId` field
+      // either — the fixed binding names the env var, not the status
+      // response's secret id.
+      expect(binding?.type).toBe("user_secret_ref");
+      expect(JSON.stringify(hireBody)).not.toContain("secretId");
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends the fixed binding in the environment test request when the status route returns 200", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
+        type: "user_secret_ref",
+        key: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        version: "latest",
+        required: true,
+      });
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends no binding in the environment test request when the status route returns 404", async () => {
+      // The default `beforeEach` mock already rejects with a 404 `ApiError`.
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires when a stored login exists, even though a probe without the binding would warn adapter_auth_missing", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      // Answers like the real sandbox probe: `warn` with `adapter_auth_missing`
+      // for a configuration with no binding, `pass` once the binding is
+      // present. This proves the wizard sends the probe the SAME configuration
+      // it hires with — a probe still sent without the binding would warn and
+      // block the hire below.
+      mockAgentsApi.testEnvironment.mockImplementation(
+        (async (...args: unknown[]) => {
+          const request = args[2] as {
+            adapterConfig: { env?: Record<string, unknown> };
+          };
+          const hasBinding = Boolean(
+            request.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY],
+          );
+          return hasBinding
+            ? {
+                adapterType: "claude_local" as const,
+                status: "pass" as const,
+                checks: [],
+                testedAt: new Date().toISOString(),
+              }
+            : {
+                adapterType: "claude_local" as const,
+                status: "warn" as const,
+                checks: [
+                  {
+                    code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+                    level: "warn" as const,
+                    message: "No stored Claude login was found for this agent.",
+                  },
+                ],
+                testedAt: new Date().toISOString(),
+              };
+        }) as unknown as () => Promise<
+          import("@paperclipai/shared").AdapterEnvironmentTestResult
+        >,
+      );
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("blocks the hire when the probe reports warn with adapter_auth_missing and no stored login exists", async () => {
+      // The default `beforeEach` mock already rejects with a 404 `ApiError`.
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn" as const,
+        checks: [
+          {
+            code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+            level: "warn" as const,
+            message: "No stored Claude login was found for this agent.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "No working authentication was found",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("reads the stored-login status once for each create attempt", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      // Fails after the gate opens, so the button stays clickable for a
+      // second attempt instead of advancing past step 4.
+      mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
+
+      await act(async () => root.unmount());
+    });
   });
 
   it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
@@ -259,11 +976,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // (step 0, "Chief of staff").
     expect(document.body.textContent).toContain("Create your first agent");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value).toBe("Ops Lead");
+    // The run entered on the agent arc, so the arc strip is the progress
+    // indicator and counts 1-3 over the wizard's steps 3-5. Segments are
+    // labelled by destination: the wizard has its own numbering, and two
+    // controls both announcing "Step 1" would mean different things.
     const currentStep = document.body.querySelector('[aria-current="step"]');
-    expect(currentStep?.getAttribute("aria-label")).toBe("Step 3");
+    expect(currentStep?.getAttribute("aria-label")).toBe("Create your first agent");
+    expect(document.body.textContent).toContain("Step 1 of 3");
 
     await act(async () => {
       root.unmount();
@@ -344,7 +1066,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     // The draft is not restored, because ownership cannot be verified...
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("Ops Lead");
     // ...and not deleted either. The wizard is open in this harness, so the
@@ -366,11 +1088,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     const deny = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");
     };
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
-    const removeItem = vi
-      .spyOn(Storage.prototype, "removeItem")
-      .mockImplementation(deny);
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
+    // Deny the browser boundary itself. Spying on a Storage object or
+    // prototype is not portable: DOM implementations may return a fresh
+    // wrapper and Node exposes a separate experimental Storage global.
+    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
     mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
 
@@ -384,14 +1105,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     await flushReact();
 
-    expect(getItem).toHaveBeenCalled();
+    expect(localStorage).toHaveBeenCalled();
     // It mounted: the wizard is open with no draft, rather than the render
     // throwing on the way in.
     expect(document.body.textContent).not.toBe("");
 
-    getItem.mockRestore();
-    removeItem.mockRestore();
-    setItem.mockRestore();
+    localStorage.mockRestore();
     await act(async () => {
       root.unmount();
     });
@@ -433,7 +1152,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     // ...but the draft was not restored, because the list cannot be trusted.
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("Ops Lead");
 
@@ -449,9 +1168,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     const deny = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");
     };
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
-    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(deny);
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
+    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
     mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
 
@@ -476,9 +1193,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     expect(mockDialog.closeOnboarding).toHaveBeenCalled();
 
-    getItem.mockRestore();
-    removeItem.mockRestore();
-    setItem.mockRestore();
+    localStorage.mockRestore();
     await act(async () => {
       root.unmount();
     });
@@ -558,7 +1273,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // Account A's agent name must not appear in account B's wizard.
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
@@ -613,7 +1328,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
@@ -687,7 +1402,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
@@ -754,6 +1469,153 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  describe("the adapter step login panel (cheap auth signal, no adapter test)", () => {
+    const SANDBOX_ENVIRONMENT = {
+      id: "env-sandbox-1",
+      driver: "sandbox" as const,
+      status: "active" as const,
+      config: { provider: "daytona" },
+      metadata: {},
+    };
+    const LOCAL_ENVIRONMENT = {
+      id: "env-local-1",
+      driver: "local" as const,
+      status: "active" as const,
+      config: { provider: "daytona" },
+      metadata: { defaultForInstance: true },
+    };
+
+    beforeEach(() => {
+      mockEnvironmentsApi.list.mockReset();
+      mockEnvironmentsApi.list.mockResolvedValue([SANDBOX_ENVIRONMENT]);
+      mockEnvironmentsApi.capabilities.mockReset();
+      mockEnvironmentsApi.capabilities.mockResolvedValue(
+        getEnvironmentCapabilities([], {
+          sandboxProviders: { daytona: { supportsLoginPty: true } },
+        }),
+      );
+      mockInstanceSettingsApi.get.mockReset();
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "env-sandbox-1" });
+      mockInstanceSettingsApi.getExperimental.mockReset();
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+      mockAgentsApi.getAdapterAuthSignal.mockReset();
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+    });
+
+    /** Drives the wizard to the Connect step with a company already created. */
+    async function openStep4(overrides: Record<string, unknown> = {}) {
+      mockCompany.companies = [{ id: "company-new", name: "Initech", issuePrefix: "INI" }];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({
+          step: 4,
+          onboardingPath: "create",
+          companyName: "Initech",
+          agentName: "Ada",
+          createdCompanyId: "company-new",
+          adapterType: "claude_local",
+          ...overrides,
+        }),
+      );
+      mockDialog.onboardingOptions = {};
+
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      // The login-panel gate chains several dependent queries (environments,
+      // instance settings, environment capabilities, then the auth signal
+      // itself), each settling on its own render. One flush is not always
+      // enough to reach the end of that chain.
+      for (let i = 0; i < 5; i++) await flushReact();
+      expect(document.body.textContent).toContain("Connect a model");
+      return { root, queryClient };
+    }
+
+    it("starts no call to the test-environment route on adapter selection", async () => {
+      const { root } = await openStep4();
+      expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
+    it("shows the login panel for claude_local when the signal reports no ready credential", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("shows the login panel for codex_local when the signal cannot decide", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "codex_local" });
+      expect(document.body.textContent).toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("hides the login panel when the signal reports a ready credential", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("renders no 'Use saved login' control", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Use saved login");
+      await act(async () => root.unmount());
+    });
+
+    it("reads the signal again after an adapter change", async () => {
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
+        "company-new",
+        "claude_local",
+        "env-sandbox-1",
+      );
+
+      const clickByText = async (match: (text: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickByText((t) => t.startsWith("Advanced settings"));
+      await clickByText((t) => t === "codex_local");
+
+      expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
+        "company-new",
+        "codex_local",
+        "env-sandbox-1",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("hides the panel when the resolved login environment driver is not sandbox", async () => {
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
     });
   });
 });
