@@ -10,9 +10,15 @@ overrides:
   react-dom: ^19.2.8
 
 patchedDependencies:
+  '@agentclientprotocol/codex-acp@1.6.2':
+    hash: grbydorkxatbzksnwwfuawwtim
+    path: patches/@agentclientprotocol__codex-acp@1.6.2.patch
   acpx@0.12.0:
-    hash: x3fethhotv43zektyl5prdwf54
+    hash: b2ggqg6aj4hdob4whk6vq6jmc4
     path: patches/acpx@0.12.0.patch
+  acpx@0.13.1:
+    hash: klzqvo4xom3l6xnrgmyg2xpqci
+    path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
     path: patches/embedded-postgres@18.1.0-beta.16.patch
@@ -123,7 +129,7 @@ importers:
         version: link:../shared
       acpx:
         specifier: 0.12.0
-        version: 0.12.0(patch_hash=x3fethhotv43zektyl5prdwf54)
+        version: 0.12.0(patch_hash=b2ggqg6aj4hdob4whk6vq6jmc4)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -164,7 +170,7 @@ importers:
     dependencies:
       '@agentclientprotocol/codex-acp':
         specifier: ^1.6.2
-        version: 1.6.2
+        version: 1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -453,6 +459,12 @@ importers:
 
   packages/paperclip-runner:
     dependencies:
+      '@agentclientprotocol/codex-acp':
+        specifier: 1.6.2
+        version: 1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)
+      acpx:
+        specifier: 0.13.1
+        version: 0.13.1(patch_hash=klzqvo4xom3l6xnrgmyg2xpqci)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -463,6 +475,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -827,6 +842,9 @@ importers:
       '@vercel/connect':
         specifier: 0.6.1
         version: 0.6.1(better-auth@1.7.0(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.3.0))(tsx@4.23.12)))
+      acpx:
+        specifier: 0.13.1
+        version: 0.13.1(patch_hash=klzqvo4xom3l6xnrgmyg2xpqci)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -5080,6 +5098,11 @@ packages:
     engines: {node: '>=22.13.0'}
     hasBin: true
 
+  acpx@0.13.1:
+    resolution: {integrity: sha512-9zhvUrAR4XxSIgaLCiiWmrwmEWh+m6jxu2KUFC8BMOiK4sFsnrRL7H6VF54ZLTTpt0IHrZQju2V7+8wiMf9DXQ==}
+    engines: {node: '>=22.13.0'}
+    hasBin: true
+
   address@2.0.3:
     resolution: {integrity: sha512-XNAb/a6TCqou+TufU8/u11HCu9x1gYvOoxLwtlXgIqmkrYQADVv6ljyW2zwiPhHz9R1gItAWpuDrdJMmrOBFEA==}
     engines: {node: '>= 16.0.0'}
@@ -7627,6 +7650,11 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  skillflag@0.2.1:
+    resolution: {integrity: sha512-47lfgUr6xzgljtTD5XfJrS+6muNb9R44OEr+o31Nco2R65W1xOA8Pi6QSbLa90tDYE6TqW5Hrh3N1egserGrhQ==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
 
@@ -8280,7 +8308,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.6.2':
+  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@openai/codex': 0.148.0
@@ -12215,11 +12243,23 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  acpx@0.12.0(patch_hash=x3fethhotv43zektyl5prdwf54):
+  acpx@0.12.0(patch_hash=b2ggqg6aj4hdob4whk6vq6jmc4):
     dependencies:
       '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
       commander: 15.0.0
       skillflag: 0.2.0
+      tsx: 4.23.12
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+
+  acpx@0.13.1(patch_hash=klzqvo4xom3l6xnrgmyg2xpqci):
+    dependencies:
+      '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
+      commander: 15.0.0
+      skillflag: 0.2.1
       tsx: 4.23.12
       zod: 4.4.3
     transitivePeerDependencies:
@@ -15185,6 +15225,15 @@ snapshots:
   sisteransi@1.0.5: {}
 
   skillflag@0.2.0:
+    dependencies:
+      '@clack/prompts': 1.7.0
+      tar-stream: 3.2.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+
+  skillflag@0.2.1:
     dependencies:
       '@clack/prompts': 1.7.0
       tar-stream: 3.2.0

@@ -63,6 +63,7 @@
     "@paperclipai/shared": "workspace:*",
     "@paperclipai/skills-catalog": "workspace:*",
     "@vercel/connect": "0.6.1",
+    "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.7.0",
@@ -84,6 +85,9 @@
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
+  "bundleDependencies": [
+    "acpx"
+  ],
   "devDependencies": {
     "@paperclipai/paperclip-runner": "workspace:*",
     "@types/express": "^5.0.0",
