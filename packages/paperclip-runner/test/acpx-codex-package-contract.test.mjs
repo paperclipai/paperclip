@@ -35,6 +35,7 @@ test("the runner pins only the Codex ACPX production dependencies", () => {
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
     undefined,
   );
+  assert.deepEqual(runnerPackage.bundleDependencies, Object.keys(runnerPackage.dependencies));
 });
 
 test("the package exposes only the reviewed Codex ACPX sidecar binary", () => {

@@ -49,7 +49,8 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("host.docker.internal");
     expect(text).toContain("paperclipApiUrl");
     expect(text).toContain('"adapterType": "openclaw_gateway"');
-    expect(text).toContain("headers.x-openclaw-token");
+    expect(text).toContain("agentDefaultsPayload.authToken");
+    expect(text).not.toContain("headers.x-openclaw-token");
     expect(text).toContain("Do NOT use /v1/responses or /hooks/*");
     expect(text).toContain('adapterType: "hermes_gateway"');
     expect(text).toContain('"adapterType": "hermes_gateway"');

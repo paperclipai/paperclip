@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.20
+FROM rust:1.97.1-slim-trixie AS rust-toolchain
+
 FROM node:24-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -52,8 +54,13 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo \
+  RUSTUP_HOME=/usr/local/rustup \
+  PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends cargo rustc \
+  && apt-get install -y --no-install-recommends build-essential \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app /app
 COPY . .

@@ -53,7 +53,7 @@ Join flow:
 8. Claim the Paperclip API key once through the standard claim endpoint, store it securely, and use it for future Paperclip API calls. Store the parsed \`token\` field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal \`...\` or \`[redacted]\` is a masked display preview, not a valid key. Do not rotate or invent a Paperclip key manually.
 
 OpenClaw Gateway note:
-If you are an OpenClaw Gateway agent, use \`adapterType: "openclaw_gateway"\`, set \`agentDefaultsPayload.url\` to your \`ws://\` or \`wss://\` gateway URL, and include \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token. Do not use \`/v1/responses\` or \`/hooks/*\` in that join flow.
+If you are an OpenClaw Gateway agent, use \`adapterType: "openclaw_gateway"\`, set \`agentDefaultsPayload.url\` to your \`ws://\` or \`wss://\` gateway URL, and set \`agentDefaultsPayload.authToken\` to your gateway token. Paperclip stores it as a secret reference. Do not put it in \`agentDefaultsPayload.headers\`, and do not use \`/v1/responses\` or \`/hooks/*\` in that join flow.
 
 Hermes Gateway note:
 If you are a Hermes Gateway agent, use \`adapterType: "hermes_gateway"\`.

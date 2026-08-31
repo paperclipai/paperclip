@@ -503,6 +503,41 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
+function CatalogIntro({ blueprintCount, installedCount }: { blueprintCount: number; installedCount: number }) {
+  return (
+    <section
+      data-testid="team-catalog-intro"
+      className="mx-5 mt-4 overflow-hidden rounded-2xl border border-emerald-950/10 bg-[#173d34] px-5 py-5 text-white shadow-sm sm:px-6"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-2xl">
+          <span className="inline-flex rounded-full bg-[#f5c76b] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[#173d34]">
+            Paperclip / blueprint catalog
+          </span>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Design the crew. Ship the work.</h2>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-emerald-50/75">
+            Import a proven operating shape, then keep ownership, budgets, and audit visible from one control plane.
+          </p>
+        </div>
+        <div className="grid min-w-[15rem] grid-cols-3 gap-2 text-center text-xs">
+          <div className="rounded-xl bg-white/10 px-3 py-2.5">
+            <div className="text-lg font-semibold tabular-nums">{blueprintCount}</div>
+            <div className="text-emerald-50/65">Blueprints</div>
+          </div>
+          <div className="rounded-xl bg-white/10 px-3 py-2.5">
+            <div className="text-lg font-semibold tabular-nums">{installedCount}</div>
+            <div className="text-emerald-50/65">Installed</div>
+          </div>
+          <div className="rounded-xl bg-[#f5c76b] px-3 py-2.5 text-[#173d34]">
+            <div className="text-sm font-semibold">Core360</div>
+            <div className="text-[#173d34]/70">+ OpenClaw</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Detail pane
 // ---------------------------------------------------------------------------
@@ -2306,6 +2341,7 @@ export function TeamCatalog() {
 
   return (
     <div className="flex h-full flex-col">
+      <CatalogIntro blueprintCount={teams.length} installedCount={installedById.size} />
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <h1 className="text-lg font-semibold">Teams</h1>

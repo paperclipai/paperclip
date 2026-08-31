@@ -22,7 +22,7 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 4. OpenClaw submits invite acceptance with:
 - `adapterType: "openclaw_gateway"`
 - `agentDefaultsPayload.url: ws://... | wss://...`
-- `agentDefaultsPayload.headers["x-openclaw-token"]`
+- `agentDefaultsPayload.authToken`
 5. Board approves join request.
 6. OpenClaw claims API key and installs/uses Paperclip skill.
 7. First task run may trigger pairing approval once; after approval, pairing persists via stored device key.
@@ -32,7 +32,7 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 ```json
 {
   "url": "ws://127.0.0.1:18789",
-  "headers": { "x-openclaw-token": "<gateway-token>" }
+  "authToken": "<gateway-token>"
 }
 ```
 

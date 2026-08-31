@@ -1953,6 +1953,11 @@ export function agentRoutes(
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   }
 
+  function isCompanySecretRef(value: unknown): boolean {
+    const record = asRecord(value);
+    return record?.type === "secret_ref" && typeof record.secretId === "string";
+  }
+
   function ensureGatewayDeviceKey(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -1960,7 +1965,9 @@ export function agentRoutes(
     if (adapterType !== "openclaw_gateway") return adapterConfig;
     const disableDeviceAuth = parseBooleanLike(adapterConfig.disableDeviceAuth) === true;
     if (disableDeviceAuth) return adapterConfig;
-    if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
+    if (asNonEmptyString(adapterConfig.devicePrivateKeyPem) || isCompanySecretRef(adapterConfig.devicePrivateKeyPem)) {
+      return adapterConfig;
+    }
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
   }
 
@@ -1975,8 +1982,7 @@ export function agentRoutes(
 
   function codexLocalEnvKeyConfigured(value: unknown): boolean {
     if (asEnvBindingString(value)) return true;
-    const record = asRecord(value);
-    return record?.type === "secret_ref" && typeof record.secretId === "string";
+    return isCompanySecretRef(value);
   }
 
   // codex_local agents inherit whatever Codex login is already on the device

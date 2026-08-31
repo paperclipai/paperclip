@@ -26,6 +26,12 @@
     "protocol",
     "README.md"
   ],
+  "bundleDependencies": [
+    "@agentclientprotocol/codex-acp",
+    "acpx",
+    "ajv",
+    "json-schema-to-ts"
+  ],
   "scripts": {
     "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run build:binary && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check",
     "build:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json",

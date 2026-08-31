@@ -18,9 +18,9 @@ This adapter always uses WebSocket gateway transport.
 
 Gateway credentials can be provided in any of these ways:
 
-- `authToken` / `token` in adapter config
-- `headers.x-openclaw-token`
-- `headers.x-openclaw-auth` (legacy)
+- `authToken` / `token` in adapter config (recommended; persisted as a secret reference)
+- `headers.x-openclaw-token` (legacy input; migrated to `authToken` before persistence)
+- `headers.x-openclaw-auth` (legacy input; migrated to `authToken` before persistence)
 - `password` (shared password mode)
 
 When a token is present and `authorization` header is missing, the adapter derives `Authorization: Bearer <token>`.

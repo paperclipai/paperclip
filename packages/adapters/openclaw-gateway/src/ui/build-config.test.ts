@@ -50,4 +50,20 @@ describe("buildOpenClawGatewayConfig", () => {
     expect(config.role).toBe("operator");
     expect(config.scopes).toEqual(["operator.admin"]);
   });
+
+  it("moves legacy auth headers into authToken and keeps headers non-secret", () => {
+    const config = buildOpenClawGatewayConfig({
+      ...baseValues(),
+      headersJson: JSON.stringify({
+        Authorization: "Bearer stale-token",
+        "X-OpenClaw-Auth": "lower-priority-token",
+        "X-OpenClaw-Token": "synthetic-token",
+        "x-trace-id": "keep",
+      }),
+    });
+
+    expect(config.authToken).toBe("synthetic-token");
+    expect(config.headers).toEqual({ "x-trace-id": "keep" });
+    expect(JSON.stringify(config.headers)).not.toContain("synthetic-token");
+  });
 });

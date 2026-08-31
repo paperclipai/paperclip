@@ -33,5 +33,7 @@ describe("buildAgentOnboardingPrompt", () => {
     expect(prompt).toContain("parsed `token` field from the raw HTTP JSON response");
     expect(prompt).toContain("A token value containing literal `...` or `[redacted]`");
     expect(prompt).toContain("never persist a displayed preview that contains `...`");
+    expect(prompt).toContain("agentDefaultsPayload.authToken");
+    expect(prompt).not.toContain('agentDefaultsPayload.headers["x-openclaw-token"]');
   });
 });

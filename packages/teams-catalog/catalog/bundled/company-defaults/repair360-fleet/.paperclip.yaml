@@ -1,0 +1,5 @@
+schema: paperclip/v1
+agents:
+  openclaw-engineering:
+    adapter:
+      type: openclaw_gateway

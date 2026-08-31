@@ -255,6 +255,8 @@ describe("TeamCatalog install preview path", () => {
 
   it("renders the detail pane for the selected team", async () => {
     await renderPage();
+    expect(document.querySelector('[data-testid="team-catalog-intro"]')).toBeTruthy();
+    expect(document.body.textContent).toContain("Design the crew. Ship the work.");
     expect(document.body.textContent).toContain("Core Exec Team");
     expect(document.body.textContent).toContain("A starter executive team.");
     // summary grid counts

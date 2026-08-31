@@ -14,6 +14,17 @@ import {
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
+const AUTH_HEADER_NAMES = new Set(["authorization", "x-openclaw-token", "x-openclaw-auth"]);
+
+function isSecretRef(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && (value as { type?: unknown }).type === "secret_ref";
+}
+
+function withoutAuthHeaders(headers: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(headers).filter(([key]) => !AUTH_HEADER_NAMES.has(key.toLowerCase())));
+}
+
 function HeadersJsonTextarea({
   isCreate,
   createDraft,
@@ -63,11 +74,13 @@ function SecretField({
   value,
   onCommit,
   placeholder,
+  stored,
 }: {
   label: string;
   value: string;
   onCommit: (v: string) => void;
   placeholder?: string;
+  stored?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
   return (
@@ -77,6 +90,7 @@ function SecretField({
           type="button"
           onClick={() => setVisible((v) => !v)}
           className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
         >
           {visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
         </button>
@@ -86,7 +100,7 @@ function SecretField({
           immediate
           type={visible ? "text" : "password"}
           className={inputClass + " pl-8"}
-          placeholder={placeholder}
+          placeholder={stored ? "Stored secret; enter a new value to replace it" : placeholder}
         />
       </div>
     </Field>
@@ -112,26 +126,17 @@ export function OpenClawGatewayConfigFields({
     config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
       ? (config.headers as Record<string, unknown>)
       : {};
-  const effectiveHeaders =
-    (eff("adapterConfig", "headers", configuredHeaders) as Record<string, unknown>) ?? {};
-
-  const effectiveGatewayToken = typeof effectiveHeaders["x-openclaw-token"] === "string"
-    ? String(effectiveHeaders["x-openclaw-token"])
-    : typeof effectiveHeaders["x-openclaw-auth"] === "string"
-      ? String(effectiveHeaders["x-openclaw-auth"])
-      : "";
+  const effectiveHeaders = withoutAuthHeaders(
+    (eff("adapterConfig", "headers", configuredHeaders) as Record<string, unknown>) ?? {},
+  );
+  const hasStoredGatewayToken = isSecretRef(config.authToken)
+    || typeof config.authToken === "string"
+    || Object.keys(configuredHeaders).some((key) => AUTH_HEADER_NAMES.has(key.toLowerCase()));
 
   const commitGatewayToken = (rawValue: string) => {
     const nextValue = rawValue.trim();
-    const nextHeaders: Record<string, unknown> = { ...effectiveHeaders };
-    if (nextValue) {
-      nextHeaders["x-openclaw-token"] = nextValue;
-      delete nextHeaders["x-openclaw-auth"];
-    } else {
-      delete nextHeaders["x-openclaw-token"];
-      delete nextHeaders["x-openclaw-auth"];
-    }
-    mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
+    mark("adapterConfig", "authToken", nextValue || undefined);
+    mark("adapterConfig", "headers", Object.keys(effectiveHeaders).length > 0 ? effectiveHeaders : undefined);
   };
 
   const sessionStrategy = eff(
@@ -174,7 +179,7 @@ export function OpenClawGatewayConfigFields({
         value={
           isCreate
             ? values!.authToken ?? ""
-            : effectiveGatewayToken
+            : ""
         }
         onCommit={(v) =>
           isCreate
@@ -182,6 +187,7 @@ export function OpenClawGatewayConfigFields({
             : commitGatewayToken(v)
         }
         placeholder="OpenClaw gateway token"
+        stored={!isCreate && hasStoredGatewayToken}
       />
 
       <Field label="Agent ID">
@@ -352,7 +358,7 @@ export function OpenClawGatewayConfigFields({
           isCreate={isCreate}
           createDraft={isCreate ? values!.headersJson ?? "" : ""}
           onCreateDraftChange={(next) => set!({ headersJson: next })}
-          editStringified={JSON.stringify(eff("adapterConfig", "headers", config.headers ?? {}), null, 2)}
+          editStringified={JSON.stringify(effectiveHeaders, null, 2)}
           onEditCommit={(next) => {
             const trimmed = next.trim();
             if (!trimmed) {

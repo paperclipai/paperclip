@@ -168,8 +168,8 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
 
   if (
     bundledDependencies.includes("acpx") &&
-    !readFileSync(resolve(destinationDir, "node_modules/acpx/dist/runtime.js"), "utf8").includes(
-      "onAgentStderr",
+    !/(?:onAgentStderr|spawnEnvironment)/.test(
+      readFileSync(resolve(destinationDir, "node_modules/acpx/dist/runtime.js"), "utf8"),
     )
   ) {
     throw new Error("staged acpx runtime is missing the repository patch");

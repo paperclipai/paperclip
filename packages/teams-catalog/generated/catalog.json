@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-08-31T10:05:18.241Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -133,6 +133,128 @@
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
       "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+    },
+    {
+      "id": "paperclipai:bundled:company-defaults:repair360-fleet",
+      "key": "paperclipai/bundled/company-defaults/repair360-fleet",
+      "kind": "bundled",
+      "category": "company-defaults",
+      "slug": "repair360-fleet",
+      "name": "Repair360 Fleet",
+      "description": "Six-department operating team for a multi-tenant Repair360 SaaS, with OpenClaw as the execution runtime and Core360 as the system of record.",
+      "path": "catalog/bundled/company-defaults/repair360-fleet",
+      "entrypoint": "TEAM.md",
+      "schema": "agentcompanies/v1",
+      "defaultInstall": false,
+      "recommendedForCompanyTypes": [
+        "company-root",
+        "software",
+        "product"
+      ],
+      "tags": [
+        "repair360",
+        "multi-tenant",
+        "fleet",
+        "openclaw",
+        "operations"
+      ],
+      "counts": {
+        "agents": 6,
+        "projects": 1,
+        "tasks": 1,
+        "routines": 0,
+        "localSkills": 0,
+        "catalogSkills": 0,
+        "externalSkillSources": 0
+      },
+      "rootAgentSlugs": [
+        "director"
+      ],
+      "agentSlugs": [
+        "chiara",
+        "director",
+        "giorgia",
+        "openclaw-engineering",
+        "qa-audit",
+        "sonia"
+      ],
+      "projectSlugs": [
+        "repair360-fleet"
+      ],
+      "requiredSkills": [],
+      "envInputs": [],
+      "sourceRefs": [],
+      "files": [
+        {
+          "path": "TEAM.md",
+          "kind": "team",
+          "sizeBytes": 1489,
+          "sha256": "a5fe6621ccdf4dc2880ba44aa72c8d65339216d02176f06e1bdc81801d1c26c5"
+        },
+        {
+          "path": ".paperclip.yaml",
+          "kind": "extension",
+          "sizeBytes": 95,
+          "sha256": "63e77f1ef6ba4bd150bc4a56c8bf55bc59a60ccb2019d6686a4b5de5be800ddf"
+        },
+        {
+          "path": "agents/chiara/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1055,
+          "sha256": "4f09a522332373a56945950fd51c17d4502e54cf06f0731714fabf6443186b2f"
+        },
+        {
+          "path": "agents/director/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1247,
+          "sha256": "0ba7428207dbbc6cc3acef217056488276d4c80d46eae66c96dab0b53443ea39"
+        },
+        {
+          "path": "agents/giorgia/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1003,
+          "sha256": "883119179eb8a2e841c91d17fd6898362e3c11d5593550d6469a77a5e5dfd0db"
+        },
+        {
+          "path": "agents/openclaw-engineering/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1128,
+          "sha256": "f60d71c4751cf3eef74ac70f0c244fc01130d06b8727826ba74f7d155e683b07"
+        },
+        {
+          "path": "agents/qa-audit/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 980,
+          "sha256": "c1f01333c56330c3617b234ebd26f48e40399d5977d38fccb6f73117bc3c7023"
+        },
+        {
+          "path": "agents/sonia/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1019,
+          "sha256": "053b0f33a25d35654d200ef9f073f6523acf9e426a331b7485600afb62b32a6b"
+        },
+        {
+          "path": "projects/repair360-fleet/PROJECT.md",
+          "kind": "project",
+          "sizeBytes": 341,
+          "sha256": "c8c17f21f3451deb5bd22f220155b1627fee3c4212c394adaffdfc8f8a346f6f"
+        },
+        {
+          "path": "README.md",
+          "kind": "readme",
+          "sizeBytes": 1402,
+          "sha256": "2047950d4ada8a12eb068a07ca165321553aebb08f74ca850a667ae39005d198"
+        },
+        {
+          "path": "tasks/tenant-boundary-check/TASK.md",
+          "kind": "task",
+          "sizeBytes": 364,
+          "sha256": "8c66e5699c7a6feb53701f01bfb692efddf577bb692b4ccebaa3953eca302b0b"
+        }
+      ],
+      "trustLevel": "assets",
+      "compatibility": "compatible",
+      "contentHash": "sha256:7632108395e5cd1fa7a43042a94fd27d3d3cd21d0eea7e31c5c66636c756b788"
     },
     {
       "id": "paperclipai:bundled:product:product-design",

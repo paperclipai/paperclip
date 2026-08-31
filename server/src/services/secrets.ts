@@ -81,6 +81,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
+  openclaw_gateway: ["authToken", "token", "password", "devicePrivateKeyPem"],
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
@@ -929,6 +930,7 @@ export function secretService(db: Db | DbTransaction) {
     strictMode?: boolean;
     adapterType?: string | null;
     actor?: { userId?: string | null; agentId?: string | null };
+    priorAdapterConfig?: Record<string, unknown> | null;
   };
 
   async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
@@ -1860,16 +1862,56 @@ export function secretService(db: Db | DbTransaction) {
     opts?: NormalizeAdapterConfigOptions,
   ) {
     const normalized = { ...adapterConfig };
+    if (opts?.adapterType === "openclaw_gateway") {
+      const headers = adapterConfig.headers;
+      if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+        const entries = Object.entries(headers);
+        const authHeaders = ["x-openclaw-token", "x-openclaw-auth", "authorization"];
+        const rawLegacyToken = authHeaders
+          .map((name) => entries.find(([key]) => key.toLowerCase() === name)?.[1])
+          .find((value) => value !== undefined);
+        if (normalized.authToken === undefined && normalized.token === undefined) {
+          if (typeof rawLegacyToken === "string") {
+            const token = rawLegacyToken.replace(/^Bearer\s+/i, "").trim();
+            if (token) normalized.authToken = token;
+          } else if (rawLegacyToken !== undefined) {
+            normalized.authToken = rawLegacyToken;
+          }
+        }
+        const safeHeaders = Object.fromEntries(entries.filter(([key]) => !authHeaders.includes(key.toLowerCase())));
+        if (Object.keys(safeHeaders).length > 0) normalized.headers = safeHeaders;
+        else delete normalized.headers;
+      }
+      const prior = opts.priorAdapterConfig;
+      const hasAuthToken = Object.prototype.hasOwnProperty.call(adapterConfig, "authToken");
+      const hasToken = Object.prototype.hasOwnProperty.call(adapterConfig, "token");
+      if (prior && !hasAuthToken && !hasToken) {
+        if (prior.authToken !== undefined) normalized.authToken = prior.authToken;
+        else if (prior.token !== undefined) normalized.token = prior.token;
+        else if (prior.headers && typeof prior.headers === "object" && !Array.isArray(prior.headers)) {
+          const priorEntries = Object.entries(prior.headers);
+          const priorAuthHeaders = ["x-openclaw-token", "x-openclaw-auth", "authorization"];
+          const priorLegacyToken = priorAuthHeaders
+            .map((name) => priorEntries.find(([key]) => key.toLowerCase() === name)?.[1])
+            .find((value) => value !== undefined);
+          if (priorLegacyToken !== undefined) {
+            normalized.authToken = typeof priorLegacyToken === "string"
+              ? priorLegacyToken.replace(/^Bearer\s+/i, "").trim()
+              : priorLegacyToken;
+          }
+        }
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
       normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
     }
     const secretFieldKeys = await listAdapterSchemaSecretFieldKeys(opts?.adapterType);
     for (const key of secretFieldKeys) {
-      if (!Object.prototype.hasOwnProperty.call(adapterConfig, key)) continue;
+      if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
       const value = await normalizeSchemaSecretFieldForPersistence(companyId, {
         adapterType: opts?.adapterType ?? null,
         key,
-        rawValue: adapterConfig[key],
+        rawValue: normalized[key],
         actor: opts?.actor,
       });
       if (value === undefined) {

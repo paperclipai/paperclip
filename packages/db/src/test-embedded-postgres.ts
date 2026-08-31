@@ -244,6 +244,10 @@ export const __startEmbeddedPostgresWithRetryForTests = startEmbeddedPostgresWit
 export const __embeddedPostgresStartMaxAttemptsForTests = EMBEDDED_POSTGRES_START_MAX_ATTEMPTS;
 
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
+  if (process.getuid?.() === 0) {
+    return { supported: false, reason: "embedded PostgreSQL cannot run as root" };
+  }
+
   let started: { dataDir: string; instance: EmbeddedPostgresInstance } | null = null;
 
   try {

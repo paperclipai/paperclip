@@ -17,8 +17,8 @@ Don't use when:
 
 Core fields:
 - url (string, required): OpenClaw gateway WebSocket URL (ws:// or wss://)
-- headers (object, optional): handshake headers; supports x-openclaw-token / x-openclaw-auth
-- authToken (string, optional): shared gateway token override
+- headers (object, optional): non-secret handshake headers; legacy auth headers are migrated to authToken
+- authToken (string, optional): shared gateway token, persisted by Paperclip as a secret reference
 - password (string, optional): gateway shared password, if configured
 
 Gateway connect identity fields:

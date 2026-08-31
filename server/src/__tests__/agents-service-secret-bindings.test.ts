@@ -273,6 +273,46 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(JSON.stringify(persistedConfig)).not.toContain(literalApiKey);
   });
 
+  it("preserves a legacy OpenClaw credential when an agent edit sends sanitized headers", async () => {
+    const companyId = await seedCompany();
+    const legacyToken = `openclaw-token-${randomUUID()}`;
+    const [legacyAgent] = await db.insert(agents).values({
+      companyId,
+      name: "Legacy OpenClaw",
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "wss://openclaw.example",
+        headers: { "X-OpenClaw-Token": legacyToken, "x-trace-id": "old" },
+      },
+      runtimeConfig: {},
+    }).returning();
+
+    const updated = await agentService(db).update(legacyAgent.id, {
+      adapterConfig: {
+        url: "wss://openclaw.example",
+        headers: { "x-trace-id": "new" },
+      },
+    });
+
+    const persistedConfig = updated?.adapterConfig as Record<string, unknown>;
+    expect(JSON.stringify(persistedConfig)).not.toContain(legacyToken);
+    expect(persistedConfig.authToken).toMatchObject({
+      type: "secret_ref",
+      version: "latest",
+    });
+    expect(persistedConfig.headers).toEqual({ "x-trace-id": "new" });
+
+    const resolved = await secretService(db).resolveAdapterConfigForRuntime(
+      companyId,
+      persistedConfig,
+      undefined,
+      { adapterType: "openclaw_gateway" },
+    );
+    expect(resolved.config.authToken).toBe(legacyToken);
+  });
+
   it("replaces agent secret bindings when adapterConfig env changes", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);

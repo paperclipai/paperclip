@@ -44,13 +44,19 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   // Paperclip API override
   if (v.paperclipApiUrl) ac.paperclipApiUrl = v.paperclipApiUrl;
 
-  // Headers — parse headersJson first, then inject authToken on top
+  // Legacy auth headers are migrated to the native secret field; headers stay non-secret.
   const headers = parseJsonObject(v.headersJson ?? "");
-  if (headers) ac.headers = headers;
-  if (v.authToken) {
-    const h = (ac.headers as Record<string, unknown>) ?? {};
-    h["x-openclaw-token"] = v.authToken;
-    ac.headers = h;
+  if (headers) {
+    const entries = Object.entries(headers);
+    const authHeaders = ["x-openclaw-token", "x-openclaw-auth", "authorization"];
+    const legacyToken = authHeaders
+      .map((name) => entries.find(([key]) => key.toLowerCase() === name)?.[1])
+      .find((value) => value !== undefined);
+    if (!ac.authToken && typeof legacyToken === "string") {
+      ac.authToken = legacyToken.replace(/^Bearer\s+/i, "").trim();
+    }
+    const safeHeaders = Object.fromEntries(entries.filter(([key]) => !authHeaders.includes(key.toLowerCase())));
+    if (Object.keys(safeHeaders).length > 0) ac.headers = safeHeaders;
   }
 
   // Payload template

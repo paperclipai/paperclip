@@ -676,7 +676,10 @@ export function agentService(db: Db) {
       normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         normalizedPatch.adapterConfig,
-        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+        {
+          adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
+          priorAdapterConfig: isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : null,
+        },
       );
     }
     // Run the server-enforced binding invariant when the patch touches the
@@ -993,7 +996,10 @@ export function agentService(db: Db) {
           patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
             existing.companyId,
             patch.adapterConfig,
-            { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+            {
+              adapterType: (patch.adapterType ?? existing.adapterType) as string,
+              priorAdapterConfig: isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : null,
+            },
           );
           // The approval activation keeps an existing fixed binding but rejects a
           // newly introduced binding, because it carries no stored-session claim.
