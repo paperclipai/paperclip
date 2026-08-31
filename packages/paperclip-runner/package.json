@@ -8,6 +8,7 @@
   },
   "type": "module",
   "bin": {
+    "paperclip-runner-opencode-proxy": "./dist/cli/opencode-app-server-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js"
   },
   "exports": {
@@ -58,7 +59,8 @@
     "@agentclientprotocol/codex-acp": "1.6.2",
     "acpx": "0.13.1",
     "ajv": "^8.20.0",
-    "json-schema-to-ts": "^3.1.1"
+    "json-schema-to-ts": "^3.1.1",
+    "opencode-ai": "1.18.17"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

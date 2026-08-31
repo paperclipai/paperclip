@@ -106,4 +106,44 @@ describe("buildPaperclipRunnerConfig", () => {
       expect(config).not.toHaveProperty(unsupportedKey);
     }
   });
+
+  it("builds a bounded OpenCode runner profile from schema values", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      codexEngine: "acp",
+      dangerouslyBypassSandbox: true,
+      adapterSchemaValues: {
+        provider: "opencode",
+        opencodePermissionMode: "ask",
+        lifecycleMode: "warm",
+        idleTimeoutMs: 45_000,
+      },
+    }));
+
+    expect(config).toMatchObject({
+      provider: "opencode",
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      opencodePermissionMode: "ask",
+      lifecycleMode: "warm",
+      idleTimeoutMs: 45_000,
+    });
+    expect(config).not.toHaveProperty("engine");
+    expect(config).not.toHaveProperty("dangerouslyBypassApprovalsAndSandbox");
+  });
+
+  it("falls back to safe OpenCode defaults for invalid schema values", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterSchemaValues: {
+        provider: "opencode",
+        opencodePermissionMode: "unrestricted",
+        lifecycleMode: "forever",
+        idleTimeoutMs: -1,
+      },
+    }))).toMatchObject({
+      provider: "opencode",
+      opencodePermissionMode: "allow",
+      lifecycleMode: "per_turn",
+    });
+  });
 });

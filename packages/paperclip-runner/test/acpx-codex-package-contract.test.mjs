@@ -37,9 +37,11 @@ test("the runner pins only the Codex ACPX production dependencies", () => {
   );
 });
 
-test("the package exposes only the reviewed Codex ACPX sidecar binary", () => {
+test("the package exposes only the reviewed provider transport binaries", () => {
   assert.deepEqual(runnerPackage.bin, {
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+    "paperclip-runner-opencode-proxy":
+      "./dist/cli/opencode-app-server-proxy.js",
   });
 });
 

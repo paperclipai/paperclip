@@ -12,6 +12,7 @@ import {
   createCodexAcpxNativeSessionBackend,
   type CodexAcpxNativeSessionBackendOptions,
 } from "./codex-acpx-native-backend.js";
+import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 export interface NativeBackendFactoryOptions extends Omit<
   CodexNativeSessionBackendOptions,
@@ -24,6 +25,9 @@ export interface NativeBackendFactoryOptions extends Omit<
   acpxEnvironment?: NodeJS.ProcessEnv;
   acpxManagedCodexCredentialSourcePath?: string;
   acpxDynamicToolHandler?: CodexAcpxNativeSessionBackendOptions["dynamicToolHandler"];
+  opencodeRuntimeDirectory?: string;
+  opencodeEnvironment?: NodeJS.ProcessEnv;
+  opencodeCommand?: string;
 }
 
 /**
@@ -35,6 +39,22 @@ export function createNativeSessionBackend(
   input: NativeExecutionInput,
   options: NativeBackendFactoryOptions = {},
 ): NativeSessionBackend {
+  if (input.provider.kind === "opencode") {
+    if (!options.opencodeRuntimeDirectory?.trim()) {
+      throw new Error(
+        "OpenCode native backend requires an instance runtime directory",
+      );
+    }
+    return createOpenCodeNativeSessionBackend(input, {
+      runtimeDirectory: options.opencodeRuntimeDirectory,
+      environment: options.opencodeEnvironment,
+      command: options.opencodeCommand,
+      runnerInstanceId: options.runnerInstanceId,
+      onSpawn: options.onSpawn,
+      dynamicTools: options.dynamicTools,
+      dynamicToolHandler: options.dynamicToolHandler,
+    });
+  }
   if (input.provider.kind === "acpx") {
     if (input.provider.agent !== "codex") {
       throw new Error(
