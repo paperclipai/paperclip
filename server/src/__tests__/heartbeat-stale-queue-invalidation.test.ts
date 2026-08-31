@@ -2021,4 +2021,109 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
+
+  // RENA-51447 / RENA-55149: two open issues that share the same
+  // (companyId, originKind, originId, originFingerprint) tuple -- the common case is a
+  // routine that produces the same fingerprint on every dispatch -- can each be queued for
+  // claim at the same time. claimQueuedRun() stamps the issue's executionRunId only after
+  // marking the run "running", and that stamp is guarded by the partial unique index
+  // issues_open_routine_execution_uq. Previously the second claim's UPDATE threw an uncaught
+  // DrizzleQueryError (23505), leaving that run stuck at status="running" with no process ever
+  // spawned until the 5-minute orphan reaper mislabeled it "process_lost". It must instead be
+  // caught and resolved to a clean terminal state in the same claim call.
+  it("cancels the losing claim instead of throwing when two open issues collide on the same routine execution fingerprint", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const originId = randomUUID();
+    const originFingerprint = "fp-1628";
+
+    const issueAId = randomUUID();
+    const issueBId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: issueAId,
+        companyId,
+        title: "Routine dispatch A",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId,
+        originFingerprint,
+      },
+      {
+        id: issueBId,
+        companyId,
+        title: "Routine dispatch B",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId,
+        originFingerprint,
+      },
+    ]);
+
+    const { runId: runAId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: issueAId,
+      wakeReason: "issue_assigned",
+    });
+    const { runId: runBId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: issueBId,
+      wakeReason: "issue_assigned",
+    });
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.not.toThrow();
+
+    await waitForCondition(async () => {
+      const runs = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      return runs.every((run) => run.status !== "queued");
+    });
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        processPid: heartbeatRuns.processPid,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    const runById = new Map(runs.map((run) => [run.id, run]));
+    const runA = runById.get(runAId);
+    const runB = runById.get(runBId);
+
+    // Exactly one of the two claims won the execution lock; the other must be cancelled
+    // deterministically here rather than left "running" with no process (which is what
+    // forced a wait on the 5-minute orphan reaper before this fix).
+    const winner = runA?.status === "cancelled" ? runB : runA;
+    const loser = winner === runA ? runB : runA;
+
+    expect(["queued", "running", "succeeded"]).toContain(winner?.status);
+    expect(loser?.status).toBe("cancelled");
+    expect(loser?.errorCode).toBe("duplicate_execution_lock");
+    expect(loser?.status).not.toBe("running");
+
+    const wakeups = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups.every((wakeup) => wakeup.status !== "queued")).toBe(true);
+
+    // The loser's issue was never stamped -- it should stay unlocked regardless of how far
+    // the winner's own run has since progressed (it may already be "succeeded" and have
+    // released its own lock by the time this assertion runs).
+    const loserIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, loser === runA ? issueAId : issueBId))
+      .then((rows) => rows[0] ?? null);
+    expect(loserIssue?.executionRunId).toBeNull();
+  });
 });

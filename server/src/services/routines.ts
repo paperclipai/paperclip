@@ -1874,71 +1874,105 @@ export function routineService(
           return updated ?? createdRun;
         }
 
-        try {
-          createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId,
-            projectWorkspaceId,
-            goalId: input.routine.goalId,
-            parentId: input.routine.parentIssueId,
-            title,
-            description,
-            status: "todo",
-            priority: input.routine.priority,
-            assigneeAgentId,
-            createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
-            createdByUserId: manualRunnerUserId,
-            responsibleUserId,
-            trustExplicitResponsibleUserId: true,
-            originKind: issueOriginKind,
-            originId: issueOriginId,
-            originRunId: createdRun.id,
-            originFingerprint: dispatchFingerprint,
-            billingCode: issueBillingCode,
-            executionWorkspaceId: input.executionWorkspaceId ?? null,
-            executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-            executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-          });
-        } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
-            throw error;
-          }
+        const isOpenExecutionConflictError = (error: unknown) =>
+          !!error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as { code?: string }).code === "23505" &&
+          "constraint" in error &&
+          (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-            kind: issueOriginKind,
-            id: issueOriginId,
-          });
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
+        // issues_open_routine_execution_uq (companyId, originKind, originId, originFingerprint)
+        // only allows one *open* issue per fingerprint. For "always_enqueue" the caller wants a
+        // fresh issue on every dispatch regardless of what's still open, so a same-fingerprint
+        // collision here isn't a dedup signal to coalesce on -- it just means two dispatches
+        // produced an identical fingerprint while the earlier issue is still open. Salt the
+        // fingerprint and retry a bounded number of times instead of letting the unique-constraint
+        // violation escape as an unhandled DrizzleQueryError (RENA-51447).
+        const ALWAYS_ENQUEUE_CONFLICT_MAX_ATTEMPTS = 5;
+        let effectiveFingerprint = dispatchFingerprint;
+        for (let attempt = 1; attempt <= ALWAYS_ENQUEUE_CONFLICT_MAX_ATTEMPTS; attempt += 1) {
+          try {
+            createdIssue = await issueSvc.create(input.routine.companyId, {
+              projectId,
+              projectWorkspaceId,
+              goalId: input.routine.goalId,
+              parentId: input.routine.parentIssueId,
+              title,
+              description,
+              status: "todo",
+              priority: input.routine.priority,
+              assigneeAgentId,
+              createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
+              createdByUserId: manualRunnerUserId,
+              responsibleUserId,
+              trustExplicitResponsibleUserId: true,
+              originKind: issueOriginKind,
+              originId: issueOriginId,
+              originRunId: createdRun.id,
+              originFingerprint: effectiveFingerprint,
+              billingCode: issueBillingCode,
+              executionWorkspaceId: input.executionWorkspaceId ?? null,
+              executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+              executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
             });
+            break;
+          } catch (error) {
+            if (!isOpenExecutionConflictError(error)) {
+              throw error;
+            }
+
+            if (input.routine.concurrencyPolicy === "always_enqueue") {
+              if (attempt >= ALWAYS_ENQUEUE_CONFLICT_MAX_ATTEMPTS) {
+                throw error;
+              }
+              logger.warn(
+                {
+                  routineId: input.routine.id,
+                  companyId: input.routine.companyId,
+                  assigneeAgentId,
+                  attempt,
+                },
+                "dispatchRoutineRun: issues_open_routine_execution_uq collision for always_enqueue policy; retrying with salted fingerprint",
+              );
+              effectiveFingerprint = `${dispatchFingerprint}:always_enqueue:${crypto.randomUUID()}`;
+              continue;
+            }
+
+            const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+              kind: issueOriginKind,
+              id: issueOriginId,
+            });
+            if (!existingIssue) throw error;
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            if (manualRunnerUserId) {
+              await touchIssueForUserInbox(txDb, {
+                companyId: input.routine.companyId,
+                issueId: existingIssue.id,
+                userId: manualRunnerUserId,
+                touchedAt: triggeredAt,
+              });
+            }
+            const updated = await finalizeRun(createdRun.id, {
+              status,
+              linkedIssueId: existingIssue.id,
+              coalescedIntoRunId: existingIssue.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              issueId: existingIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
           }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+        }
+
+        if (!createdIssue) {
+          throw new Error("dispatchRoutineRun: issue creation loop exited without creating an issue or throwing");
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.

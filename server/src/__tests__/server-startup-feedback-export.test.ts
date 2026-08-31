@@ -351,6 +351,13 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
   createPluginWorkerManager: vi.fn(() => ({ id: "plugin-worker-manager" })),
 }));
 
+// Without this mock, startHostResourceTelemetry() registers its own real setInterval
+// during startServer(), which clobbers the setInterval spy's captured callback in tests
+// below that rely on it being the routine-tick interval (RENA-55149).
+vi.mock("../services/host-telemetry.js", () => ({
+  startHostResourceTelemetry: vi.fn(() => () => {}),
+}));
+
 vi.mock("../startup-banner.js", () => ({
   printStartupBanner: vi.fn(),
 }));

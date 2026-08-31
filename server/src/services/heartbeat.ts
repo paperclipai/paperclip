@@ -465,6 +465,33 @@ const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+
+// Detects a violation of the partial unique index issues_open_routine_execution_uq
+// (companyId, originKind, originId, originFingerprint), which only allows one open issue
+// per fingerprint to hold an execution lock (executionRunId IS NOT NULL) at a time. See
+// RENA-51447/RENA-55149.
+//
+// db is drizzle over the `postgres` (postgres.js) driver, which throws a PostgresError
+// exposing `constraint_name` (not `constraint`, the node-postgres/`pg` field name), and
+// drizzle wraps that in a DrizzleQueryError with the real error on `.cause` rather than on
+// the thrown error itself. routines.ts's isOpenExecutionConflictError checks `error.constraint`
+// on the caught error directly, which matches neither shape with this driver -- so that
+// existing "working" collision handler cannot actually match a real 23505 from this driver
+// either. Checking both the error and its `.cause` for both field name variants here keeps
+// this resilient regardless of which layer surfaces which shape.
+function isOpenRoutineExecutionConflictError(error: unknown): boolean {
+  const candidates = [error, (error as { cause?: unknown } | null)?.cause];
+  return candidates.some((candidate) => (
+    !!candidate &&
+    typeof candidate === "object" &&
+    "code" in candidate &&
+    (candidate as { code?: string }).code === "23505" &&
+    (
+      (candidate as { constraint?: string }).constraint === "issues_open_routine_execution_uq" ||
+      (candidate as { constraint_name?: string }).constraint_name === "issues_open_routine_execution_uq"
+    )
+  ));
+}
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -479,6 +506,11 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 60 * 1000,
 ] as const;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
+// Short backoff before a process-lost retry becomes claimable, so a burst of orphaned
+// runs (e.g. concurrency pressure from a large routine dispatch batch) doesn't immediately
+// re-collide with the same resource/concurrency pressure that caused the original loss.
+export const PROCESS_LOSS_RETRY_DELAYS_MS = [15 * 1000, 60 * 1000, 3 * 60 * 1000] as const;
+const PROCESS_LOSS_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
@@ -1398,6 +1430,20 @@ export function applyRunScopedMentionedSkillKeys(
     ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
+}
+
+export function computeProcessLossRetryDelayMs(
+  attempt: number,
+  random: () => number = Math.random,
+) {
+  const index = Math.min(
+    Math.max(Math.floor(attempt) || 1, 1),
+    PROCESS_LOSS_RETRY_DELAYS_MS.length,
+  ) - 1;
+  const baseDelayMs = PROCESS_LOSS_RETRY_DELAYS_MS[index];
+  const sample = Math.min(1, Math.max(0, random()));
+  const jitterMultiplier = 1 + (((sample * 2) - 1) * PROCESS_LOSS_RETRY_JITTER_RATIO);
+  return Math.max(1_000, Math.round(baseDelayMs * jitterMultiplier));
 }
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
@@ -10469,7 +10515,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     now: Date,
+    options: { applyBackoff?: boolean } = {},
   ) {
+    // Backoff only applies to genuine process-loss reaping (orphaned/dead process detection),
+    // which is the resource-pressure scenario a burst of losses can re-collide on (RENA-51447).
+    // Graceful shutdown restarts are a deliberate, non-concurrent event, so they keep the prior
+    // immediate "queued" behavior instead of waiting out a backoff window.
+    const applyBackoff = options.applyBackoff ?? false;
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -10515,11 +10567,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const processLossRetryAttempt = (run.processLossRetryCount ?? 0) + 1;
+    const processLossRetryDelayMs = applyBackoff
+      ? computeProcessLossRetryDelayMs(processLossRetryAttempt)
+      : 0;
+    const processLossRetryDueAt = new Date(now.getTime() + processLossRetryDelayMs);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
+      ...(applyBackoff
+        ? {
+          scheduledRetryAttempt: processLossRetryAttempt,
+          scheduledRetryAt: processLossRetryDueAt.toISOString(),
+        }
+        : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -10535,6 +10598,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            ...(applyBackoff
+              ? {
+                scheduledRetryAttempt: processLossRetryAttempt,
+                scheduledRetryAt: processLossRetryDueAt.toISOString(),
+              }
+              : {}),
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -10544,6 +10613,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0]);
 
+      // When backoff applies, land the retry in scheduled_retry (not queued) so it only
+      // becomes claimable once processLossRetryDueAt passes. promoteDueScheduledRetries()
+      // promotes it to "queued" when due, reusing the same backoff machinery as other bounded
+      // retries. This spreads out retries after a burst of process losses instead of
+      // re-claiming immediately, which reduces the chance of re-colliding with the same
+      // concurrency/resource pressure that caused the original loss (RENA-51447). Graceful
+      // shutdown restarts skip this and stay immediately "queued", as before.
       const retryRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -10551,13 +10627,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: applyBackoff ? "scheduled_retry" : "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          processLossRetryCount: processLossRetryAttempt,
+          ...(applyBackoff
+            ? {
+              scheduledRetryAt: processLossRetryDueAt,
+              scheduledRetryAttempt: processLossRetryAttempt,
+              scheduledRetryReason: "process_lost_retry",
+            }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -10587,27 +10670,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return retryRun;
     });
 
-    publishLiveEvent({
-      companyId: queued.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
-      },
-    });
+    if (applyBackoff) {
+      // Promotion to "queued" (and the corresponding heartbeat.run.queued live event) happens
+      // once promoteDueScheduledRetries() finds this row past scheduledRetryAt.
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Scheduled automatic retry ${processLossRetryAttempt} in ${processLossRetryDelayMs}ms `
+          + `(due ${processLossRetryDueAt.toISOString()}) after orphaned child process was confirmed dead`,
+        payload: {
+          retryOfRunId: run.id,
+          scheduledRetryAttempt: processLossRetryAttempt,
+          scheduledRetryAt: processLossRetryDueAt.toISOString(),
+          delayMs: processLossRetryDelayMs,
+        },
+      });
+    } else {
+      publishLiveEvent({
+        companyId: queued.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: queued.id,
+          agentId: queued.agentId,
+          invocationSource: queued.invocationSource,
+          triggerDetail: queued.triggerDetail,
+          wakeupRequestId: queued.wakeupRequestId,
+        },
+      });
 
-    await appendRunEvent(queued, 1, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
-      payload: {
-        retryOfRunId: run.id,
-      },
-    });
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Queued automatic retry after orphaned child process was confirmed dead",
+        payload: {
+          retryOfRunId: run.id,
+        },
+      });
+    }
 
     return queued;
   }
@@ -12991,24 +13092,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        if (!isOpenRoutineExecutionConflictError(error)) throw error;
+
+        // issues_open_routine_execution_uq (companyId, originKind, originId, originFingerprint)
+        // only allows one *open* issue per fingerprint to hold an execution lock at a time.
+        // Two open issues sharing a fingerprint (most commonly a routine that produces the
+        // same fingerprint on every dispatch, see RENA-51428) can both reach this claim in
+        // the same window; the loser's UPDATE above hits the constraint. Previously that threw
+        // out of claimQueuedRun() uncaught, leaving the run stuck at status="running" with no
+        // process ever spawned until the 5-minute orphan reaper mislabeled it "process_lost"
+        // (RENA-51447). Resolve it here immediately instead: the run itself is fine, it just
+        // lost the race for the issue's execution slot, so cancel it deterministically with a
+        // clear, non-misleading errorCode and let the next queued run for this agent proceed.
+        logger.warn(
+          { runId: claimed.id, issueId: claimedIssueId, companyId: claimed.companyId },
+          "claimQueuedRun: issues_open_routine_execution_uq collision stamping executionRunId; cancelling run as duplicate_execution_lock",
         );
+        return await cancelRunInternal(
+          claimed.id,
+          "Cancelled because another run already holds the execution lock for this issue (duplicate dispatch)",
+          {
+            errorCode: "duplicate_execution_lock",
+            eventMessage: "Run lost the race for the issue execution lock (duplicate_execution_lock); cancelled instead of leaking to the orphan reaper",
+            eventPayload: { issueId: claimedIssueId },
+          },
+        );
+      }
     }
 
     return claimed;
@@ -14144,7 +14273,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
         if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now, { applyBackoff: true });
         }
       } else if (retryAgent) {
         const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
@@ -18321,6 +18450,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         kind: "queued_recovery" as const,
         run: queuedRun,
       };
+    }).catch((error) => {
+      if (!isOpenRoutineExecutionConflictError(error)) throw error;
+
+      // A losing claimQueuedRun() (see RENA-51447/RENA-55149) can route here via
+      // cancelRunInternal -> releaseIssueExecutionAndPromote to promote a fresh recovery/next
+      // run onto the just-released issue. If a sibling issue with the same
+      // (companyId, originKind, originId, originFingerprint) is still open and holding the
+      // execution lock, that promotion UPDATE hits the same issues_open_routine_execution_uq
+      // constraint. There is nothing to roll back (the transaction already did that), so treat
+      // it as "nothing to promote right now" instead of letting it escape uncaught -- the next
+      // wakeup/resumeQueuedRuns pass will re-evaluate this issue once the sibling's lock clears.
+      logger.warn(
+        { err: error, runId: run.id, issueId: contextIssueId },
+        "releaseIssueExecutionAndPromote: issues_open_routine_execution_uq collision promoting next candidate; skipping promotion for now",
+      );
+      return null;
     });
 
     if (promotionResult?.kind === "blocked") {

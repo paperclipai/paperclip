@@ -1307,7 +1307,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
-    expect(["queued", "running"]).toContain(retryRun?.status);
+    expect(["queued", "running", "scheduled_retry"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
@@ -2416,7 +2416,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const retryRun = runs.find((row) => row.id !== runId);
-    expect(["queued", "running"]).toContain(retryRun?.status);
+    // reapOrphanedRuns() enqueues this retry with applyBackoff: true (RENA-51447 /
+    // RENA-55149), so it lands in scheduled_retry rather than being immediately
+    // claimable, unlike the graceful-shutdown restart path this assertion previously
+    // assumed.
+    expect(["queued", "running", "scheduled_retry"]).toContain(retryRun?.status);
 
     const issue = await db
       .select()
