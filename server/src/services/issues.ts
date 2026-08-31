@@ -131,6 +131,10 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import {
+  isAbandonedHeartbeatRun,
+  type HeartbeatRunLivenessRow,
+} from "./heartbeat-run-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -815,6 +819,19 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+// Columns every lock-reaping path needs to decide whether a non-terminal run is
+// actually still alive (MAD-622).
+const HEARTBEAT_RUN_LIVENESS_SELECTION = {
+  id: heartbeatRuns.id,
+  status: heartbeatRuns.status,
+  processPid: heartbeatRuns.processPid,
+  processGroupId: heartbeatRuns.processGroupId,
+  processStartedAt: heartbeatRuns.processStartedAt,
+  lastOutputAt: heartbeatRuns.lastOutputAt,
+  startedAt: heartbeatRuns.startedAt,
+  updatedAt: heartbeatRuns.updatedAt,
+  createdAt: heartbeatRuns.createdAt,
+} as const;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -1172,18 +1189,24 @@ async function listPendingFinalizeBlockerIssueIds(
  * Whether a heartbeat run has reached a terminal state or no longer exists.
  * A terminal/missing run can make no further progress on its execution
  * workspace, so callers must not wait on it to advance an in-flight operation.
+ *
+ * MAD-622: a run whose *process* died without its row ever transitioning is
+ * neither terminal nor missing, yet it can make no further progress either. Such
+ * an abandoned run (no live process, silent past its lease) counts as terminal
+ * here so it stops blocking gates and holding issue locks forever.
  */
 export async function heartbeatRunIsTerminalOrMissing(
   dbOrTx: Pick<Db, "select">,
   runId: string,
 ): Promise<boolean> {
   const run = await dbOrTx
-    .select({ status: heartbeatRuns.status })
+    .select(HEARTBEAT_RUN_LIVENESS_SELECTION)
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId))
-    .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+    .then((rows: HeartbeatRunLivenessRow[]) => rows[0] ?? null);
   if (!run) return true;
-  return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+  return isAbandonedHeartbeatRun(run);
 }
 
 /**
@@ -5402,11 +5425,19 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(HEARTBEAT_RUN_LIVENESS_SELECTION)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      // MAD-622: terminal, missing, or abandoned (dead process past its lease)
+      // all mean the run holds no real claim on the execution lock.
+      if (
+        run &&
+        !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) &&
+        !isAbandonedHeartbeatRun(run)
+      ) {
+        return false;
+      }
 
       const updated = await tx
         .update(issues)
@@ -5450,22 +5481,32 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(HEARTBEAT_RUN_LIVENESS_SELECTION)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      // MAD-622: abandoned runs (dead process past the lease) count as stale
+      // alongside terminal and missing ones.
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) && !isAbandonedHeartbeatRun(run)) {
+        return false;
+      }
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select(HEARTBEAT_RUN_LIVENESS_SELECTION)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (
+          executionRun &&
+          !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status) &&
+          !isAbandonedHeartbeatRun(executionRun)
+        ) {
+          return false;
+        }
       }
 
       const updated = await tx

@@ -541,4 +541,117 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
   });
+
+  // MAD-891: the wedge that stranded MAD-741/868/875/878/879. A retry run was
+  // promoted `scheduled_retry` -> `queued`, its dispatch failed, and the row
+  // stayed `queued` with `startedAt = null` forever. That status is neither
+  // terminal nor missing, so the lock reaper could not release it and every
+  // mutation on the issue 409'd with `Issue run ownership conflict`.
+  it("releases an execution lock held by a queued run that never started", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const orphanRunId = randomUUID();
+    const issueId = randomUUID();
+    const longPast = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db.insert(heartbeatRuns).values({
+      id: orphanRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "manual",
+      // The orphan signature: promoted to `queued`, never claimed, no process.
+      startedAt: null,
+      finishedAt: null,
+      processPid: null,
+      processGroupId: null,
+      createdAt: longPast,
+      // Bumped well after createdAt — the lease must not be renewed by it.
+      updatedAt: new Date(),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned queued run holds the lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: longPast,
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Recovered from orphaned queued run" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        title: issues.title,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      title: "Recovered from orphaned queued run",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  // Guard the other direction: a queued run inside its lease is a legitimate
+  // waiter, and its lock must still be honoured.
+  it("keeps the lock for a recently queued run that has not started yet", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const queuedRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "manual",
+      startedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Recently queued run still owns the lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: queuedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should not steal the lock" });
+
+    expect(res.status).toBe(409);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row?.executionRunId).toBe(queuedRunId);
+  });
 });

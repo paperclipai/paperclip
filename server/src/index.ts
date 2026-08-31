@@ -1337,6 +1337,13 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
 
+        // MAD-891: must run before the stale-lock sweeper — it makes orphaned
+        // queued runs terminal, which is what lets the lock sweeper release them.
+        const orphanedQueued = await heartbeat.sweepOrphanedQueuedRuns();
+        if (orphanedQueued.failed > 0 || orphanedQueued.dispatched > 0) {
+          logger.warn({ ...orphanedQueued }, "startup orphaned queued-run sweeper resolved stranded runs");
+        }
+
         const swept = await heartbeat.sweepStaleIssueLocks();
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
@@ -1571,6 +1578,14 @@ export async function startServer(): Promise<StartedServer> {
               const scanned = await heartbeat.scanSilentActiveRuns();
               if (scanned.created > 0 || scanned.escalated > 0) {
                 logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+              }
+            })
+            .then(async () => {
+              // MAD-891: ordered before the stale-lock sweeper on purpose — it
+              // makes orphaned queued runs terminal so their locks become reapable.
+              const orphanedQueued = await heartbeat.sweepOrphanedQueuedRuns();
+              if (orphanedQueued.failed > 0 || orphanedQueued.dispatched > 0) {
+                logger.warn({ ...orphanedQueued }, "periodic orphaned queued-run sweeper resolved stranded runs");
               }
             })
             .then(async () => {
