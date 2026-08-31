@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
-use crate::acpx_provider_state::AcpxProviderStateEvent;
+use crate::acpx_provider_state::{is_reserved_terminal_operation, AcpxProviderStateEvent};
 use crate::durable::{redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
-use crate::provider_bridge::semantic_value_digest;
+use crate::provider_bridge::{semantic_value_digest, ToolResult};
 use crate::stable_identity::{
     is_stable_id, project_acpx_runtime_request_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS,
 };
@@ -101,54 +101,32 @@ pub fn project_acpx_state_event(
             call_id,
             operation_id,
             input,
-        } => one(
-            "semantic_tool.input",
-            EventPriority::P0,
-            json!({
-                "semantic_tool": {
-                    "schema": "paperclip.prp.semantic_tool.v1",
-                    "schemaVersion": 1,
-                    "phase": "input",
-                    "operationId": operation_id,
-                    "callId": call_id,
-                    "correlation": context.correlation(),
-                    "idempotencyKey": Value::Null,
-                    "content": {
-                        "digest": semantic_value_digest(input),
-                        "redactionDisposition": "digest_only",
-                        "references": [],
-                    },
-                    "input": input,
-                },
-            }),
-        ),
-        AcpxProviderStateEvent::ToolResult(result) => {
-            let safe_result = sanitize_value(&result.result);
+        } => {
+            validate_semantic_projection_identity(call_id, operation_id)?;
             one(
-                "semantic_tool.result",
+                "semantic_tool.input",
                 EventPriority::P0,
                 json!({
                     "semantic_tool": {
                         "schema": "paperclip.prp.semantic_tool.v1",
                         "schemaVersion": 1,
-                        "phase": "result",
-                        "operationId": result.operation_id,
-                        "callId": result.call_id,
+                        "phase": "input",
+                        "operationId": operation_id,
+                        "callId": call_id,
                         "correlation": context.correlation(),
                         "idempotencyKey": Value::Null,
                         "content": {
-                            "digest": semantic_value_digest(&safe_result),
+                            "digest": semantic_value_digest(input),
                             "redactionDisposition": "digest_only",
                             "references": [],
                         },
-                        "outcome": if result.is_error { "failed" } else { "succeeded" },
-                        "code": if result.is_error { "semantic_tool_failed" } else { "semantic_tool_succeeded" },
-                        "retryable": false,
-                        "authorizationBoundary": "active_task",
-                        "operationReceiptId": format!("operation_{}", result.call_id),
+                        "input": input,
                     },
                 }),
             )
+        }
+        AcpxProviderStateEvent::ToolResult(result) => {
+            Ok(vec![project_acpx_tool_result(context, result)?])
         }
         AcpxProviderStateEvent::PermissionRequest { .. } => Err(LocalRunnerError::invalid(
             "ACPX permission request reached projection outside the pinned runner policy",
@@ -163,10 +141,16 @@ pub fn project_acpx_state_event(
             })?;
             let prompt = question_set
                 .get("title")
-                .or_else(|| question_set.pointer("/questions/0/prompt"))
                 .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    question_set
+                        .pointer("/questions/0/prompt")
+                        .and_then(Value::as_str)
+                })
                 .map(|value| bounded_text(value, MAX_TEXT_CHARS))
                 .unwrap_or_else(|| "Codex needs your input".to_owned());
+            let origin = project_runtime_request_origin(origin.as_ref())?;
             one(
                 "runtime_request.created",
                 EventPriority::P0,
@@ -181,20 +165,31 @@ pub fn project_acpx_state_event(
                         "status": "pending",
                         "prompt": prompt,
                         "input": question_set,
-                        "origin": origin.clone().unwrap_or_else(|| json!({
-                            "adapter": "codex-acpx",
-                            "provider": "codex",
-                            "method": "runtime.input_requested",
-                        })),
+                        "origin": origin,
                     },
                 }),
             )
         }
-        AcpxProviderStateEvent::SemanticResult(result) => one(
-            "run.result.proposed",
-            EventPriority::P0,
-            result.result.clone(),
-        ),
+        AcpxProviderStateEvent::SemanticResult(result) => {
+            validate_semantic_projection_identity(&result.call_id, &result.operation_id)?;
+            if is_reserved_terminal_operation(&result.operation_id) {
+                one(
+                    "run.result.proposed",
+                    EventPriority::P0,
+                    result.result.clone(),
+                )
+            } else {
+                Ok(vec![project_acpx_tool_result(
+                    context,
+                    &ToolResult {
+                        call_id: result.call_id.clone(),
+                        operation_id: result.operation_id.clone(),
+                        result: result.result.clone(),
+                        is_error: !result.ok,
+                    },
+                )?])
+            }
+        }
         AcpxProviderStateEvent::AssistantMessage { turn_id, text } => {
             require_projected_turn(context, turn_id)?;
             one(
@@ -205,7 +200,7 @@ pub fn project_acpx_state_event(
                     "itemId": context.item_id,
                     "kind": "agentMessage",
                     "status": "completed",
-                    "channel": "progress",
+                    "channel": "final",
                     "text": bounded_text(text, MAX_TEXT_CHARS),
                 }),
             )
@@ -248,6 +243,103 @@ pub fn project_acpx_state_event(
             json!({"code": code, "message": bounded_text(message, MAX_TEXT_CHARS)}),
         ),
     }
+}
+
+fn project_acpx_tool_result(
+    context: &AcpxEventProjectionContext,
+    result: &ToolResult,
+) -> Result<NormalizedProviderEvent, LocalRunnerError> {
+    validate_semantic_projection_identity(&result.call_id, &result.operation_id)?;
+    let safe_result = sanitize_value(&result.result);
+    Ok(NormalizedProviderEvent {
+        event_type: "semantic_tool.result".to_owned(),
+        priority: EventPriority::P0,
+        payload: json!({
+            "semantic_tool": {
+                "schema": "paperclip.prp.semantic_tool.v1",
+                "schemaVersion": 1,
+                "phase": "result",
+                "operationId": result.operation_id,
+                "callId": result.call_id,
+                "correlation": context.correlation(),
+                "idempotencyKey": Value::Null,
+                "content": {
+                    "digest": semantic_value_digest(&safe_result),
+                    "redactionDisposition": "digest_only",
+                    "references": [],
+                },
+                "outcome": if result.is_error { "failed" } else { "succeeded" },
+                "code": if result.is_error { "semantic_tool_failed" } else { "semantic_tool_succeeded" },
+                "retryable": false,
+                "authorizationBoundary": "active_task",
+                "operationReceiptId": format!("operation_{}", result.call_id),
+            },
+        }),
+    })
+}
+
+fn validate_semantic_projection_identity(
+    call_id: &str,
+    operation_id: &str,
+) -> Result<(), LocalRunnerError> {
+    for (value, label) in [(call_id, "call"), (operation_id, "operation")] {
+        if !is_stable_id(value, SHORT_STABLE_ID_CHARS) {
+            return Err(LocalRunnerError::invalid(format!(
+                "ACPX semantic {label} identity is invalid"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn project_runtime_request_origin(origin: Option<&Value>) -> Result<Value, LocalRunnerError> {
+    let Some(origin) = origin else {
+        return Ok(json!({
+            "adapter": "codex-acpx",
+            "provider": "codex",
+            "method": "runtime.input_requested",
+        }));
+    };
+    let object = origin.as_object().ok_or_else(|| {
+        LocalRunnerError::invalid("ACPX runtime request origin must be an object")
+    })?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "adapter" | "provider" | "method"))
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX runtime request origin contains unsupported fields",
+        ));
+    }
+    validate_origin_field(object.get("adapter"), "adapter", 160, true)?;
+    validate_origin_field(object.get("provider"), "provider", 160, false)?;
+    validate_origin_field(object.get("method"), "method", 500, false)?;
+    Ok(origin.clone())
+}
+
+fn validate_origin_field(
+    value: Option<&Value>,
+    field: &str,
+    max_chars: usize,
+    required: bool,
+) -> Result<(), LocalRunnerError> {
+    let Some(value) = value else {
+        if required {
+            return Err(LocalRunnerError::invalid(format!(
+                "ACPX runtime request origin omitted {field}"
+            )));
+        }
+        return Ok(());
+    };
+    let text = value.as_str().ok_or_else(|| {
+        LocalRunnerError::invalid(format!("ACPX runtime request origin {field} must be text"))
+    })?;
+    if text.is_empty() || text.chars().count() > max_chars {
+        return Err(LocalRunnerError::invalid(format!(
+            "ACPX runtime request origin {field} is invalid"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_projection_identity(

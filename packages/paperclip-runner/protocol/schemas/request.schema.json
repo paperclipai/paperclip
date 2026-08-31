@@ -9,7 +9,7 @@
       "properties": {
         "schema": { "const": "paperclip.runtime_request.v2" },
         "requestKind": { "const": "runtime" },
-        "requestId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 160 },
         "type": { "const": "input" },
         "status": { "enum": ["pending", "resolved", "expired", "cancelled"] },
         "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
@@ -24,8 +24,8 @@
           },
           "additionalProperties": false
         },
-        "turnId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
-        "itemId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+        "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 240 }
       },
       "additionalProperties": false
     },

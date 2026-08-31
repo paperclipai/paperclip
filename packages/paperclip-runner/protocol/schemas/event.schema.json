@@ -22,10 +22,10 @@
     "sourceSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "sourceKind": { "enum": ["runner", "control_plane"] },
-    "runId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
-    "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
-    "turnId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
-    "itemId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "itemId": { "type": "string", "minLength": 1, "maxLength": 240 },
     "eventType": {
       "enum": [
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",

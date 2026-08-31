@@ -17,8 +17,12 @@ const MAX_PENDING_TOOLS: usize = 4_096;
 const MAX_PENDING_TOOL_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 1_024;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 16 * 1024 * 1024;
-const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
-const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
+pub(crate) const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
+pub(crate) const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
+
+pub(crate) fn is_reserved_terminal_operation(operation_id: &str) -> bool {
+    matches!(operation_id, PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcpxPendingTool {
@@ -467,10 +471,7 @@ impl AcpxProviderState {
                 result_digest: semantic_result_digest
                     .expect("decoded ACPX semantic result has a raw correlation digest"),
             };
-            if matches!(
-                result.operation_id.as_str(),
-                PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME
-            ) {
+            if is_reserved_terminal_operation(&result.operation_id) {
                 return match self.semantic_result.as_ref() {
                     None => {
                         self.semantic_result = Some(result.clone());

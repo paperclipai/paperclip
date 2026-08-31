@@ -1,6 +1,8 @@
 use paperclip_runner_core::acpx_event_payload::AcpxTurnStatus;
-use paperclip_runner_core::acpx_provider_state::{AcpxProviderStateEvent, AcpxSemanticResult};
+use paperclip_runner_core::acpx_provider_state::{AcpxProviderState, AcpxProviderStateEvent};
+use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarEvent;
 use paperclip_runner_core::durable::EventPriority;
+use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
 use paperclip_runner_core::provider_bridge::ToolResult;
 use paperclip_runner_core::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
@@ -18,6 +20,32 @@ fn context() -> AcpxEventProjectionContext {
 
 fn project(event: AcpxProviderStateEvent) -> Vec<NormalizedProviderEvent> {
     project_acpx_state_event(&context(), &event).unwrap()
+}
+
+fn reduced_semantic_result(
+    call_id: &str,
+    operation_id: &str,
+    ok: bool,
+    result: Value,
+) -> AcpxProviderStateEvent {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state
+        .accept_event(&AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"semantic_result",
+                "callId":call_id,
+                "operationId":operation_id,
+                "ok":ok,
+                "result":result,
+            }),
+        })
+        .unwrap()
+        .remove(0)
 }
 
 #[test]
@@ -108,14 +136,28 @@ fn projects_structured_input_and_semantic_results_without_provider_envelopes() {
         "reportedWorkDisposition":"done",
         "summary":"Finished",
     });
-    let projected = project(AcpxProviderStateEvent::SemanticResult(AcpxSemanticResult {
-        call_id: "finish-1".to_owned(),
-        operation_id: "paperclip_finish".to_owned(),
-        ok: true,
-        result: result.clone(),
-    }));
+    let projected = project(reduced_semantic_result(
+        "finish-1",
+        "paperclip_finish",
+        true,
+        result.clone(),
+    ));
     assert_eq!(projected[0].event_type, "run.result.proposed");
     assert_eq!(projected[0].payload, result);
+
+    let dynamic = project(reduced_semantic_result(
+        "call-1",
+        "issues.read",
+        true,
+        json!({"id":"issue-1"}),
+    ));
+    assert_eq!(dynamic[0].event_type, "semantic_tool.result");
+    assert_eq!(dynamic[0].payload["semantic_tool"]["phase"], "result");
+    assert_eq!(
+        dynamic[0].payload["semantic_tool"]["operationId"],
+        "issues.read"
+    );
+    assert_eq!(dynamic[0].payload["semantic_tool"]["callId"], "call-1");
 
     let activity = NormalizedProviderEvent {
         event_type: "usage.reported".to_owned(),
@@ -129,6 +171,48 @@ fn projects_structured_input_and_semantic_results_without_provider_envelopes() {
 }
 
 #[test]
+fn projects_runtime_request_prompt_and_origin_into_the_strict_schema() {
+    let empty_title = AcpxProviderStateEvent::InputRequest {
+        request_id: "request-1".to_owned(),
+        question_set: json!({
+            "schema":"paperclip.question_set.v1",
+            "title":"",
+            "questions":[{
+                "id":"target",
+                "prompt":"Which target?",
+                "required":true,
+                "answerMode":"single_select",
+                "options":[{"id":"first","label":"First"}],
+            }],
+        }),
+        origin: Some(json!({
+            "adapter":"codex-acpx",
+            "provider":"codex",
+            "method":"runtime.input_requested",
+        })),
+    };
+    let projected = project(empty_title);
+    assert_eq!(projected[0].payload["request"]["prompt"], "Which target?");
+
+    for origin in [
+        json!({"provider":"codex"}),
+        json!({"adapter":"codex-acpx","extra":true}),
+        json!({"adapter":""}),
+        json!({"adapter":"codex-acpx","method":null}),
+    ] {
+        let invalid = AcpxProviderStateEvent::InputRequest {
+            request_id: "request-1".to_owned(),
+            question_set: json!({
+                "schema":"paperclip.question_set.v1",
+                "questions":[],
+            }),
+            origin: Some(origin),
+        };
+        assert!(project_acpx_state_event(&context(), &invalid).is_err());
+    }
+}
+
+#[test]
 fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
     let assistant = project(AcpxProviderStateEvent::AssistantMessage {
         turn_id: "turn-1".to_owned(),
@@ -136,6 +220,7 @@ fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
     });
     assert_eq!(assistant[0].event_type, "item.completed");
     assert_eq!(assistant[0].payload["itemId"], "item-1");
+    assert_eq!(assistant[0].payload["channel"], "final");
 
     for (status, expected) in [
         (AcpxTurnStatus::Completed, "turn.completed"),
@@ -247,6 +332,31 @@ fn rejects_invalid_durable_projection_identity() {
 }
 
 #[test]
+fn rejects_semantic_events_that_cannot_form_stable_receipts() {
+    for event in [
+        AcpxProviderStateEvent::ToolCall {
+            call_id: "call 1".to_owned(),
+            operation_id: "issues.read".to_owned(),
+            input: json!({}),
+        },
+        AcpxProviderStateEvent::ToolResult(ToolResult {
+            call_id: "call-1".to_owned(),
+            operation_id: "issues/read".to_owned(),
+            result: json!({}),
+            is_error: false,
+        }),
+        reduced_semantic_result("réturn-1", "issues.read", true, json!({})),
+        reduced_semantic_result("call-1", "issues read", true, json!({})),
+    ] {
+        let error = project_acpx_state_event(&context(), &event)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("semantic"), "{error}");
+        assert!(error.contains("identity"), "{error}");
+    }
+}
+
+#[test]
 fn deterministically_projects_bounded_upstream_request_ids() {
     let question_set = json!({
         "schema":"paperclip.question_set.v1",
@@ -326,12 +436,9 @@ fn runtime_request_projection_preserves_durable_identity_boundaries() {
     assert!(request_validator.is_valid(&durable_request[0].payload["request"]));
 
     for request_id in ["request 1", "réquest-1", "request/1", "_request-1"] {
-        let mut invalid_request = valid[0].payload["request"].clone();
-        invalid_request["requestId"] = Value::String(request_id.to_owned());
-        assert!(
-            !request_validator.is_valid(&invalid_request),
-            "{request_id}"
-        );
+        let mut legacy_request = valid[0].payload["request"].clone();
+        legacy_request["requestId"] = Value::String(request_id.to_owned());
+        assert!(request_validator.is_valid(&legacy_request), "{request_id}");
     }
 
     for field in ["turnId", "itemId"] {

@@ -4,7 +4,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::acpx_provider_state::{AcpxProviderState, AcpxProviderStateEvent};
+use crate::acpx_provider_state::{
+    is_reserved_terminal_operation, AcpxProviderState, AcpxProviderStateEvent, PRP_BLOCK_TOOL_NAME,
+    PRP_COMPLETION_TOOL_NAME,
+};
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -21,8 +24,6 @@ const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
-const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -764,10 +765,6 @@ impl AcpxProviderSession {
 
 fn is_reserved_terminal_result(result: &crate::acpx_provider_state::AcpxSemanticResult) -> bool {
     is_reserved_terminal_operation(&result.operation_id)
-}
-
-fn is_reserved_terminal_operation(operation_id: &str) -> bool {
-    matches!(operation_id, PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME)
 }
 
 fn validate_reserved_terminal_result(

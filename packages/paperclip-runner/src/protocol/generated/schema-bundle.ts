@@ -2716,8 +2716,7 @@ export const requestSchema = {
         "requestId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          "maxLength": 160
         },
         "type": {
           "const": "input"
@@ -2765,14 +2764,12 @@ export const requestSchema = {
         "turnId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 240,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          "maxLength": 240
         },
         "itemId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 240,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          "maxLength": 240
         }
       },
       "additionalProperties": false
@@ -3251,26 +3248,22 @@ export const eventSchema = {
     "runId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      "maxLength": 160
     },
     "normalizedSessionId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      "maxLength": 160
     },
     "turnId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 240,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      "maxLength": 240
     },
     "itemId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 240,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      "maxLength": 240
     },
     "eventType": {
       "enum": [
