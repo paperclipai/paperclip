@@ -574,6 +574,20 @@ async function triggerExists(
   return rows[0]?.exists ?? false;
 }
 
+async function heartbeatEventSequencesAreUnique(
+  sql: ReturnType<typeof postgres>,
+): Promise<boolean> {
+  const rows = await sql<{ unique: boolean }[]>`
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM heartbeat_run_events
+      GROUP BY run_id, seq
+      HAVING count(*) > 1
+    ) AS unique
+  `;
+  return rows[0]?.unique ?? false;
+}
+
 async function heartbeatNextEventSequencesAreCurrent(
   sql: ReturnType<typeof postgres>,
 ): Promise<boolean> {
@@ -648,9 +662,15 @@ async function migrationStatementAlreadyApplied(
     return triggerExists(sql, createTriggerMatch[1]);
   }
 
-  // This native-runner cursor backfill has a persistent postcondition. Verify it
-  // instead of replaying it when a restored database is missing only the
+  // These native-runner repairs have persistent postconditions. Verify them
+  // instead of replaying them when a restored database is missing only the
   // migration-history row.
+  if (
+    normalized.startsWith("WITH ranked AS (")
+    && normalized.includes('UPDATE "heartbeat_run_events" AS event')
+  ) {
+    return heartbeatEventSequencesAreUnique(sql);
+  }
   if (
     normalized.startsWith('UPDATE "heartbeat_runs" AS run')
     && normalized.includes('SET "next_event_seq" = COALESCE')

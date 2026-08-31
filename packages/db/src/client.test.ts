@@ -1413,6 +1413,9 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const eventSequenceUniquenessHash = await migrationHash(
+        "0235_heartbeat_run_event_sequence_uniqueness.sql",
+      );
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       const companyId = "10000000-0000-4000-8000-000000000227";
       const agentId = "20000000-0000-4000-8000-000000000227";
@@ -1440,6 +1443,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           DROP INDEX IF EXISTS issues_company_id_uq;
           DROP INDEX IF EXISTS heartbeat_run_events_run_source_event_uq;
           DROP INDEX IF EXISTS heartbeat_run_events_run_source_seq_uq;
+          DROP INDEX IF EXISTS heartbeat_run_events_run_seq_uq;
           ALTER TABLE heartbeat_run_events
             DROP COLUMN IF EXISTS source_instance_id,
             DROP COLUMN IF EXISTS source_event_id,
@@ -1468,6 +1472,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             DROP COLUMN IF EXISTS last_status_decision_id;
         `);
         await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${eventSequenceUniquenessHash}`;
         await sql`
           INSERT INTO companies (id, name, issue_prefix)
           VALUES (${companyId}, 'Native persistence fixture', 'NPF')
@@ -1515,7 +1520,10 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           WHERE run_id = '${runId}'
           ORDER BY id
         `);
-        expect(events.map((event) => Number(event.seq))).toEqual([1, 5, 5, 9]);
+        // 0235 preserves every legacy event while moving only duplicate
+        // sequence values above the old run maximum before installing the
+        // durable (run_id, seq) uniqueness invariant.
+        expect(events.map((event) => Number(event.seq))).toEqual([1, 5, 10, 9]);
         expect(events.map(({ seq: _seq, ...event }) => ({
           ...event,
           created_at: event.created_at.toISOString(),
@@ -1562,7 +1570,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         expect(runs.map((run) => ({
           runtimeMode: run.runtime_mode,
           nextEventSeq: Number(run.next_event_seq),
-        }))).toEqual([{ runtimeMode: "legacy", nextEventSeq: 10 }]);
+        }))).toEqual([{ runtimeMode: "legacy", nextEventSeq: 11 }]);
 
         const nativeRowsBefore = await verifySql.unsafe<{ table_name: string; row_count: number }[]>(`
           SELECT 'completion_contracts' AS table_name, count(*)::int AS row_count FROM completion_contracts
@@ -1815,6 +1823,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         }))).toEqual([{ status: "done", statusVersion: 1 }]);
 
         await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${eventSequenceUniquenessHash}`;
       } finally {
         await verifySql.end();
       }
@@ -1857,7 +1866,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           finalizationCount: row.finalization_count,
         }))).toEqual([{
           statusVersion: 1,
-          nextEventSeq: 10,
+          nextEventSeq: 11,
           triggerCount: 1,
           finalizationCount: 1,
         }]);
@@ -1866,5 +1875,33 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       }
     },
     60_000,
+  );
+
+  it(
+    "replays the idempotent provider trace migration",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+      const hash = await migrationHash(
+        "0234_provider_trace_records.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await expect(
+        applyPendingMigrations(connectionString),
+      ).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+    },
+    30_000,
   );
 });
