@@ -54,12 +54,11 @@ import {
   boundedIdentity,
   closeSidecarHostForCommand,
   combineSidecarAdmissionCleanups,
-  combineSidecarHostCleanups,
   hasSidecarSessionOwnership,
   observeSidecarCleanupWithin,
   parseAcpxRunAttachment,
   readSidecarHostStatusWithin,
-  recoverSidecarHostCleanup,
+  recoverAndCombineSidecarHostCleanup,
   requireSidecarCommandHost,
   verifyOpenedAcpxSidecarHost,
 } from "./acpx-sidecar-lifecycle.js";
@@ -1114,9 +1113,7 @@ function retainActiveHostCleanup(
   const prior = activeHostCleanup;
   const retained = closing
     ? cleanup
-    : prior
-      ? combineSidecarHostCleanups([prior, cleanup])
-      : recoverSidecarHostCleanup(activeHost, cleanup);
+    : recoverAndCombineSidecarHostCleanup(activeHost, cleanup, prior);
   activeHostCleanup = retained;
   void retained
     .then(

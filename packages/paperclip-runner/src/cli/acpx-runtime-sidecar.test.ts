@@ -14,6 +14,7 @@ import {
   observeSidecarCleanupWithin,
   parseAcpxRunAttachment,
   readSidecarHostStatusWithin,
+  recoverAndCombineSidecarHostCleanup,
   recoverSidecarHostCleanup,
   requireSidecarCommandHost,
   verifyOpenedAcpxSidecarHost,
@@ -231,15 +232,23 @@ describe("Codex ACPX runtime sidecar", () => {
     await expect(owner).resolves.toBeUndefined();
   });
 
-  it("preserves a retry failure after the prior cleanup succeeds", async () => {
-    let finishPrior!: () => void;
-    const prior = new Promise<void>((resolve) => {
-      finishPrior = resolve;
+  it("accepts a coalesced rejection after sequential recovery succeeds", async () => {
+    let rejectCoalesced!: (error: unknown) => void;
+    const coalesced = new Promise<void>((_resolve, reject) => {
+      rejectCoalesced = reject;
     });
-    const owner = combineSidecarHostCleanups([
-      prior,
-      Promise.reject(new Error("retry failed")),
-    ]);
+    const close = vi
+      .fn<() => Promise<void>>()
+      .mockReturnValueOnce(coalesced)
+      .mockReturnValueOnce(coalesced)
+      .mockResolvedValue(undefined);
+    const host = { close };
+    const recoveredPrior = recoverSidecarHostCleanup(host, host.close());
+    const owner = recoverAndCombineSidecarHostCleanup(
+      host,
+      host.close(),
+      recoveredPrior,
+    );
     let settled = false;
     void owner
       .finally(() => {
@@ -249,8 +258,27 @@ describe("Codex ACPX runtime sidecar", () => {
 
     await Promise.resolve();
     expect(settled).toBe(false);
-    finishPrior();
+    rejectCoalesced(new Error("coalesced close failed before recovery"));
+    await expect(owner).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(4);
+  });
+
+  it("rejects when every active-host cleanup owner fails", async () => {
+    const owner = combineSidecarHostCleanups([
+      Promise.reject(new Error("recovery exhausted")),
+      Promise.reject(new Error("retry failed")),
+    ]);
+
     await expect(owner).rejects.toThrow("did not release provider ownership");
+  });
+
+  it("accepts a later recovery after an older owner exhausts", async () => {
+    await expect(
+      combineSidecarHostCleanups([
+        Promise.reject(new Error("older recovery exhausted")),
+        Promise.resolve(),
+      ]),
+    ).resolves.toBeUndefined();
   });
 
   it("bounds status verification before cleaning up the opened host", async () => {
