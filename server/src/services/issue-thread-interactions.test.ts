@@ -387,4 +387,40 @@ describe("issueThreadInteractionService", () => {
     expect(state.toolActionRequestUpdates).toHaveLength(1);
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
   });
+
+  // A `blocked` issue with a pending interaction can be reset to
+  // another status (operator action, admin force-release, automated
+  // housekeeping) without that reset ever touching the interaction it was
+  // raised for. Left alone, the card stays "pending" forever, indistinguishable
+  // from one still waiting on a real answer. This mirrors the terminal-issue
+  // expiry above but fires on the blocked-exit path instead.
+  it("expires pending interactions when the issue leaves blocked status", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-unblock", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Approve the rollout?" },
+      result: null, resolvedAt: null, createdAt: new Date("2026-08-30T11:08:46.000Z"), updatedAt: new Date("2026-08-30T11:08:46.000Z"),
+    };
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+    const expired = await svc.expirePendingInteractionsForUnblockedIssue(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      { userId: "local-board" },
+    );
+    expect(expired).toHaveLength(1);
+    expect(expired[0]?.status).toBe("expired");
+    expect(expired[0]?.result).toMatchObject({ version: 1, outcome: "issue_unblocked" });
+    expect(expired[0]?.resolvedByUserId).toBe("local-board");
+  });
+
+  // The "already resolved through its own route first" safety property is
+  // enforced by the real `WHERE status = 'pending'` SQL filter, which this
+  // file's fake `select`/`update` mocks do not model (they return whatever
+  // row was seeded regardless of its status). That property has a real
+  // embedded-Postgres regression test instead: see "leaves an interaction
+  // alone when it was resolved through its own route before the blocked
+  // issue's status changed" in issues-service.test.ts.
 });

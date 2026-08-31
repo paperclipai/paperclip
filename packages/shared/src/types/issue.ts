@@ -1082,7 +1082,7 @@ export interface SuggestTasksResultCreatedTask {
 
 export interface SuggestTasksResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome?: "withdrawn" | "issue_closed" | "issue_unblocked" | "addressee_deleted";
   reason?: string | null;
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
@@ -1178,7 +1178,7 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome?: "withdrawn" | "issue_closed" | "issue_unblocked" | "addressee_deleted";
   reason?: string | null;
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
@@ -1388,6 +1388,7 @@ export interface RequestConfirmationResult {
     | "stale_target"
     | "withdrawn"
     | "issue_closed"
+    | "issue_unblocked"
     | "addressee_deleted";
   reason?: string | null;
   commentId?: string | null;
@@ -1424,7 +1425,7 @@ export interface RequestItemVerdictsResultItem {
 
 export interface RequestItemVerdictsResult {
   version: 1;
-  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed" | "issue_unblocked" | "addressee_deleted";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];

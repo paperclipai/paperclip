@@ -862,7 +862,7 @@ export const suggestTasksResultCreatedTaskSchema = z.object({
 
 export const suggestTasksResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z.enum(["withdrawn", "issue_closed", "issue_unblocked", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
@@ -1024,7 +1024,7 @@ export const askUserQuestionsAnswerSchema = z.object({
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z.enum(["withdrawn", "issue_closed", "issue_unblocked", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(64),
   cancelled: z.literal(true).optional(),
@@ -1253,6 +1253,7 @@ export const requestConfirmationResultSchema = z.object({
     "stale_target",
     "withdrawn",
     "issue_closed",
+    "issue_unblocked",
     "addressee_deleted",
   ]),
   reason: z.string().trim().max(4000).nullable().optional(),
@@ -1395,7 +1396,7 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed", "issue_unblocked", "addressee_deleted"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean(),
   items: z.array(requestItemVerdictsResultItemSchema)

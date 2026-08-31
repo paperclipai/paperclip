@@ -31,8 +31,10 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionResolverPolicy,
   IssueThreadInteractionResolverPolicyProvenance,
+  IssueThreadInteractionResult,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationSecretProposalResult,
   RequestConfirmationTarget,
   RequestItemVerdictsInteraction,
   RequestItemVerdictsResult,
@@ -584,6 +586,14 @@ function interactionIssueClosedError() {
   );
 }
 
+function interactionIssueUnblockedError() {
+  return issueThreadInteractionResolutionError(
+    409,
+    "interaction_issue_unblocked",
+    "Interaction expired because the issue left blocked status without it being resolved",
+  );
+}
+
 function interactionAlreadyResolvedError() {
   return issueThreadInteractionResolutionError(
     409,
@@ -611,6 +621,7 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
     );
   }
   if (result?.outcome === "issue_closed") return interactionIssueClosedError();
+  if (result?.outcome === "issue_unblocked") return interactionIssueUnblockedError();
   return issueThreadInteractionResolutionError(
     409,
     "interaction_already_resolved",
@@ -761,9 +772,9 @@ function buildSupersededByNewerInteractionResult(replacementInteractionId: strin
 
 function buildAdministrativeOutcomeResult(
   row: IssueThreadInteractionRow,
-  outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
+  outcome: "withdrawn" | "issue_closed" | "issue_unblocked" | "addressee_deleted",
   reason: string | null = null,
-) {
+): IssueThreadInteractionResult {
   if (row.kind === "connection_intent") {
     return { version: 1, outcome: "expired", reason } as const;
   }
@@ -780,19 +791,15 @@ function buildAdministrativeOutcomeResult(
       items: interaction.result?.items ?? [],
     } satisfies RequestItemVerdictsResult;
   }
+  const secretProposalStatus: "withdrawn" | "expired" = outcome === "withdrawn" ? "withdrawn" : "expired";
+  const secretProposal: RequestConfirmationSecretProposalResult | undefined = linkedSecretProposalId(row)
+    ? { version: 1, status: secretProposalStatus, updatedAt: new Date().toISOString() }
+    : undefined;
   return {
     version: 1,
     outcome,
     reason,
-    ...(linkedSecretProposalId(row)
-      ? {
-          secretProposal: {
-            version: 1,
-            status: outcome === "withdrawn" ? "withdrawn" : "expired",
-            updatedAt: new Date().toISOString(),
-          },
-        }
-      : {}),
+    ...(secretProposal ? { secretProposal } : {}),
   } as const;
 }
 
@@ -803,6 +810,85 @@ class InteractionResolvedConcurrentlyError extends Error {
   constructor() {
     super("Interaction was resolved concurrently");
   }
+}
+
+// Shared by every "the issue moved on without touching this card" administrative
+// expiry (terminal transition, blocked-exit). One `pending` row at a time, one
+// transaction per row, same ordering as withdrawal: revoke the linked tool
+// action before resolving the card. A concurrent gateway claim (approved ->
+// executing) blocks on the revocation's row lock and then aborts; if the card
+// was concurrently resolved instead, the no-row update below rolls the
+// revocation back. A claim that already committed is in flight and cannot be
+// recalled — the card still expires and the execution result lands on it via
+// the gateway's lifecycle reflection.
+async function expirePendingInteractionsWithAdministrativeOutcome(
+  db: Db,
+  issue: { id: string; companyId: string },
+  actor: InteractionActor,
+  options: {
+    outcome: "issue_closed" | "issue_unblocked";
+    secretProposalReason: string;
+  },
+) {
+  const rows = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, issue.companyId),
+      eq(issueThreadInteractions.issueId, issue.id),
+      eq(issueThreadInteractions.status, "pending"),
+    ));
+  if (rows.length === 0) return [];
+
+  const now = new Date();
+  const expired: IssueThreadInteraction[] = [];
+  for (const row of rows) {
+    const updated = await db.transaction(async (tx) => {
+      if (row.kind === "connection_intent") {
+        await tx
+          .delete(toolOauthStates)
+          .where(eq(toolOauthStates.interactionId, row.id));
+      }
+      await resolveLinkedToolActionRequests(tx, row, {
+        status: "expired",
+        fromStatuses: ["pending", "approved"],
+        actor,
+        now,
+      });
+      await resolveLinkedSecretProposal(tx as unknown as Db, row, {
+        status: "expired",
+        actor,
+        reason: options.secretProposalReason,
+        now,
+      });
+      const [resolved] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "expired",
+          result: buildAdministrativeOutcomeResult(row, options.outcome),
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, row.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+      if (!resolved) throw new InteractionResolvedConcurrentlyError();
+      return resolved;
+    }).catch((err: unknown) => {
+      if (err instanceof InteractionResolvedConcurrentlyError) return null;
+      throw err;
+    });
+    if (updated) expired.push(hydrateInteraction(updated));
+  }
+  if (expired.length > 0) {
+    await touchIssue(db, issue.id);
+    await emitResolvedInteractionsTelemetry(db, expired);
+  }
+  return expired;
 }
 
 // A request_confirmation card can govern a parked tool call via a linked
@@ -3424,73 +3510,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor = {},
     ) => {
       if (!isTerminalIssueStatus(issue.status)) return [];
-      const rows = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(and(
-          eq(issueThreadInteractions.companyId, issue.companyId),
-          eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.status, "pending"),
-        ));
-      if (rows.length === 0) return [];
+      return expirePendingInteractionsWithAdministrativeOutcome(db, issue, actor, {
+        outcome: "issue_closed",
+        secretProposalReason: "Issue closed before the secret proposal was resolved",
+      });
+    },
 
-      const now = new Date();
-      const expired: IssueThreadInteraction[] = [];
-      for (const row of rows) {
-        // Same ordering as withdrawal: revoke the linked tool action before
-        // resolving the card, inside one transaction. A concurrent gateway
-        // claim (approved -> executing) blocks on the revocation's row lock
-        // and then aborts; if the card was concurrently resolved instead, the
-        // no-row update below rolls the revocation back. A claim that already
-        // committed is in flight and cannot be recalled — the card still
-        // expires and the execution result lands on it via the gateway's
-        // lifecycle reflection.
-        const updated = await db.transaction(async (tx) => {
-          if (row.kind === "connection_intent") {
-            await tx
-              .delete(toolOauthStates)
-              .where(eq(toolOauthStates.interactionId, row.id));
-          }
-          await resolveLinkedToolActionRequests(tx, row, {
-            status: "expired",
-            fromStatuses: ["pending", "approved"],
-            actor,
-            now,
-          });
-          await resolveLinkedSecretProposal(tx as unknown as Db, row, {
-            status: "expired",
-            actor,
-            reason: "Issue closed before the secret proposal was resolved",
-            now,
-          });
-          const [resolved] = await tx
-            .update(issueThreadInteractions)
-            .set({
-              status: "expired",
-              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
-              resolvedByAgentId: actor.agentId ?? null,
-              resolvedByUserId: actor.userId ?? null,
-              resolvedAt: now,
-              updatedAt: now,
-            })
-            .where(and(
-              eq(issueThreadInteractions.id, row.id),
-              eq(issueThreadInteractions.status, "pending"),
-            ))
-            .returning();
-          if (!resolved) throw new InteractionResolvedConcurrentlyError();
-          return resolved;
-        }).catch((err: unknown) => {
-          if (err instanceof InteractionResolvedConcurrentlyError) return null;
-          throw err;
-        });
-        if (updated) expired.push(hydrateInteraction(updated));
-      }
-      if (expired.length > 0) {
-        await touchIssue(db, issue.id);
-        await emitResolvedInteractionsTelemetry(db, expired);
-      }
-      return expired;
+    // A `blocked` issue leaves that status two ways. (1) Its assignee
+    // resolves the interaction it was waiting on through the interaction's own
+    // accept/reject/respond/withdraw route, then separately updates the issue
+    // status — by the time that update lands here the interaction is already
+    // non-`pending`, so the query below finds nothing and this is a no-op. (2)
+    // Something changes the status directly (an operator/board reset, an
+    // admin force-release, automated housekeeping) without ever touching the
+    // interaction. That leaves a `pending` card whose block it was raised for
+    // no longer exists — nothing will ever surface it again except a manual
+    // read of the interactions endpoint. Expiring it here, the same way a
+    // terminal transition already does, keeps issue status and interaction
+    // status from drifting apart instead of leaving an orphaned card that a
+    // future wake could be mistaken for a real answer.
+    expirePendingInteractionsForUnblockedIssue: async (
+      issue: { id: string; companyId: string },
+      actor: InteractionActor = {},
+    ) => {
+      return expirePendingInteractionsWithAdministrativeOutcome(db, issue, actor, {
+        outcome: "issue_unblocked",
+        secretProposalReason: "Issue left blocked status before the secret proposal was resolved",
+      });
     },
 
     withdrawInteraction: async (

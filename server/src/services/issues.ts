@@ -8000,6 +8000,75 @@ export function issueService(db: Db) {
               });
             }
           }
+          if (existing.status === "blocked" && updated.status !== "blocked") {
+            // Leaving `blocked` can happen two ways. (1) The assignee
+            // resolves the interaction the block was waiting on through that
+            // interaction's own accept/reject/respond/withdraw route, then
+            // separately updates status here — by now the interaction is
+            // already non-`pending`, so the expiry below finds nothing and is
+            // a no-op. (2) Status changes directly (an operator/board reset,
+            // an admin force-release, automated housekeeping) without ever
+            // touching the interaction, leaving a `pending` card whose block
+            // no longer exists and that nothing will resurface. Expire it the
+            // same way a terminal transition already does, so a stale
+            // `pending` interaction can never outlive the block it belonged
+            // to and be mistaken, on a later wake, for a real answer.
+            const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+            const expiredInteractions = await issueThreadInteractionService(tx).expirePendingInteractionsForUnblockedIssue(
+              updated,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            );
+            const {
+              nativeQuestionCancellationIdentity,
+              requestNativeQuestionRunCancellation,
+            } = await import(
+              "./native-runtime/native-question-bridge.js"
+            );
+            for (const interaction of expiredInteractions) {
+              if (interaction.kind === "ask_user_questions") {
+                const nativeQuestion = nativeQuestionCancellationIdentity(interaction);
+                if (nativeQuestion) {
+                  if (dbOrTx !== db && !postCommitActions) {
+                    throw new Error(
+                      "Unblocked-issue native question updates in an external transaction require a post-commit action queue",
+                    );
+                  }
+                  const runId = await requestNativeQuestionRunCancellation(
+                    tx,
+                    nativeQuestion,
+                    { kind: "issue_unblocked", issueStatus: updated.status },
+                  );
+                  if (runId) {
+                    queuedPostCommitActions.push({
+                      type: "cancel_native_question_run",
+                      runId,
+                      issueId: updated.id,
+                      issueStatus: updated.status,
+                    });
+                  }
+                }
+              }
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+                actorId: actorAgentId ?? actorUserId ?? "issue_service",
+                agentId: actorAgentId ?? null,
+                action: "issue.thread_interaction_expired",
+                entityType: "issue",
+                entityId: updated.id,
+                details: {
+                  identifier: updated.identifier ?? null,
+                  interactionId: interaction.id,
+                  interactionKind: interaction.kind,
+                  interactionStatus: interaction.status,
+                  source: "issue.status_transition.issue_unblocked",
+                  previousStatus: existing.status,
+                  nextStatus: updated.status,
+                  result: interaction.result ?? null,
+                },
+              });
+            }
+          }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
           // stops spinning and offers "Run now" again (blocked = stuck on a human).

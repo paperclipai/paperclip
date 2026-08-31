@@ -465,6 +465,24 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Expired by target change");
   });
 
+  // A `blocked` issue that leaves that status without its pending
+  // confirmation ever being resolved auto-expires the card with this outcome
+  // instead of leaving it "pending" forever.
+  it("renders confirmations expired by leaving blocked status with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "expired",
+        result: { version: 1, outcome: "issue_unblocked", reason: null },
+      },
+    });
+
+    expect(host.textContent).toContain("Expired · issue unblocked");
+    expect(host.textContent).toContain("This confirmation expired automatically because the issue left blocked status without it being resolved.");
+    expect(host.textContent).not.toContain("Expired by target change");
+    expect(host.textContent).not.toContain("issue reached a terminal state");
+  });
+
   it("renders withdrawn question interactions with the withdraw reason", () => {
     const host = renderCard({
       interaction: {
@@ -502,6 +520,26 @@ describe("IssueThreadInteractionCard", () => {
 
     expect(host.textContent).toContain("Questions expired when the issue closed");
     expect(host.textContent).toContain("This question request expired automatically when the issue reached a terminal state.");
+    expect(host.textContent).not.toContain("expired by comment");
+  });
+
+  it("renders question interactions expired by leaving blocked status with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "issue_unblocked",
+          reason: null,
+          answers: [],
+          summaryMarkdown: null,
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Questions expired when the issue left blocked status");
+    expect(host.textContent).toContain("This question request expired automatically because the issue left blocked status without it being answered.");
     expect(host.textContent).not.toContain("expired by comment");
   });
 

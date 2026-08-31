@@ -588,6 +588,115 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  // A `blocked` issue can leave that status without whatever raised
+  // it ever touching the interaction the block was waiting on (an operator
+  // reset, an admin force-release, automated housekeeping). Left alone, the
+  // "pending" card outlives the block it belonged to and nothing surfaces it
+  // again — a later wake can mistake it for something still awaiting a real
+  // answer. This mirrors the terminal-transition test above but for the
+  // blocked-exit path.
+  it("expires a pending interaction when an issue leaves blocked status without it being resolved", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked pending a confirmation nobody answered",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve the rework?" } as never,
+    });
+
+    // A direct reset: status flips straight back to `todo`
+    // with no interaction resolution in the same call.
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "expired",
+      resolvedByUserId: "local-board",
+    });
+    expect(interaction?.result).toMatchObject({ version: 1, outcome: "issue_unblocked" });
+    expect(interaction?.resolvedAt).not.toBeNull();
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.details).toMatchObject({
+      interactionId,
+      interactionKind: "request_confirmation",
+      interactionStatus: "expired",
+    });
+  });
+
+  it("leaves an interaction alone when it was resolved through its own route before the blocked issue's status changed", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked pending a confirmation the assignee actually answered",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve the rework?" } as never,
+    });
+
+    // The legitimate path: the interaction is resolved through its own
+    // route first (modeled here as a direct row update, since that route is
+    // exercised elsewhere) — by the time status changes, it is no longer
+    // `pending`, and the blocked-exit expiry must not touch it.
+    const resolvedAt = new Date();
+    await db.update(issueThreadInteractions).set({
+      status: "accepted",
+      result: { version: 1, outcome: "accepted" } as never,
+      resolvedByAgentId: null,
+      resolvedByUserId: "local-board",
+      resolvedAt,
+    }).where(eq(issueThreadInteractions.id, interactionId));
+
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "accepted",
+      resolvedByUserId: "local-board",
+    });
+    expect(interaction?.result).toMatchObject({ outcome: "accepted" });
+    expect(interaction?.resolvedAt?.getTime()).toBe(resolvedAt.getTime());
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(0);
+  });
+
   it("expires superseded interactions when human comments are added through the service", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {

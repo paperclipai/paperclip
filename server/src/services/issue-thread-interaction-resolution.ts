@@ -16,6 +16,7 @@ export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "interaction_superseded",
   "interaction_already_resolved",
   "interaction_issue_closed",
+  "interaction_issue_unblocked",
   "interaction_governed_action_denied",
   "review_policy_denied",
 ] as const;

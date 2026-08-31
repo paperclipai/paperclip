@@ -143,17 +143,19 @@ function resolveActorLabel(args: {
 
 /**
  * Administrative terminal outcomes (P1): an interaction that was withdrawn by
- * its board/agent, or auto-expired when its issue reached a terminal state.
- * Both are stored as `status="cancelled"|"expired"` with the distinguishing
- * fact carried on `result.outcome` (there is no dedicated `withdrawn` status).
+ * its board/agent, auto-expired when its issue reached a terminal state, or
+ * auto-expired because the issue left `blocked` status without it being
+ * resolved. All three are stored as `status="cancelled"|"expired"`
+ * with the distinguishing fact carried on `result.outcome` (there is no
+ * dedicated `withdrawn` status).
  */
 function getAdministrativeOutcome(
   interaction: IssueThreadInteraction,
-): "withdrawn" | "issue_closed" | null {
+): "withdrawn" | "issue_closed" | "issue_unblocked" | null {
   const result = interaction.result;
   if (result && typeof result === "object" && "outcome" in result) {
     const outcome = (result as { outcome?: string | null }).outcome;
-    if (outcome === "withdrawn" || outcome === "issue_closed") return outcome;
+    if (outcome === "withdrawn" || outcome === "issue_closed" || outcome === "issue_unblocked") return outcome;
   }
   return null;
 }
@@ -1411,14 +1413,20 @@ function AskUserQuestionsCard({
               ? questions.length === 1
                 ? "Question expired when the issue closed"
                 : "Questions expired when the issue closed"
-              : questions.length === 1
-                ? "Question expired by comment"
-                : "Questions expired by comment"}
+              : interaction.result?.outcome === "issue_unblocked"
+                ? questions.length === 1
+                  ? "Question expired when the issue left blocked status"
+                  : "Questions expired when the issue left blocked status"
+                : questions.length === 1
+                  ? "Question expired by comment"
+                  : "Questions expired by comment"}
           </div>
           <p className="mt-1">
             {interaction.result?.outcome === "issue_closed"
               ? "This question request expired automatically when the issue reached a terminal state."
-              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
+              : interaction.result?.outcome === "issue_unblocked"
+                ? "This question request expired automatically because the issue left blocked status without it being answered."
+                : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1612,16 +1620,18 @@ function RequestConfirmationResolution({
   if (interaction.status === "expired") {
     const expiredByComment = outcome === "superseded_by_comment";
     const expiredByIssueClosed = outcome === "issue_closed";
+    const expiredByUnblock = outcome === "issue_unblocked";
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         {/*
-         * issue_closed already carries its label in the header status badge
-         * ("Expired · issue closed"), so this eyebrow would duplicate it
-         * verbatim — only render the eyebrow for the states the header shows
-         * generically as "Expired".
+         * issue_closed/issue_unblocked already carry their label in the header
+         * status badge ("Expired · issue closed" / "Expired · issue
+         * unblocked"), so this eyebrow would duplicate it verbatim — only
+         * render the eyebrow for the states the header shows generically as
+         * "Expired".
          */}
-        {expiredByIssueClosed ? null : (
+        {expiredByIssueClosed || expiredByUnblock ? null : (
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
             {expiredByComment ? "Expired by comment" : "Expired by target change"}
           </div>
@@ -1631,7 +1641,9 @@ function RequestConfirmationResolution({
             ? "A board comment superseded this confirmation before it was resolved."
             : expiredByIssueClosed
               ? "This confirmation expired automatically when the issue reached a terminal state."
-              : "The requested target changed before this confirmation was resolved."}
+              : expiredByUnblock
+                ? "This confirmation expired automatically because the issue left blocked status without it being resolved."
+                : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -3997,9 +4009,11 @@ export function IssueThreadInteractionCard({
       ? "Withdrawn"
       : adminOutcome === "issue_closed"
         ? "Expired · issue closed"
-        : activeStyles
-          ? activeStyles.label
-          : statusLabel(interaction.status);
+        : adminOutcome === "issue_unblocked"
+          ? "Expired · issue unblocked"
+          : activeStyles
+            ? activeStyles.label
+            : statusLabel(interaction.status);
 
   return (
     // Every nested subcard resolves the same interaction, so they all explain a
@@ -4204,9 +4218,9 @@ export function IssueThreadInteractionCard({
               <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
             ) : null}
           </div>
-        ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
-          // The header badge + body already explain the issue-closed expiry;
-          // the footer is just the audit timestamp.
+        ) : (adminOutcome === "issue_closed" || adminOutcome === "issue_unblocked") && interaction.resolvedAt ? (
+          // The header badge + body already explain the issue-closed/
+          // issue-unblocked expiry; the footer is just the audit timestamp.
           <div
             className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
             data-testid="interaction-issue-closed-footer"
