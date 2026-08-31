@@ -228,6 +228,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     queryClient.clear();
     container.remove();
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -266,6 +267,26 @@ describe("OnboardingWizard — which step it lands on", () => {
   });
 
   it("keeps Step 5 stable through pending writes and query invalidation, then dismisses the route", async () => {
+    const handoffOrder: string[] = [];
+    const removeItem = Storage.prototype.removeItem;
+    const removeItemSpy = vi
+      .spyOn(Storage.prototype, "removeItem")
+      .mockImplementation(function (key: string) {
+        if (key === "paperclip-onboarding-state") handoffOrder.push("clear draft");
+        return removeItem.call(this, key);
+      });
+    dialogState.setOnboardingRouteDismissed.mockImplementation((dismissed: boolean) => {
+      if (dismissed) handoffOrder.push("dismiss route");
+      dialogState.onboardingRouteDismissed = dismissed;
+    });
+    dialogState.closeOnboarding.mockImplementation(() => {
+      handoffOrder.push("close dialog");
+      dialogState.onboardingOpen = false;
+      dialogState.onboardingOptions = {};
+    });
+    mockNavigate.mockImplementation(() => {
+      handoffOrder.push("navigate");
+    });
     let resolveProject!: (project: { id: string }) => void;
     mockProjectsApi.create.mockReturnValue(
       new Promise<{ id: string }>((resolve) => {
@@ -312,6 +333,12 @@ describe("OnboardingWizard — which step it lands on", () => {
 
     expect(dialogState.setOnboardingRouteDismissed).toHaveBeenCalledWith(true);
     expect(mockNavigate).toHaveBeenCalledWith("/PC1/issues/PC1-1");
+    expect(handoffOrder).toEqual([
+      "dismiss route",
+      "clear draft",
+      "close dialog",
+      "navigate",
+    ]);
     expect(localStorage.getItem("paperclip-onboarding-state")).toBeNull();
     expect(currentStep()).toBe("closed");
 
@@ -321,6 +348,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     await rerender();
     await settle();
     expect(currentStep()).toBe("closed");
+    removeItemSpy.mockRestore();
   });
 
   it("stays closed until the mission lookup settles", async () => {
