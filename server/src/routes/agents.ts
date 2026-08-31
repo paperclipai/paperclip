@@ -5394,14 +5394,15 @@ export function agentRoutes(
     // Stamp the cancellation as operator-initiated (this route is board-only).
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
-    const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+    const cancellation = await heartbeat.cancelRunWithOutcome(runId, "Cancelled by a board operator", {
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,
       },
     });
+    const run = cancellation.run;
 
-    if (run) {
+    if (cancellation.cancelled && run) {
       await logActivity(db, {
         companyId: run.companyId,
         actorType: "user",

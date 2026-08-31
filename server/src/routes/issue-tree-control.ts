@@ -112,7 +112,9 @@ export function issueTreeControlRoutes(db: Db) {
       for (const heartbeatRunId of interruptedRunIds) {
         const cancellationTask = (async () => {
           try {
-            await heartbeat.cancelRun(heartbeatRunId);
+            const cancellation = await heartbeat.cancelRunWithOutcome(heartbeatRunId);
+            if (!cancellation.cancelled || !cancellation.run) return;
+            const cancelled = cancellation.run;
             await logActivity(db, {
               companyId: root.companyId,
               actorType: actor.actorType,
@@ -122,7 +124,7 @@ export function issueTreeControlRoutes(db: Db) {
               agentApiKeyId: actor.agentApiKeyId,
               action: "issue.tree_hold_run_interrupted",
               entityType: "heartbeat_run",
-              entityId: heartbeatRunId,
+              entityId: cancelled.id,
               details: {
                 holdId: result.hold.id,
                 rootIssueId: root.id,

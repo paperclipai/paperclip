@@ -25,6 +25,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  cancelRunWithOutcome: vi.fn(async () => ({ run: null, cancelled: false, attempted: false })),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
@@ -321,11 +322,10 @@ describe("issue update comment wakeups", () => {
       status: "running",
       contextSnapshot: { issueId: existing.id },
     });
-    mockHeartbeatService.cancelRun.mockResolvedValue({
-      id: "run-1",
-      companyId: existing.companyId,
-      agentId: PREVIOUS_AGENT_ID,
-      status: "cancelled",
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: { id: "run-1", companyId: existing.companyId, agentId: PREVIOUS_AGENT_ID, status: "cancelled" },
+      cancelled: true,
+      attempted: true,
     });
 
     const res = await request(await createApp())
@@ -338,7 +338,7 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenCalledWith(
       "run-1",
       "Interrupted by board comment",
       expect.objectContaining({
@@ -407,11 +407,10 @@ describe("issue update comment wakeups", () => {
       status: "running",
       contextSnapshot: { issueId: existing.id },
     });
-    mockHeartbeatService.cancelRun.mockResolvedValue({
-      id: "run-2",
-      companyId: existing.companyId,
-      agentId: PREVIOUS_AGENT_ID,
-      status: "cancelled",
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: { id: "run-2", companyId: existing.companyId, agentId: PREVIOUS_AGENT_ID, status: "cancelled" },
+      cancelled: true,
+      attempted: true,
     });
 
     const res = await request(await createApp())
@@ -424,7 +423,7 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenCalledWith(
       "run-2",
       "Interrupted by board comment",
       expect.objectContaining({

@@ -14,7 +14,11 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
+  getRun: vi.fn(),
+  cancelRunWithOutcome: vi.fn(),
 }));
+
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -77,7 +81,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
     issueService: () => mockIssueService,
-    logActivity: vi.fn(),
+    logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
@@ -176,6 +180,9 @@ describe("agent live run routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockHeartbeatService.getRun.mockResolvedValue({ id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" });
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({ run: null, cancelled: false, attempted: false });
+    mockLogActivity.mockResolvedValue(undefined);
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -589,6 +596,77 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(4);
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("only attributes board cancellation when this route owns the transition", async () => {
+    const cancelledRun = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "cancelled",
+    };
+    mockHeartbeatService.getRun.mockResolvedValue(cancelledRun);
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: cancelledRun,
+      cancelled: false,
+      attempted: false,
+    });
+
+    const alreadyCancelled = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}),
+    );
+
+    expect(alreadyCancelled.status).toBe(200);
+    expect(alreadyCancelled.body).toMatchObject(cancelledRun);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "heartbeat.cancelled" }),
+    );
+
+    const succeededRun = { ...cancelledRun, status: "succeeded" };
+    mockHeartbeatService.getRun.mockResolvedValue(succeededRun);
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: succeededRun,
+      cancelled: false,
+      attempted: true,
+    });
+
+    const finalizationWon = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}),
+    );
+
+    expect(finalizationWon.status).toBe(200);
+    expect(finalizationWon.body).toMatchObject(succeededRun);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "heartbeat.cancelled" }),
+    );
+
+    mockHeartbeatService.getRun.mockResolvedValue({ ...cancelledRun, status: "running" });
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: cancelledRun,
+      cancelled: true,
+      attempted: true,
+    });
+
+    const owned = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}),
+    );
+
+    expect(owned.status).toBe(200);
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenLastCalledWith(
+      "run-1",
+      "Cancelled by a board operator",
+      expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "heartbeat.cancelled", entityId: "run-1" }),
+    );
   });
 
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {

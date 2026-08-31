@@ -9252,6 +9252,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return setRunStatusFromLive(runId, status, ["running"], patch);
   }
 
+  async function cancelRunStatus(
+    runId: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    return setRunStatusFromLive(runId, "cancelled", [...CANCELLABLE_HEARTBEAT_RUN_STATUSES], patch);
+  }
+
   // Move a run to a new status only when its current status is one of
   // `fromStatuses`. The compare-and-set is a single conditional update, so a
   // concurrent path can win the race. When this update matches nothing, the
@@ -12903,25 +12910,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          issueId: issueId,
-          details: {
-            issueId,
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-          },
-        });
+        const cancellation = await cancelRunWithOutcomeInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
+        if (cancellation.cancelled && cancellation.run) {
+          const cancelled = cancellation.run;
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.tree_hold_run_interrupted",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            issueId: issueId,
+            details: {
+              issueId,
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              source: "heartbeat.claim_queued_run",
+              securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+            },
+          });
+        }
         return null;
       }
 
@@ -19767,10 +19777,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
+  type CancelRunOutcome = {
+    run: typeof heartbeatRuns.$inferSelect | null;
+    cancelled: boolean;
+    attempted: boolean;
+  };
+
+  async function cancelRunWithOutcomeInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: CancelRunOptions = {},
+  ): Promise<CancelRunOutcome> {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
-    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
+    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) {
+      return { run, cancelled: false, attempted: false };
+    }
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
     const resultJson = agent
@@ -19803,34 +19825,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancellation = await cancelRunStatus(run.id, {
       finishedAt,
       error: reason,
       errorCode,
       ...(resultJson ? { resultJson } : {}),
     });
+    if (!cancellation.updated) return { run: cancellation.run, cancelled: false, attempted: true };
+    const cancelled = cancellation.run;
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
       error: reason,
     });
 
-    if (cancelled) {
-      await appendRunEvent(cancelled, 1, {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: options.eventMessage ?? "run cancelled",
-        ...(options.eventPayload ? { payload: options.eventPayload } : {}),
-      });
-      await releaseIssueExecutionAndPromote(cancelled);
-    }
+    await appendRunEvent(cancelled, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: options.eventMessage ?? "run cancelled",
+      ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+    });
+    await releaseIssueExecutionAndPromote(cancelled);
 
     await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
     await startNextQueuedRunForAgent(run.agentId);
-    return cancelled;
+    return { run: cancelled, cancelled: true, attempted: true };
+  }
+
+  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
+    const outcome = await cancelRunWithOutcomeInternal(runId, reason, options);
+    return outcome.cancelled || !outcome.attempted ? outcome.run : null;
   }
 
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause", errorCode = "cancelled") {
@@ -19840,8 +19867,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
+    let runsCancelled = 0;
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancellation = await cancelRunStatus(run.id, {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -19853,6 +19881,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }),
         } : {}),
       });
+      if (!cancellation.updated) continue;
+      const cancelled = cancellation.run;
+      runsCancelled += 1;
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
@@ -19873,10 +19904,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           processGroupId: run.processGroupId,
         });
       }
-      await releaseIssueExecutionAndPromote(run);
+      await releaseIssueExecutionAndPromote(cancelled);
     }
 
-    return runs.length;
+    return runsCancelled;
   }
 
   async function cancelPendingWakeupsForAgentsInternal(agentIds: string[], reason: string) {
@@ -20347,6 +20378,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    cancelRunWithOutcome: (runId: string, reason?: string, options?: CancelRunOptions) =>
+      cancelRunWithOutcomeInternal(runId, reason, options),
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

@@ -19,6 +19,7 @@ const mockTreeControlService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
+  cancelRunWithOutcome: vi.fn(),
   wakeup: vi.fn(),
 }));
 
@@ -61,6 +62,7 @@ describe("issue tree control routes", () => {
       restoreHold: null,
     });
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({ run: null, cancelled: false, attempted: true });
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
@@ -147,13 +149,18 @@ describe("issue tree control routes", () => {
         ],
       },
     });
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue({
+      run: { id: "44444444-4444-4444-8444-444444444444", status: "cancelled" },
+      cancelled: true,
+      attempted: true,
+    });
 
     const res = await request(app)
       .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds")
       .send({ mode: "pause", reason: "pause subtree" });
 
     expect(res.status).toBe(201);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
     expect(mockTreeControlService.cancelUnclaimedWakeupsForTree).toHaveBeenCalledWith(
       "company-2",
       "11111111-1111-4111-8111-111111111111",
@@ -165,6 +172,51 @@ describe("issue tree control routes", () => {
         action: "issue.tree_hold_run_interrupted",
         entityId: "44444444-4444-4444-8444-444444444444",
       }),
+    );
+  });
+
+  it.each([
+    ["returns null", { run: null, cancelled: false, attempted: true }],
+    ["returns a succeeded terminal run", { run: { id: "44444444-4444-4444-8444-444444444444", status: "succeeded" }, cancelled: false, attempted: false }],
+    ["returns a failed terminal run", { run: { id: "44444444-4444-4444-8444-444444444444", status: "failed" }, cancelled: false, attempted: false }],
+    ["returns a cancellation owned by another path", { run: { id: "44444444-4444-4444-8444-444444444444", status: "cancelled" }, cancelled: false, attempted: false }],
+  ])("does not report a tree-hold run interruption when cancelRun %s", async (_outcome, cancellationOutcome) => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockTreeControlService.createHold.mockResolvedValue({
+      hold: {
+        id: "33333333-3333-4333-8333-333333333333",
+        mode: "pause",
+        reason: "pause subtree",
+      },
+      preview: {
+        mode: "pause",
+        totals: { affectedIssues: 1 },
+        warnings: [],
+        activeRuns: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            issueId: "11111111-1111-4111-8111-111111111111",
+          },
+        ],
+      },
+    });
+    mockHeartbeatService.cancelRunWithOutcome.mockResolvedValue(cancellationOutcome);
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds")
+      .send({ mode: "pause", reason: "pause subtree" });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.tree_hold_run_interrupted" }),
     );
   });
 
@@ -246,14 +298,14 @@ describe("issue tree control routes", () => {
       updatedIssueIds: ["11111111-1111-4111-8111-111111111111"],
       updatedIssues: [],
     });
-    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+    mockHeartbeatService.cancelRunWithOutcome.mockRejectedValue(new Error("adapter process did not exit"));
 
     const res = await request(app)
       .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds")
       .send({ mode: "cancel", reason: "cancel subtree" });
 
     expect(res.status).toBe(201);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+    expect(mockHeartbeatService.cancelRunWithOutcome).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
     expect(mockTreeControlService.cancelIssueStatusesForHold).toHaveBeenCalledWith(
       "company-2",
       "11111111-1111-4111-8111-111111111111",
