@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  checkout: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
@@ -268,6 +269,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.checkout.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
@@ -384,6 +386,16 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.checkout.mockImplementation(async (
+      _id: string,
+      _agentId: string,
+      _expectedStatuses: string[],
+      runId: string,
+    ) => ({
+      ...makeIssue("in_progress"),
+      checkoutRunId: runId,
+      executionRunId: runId,
+    }));
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
       const allowed = input.action !== "tasks:manage_active_checkouts";
@@ -1873,6 +1885,12 @@ describe.sequential("issue comment reopen routes", () => {
         actorUserId: null,
       }),
     );
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      ["todo", "in_progress"],
+      "run-1",
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1884,20 +1902,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        requestedByActorType: "agent",
-        requestedByActorId: "22222222-2222-4222-8222-222222222222",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "done",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-      }),
-    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("keeps generic same-agent comments on closed issues inert", async () => {
@@ -1928,6 +1933,12 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      ["todo", "in_progress"],
+      "run-1",
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1939,23 +1950,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "done",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-        contextSnapshot: expect.objectContaining({
-          wakeReason: "issue_reopened_via_comment",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-      }),
-    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("honors explicit agent resume intent from a default-open peer as an agent-class wake", async () => {
@@ -1982,6 +1977,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
@@ -2256,15 +2252,14 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    expect(mockIssueService.addComment).toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
       "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        requestedByActorType: "agent",
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({ reopenedFrom: "cancelled", resumeIntent: true }),
-      }),
+      ["todo", "in_progress"],
+      "run-1",
     );
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("interrupts an active run before a combined comment update", async () => {

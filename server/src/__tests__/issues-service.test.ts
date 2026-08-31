@@ -5999,6 +5999,216 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionRunId: successorRunId,
     });
   });
+
+  it("stamps the checked-out issue onto a timer run that had no source issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PR Coordinator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer", wakeSource: "timer" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly operating loop",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo"], runId);
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      checkoutRunId: runId,
+    });
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "heartbeat_timer",
+      wakeSource: "timer",
+      issueId,
+      taskId: issueId,
+    });
+  });
+
+  it("does not rewrite a populated run source when checking out a different issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PR Coordinator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+        issueId: sourceIssueId,
+        taskId: sourceIssueId,
+      },
+    });
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      title: "Other assigned issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const checkedOut = await svc.checkout(otherIssueId, agentId, ["todo"], runId);
+    expect(checkedOut).toMatchObject({
+      id: otherIssueId,
+      status: "in_progress",
+      checkoutRunId: runId,
+    });
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "issue_assigned",
+      issueId: sourceIssueId,
+      taskId: sourceIssueId,
+    });
+  });
+
+  it("does not stamp checkout identity over a concurrent wake source update", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const wakeIssueId = randomUUID();
+    const checkoutIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PR Coordinator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer", wakeSource: "timer" },
+    });
+    await db.insert(issues).values({
+      id: checkoutIssueId,
+      companyId,
+      title: "Checked out later",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const hold = deferred<void>();
+    const locked = deferred<void>();
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+      );
+      locked.resolve();
+      await hold.promise;
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            wakeReason: "issue_comment_mentioned",
+            issueId: wakeIssueId,
+            taskId: wakeIssueId,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+    });
+
+    await locked.promise;
+    const checkoutPromise = svc.checkout(checkoutIssueId, agentId, ["todo"], runId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    hold.resolve();
+    await holder;
+    const checkedOut = await checkoutPromise;
+    expect(checkedOut).toMatchObject({
+      id: checkoutIssueId,
+      status: "in_progress",
+      checkoutRunId: runId,
+    });
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "issue_comment_mentioned",
+      issueId: wakeIssueId,
+      taskId: wakeIssueId,
+    });
+  }, 15_000);
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
