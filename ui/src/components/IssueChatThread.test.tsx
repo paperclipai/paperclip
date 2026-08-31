@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { LONG_COMMENT_CHARACTER_LIMIT } from "./FoldedCommentBody";
 import {
   IssueAssigneePausedNotice,
   IssueChatThread,
@@ -1837,6 +1838,68 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("folds extremely long human and agent comments independently", () => {
+    const root = createRoot(container);
+    const longPrefix = "a".repeat(LONG_COMMENT_CHARACTER_LIMIT);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-human-long",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: `${longPrefix}human hidden tail`,
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-agent-long",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: `${longPrefix}agent hidden tail`,
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const expandButtons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .filter((button) => button.textContent?.includes("more characters"));
+    expect(expandButtons).toHaveLength(2);
+    expect(container.textContent).not.toContain("human hidden tail");
+    expect(container.textContent).not.toContain("agent hidden tail");
+
+    flushAct(() => expandButtons[0]?.click());
+
+    expect(container.textContent).toContain("human hidden tail");
+    expect(container.textContent).not.toContain("agent hidden tail");
+
+    flushAct(() => root.unmount());
   });
 
   it("confirms and invokes delete only for the current user's normal comments", async () => {

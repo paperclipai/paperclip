@@ -111,6 +111,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import { FoldedCommentBody } from "./FoldedCommentBody";
 import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
@@ -1459,31 +1460,6 @@ function getThreadMessageCopyText(message: ThreadMessage) {
     .join("\n\n");
 }
 
-const IssueChatTextParts = memo(function IssueChatTextParts({
-  message,
-  recessed = false,
-  onAccent = false,
-}: {
-  message: ThreadMessage;
-  recessed?: boolean;
-  onAccent?: boolean;
-}) {
-  return (
-    <>
-      {message.content
-        .filter((part): part is TextMessagePart => part.type === "text")
-        .map((part, index) => (
-          <IssueChatTextPart
-            key={`${message.id}:text:${index}`}
-            text={part.text}
-            recessed={recessed}
-            onAccent={onAccent}
-          />
-        ))}
-    </>
-  );
-});
-
 function groupAssistantParts(
   content: readonly ThreadMessage["content"][number][],
 ): Array<
@@ -1669,7 +1645,19 @@ function IssueChatUserMessage({
           <div className="text-sm italic text-muted-foreground">Comment deleted</div>
         ) : (
           <div className="min-w-0 max-w-full space-y-3">
-            <IssueChatTextParts message={message} onAccent={isCurrentUser && !queued} />
+            <FoldedCommentBody
+              body={getThreadMessageCopyText(message)}
+              toggleClassName={isCurrentUser && !queued
+                ? "text-white/80 hover:text-white hover:bg-white/10"
+                : undefined}
+            >
+              {(visibleBody) => (
+                <IssueChatTextPart
+                  text={visibleBody}
+                  onAccent={isCurrentUser && !queued}
+                />
+              )}
+            </FoldedCommentBody>
           </div>
         )}
       </div>
@@ -2035,7 +2023,13 @@ function IssueChatAssistantMessage({
               <div className="text-sm italic text-muted-foreground">Comment deleted</div>
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
-                <IssueChatAssistantParts message={message} hasCoT={false} />
+                <FoldedCommentBody body={getThreadMessageCopyText(message)}>
+                  {(visibleBody, { isCollapsed }) => (
+                    isCollapsed
+                      ? <IssueChatTextPart text={visibleBody} />
+                      : <IssueChatAssistantParts message={message} hasCoT={false} />
+                  )}
+                </FoldedCommentBody>
                 {notices.length > 0 ? (
                   <div className="space-y-2">
                     {notices.map((notice, index) => (
@@ -2848,9 +2842,13 @@ function SystemNoticeCommentRow({
     presentation,
     metadata: commentMetadata,
     body: (
-      <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
-        {bodyText}
-      </MarkdownBody>
+      <FoldedCommentBody body={bodyText}>
+        {(visibleBody) => (
+          <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
+            {visibleBody}
+          </MarkdownBody>
+        )}
+      </FoldedCommentBody>
     ),
     timestamp: toValidIsoString(message.createdAt),
     source,
