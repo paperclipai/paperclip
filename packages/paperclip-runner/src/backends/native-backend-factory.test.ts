@@ -93,6 +93,23 @@ function acpxExecution(agent: "codex" | "pi" = "codex"): NativeExecutionInput {
   };
 }
 
+function opencodeExecution(): NativeExecutionInput {
+  return {
+    ...execution(),
+    session: {
+      normalizedSessionId: "session",
+      driverKind: "opencode_server",
+      protocolVersion: 1,
+      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    },
+    provider: {
+      kind: "opencode",
+      model: "openrouter/model",
+      permissionMode: "allow",
+    },
+  };
+}
+
 describe("native backend factory", () => {
   it("constructs the Codex backend without starting its transport", async () => {
     const backend = createNativeSessionBackend(execution(), {
@@ -111,17 +128,27 @@ describe("native backend factory", () => {
     });
   });
 
-  it("fails closed when a deferred provider reaches the factory", () => {
+  it("requires an explicit runtime root for OpenCode", () => {
     expect(() =>
-      createNativeSessionBackend(
-        execution({
-          kind: "opencode",
-          model: "openrouter/model",
-        }),
-      ),
-    ).toThrow(
-      "Native backend for opencode is not included in the Codex-first runner",
-    );
+      createNativeSessionBackend(opencodeExecution()),
+    ).toThrow("OpenCode native backend requires an instance runtime directory");
+  });
+
+  it("constructs the OpenCode backend without starting its process", async () => {
+    const backend = createNativeSessionBackend(opencodeExecution(), {
+      opencodeRuntimeDirectory: "/runtime",
+    });
+
+    await expect(backend.descriptor()).resolves.toMatchObject({
+      kind: "runner",
+      name: "opencode_server",
+      version: "1.18.17",
+      capabilities: {
+        resume: true,
+        interruption: true,
+        dynamicTools: true,
+      },
+    });
   });
 
   it("constructs the qualified Codex ACPX backend without starting ACPX", async () => {

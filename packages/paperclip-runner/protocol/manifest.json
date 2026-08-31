@@ -188,6 +188,12 @@
       "compatibilityCase": "codex-structured-input"
     },
     {
+      "path": "fixtures/questions/opencode.json",
+      "sha256": "7e5f753d04321f78a38a4362b2a4c7aeacbb4736d4db72a699f23c245884da72",
+      "expectation": "accept",
+      "compatibilityCase": "opencode-structured-input"
+    },
+    {
       "path": "fixtures/replay/duplicate-event.json",
       "sha256": "779c146966d2825ffcde88bfff8b1fb238c162d40c578980ad3bd1a7def405d7",
       "expectation": "accept",

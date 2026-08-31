@@ -20,7 +20,10 @@ The package also publishes the canonical semantic action declarations and
 their input and output schemas. Its package-local dispatcher projects only
 bound, run-authorized actions and emits redacted semantic receipts.
 
-The first and only installed provider is Codex. Dynamic semantic tools remain
+The production-selected provider remains Codex. The package also contains the
+qualified OpenCode 1.18.17 driver, authenticated loopback MCP bridge, and
+runnerd-compatible proxy, but this slice does not authorize the server to
+select OpenCode for a fresh native run. Dynamic semantic tools remain
 undiscoverable unless the hidden server coordinator projects one of the five
 same-task read bindings for an already persisted native Codex run. Catalog
 membership alone does not grant authority. The server can now create and start
@@ -36,8 +39,8 @@ The package has two initial public surfaces:
 - `@paperclipai/paperclip-runner/testing` adds Node-only fixture loading and a
   provider-neutral semantic conformance kit for deterministic test adapters.
 
-No SDK, browser, React, eval, live-console, lab, or provider-experiment entry
-point is exported. The package remains private in this wave. The server route
+No SDK, browser, React, eval, live-console, or lab entry point is exported. The
+package remains private in this wave. The server route
 at `/api/runner/v1/connect/:runId` has no authority until the hidden coordinator
 registers an exact existing run binding. Fresh native starts are rejected
 unless the instance `enableNativeRunner` flag is enabled. Existing direct
@@ -48,6 +51,13 @@ stages it under `dist/bin`. The normal server build vendors that directory, so
 an installed server does not depend on a separate system Rust installation or
 a manually copied binary. `pnpm-lock.yaml` remains under the repository's
 existing lockfile process.
+
+The `paperclip-runner-opencode-proxy` binary adapts the pinned OpenCode server
+protocol to the normalized harness contract. It admits only a bounded provider
+environment, uses an authenticated loopback MCP endpoint, validates dynamic
+tool inputs, keeps terminal completion tools private to the runner boundary,
+and preserves exact provider session identity for recovery. The backend factory
+requires an explicit runtime directory before constructing this provider.
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the qualified Codex ACPX profile only. It validates
