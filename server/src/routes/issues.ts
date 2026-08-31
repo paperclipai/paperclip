@@ -3058,12 +3058,19 @@ export function issueRoutes(
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
-    return input.parentId !== undefined ||
-      input.inheritExecutionWorkspaceFromIssueId !== undefined ||
-      input.projectWorkspaceId !== undefined ||
-      input.executionWorkspaceId !== undefined ||
-      input.executionWorkspacePreference !== undefined ||
-      input.executionWorkspaceSettings !== undefined;
+    // `!= null` (not `!== undefined`) on purpose: a caller that explicitly sends
+    // `parentId: null` — a normal, idiomatic way for a JSON API client to say
+    // "no parent" — must not be treated the same as a caller who actually named
+    // a parent or workspace. Treating an explicit null the same as an explicit
+    // value used to skip run-scoped workspace inheritance below even though the
+    // request carried no real workspace selection at all, silently leaving the
+    // created issue unbound from the creating run's project workspace.
+    return input.parentId != null ||
+      input.inheritExecutionWorkspaceFromIssueId != null ||
+      input.projectWorkspaceId != null ||
+      input.executionWorkspaceId != null ||
+      input.executionWorkspacePreference != null ||
+      input.executionWorkspaceSettings != null;
   }
 
   async function resolveRunIssueWorkspaceInheritanceSource(
@@ -3086,7 +3093,21 @@ export function issueRoutes(
     const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
       : null;
-    if (!context || !readNonEmptyString(context.executionWorkspaceId)) return null;
+    // Previously this also required `context.executionWorkspaceId` to be a
+    // non-empty string before treating the run as having a workspace to
+    // inherit. That field is written onto the run's context snapshot by the
+    // heartbeat dispatch's own workspace-provisioning step, at a point in the
+    // run lifecycle downstream of where this route can be called (an agent
+    // can create an issue from its very first turn, before that step has
+    // run), and it is not the field the shared-workspace serialize gate
+    // itself reads (that gate keys off the issue's own `projectWorkspaceId`,
+    // set separately). Gating run-scoped inheritance on it made this whole
+    // path silently inert for exactly the run shapes it exists to cover.
+    // The run's own current issue (`context.issueId`) is the correct and
+    // sufficient signal: if that issue has no project association either,
+    // `getWorkspaceInheritanceIssue` below simply finds nothing to inherit,
+    // which is the same safe no-op as returning null here.
+    if (!context) return null;
     const paperclipIssue = context.paperclipIssue && typeof context.paperclipIssue === "object"
       ? context.paperclipIssue as Record<string, unknown>
       : null;
