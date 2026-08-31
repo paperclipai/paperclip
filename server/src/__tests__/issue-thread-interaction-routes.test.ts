@@ -61,9 +61,6 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
 }));
-const mockQuestionResponseDeliveries = vi.hoisted(() => ({
-  deliver: vi.fn(async () => ({ mode: "steered", status: "delivered" })),
-}));
 const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 const mockRunAttribution = vi.hoisted(() => ({
