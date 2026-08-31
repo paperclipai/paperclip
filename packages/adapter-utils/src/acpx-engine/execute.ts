@@ -45,6 +45,7 @@ import {
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
+  asBoolean,
   asNumber,
   asString,
   buildInvocationEnvForLogs,
@@ -1929,6 +1930,22 @@ async function buildRuntime(input: {
       );
     }
     if (codexStartupConfig.value) env.CODEX_CONFIG = codexStartupConfig.value;
+    // `dangerouslyBypassApprovalsAndSandbox` maps to a CLI flag the ACP lane
+    // never passes, so on this lane the setting used to be dropped and the
+    // agent stayed in codex-acp's default "agent" mode -- workspace-write with
+    // no network. That blocks loopback, so the agent cannot reach the Paperclip
+    // API to post its result or set an issue disposition: it does the work,
+    // goes mute, and the run is escalated as missing_disposition. codex-acp
+    // picks its starting mode from INITIAL_AGENT_MODE (AgentMode
+    // .getInitialAgentMode), and its "danger-full-access" mode is exactly
+    // approvalPolicy "never" + sandboxPolicy dangerFullAccess, so set it here.
+    // An explicit operator value wins -- this only fills in the default.
+    if (
+      !env.INITIAL_AGENT_MODE &&
+      asBoolean(config.dangerouslyBypassApprovalsAndSandbox, asBoolean(config.dangerouslyBypassSandbox, false))
+    ) {
+      env.INITIAL_AGENT_MODE = "danger-full-access";
+    }
   }
 
   let skillPromptInstructions = "";

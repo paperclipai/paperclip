@@ -478,6 +478,27 @@ describe("shared ACPX engine runtime behavior", () => {
     );
   });
 
+  // The bypass is a Codex CLI flag this lane never passes, so without an
+  // explicit starting mode codex-acp stays in workspace-write with no network
+  // and the agent cannot reach the Paperclip API on loopback.
+  it("starts Codex in full-access mode when the sandbox bypass is configured", async () => {
+    const { meta } = await runExecutor({
+      agent: "codex",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    expect((meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBe("danger-full-access");
+
+    const legacy = await runExecutor({ agent: "codex", dangerouslyBypassSandbox: true });
+    expect((legacy.meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBe(
+      "danger-full-access",
+    );
+  });
+
+  it("leaves Codex in its default mode when no bypass is configured", async () => {
+    const { meta } = await runExecutor({ agent: "codex" });
+    expect((meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBeUndefined();
+  });
+
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
     const arbitraryModel = "gpt-999-test-does-not-exist";
     const { configOptions, meta } = await runExecutor({
