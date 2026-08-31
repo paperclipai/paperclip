@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  REDACTED_UNCLASSIFIED_COMMENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeIssueCommentBody,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -138,6 +145,89 @@ describe("redaction", () => {
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
+  });
+
+  it("redacts every required comment credential class", () => {
+    const values = [
+      "Authorization: Basic c3ludGhldGljOnZhbHVl",
+      'apiKey="synthetic-api-key-value"',
+      "passphrase=synthetic-passphrase-value",
+      'webhook_secret: "synthetic-webhook-value"',
+      "postgres://synthetic:password@db.example.test:5432/app",
+      "mysql://synthetic:password@db.example.test/app",
+      "redis://:password@cache.example.test:6379/0",
+      "mongodb://synthetic:password@mongo.example.test/app",
+      "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+      "github_pat_11AA22BB33CC44DD55EE66FF77GG88HH",
+      "ops_11AA22BB33CC44DD55EE66FF",
+      "tskey-auth-11AA22BB33CC44DD55EE66FF",
+      "PRIVATE_KEY=synthetic-private-key-value",
+      "CREDENTIAL=synthetic-credential-value",
+    ];
+
+    const result = sanitizeIssueCommentBody(values.join("\n"));
+
+    expect(result).toContain(REDACTED_EVENT_VALUE);
+    for (const value of values) {
+      const secretPart = value.includes("=") ? value.split("=").at(-1)! : value;
+      expect(result).not.toContain(secretPart);
+    }
+  });
+
+  it("fails closed on an unclassified secret-shaped line", () => {
+    const opaque = "QWxhZGRpbjpPcGVuU2VzYW1lMTIzNDU2Nzg5MDEyMzQ1Njc4OTA=";
+    const result = sanitizeIssueCommentBody([
+      "App: synthetic-monitor status=running",
+      `encoded configuration: ${opaque}`,
+      "HTTP: 200 in 42ms",
+    ].join("\n"));
+
+    expect(result).toBe([
+      "App: synthetic-monitor status=running",
+      REDACTED_UNCLASSIFIED_COMMENT_VALUE,
+      "HTTP: 200 in 42ms",
+    ].join("\n"));
+    expect(result).not.toContain(opaque);
+  });
+
+  it("fully redacts a synthetic Coolify inventory payload before comment persistence", () => {
+    const syntheticPayload = JSON.stringify({
+      name: "synthetic-app",
+      status: "running",
+      fqdn: "https://synthetic.example.test",
+      manual_webhook_secret_github: "synthetic-github-webhook-secret",
+      apiKey: "synthetic-api-key",
+      environment_variables: "POSTGRES_PASSWORD=synthetic-db-password",
+      docker_compose_raw:
+        "c2VydmljZXM6CiAgYXBwOgogICAgZW52aXJvbm1lbnQ6CiAgICAtIERBVEFCQVNFX1VSTD1wb3N0Z3JlczovL3VzZXI6cGFzc0BkYi9hcHA=",
+      custom_labels:
+        "dHJhZWZpay5odHRwLnJvdXRlcnMuYXBwLnJ1bGU9SG9zdChgc3ludGhldGljLmV4YW1wbGUudGVzdGAp",
+    });
+
+    const result = sanitizeIssueCommentBody(`Inventory result:\n${syntheticPayload}`);
+
+    expect(result).toContain("Inventory result:");
+    expect(result).toContain(REDACTED_UNCLASSIFIED_COMMENT_VALUE);
+    expect(result).not.toContain("synthetic-github-webhook-secret");
+    expect(result).not.toContain("synthetic-api-key");
+    expect(result).not.toContain("synthetic-db-password");
+    expect(result).not.toContain("c2VydmljZXM6");
+    expect(result).not.toContain("dHJhZWZpay5odHRw");
+  });
+
+  it("preserves allowlisted monitor fields and common non-secret identifiers", () => {
+    const input = [
+      "App: synthetic-app",
+      "Status: running",
+      "FQDN: https://synthetic.example.test",
+      "HTTP: 200",
+      "Latency: 42ms",
+      "Last deploy: succeeded",
+      "Run: 019ec394-e246-4b98-aaa4-fb9072130a7c",
+      "Commit: 8478ddbce8478ddbce8478ddbce8478ddbce8478d",
+    ].join("\n");
+
+    expect(sanitizeIssueCommentBody(input)).toBe(input);
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {

@@ -1,7 +1,7 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
 const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|passphrase|credential|webhook|jwt|private[-_]?key|cookie|connection[-_]?string|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
@@ -42,6 +42,19 @@ const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
+const SECRET_ENV_ASSIGNMENT_RE = new RegExp(
+  String.raw`(\b${SECRET_FIELD_NAME_PATTERN}\s*=\s*)(?:(["'])([^"'` + "`" + String.raw`\r\n]*)\2|([^\s"'` + "`" + String.raw`]+))`,
+  "gi",
+);
+const CONNECTION_STRING_RE =
+  /\b(?:postgres(?:ql)?|mysql|redis(?:s)?|mongodb(?:\+srv)?):\/\/[^\s<>"'`]+/gi;
+const AUTHORIZATION_HEADER_RE = /(\bAuthorization\s*:\s*)[^\r\n]+/gi;
+const GITHUB_FINE_GRAINED_TOKEN_RE = /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g;
+const COOLIFY_TOKEN_RE = /\bops_[A-Za-z0-9_-]{12,}\b/g;
+const TAILNET_AUTH_KEY_RE = /\btskey-[A-Za-z0-9_-]{12,}\b/g;
+const SECRET_SHAPED_VALUE_RE = /[A-Za-z0-9+/_=-]{32,}/g;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HEX_DIGEST_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -51,6 +64,7 @@ const SECRET_TEXT_HINTS = [
   "secret",
   "pass",
   "credential",
+  "webhook",
   "jwt",
   "private",
   "cookie",
@@ -61,8 +75,18 @@ const SECRET_TEXT_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  "ops_",
+  "tskey-",
+  "postgres://",
+  "postgresql://",
+  "mysql://",
+  "redis://",
+  "mongodb://",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
+export const REDACTED_UNCLASSIFIED_COMMENT_VALUE =
+  "[redacted: unclassified secret-shaped value]";
 
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
@@ -167,7 +191,62 @@ export function redactSensitiveText(input: string): string {
   return redactCommandText(
     input
       .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
+      .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
+      .replace(
+        SECRET_ENV_ASSIGNMENT_RE,
+        (_match, prefix: string, quote: string | undefined) =>
+          quote
+            ? `${prefix}${quote}${REDACTED_EVENT_VALUE}${quote}`
+            : `${prefix}${REDACTED_EVENT_VALUE}`,
+      )
+      .replace(AUTHORIZATION_HEADER_RE, `$1${REDACTED_EVENT_VALUE}`)
+      .replace(CONNECTION_STRING_RE, REDACTED_EVENT_VALUE)
+      .replace(GITHUB_FINE_GRAINED_TOKEN_RE, REDACTED_EVENT_VALUE)
+      .replace(COOLIFY_TOKEN_RE, REDACTED_EVENT_VALUE)
+      .replace(TAILNET_AUTH_KEY_RE, REDACTED_EVENT_VALUE),
     REDACTED_EVENT_VALUE,
   );
+}
+
+function shannonEntropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const character of value) {
+    counts.set(character, (counts.get(character) ?? 0) + 1);
+  }
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const probability = count / value.length;
+    entropy -= probability * Math.log2(probability);
+  }
+  return entropy;
+}
+
+function isUnclassifiedSecretShapedValue(value: string): boolean {
+  if (UUID_RE.test(value) || HEX_DIGEST_RE.test(value)) return false;
+  const characterClasses = [/[a-z]/.test(value), /[A-Z]/.test(value), /\d/.test(value), /[+/_=-]/.test(value)]
+    .filter(Boolean).length;
+  return characterClasses >= 3 && shannonEntropy(value) >= 4.2;
+}
+
+/**
+ * Sanitize a would-be issue comment at the final persistence boundary.
+ *
+ * Classified credential forms are replaced in place. If a line still contains
+ * an opaque, high-entropy value after classified redaction, the whole line is
+ * dropped so an unknown credential format cannot pass through by accident.
+ */
+export function sanitizeIssueCommentBody(input: string): string {
+  const classified = redactSensitiveText(input);
+  return classified
+    .split("\n")
+    .map((line) => {
+      SECRET_SHAPED_VALUE_RE.lastIndex = 0;
+      for (const match of line.matchAll(SECRET_SHAPED_VALUE_RE)) {
+        if (isUnclassifiedSecretShapedValue(match[0])) {
+          return REDACTED_UNCLASSIFIED_COMMENT_VALUE;
+        }
+      }
+      return line;
+    })
+    .join("\n");
 }

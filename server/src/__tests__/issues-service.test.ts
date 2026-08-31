@@ -31,6 +31,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { REDACTED_UNCLASSIFIED_COMMENT_VALUE } from "../redaction.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -7011,5 +7012,35 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     const comment = await svc.addComment(issueId, "hello from a live run", { runId });
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+
+  it("sanitizes synthetic infrastructure output at the single comment persistence boundary", async () => {
+    const encodedConfig =
+      "c2VydmljZXM6CiAgYXBwOgogICAgZW52aXJvbm1lbnQ6CiAgICAtIERBVEFCQVNFX1VSTD1wb3N0Z3JlczovL3VzZXI6cGFzc0BkYi9hcHA=";
+    const body = [
+      "App: synthetic-app",
+      "Status: running",
+      "FQDN: https://synthetic.example.test",
+      'raw inventory: {"manual_webhook_secret":"synthetic-webhook-value"}',
+      `encoded configuration: ${encodedConfig}`,
+      "HTTP: 200 in 42ms",
+      "Last deploy: succeeded",
+    ].join("\n");
+
+    const comment = await svc.addComment(issueId, body, { agentId });
+    const persisted = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0]?.body ?? "");
+
+    expect(persisted).toContain("App: synthetic-app");
+    expect(persisted).toContain("Status: running");
+    expect(persisted).toContain("FQDN: https://synthetic.example.test");
+    expect(persisted).toContain("HTTP: 200 in 42ms");
+    expect(persisted).toContain("Last deploy: succeeded");
+    expect(persisted).toContain(REDACTED_UNCLASSIFIED_COMMENT_VALUE);
+    expect(persisted).not.toContain("synthetic-webhook-value");
+    expect(persisted).not.toContain(encodedConfig);
   });
 });

@@ -90,7 +90,7 @@ import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
-import { redactSensitiveText } from "../redaction.js";
+import { redactSensitiveText, sanitizeIssueCommentBody } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -4641,7 +4641,11 @@ export function issueService(db: Db) {
     return {
       ...comment,
       authorType: deriveIssueCommentAuthorType(comment),
-      body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+      // Sanitize again on read so legacy rows and internal inserts cannot turn
+      // into a bypass of the comment egress boundary.
+      body: sanitizeIssueCommentBody(
+        redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+      ),
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
@@ -8911,7 +8915,11 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      // This is the single issue-comment persistence boundary. Keep secret
+      // sanitization here so routes and internal callers cannot bypass it.
+      const redactedBody = sanitizeIssueCommentBody(
+        redactCurrentUserText(body, currentUserRedactionOptions),
+      );
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );
