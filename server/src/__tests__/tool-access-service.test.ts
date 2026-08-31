@@ -40,7 +40,12 @@ import {
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { APP_STORE_HIDDEN_SLUGS, getConnectableAppDefinition } from "@paperclipai/shared";
+import {
+  APP_STORE_HIDDEN_SLUGS,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  getConnectableAppDefinition,
+  type GoogleWorkspaceConnectorProfileId,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -62,7 +67,6 @@ import { errorHandler } from "../middleware/index.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
-  GMAIL_CONNECTOR_SCOPES,
   type PaperclipCloudConnector,
 } from "../services/paperclip-cloud-connector.js";
 
@@ -85,23 +89,29 @@ function createTestToolAccessService(
   });
 }
 
-function fakeGmailConnector(companyId: string, userId: string): PaperclipCloudConnector {
+function fakeGoogleWorkspaceConnector(
+  companyId: string,
+  userId: string,
+  profile: GoogleWorkspaceConnectorProfileId = "gmail.draft",
+): PaperclipCloudConnector {
+  const profileDefinition = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile];
+  const tokenPrefix = profile.split(".")[0]!;
   const credentials = {
     v: 1 as const,
-    accessToken: "gmail-access-token",
-    refreshToken: "gmail-refresh-token",
+    accessToken: `${tokenPrefix}-access-token`,
+    refreshToken: `${tokenPrefix}-refresh-token`,
     tokenType: "Bearer",
     accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    scopes: [...GMAIL_CONNECTOR_SCOPES],
+    scopes: [...profileDefinition.scopes],
     subject: userId,
     companyId,
     instanceId: "test-instance",
     environment: "development" as const,
     provider: "google" as const,
-    profile: "gmail.draft",
+    profile,
   };
   return {
-    getCapabilities: vi.fn(async () => ["gmail.draft" as const]),
+    getCapabilities: vi.fn(async () => [profile]),
     startAuthorization: vi.fn(async ({ returnState }) => ({
       authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(returnState)}`,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -110,6 +120,10 @@ function fakeGmailConnector(companyId: string, userId: string): PaperclipCloudCo
     refresh: vi.fn(async () => credentials),
     revoke: vi.fn(async () => undefined),
   };
+}
+
+function fakeGmailConnector(companyId: string, userId: string): PaperclipCloudConnector {
+  return fakeGoogleWorkspaceConnector(companyId, userId);
 }
 
 function createToolGatewayService(
@@ -281,8 +295,9 @@ function createRouteApp(
   actor?: Express.Request["actor"],
   toolGateway?: ToolGatewayService,
   deployment?: {
-    deploymentMode: "local_trusted" | "authenticated";
-    deploymentExposure: "private" | "public";
+    deploymentMode?: "local_trusted" | "authenticated";
+    deploymentExposure?: "private" | "public";
+    paperclipCloudConnector?: PaperclipCloudConnector | null;
   },
   useProtocolFixtureTransport = true,
 ) {
@@ -4882,6 +4897,131 @@ describeEmbeddedPostgres("tool access service", () => {
       await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
     }
   }, 15_000);
+
+  it("routes a managed Drive callback into the personal vault, filtered catalog, and provider-specific activity", async () => {
+    const company = await createCompany(db);
+    const userId = `drive-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const profile = "drive.read" as const;
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([
+      { name: "search_files", annotations: { readOnlyHint: true } },
+      { name: "create_file", annotations: { readOnlyHint: false } },
+    ]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-read",
+        grantKind: "user",
+        name: "Drive managed read",
+      }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const app = createRouteApp(
+        db,
+        boardSessionActor(company.id, "owner", userId),
+        undefined,
+        { paperclipCloudConnector: connector },
+      );
+
+      const callback = await request(app)
+        .get("/api/tools/oauth/cloud-connector/callback")
+        .query({ state, claim_id: "drive-claim" })
+        .set("accept", "application/json");
+
+      expect(callback.status).toBe(200);
+      expect(connector.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+        companyId: company.id,
+        subject: userId,
+        profile,
+      }));
+      expect(connector.claim).toHaveBeenCalledWith(expect.objectContaining({
+        companyId: company.id,
+        subject: userId,
+        profile,
+        claimId: "drive-claim",
+        redemptionId: state,
+      }));
+      expect(callback.body.connection).toMatchObject({
+        status: "active",
+        enabled: true,
+        healthStatus: "ok",
+        config: {
+          sourceTemplateKey: "google-drive",
+          oauth: {
+            strategy: "paperclip_cloud_connector",
+            provider: "google-drive",
+            connectorProfile: profile,
+            resource: GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].serverUrl,
+            scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
+          },
+        },
+      });
+      expect(callback.body.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "quarantined", riskLevel: "read" }),
+        expect.objectContaining({ toolName: "create_file", status: "disabled", riskLevel: "write" }),
+      ]));
+
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, connected.connectionId),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, userId),
+      ));
+      expect(grant).toMatchObject({
+        status: "active",
+        providerTenant: {
+          name: "Google Drive",
+          oauth: {
+            strategy: "paperclip_cloud_connector",
+            scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
+          },
+        },
+      });
+      expect(grant!.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual([
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+      const secrets = await db.select().from(companySecrets).where(inArray(
+        companySecrets.id,
+        grant!.credentialSecretRefs.map((ref) => ref.secretId),
+      ));
+      expect(secrets).toHaveLength(2);
+      expect(secrets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ companyId: company.id, scope: "user", ownerUserId: userId, provider: "local_encrypted" }),
+      ]));
+      const versions = await db.select().from(companySecretVersions).where(inArray(
+        companySecretVersions.secretId,
+        grant!.credentialSecretRefs.map((ref) => ref.secretId),
+      ));
+      expect(versions).toHaveLength(2);
+      expect(JSON.stringify(versions)).not.toContain("drive-access-token");
+      expect(JSON.stringify(versions)).not.toContain("drive-refresh-token");
+
+      const [activity] = await db.select().from(activityLog).where(and(
+        eq(activityLog.entityId, connected.connectionId),
+        eq(activityLog.action, "tool_app.oauth_connected"),
+      ));
+      expect(activity?.details).toMatchObject({
+        applicationId: callback.body.application.id,
+        catalogEntryCount: 2,
+        provider: "google-drive",
+        profile,
+      });
+      expect(JSON.stringify(activity?.details)).not.toContain(userId);
+      expect(JSON.stringify(activity?.details)).not.toContain("token");
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
 
   it("keeps brokered OAuth state retryable until credentials are durably stored", async () => {
     const company = await createCompany(db);
