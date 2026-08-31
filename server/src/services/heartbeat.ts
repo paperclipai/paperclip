@@ -10666,15 +10666,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { mode: "pid_mismatch" as const, skipDrain: false as const, activeRunIds: [] as string[] };
     }
 
-    const activeRuns = await db
-      .select({
-        run: heartbeatRuns,
-        adapterType: agents.adapterType,
-        adapterConfig: agents.adapterConfig,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(eq(heartbeatRuns.status, "running"));
+    let activeRuns: Array<{
+      run: typeof heartbeatRuns.$inferSelect;
+      adapterType: string;
+      adapterConfig: unknown;
+    }>;
+    try {
+      activeRuns = await db
+        .select({
+          run: heartbeatRuns,
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(eq(heartbeatRuns.status, "running"));
+    } catch (err) {
+      // The restart request captures running ids before SIGTERM. Preserve that
+      // durable preflight set in a filesystem-only snapshot when the shutdown
+      // database socket is already gone. The replacement server can hydrate
+      // those rows from its fresh connection and adopt or interrupt them.
+      await writeHotRestartShutdownSnapshot({
+        intent: {
+          ...intent,
+          previousServerVersion: intent.previousServerVersion ?? serverVersion,
+        },
+        signal,
+        activeRuns: [],
+        capturedAt: now,
+      });
+      logger.error(
+        {
+          err,
+          signal,
+          previousServerPid: intent.previousServerPid,
+          preflightActiveRunIds: intent.preflightActiveRunIds,
+          resolvedMode: "preflight_snapshot_fallback",
+        },
+        "hot-restart active-run query failed; wrote preflight fallback snapshot",
+      );
+      return {
+        mode: "preflight_snapshot_fallback" as const,
+        skipDrain: true as const,
+        activeRunIds: intent.preflightActiveRunIds,
+      };
+    }
     const snapshotRuns = activeRuns.map(toHotRestartIntentRun);
     const intentWithVersion = {
       ...intent,
@@ -10783,25 +10819,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         intent.drainRequired
           ? "drain-required restart intent has no adoption snapshot"
-          : "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
+          : "hot-restart intent present but shutdown snapshot is missing; reconstructing from preflight runs",
       );
     }
-    const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
+    const snapshotCandidates = intent.shutdownSnapshot?.activeRuns ?? [];
     const missingSnapshotRunIds = findMissingHotRestartSnapshotRunIds(intent);
     const reconciliationRunIds = [
-      ...new Set([...candidates.map((run) => run.runId), ...missingSnapshotRunIds]),
+      ...new Set([...snapshotCandidates.map((run) => run.runId), ...missingSnapshotRunIds]),
     ];
     const currentRows = reconciliationRunIds.length > 0
       ? await db
         .select({
           run: heartbeatRuns,
           adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
         .where(inArray(heartbeatRuns.id, reconciliationRunIds))
       : [];
     const currentByRunId = new Map(currentRows.map((row) => [row.run.id, row]));
+    const reconstructedCandidateRunIds = new Set(missingSnapshotRunIds);
+    const reconstructedCandidates = missingSnapshotRunIds.flatMap((runId) => {
+      const current = currentByRunId.get(runId);
+      return current ? [toHotRestartIntentRun(current)] : [];
+    });
+    const candidates = [...snapshotCandidates, ...reconstructedCandidates];
 
     const reportRuns: HotRestartReportRun[] = [];
     const adoptedRunIds: string[] = [];
@@ -10824,24 +10867,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
 
     for (const runId of missingSnapshotRunIds) {
-      const current = currentByRunId.get(runId);
-      if (!current) {
-        finalizedWhileDownRunIds.push(runId);
-        continue;
-      }
-
-      const candidate = toHotRestartIntentRun(current);
-      if (current.run.status !== "running") {
-        classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
-      } else {
-        classify(candidate, "lost", "missing_shutdown_snapshot");
-      }
+      if (!currentByRunId.has(runId)) finalizedWhileDownRunIds.push(runId);
     }
 
-    if (lostRunIds.length > 0) {
-      logger.error(
-        { previousServerPid: intent.previousServerPid, lostRunIds },
-        "hot-restart shutdown snapshot omitted live preflight runs; reporting them as lost",
+    if (reconstructedCandidates.length > 0) {
+      logger.warn(
+        {
+          previousServerPid: intent.previousServerPid,
+          reconstructedRunIds: reconstructedCandidates.map((run) => run.runId),
+        },
+        "reconstructing hot-restart candidates from the preflight active-run set",
       );
     }
 
@@ -10852,7 +10887,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const { run, adapterType } = current;
+      const { run, adapterType, adapterConfig } = current;
       const patch = {
         adapterType,
         status: run.status,
@@ -10863,6 +10898,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (run.status !== "running") {
         classify(candidate, "finalized_while_down", `run_status_${run.status}`, patch);
         continue;
+      }
+
+      if (reconstructedCandidateRunIds.has(run.id)) {
+        const processPid = run.processPid ?? candidate.processPid;
+        const processGroupId = run.processGroupId ?? candidate.processGroupId;
+        const processAlive = isProcessAlive(processPid) || isProcessGroupAlive(processGroupId);
+        const requiresInterrupt = !processAlive || isServerStdioBoundHotRestartRun({
+          run,
+          adapterType,
+          adapterConfig,
+        });
+        if (requiresInterrupt) {
+          const signal = intent.shutdownSnapshot?.signal ?? "SIGTERM";
+          const drain = await drainRunningRunsForShutdown(signal, now, [run.id]);
+          if (drain.interruptedRunIds.includes(run.id)) {
+            classify(candidate, "finalized_while_down", "server_shutdown_interrupted", patch);
+          } else {
+            const latest = await db
+              .select({ status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, run.id))
+              .then((rows) => rows[0] ?? null);
+            if (latest && latest.status !== "running") {
+              classify(candidate, "finalized_while_down", `run_status_${latest.status}`, {
+                ...patch,
+                status: latest.status,
+              });
+            } else {
+              classify(candidate, "lost", "preflight_interrupt_not_applied", patch);
+            }
+          }
+          continue;
+        }
       }
 
       const hasSelectiveAcpDrain = intent.drainReason === "active_acp_run"

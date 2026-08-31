@@ -108,6 +108,10 @@ export async function coordinateHeartbeatSchedulerShutdown<
   signal: "SIGINT" | "SIGTERM";
   prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<TPreparation>) | null;
   waitForHeartbeatSchedulerIdle: () => Promise<void>;
+  reportPreparationError?: (error: unknown, context: {
+    signal: "SIGINT" | "SIGTERM";
+    resolvedMode: "graceful_drain";
+  }) => void;
 }): Promise<{
   hotRestart: TPreparation | null;
   preparationError: unknown;
@@ -127,6 +131,10 @@ export async function coordinateHeartbeatSchedulerShutdown<
       hotRestart = await input.prepareHotRestartShutdown(input.signal);
     } catch (err) {
       preparationError = err;
+      input.reportPreparationError?.(err, {
+        signal: input.signal,
+        resolvedMode: "graceful_drain",
+      });
     }
   }
 
