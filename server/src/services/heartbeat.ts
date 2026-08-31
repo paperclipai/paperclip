@@ -2044,6 +2044,57 @@ function isConfigurationIncompleteFailure(error: unknown): error is Configuratio
   return error instanceof ConfigurationIncompleteFailure;
 }
 
+function isSecretBindingMissingConfigurationFailure(error: unknown) {
+  if (!isConfigurationIncompleteFailure(error)) return false;
+  const configurationIncomplete = parseObject(error.resultJson.configurationIncomplete);
+  return configurationIncomplete.reason === "secret_binding_missing";
+}
+
+function normalizeSecretRefsForConfigComparison(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeSecretRefsForConfigComparison);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  if (record.type === "secret_ref") {
+    return Object.fromEntries(
+      Object.entries(record).filter(([key]) => key !== "secretId" && key !== "version"),
+    );
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, normalizeSecretRefsForConfigComparison(entry)]),
+  );
+}
+
+export function isSecretRefOnlyConfigChange(initialConfig: unknown, latestConfig: unknown) {
+  const initialFingerprint = stableStringifyForFingerprint(initialConfig);
+  const latestFingerprint = stableStringifyForFingerprint(latestConfig);
+  return initialFingerprint !== latestFingerprint &&
+    stableStringifyForFingerprint(normalizeSecretRefsForConfigComparison(initialConfig)) ===
+      stableStringifyForFingerprint(normalizeSecretRefsForConfigComparison(latestConfig));
+}
+
+export async function resolveWithSecretBindingConfigRefresh<TSnapshot, TValue>(input: {
+  initialSnapshot: TSnapshot;
+  resolve: (snapshot: TSnapshot) => Promise<TValue>;
+  refreshSnapshot: () => Promise<TSnapshot | null>;
+}) {
+  try {
+    return {
+      value: await input.resolve(input.initialSnapshot),
+      snapshot: input.initialSnapshot,
+      refreshed: false,
+    };
+  } catch (error) {
+    if (!isSecretBindingMissingConfigurationFailure(error)) throw error;
+    const refreshedSnapshot = await input.refreshSnapshot();
+    if (!refreshedSnapshot) throw error;
+    return {
+      value: await input.resolve(refreshedSnapshot),
+      snapshot: refreshedSnapshot,
+      refreshed: true,
+    };
+  }
+}
+
 export function isConfigurationIncompleteFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
@@ -15083,13 +15134,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
     }
-    const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
-      agentConfig: config,
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      mode: requestedExecutionWorkspaceMode,
-      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
-    });
     let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
     let profileResolutionFallbackReason: string | null = null;
     try {
@@ -15121,13 +15165,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
-    const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: workspaceManagedConfig,
-      modelProfile: modelProfileApplication,
-      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
-    });
-    const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
-    const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    const buildDispatchConfigSnapshot = (agentConfig: Record<string, unknown>) => {
+      const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+        agentConfig,
+        projectPolicy: projectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+        mode: requestedExecutionWorkspaceMode,
+        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+      });
+      const mergedConfig = mergeModelProfileAdapterConfig({
+        baseConfig: workspaceManagedConfig,
+        modelProfile: modelProfileApplication,
+        issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+      });
+      return {
+        mergedConfig,
+        configSnapshot: buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId),
+        executionRunConfig: stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig),
+      };
+    };
+    const initialDispatchConfigSnapshot = buildDispatchConfigSnapshot(config);
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
@@ -15138,33 +15195,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
     });
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
-      companyId: agent.companyId,
-      agentId: agent.id,
-      adapterType: agent.adapterType,
-      issueId,
-      heartbeatRunId: run.id,
-      environmentId: selectedEnvironmentForConfig?.id ?? null,
-      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
-      environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
-      projectId: projectContext?.id ?? null,
-      routineId: routineEnvContext.routineId,
-      responsibleUserId,
-      executionRunConfig,
-      projectEnv: projectContext?.env ?? null,
-      routineEnv: routineEnvContext.env,
-      secretsSvc,
-      trustPreset,
-      requiredScopedEnvBinding: pushCapabilityPreflightRequired
-        ? {
-            keys: [...PUSH_CAPABILITY_ENV_KEYS],
-            consumerScopes: ["agent", "project"],
-            reason: "push_write_credential_missing",
-            remediation:
-              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
-          }
-        : undefined,
+    const resolveDispatchConfigSnapshot = (snapshot: typeof initialDispatchConfigSnapshot) =>
+      resolveExecutionRunAdapterConfig({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        adapterType: agent.adapterType,
+        issueId,
+        heartbeatRunId: run.id,
+        environmentId: selectedEnvironmentForConfig?.id ?? null,
+        environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+        environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+        projectId: projectContext?.id ?? null,
+        routineId: routineEnvContext.routineId,
+        responsibleUserId,
+        executionRunConfig: snapshot.executionRunConfig,
+        projectEnv: projectContext?.env ?? null,
+        routineEnv: routineEnvContext.env,
+        secretsSvc,
+        trustPreset,
+        requiredScopedEnvBinding: pushCapabilityPreflightRequired
+          ? {
+              keys: [...PUSH_CAPABILITY_ENV_KEYS],
+              consumerScopes: ["agent", "project"],
+              reason: "push_write_credential_missing",
+              remediation:
+                "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+            }
+          : undefined,
+      });
+    const dispatchConfigResolution = await resolveWithSecretBindingConfigRefresh({
+      initialSnapshot: initialDispatchConfigSnapshot,
+      resolve: resolveDispatchConfigSnapshot,
+      refreshSnapshot: async () => {
+        const latestAgent = await getAgent(agent.id);
+        if (
+          !latestAgent ||
+          latestAgent.companyId !== agent.companyId ||
+          latestAgent.adapterType !== agent.adapterType ||
+          latestAgent.defaultEnvironmentId !== agent.defaultEnvironmentId ||
+          stableStringifyForFingerprint(latestAgent.runtimeConfig) !==
+            stableStringifyForFingerprint(agent.runtimeConfig) ||
+          stableStringifyForFingerprint(latestAgent.permissions) !==
+            stableStringifyForFingerprint(agent.permissions)
+        ) {
+          return null;
+        }
+        const latestConfig = parseObject(latestAgent.adapterConfig);
+        if (!isSecretRefOnlyConfigChange(config, latestConfig)) {
+          return null;
+        }
+        logger.info(
+          {
+            event: "agent_config_refreshed_after_secret_binding_race",
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            initialConfigUpdatedAt: agent.updatedAt,
+            refreshedConfigUpdatedAt: latestAgent.updatedAt,
+          },
+          "Agent config changed during pre-dispatch secret validation; retrying once with the current config",
+        );
+        return buildDispatchConfigSnapshot(latestConfig);
+      },
     });
+    const { configSnapshot, mergedConfig } = dispatchConfigResolution.snapshot;
+    const { resolvedConfig, secretKeys, secretManifest } = dispatchConfigResolution.value;
+    if (dispatchConfigResolution.refreshed) {
+      context.paperclipConfigRefresh = {
+        reason: "secret_binding_changed_during_predispatch",
+        source: "agent_adapter_config",
+      };
+    } else {
+      delete context.paperclipConfigRefresh;
+    }
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
         manifest: secretManifest,
