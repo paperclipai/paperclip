@@ -162,6 +162,18 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+export function isClaudeReportedCostTrusted(env: Record<string, string>): boolean {
+  const rawBaseUrl = env.ANTHROPIC_BASE_URL?.trim();
+  if (!rawBaseUrl) return true;
+
+  try {
+    const hostname = new URL(rawBaseUrl).hostname.toLowerCase();
+    return hostname === "anthropic.com" || hostname.endsWith(".anthropic.com");
+  } catch {
+    return false;
+  }
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
   const onLog = input.onLog ?? (async () => {});
@@ -1206,8 +1218,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : claudeRefusal
       ? "model_refusal"
       : null;
+    const reportedCostTrusted = isClaudeReportedCostTrusted(effectiveEnv);
+    const reportedCostUsd = parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0);
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
+      costSource: reportedCostTrusted ? "reported" : "untrusted",
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
@@ -1217,6 +1232,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
     };
+    if (!reportedCostTrusted) {
+      delete mergedResultJson.total_cost_usd;
+    }
 
     return {
       exitCode: proc.exitCode,
@@ -1236,7 +1254,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd,
+      costSource: reportedCostTrusted ? "reported" : "untrusted",
+      costUsd: reportedCostTrusted ? reportedCostUsd : null,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:

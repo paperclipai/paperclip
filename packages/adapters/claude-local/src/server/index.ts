@@ -1,4 +1,9 @@
-export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export {
+  claudeSessionCwdMatchesExecutionTarget,
+  execute,
+  isClaudeReportedCostTrusted,
+  runClaudeLogin,
+} from "./execute.js";
 export * from "./acp.js";
 export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";

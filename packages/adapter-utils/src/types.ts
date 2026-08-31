@@ -100,6 +100,7 @@ export interface AdapterExecutionResult {
   biller?: string | null;
   model?: string | null;
   billingType?: AdapterBillingType | null;
+  costSource?: "reported" | "untrusted" | null;
   costUsd?: number | null;
   /**
    * Provider-billed cost after prompt-cache discounts. Adapters should set
