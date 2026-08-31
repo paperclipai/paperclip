@@ -657,7 +657,9 @@ function runtimePort(
       | {
           readonly kind: "reconciliation";
           readonly generation: number;
+          readonly attemptNumber: number;
         };
+    pendingExternalIntent: boolean;
   };
   let runtimeClosed = false;
   let runtimeCloseAttempt: RuntimeCloseAttempt | undefined;
@@ -673,6 +675,21 @@ function runtimePort(
 
   const hasUnreconciledLateFailure = (): boolean =>
     reconciledLateFailureGeneration < lateFailureGeneration;
+
+  const consumePendingExternalIntent = (
+    attempt: RuntimeCloseAttempt,
+    failed: boolean,
+  ): boolean => {
+    const pending = attempt.pendingExternalIntent;
+    attempt.pendingExternalIntent = false;
+    return (
+      pending &&
+      failed &&
+      attempt.origin.kind === "reconciliation" &&
+      attempt.origin.attemptNumber >=
+        MAX_LATE_RUNTIME_CLEANUP_RECONCILIATION_ATTEMPTS
+    );
+  };
 
   const scheduleLateFailureReconciliation = (): void => {
     if (
@@ -698,7 +715,10 @@ function runtimePort(
     let retry = false;
     const reconciliation = closeRuntime({
       reason: `ACPX late protocol cleanup reconciliation ${attemptNumber}`,
-      reconciliationGeneration: attemptGeneration,
+      reconciliation: {
+        generation: attemptGeneration,
+        attemptNumber,
+      },
     }).then(
       () => {
         if (hasUnreconciledLateFailure()) {
@@ -733,6 +753,11 @@ function runtimePort(
     void attempt.outcome.then((error) => {
       watchedReleasedAttempts.delete(attempt);
       if (runtimeCloseAttempt === attempt) runtimeCloseAttempt = undefined;
+      const renewForExternalIntent = consumePendingExternalIntent(
+        attempt,
+        error !== null || !processCleanupSucceeded,
+      );
+      if (renewForExternalIntent) lateFailureGeneration += 1;
       if (error === null) {
         if (processCleanupSucceeded) {
           reconciledLateFailureGeneration = Math.max(
@@ -747,11 +772,14 @@ function runtimePort(
       // A newer successful close cannot erase an older outcome that had not
       // settled yet. Re-open cleanup state and autonomously create a bounded
       // reconciliation generation so the late failure is not suppression-only.
-      // Only an externally initiated close creates a new failure generation.
-      // A timed-out autonomous reconciliation remains charged to the budget
-      // of the generation that created it, even when external callers later
-      // coalesce onto that same immutable attempt.
-      if (attempt.origin.kind === "external") lateFailureGeneration += 1;
+      // An autonomous failure remains charged to the budget of the generation
+      // that created it. If external callers coalesced onto the exhausted final
+      // attempt, their single batched intent creates exactly one new generation;
+      // joins on earlier attempts are satisfied by the remaining same-generation
+      // retries.
+      if (attempt.origin.kind === "external") {
+        lateFailureGeneration += 1;
+      }
       runtimeClosed = false;
       scheduleLateFailureReconciliation();
     });
@@ -759,9 +787,22 @@ function runtimePort(
 
   async function closeRuntime(input: {
     reason: string;
-    reconciliationGeneration?: number;
+    reconciliation?: {
+      generation: number;
+      attemptNumber: number;
+    };
   }): Promise<void> {
     if (runtimeClosed) return;
+    if (
+      runtimeCloseAttempt?.origin.kind === "reconciliation" &&
+      input.reconciliation === undefined
+    ) {
+      // Preserve the attempt's autonomous origin while remembering that one or
+      // more external callers requested a fresh cleanup observation. The exact
+      // outcome consumes this bit, so coalesced callers cannot mint generations
+      // independently.
+      runtimeCloseAttempt.pendingExternalIntent = true;
+    }
     if (!runtimeCloseAttempt) {
       // A close can reconcile only failures already known when its protocol
       // attempt begins. A released older attempt may reject while this one is
@@ -769,14 +810,16 @@ function runtimePort(
       runtimeCloseAttempt = {
         outcome: ownedRuntimeCloseOutcome(runtime, handle, input.reason),
         reconciliationGeneration:
-          input.reconciliationGeneration ?? lateFailureGeneration,
+          input.reconciliation?.generation ?? lateFailureGeneration,
         origin:
-          input.reconciliationGeneration === undefined
+          input.reconciliation === undefined
             ? { kind: "external" }
             : {
                 kind: "reconciliation",
-                generation: input.reconciliationGeneration,
+                generation: input.reconciliation.generation,
+                attemptNumber: input.reconciliation.attemptNumber,
               },
+        pendingExternalIntent: false,
       };
     }
     const observedAttempt = runtimeCloseAttempt;
@@ -794,8 +837,18 @@ function runtimePort(
     ]);
     if (closeError instanceof AcpxRuntimeCloseTimeoutError) {
       watchPendingAttempt(observedAttempt, processErrors.length === 0);
-    } else if (runtimeCloseAttempt === observedAttempt) {
-      runtimeCloseAttempt = undefined;
+    } else {
+      if (
+        consumePendingExternalIntent(
+          observedAttempt,
+          closeError !== null || processErrors.length > 0,
+        )
+      ) {
+        lateFailureGeneration += 1;
+      }
+      if (runtimeCloseAttempt === observedAttempt) {
+        runtimeCloseAttempt = undefined;
+      }
     }
     if (processErrors.length === 0 && closeError === null) {
       reconciledLateFailureGeneration = Math.max(
