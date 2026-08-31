@@ -125,6 +125,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  resolveHeartbeatRunErrorCode,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -16950,14 +16951,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-      const runErrorCode =
-        outcome === "timed_out"
-          ? "timeout"
-          : outcome === "cancelled"
-            ? (latestRun?.errorCode ?? "cancelled")
-            : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
-              : null;
+      const runErrorCode = resolveHeartbeatRunErrorCode({
+        outcome,
+        adapterErrorCode: adapterResult.errorCode,
+        cancelledErrorCode: latestRun?.errorCode,
+        responsibleUserDenialCode: recordedResponsibleUserDenialCode,
+      });
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {

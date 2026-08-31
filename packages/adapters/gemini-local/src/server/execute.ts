@@ -5,6 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
+  detectSandboxExecTimeout,
+  extractSandboxExecTimeoutMessage,
+} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -663,16 +668,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
+      const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth
-          ? "gemini_auth_required"
-          : networkUnavailable
-            ? "gemini_network_unavailable"
-            : null,
+        errorMessage: sandboxExecTimedOut
+          ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
+          : `Timed out after ${timeoutSec}s`,
+        errorCode: sandboxExecTimedOut
+          ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE
+          : authMeta.requiresAuth
+            ? "gemini_auth_required"
+            : networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
