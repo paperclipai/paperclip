@@ -5576,10 +5576,11 @@ export function shouldAutoCheckoutIssueForWake(input: {
   if (executionState?.status === "pending") return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
+  const hasExplicitResumeIntent = input.contextSnapshot?.resumeIntent === true;
   if (
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
+    !(issueStatus === "blocked" && hasExplicitResumeIntent) &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -13131,6 +13132,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode:
           | "issue_not_found"
           | "issue_assignee_changed"
+          | "issue_blocked_status"
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
@@ -13168,7 +13170,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
+    const hasExplicitResumeIntent = context.resumeIntent === true;
+    const resumeIntent = hasExplicitResumeIntent || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
@@ -13301,6 +13304,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId,
           expectedExecutionRunId: run.id,
           currentExecutionRunId: issue.executionRunId,
+        },
+      };
+    }
+
+    if (issue.status === "blocked" && !hasExplicitResumeIntent) {
+      return {
+        stale: true,
+        errorCode: "issue_blocked_status",
+        reason:
+          "Cancelled because the issue was blocked before the queued run could start; an explicit structured resume is required",
+        details: {
+          issueId,
+          currentStatus: issue.status,
+          requiredResumeIntent: true,
         },
       };
     }
@@ -14566,7 +14583,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
     ) {
       try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        const expectedStatuses = context.resumeIntent === true
+          ? ["todo", "backlog", "blocked"]
+          : ["todo", "backlog"];
+        await issuesSvc.checkout(issueId, agent.id, expectedStatuses, run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;

@@ -35,4 +35,27 @@ describe("shouldAutoCheckoutIssueForWake", () => {
       agentId: reviewerAgentId,
     })).toBe(false);
   });
+
+  it("does not implicitly auto-checkout a blocked issue", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_blockers_resolved" },
+      issueStatus: "blocked",
+      issueAssigneeAgentId: "agent-1",
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(false);
+  });
+
+  it("allows a blocked issue to auto-checkout only with explicit structured resume intent", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: {
+        wakeReason: "issue_status_changed",
+        resumeIntent: true,
+      },
+      issueStatus: "blocked",
+      issueAssigneeAgentId: "agent-1",
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(true);
+  });
 });
