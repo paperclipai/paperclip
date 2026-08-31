@@ -1470,6 +1470,123 @@ describe("claude execute", () => {
       expect(result.errorMessage).toBeNull();
       expect(result.errorCode).toBeNull();
       expect(result.summary).toBe("Implemented the requested change.");
+      expect(result.resultJson).toMatchObject({
+        subtype: "success",
+        is_error: false,
+        dirtyExit: true,
+        dirtyExitCode: 1,
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps error_during_execution results as failures when the process exits nonzero", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-error-result-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      exitCode: 1,
+      resultEvent: {
+        type: "result",
+        subtype: "error_during_execution",
+        session_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        is_error: true,
+        result: "Tool execution failed.",
+        usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-error-result",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toContain("Tool execution failed.");
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      expect(result.resultJson?.dirtyExit).toBeUndefined();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps no-result transient upstream failures classified as transient", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-no-result-transient-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeTextFailingClaudeCommand(commandPath, {
+      stderr: "API Error: 529 overloaded_error\n",
+      exitCode: 1,
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-no-result-transient",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toContain("overloaded_error");
+      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.resultJson?.dirtyExit).toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
