@@ -1,15 +1,93 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   buildChiefOfStaffPayload,
   buildGeneralistPayload,
   collectDesiredProfile,
   ensureInstanceFiles,
+  evaluateDelegatePrerequisites,
   provisionDelegateProfile,
 } from "./delegate-bootstrap.mjs";
+
+test("evaluateDelegatePrerequisites reports every missing prerequisite", () => {
+  const issues = evaluateDelegatePrerequisites({
+    nodeVersion: "22.14.0",
+    requirePnpm: true,
+    pnpm: { installed: false, version: null },
+    harnesses: [],
+  });
+
+  assert.deepEqual(issues, [
+    "Node.js 24.11 or newer is required; found 22.14.0.",
+    'pnpm 9 or newer is not installed. Run "corepack enable", then rerun ./setup-delegate.',
+    "Install and sign in to Codex or Claude Code.",
+  ]);
+});
+
+test("evaluateDelegatePrerequisites accepts a supported toolchain", () => {
+  const issues = evaluateDelegatePrerequisites({
+    nodeVersion: "24.11.0",
+    requirePnpm: true,
+    pnpm: { installed: true, version: "9.15.4" },
+    harnesses: [{ id: "codex", label: "Codex", authenticated: true }],
+  });
+
+  assert.deepEqual(issues, []);
+});
+
+test("evaluateDelegatePrerequisites validates the pinned harness", () => {
+  const issues = evaluateDelegatePrerequisites({
+    nodeVersion: "24.15.0",
+    requirePnpm: false,
+    pnpm: { installed: false, version: null },
+    harnesses: [{ id: "claude", label: "Claude Code", authenticated: true }],
+    requiredHarness: "codex",
+  });
+
+  assert.deepEqual(issues, [
+    "Codex is required by the saved or selected delegate profile but is not installed.",
+  ]);
+});
+
+test("setup-delegate reports missing commands before writing instance files", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "paperclip-delegate-preflight-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const binDirectory = join(directory, "bin");
+  const paperclipHome = join(directory, "paperclip-home");
+  mkdirSync(binDirectory);
+  const dirnameCommand = ["/usr/bin/dirname", "/bin/dirname"].find(existsSync);
+  assert.ok(dirnameCommand, "dirname is required to exercise the Bash entrypoint");
+  symlinkSync(dirnameCommand, join(binDirectory, "dirname"));
+
+  const result = spawnSync("/bin/bash", [join(process.cwd(), "setup-delegate")], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: directory,
+      PAPERCLIP_DELEGATE_HARNESS: "",
+      PAPERCLIP_DELEGATE_SKIP_BUILD: "false",
+      PAPERCLIP_HOME: paperclipHome,
+      PATH: binDirectory,
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Node\.js 24\.11 or newer is not installed/);
+  assert.match(result.stderr, /pnpm 9 or newer is not installed/);
+  assert.match(result.stderr, /Install and sign in to Codex or Claude Code/);
+  assert.equal(existsSync(paperclipHome), false);
+});
 
 test("ensureInstanceFiles creates a self-contained low-resource instance", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "paperclip-delegate-instance-"));

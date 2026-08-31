@@ -4,7 +4,37 @@ set -euo pipefail
 delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$delegate_repo_root"
 
-node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 24 || (major === 24 && minor < 11)) { console.error(`Node 24.11+ is required; found ${process.version}`); process.exit(1); }'
+delegate_bootstrap="$delegate_repo_root/scripts/delegate-bootstrap.mjs"
+delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+delegate_instance="${PAPERCLIP_INSTANCE_ID:-default}"
+delegate_instance_dir="$delegate_home/instances/$delegate_instance"
+delegate_env_path="$delegate_instance_dir/.env"
+delegate_config_path="$delegate_instance_dir/config.json"
+delegate_profile_path="$delegate_instance_dir/delegate-profile.json"
+
+if ! command -v node >/dev/null 2>&1; then
+  delegate_missing_dependencies=("Node.js 24.11 or newer is not installed.")
+  if [[ "${PAPERCLIP_DELEGATE_SKIP_BUILD:-false}" != "true" ]] && ! command -v pnpm >/dev/null 2>&1; then
+    delegate_missing_dependencies+=("pnpm 9 or newer is not installed. Run \"corepack enable\", then rerun ./setup-delegate.")
+  fi
+  delegate_requested_harness="${PAPERCLIP_DELEGATE_HARNESS:-}"
+  if [[ -n "$delegate_requested_harness" ]]; then
+    if ! command -v "$delegate_requested_harness" >/dev/null 2>&1; then
+      delegate_missing_dependencies+=("The selected $delegate_requested_harness CLI is not installed.")
+    fi
+  elif ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+    delegate_missing_dependencies+=("Install and sign in to Codex or Claude Code.")
+  fi
+  echo "Delegate setup cannot continue. Fix these missing or incompatible prerequisites:" >&2
+  for delegate_missing_dependency in "${delegate_missing_dependencies[@]}"; do
+    echo "  - $delegate_missing_dependency" >&2
+  done
+  exit 1
+fi
+
+delegate_node="$(command -v node)"
+PAPERCLIP_DELEGATE_PROFILE_PATH="$delegate_profile_path" \
+  "$delegate_node" "$delegate_bootstrap" preflight
 
 corepack enable >/dev/null 2>&1 || true
 if [[ "${PAPERCLIP_DELEGATE_SKIP_BUILD:-false}" != "true" ]]; then
@@ -12,14 +42,6 @@ if [[ "${PAPERCLIP_DELEGATE_SKIP_BUILD:-false}" != "true" ]]; then
   pnpm build
 fi
 
-delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
-delegate_instance="${PAPERCLIP_INSTANCE_ID:-default}"
-delegate_instance_dir="$delegate_home/instances/$delegate_instance"
-delegate_env_path="$delegate_instance_dir/.env"
-delegate_config_path="$delegate_instance_dir/config.json"
-delegate_profile_path="$delegate_instance_dir/delegate-profile.json"
-delegate_node="$(command -v node)"
-delegate_bootstrap="$delegate_repo_root/scripts/delegate-bootstrap.mjs"
 mkdir -p "$delegate_instance_dir"
 
 DELEGATE_ENV_PATH="$delegate_env_path" node <<'NODE'
