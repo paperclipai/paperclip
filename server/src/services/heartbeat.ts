@@ -816,6 +816,7 @@ export function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "opencode_transient_upstream" ||
     run.errorCode === "codex_harness_crash" ||
     // A wall-clock timeout and an inactivity-monitor kill both mean the harness
     // wedged rather than that the work is impossible, so both earn the same

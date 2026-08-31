@@ -16,6 +16,7 @@ describe("readHeartbeatRunErrorFamily", () => {
       "opencode_output_inactivity_monitor",
       "codex_transient_upstream",
       "claude_transient_upstream",
+      "opencode_transient_upstream",
       "codex_harness_crash",
     ]) {
       expect(readHeartbeatRunErrorFamily(run(code))).toBe("transient_upstream");

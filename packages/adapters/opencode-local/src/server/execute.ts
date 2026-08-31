@@ -87,6 +87,15 @@ const OPENCODE_QUOTA_ERROR_RE =
   /(?:insufficient balance|insufficient (?:credit|funds)|out of credits?|(?:usage|session|rate|quota|credit) limit|quota (?:exceeded|exhausted)|payment required|402\b)/i;
 const OPENCODE_CONFIG_ERROR_RE =
   /(?:api key(?:[^\n]{0,40})?(?:is )?(?:missing|not set|not found|unavailable|required)|missing (?:api )?(?:key|credentials?)|no (?:api )?key|unauthorized|invalid api key|401\b|requires explicit opt in)/i;
+// A gateway that gives up on the upstream model is the single most common way a
+// long agentic run dies: the router returns 5xx once the model goes quiet for
+// longer than its own idle budget, e.g. OpenRouter's
+// `{"code":504,"message":"Upstream idle timeout exceeded"}`. Nothing about the
+// task is wrong, so this is the textbook case for the retry ladder. Matched on
+// the wording and on the bare status code, since routers vary in which they
+// send. 429 lives in the quota regex above and is checked first.
+const OPENCODE_TRANSIENT_ERROR_RE =
+  /(?:upstream idle timeout|idle timeout exceeded|upstream (?:error|timeout|unavailable)|gateway time-?out|bad gateway|service unavailable|overloaded|temporarily unavailable|connection (?:reset|closed|error)|socket hang ?up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|\b50[234]\b|"?error_type"?\s*:\s*"?timeout)/i;
 
 /**
  * Classify an OpenCode failure message into the platform's error families.
@@ -96,13 +105,18 @@ const OPENCODE_CONFIG_ERROR_RE =
  */
 export function classifyOpenCodeFailure(
   message: string | null | undefined,
-): { errorCode: string; errorFamily: "provider_quota" | null } | null {
+): { errorCode: string; errorFamily: "provider_quota" | "transient_upstream" | null } | null {
   if (typeof message !== "string" || message.trim().length === 0) return null;
   if (OPENCODE_QUOTA_ERROR_RE.test(message)) {
     return { errorCode: "provider_quota", errorFamily: "provider_quota" };
   }
+  // Config is checked before transient so a 401 stays a credential fault
+  // rather than being retried as a flaky gateway.
   if (OPENCODE_CONFIG_ERROR_RE.test(message)) {
     return { errorCode: "configuration_incomplete", errorFamily: null };
+  }
+  if (OPENCODE_TRANSIENT_ERROR_RE.test(message)) {
+    return { errorCode: "opencode_transient_upstream", errorFamily: "transient_upstream" };
   }
   return null;
 }

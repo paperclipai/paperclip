@@ -30,6 +30,30 @@ describe("classifyOpenCodeFailure", () => {
     }
   });
 
+  it("classifies a gateway giving up on the upstream as retryable", () => {
+    for (const message of [
+      // Verbatim from a real OpenRouter failure that killed a 410KB run.
+      '{"code":504,"message":"Upstream idle timeout exceeded","metadata":{"error_type":"timeout"}}',
+      "Error: 502 Bad Gateway",
+      "503 Service Unavailable",
+      "socket hang up",
+      "read ECONNRESET",
+    ]) {
+      expect(classifyOpenCodeFailure(message)).toEqual({
+        errorCode: "opencode_transient_upstream",
+        errorFamily: "transient_upstream",
+      });
+    }
+  });
+
+  it("keeps a credential fault out of the transient bucket", () => {
+    // 401 must not be retried as a flaky gateway just because it is an HTTP code.
+    expect(classifyOpenCodeFailure("401 Unauthorized")).toEqual({
+      errorCode: "configuration_incomplete",
+      errorFamily: null,
+    });
+  });
+
   it("leaves an ordinary failure unclassified", () => {
     expect(classifyOpenCodeFailure("OpenCode exited with code 1")).toBeNull();
     expect(classifyOpenCodeFailure("")).toBeNull();
