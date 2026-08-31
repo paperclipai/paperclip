@@ -47,16 +47,16 @@ test("the ACPX sidecar schema accepts each versioned message family", () => {
   }
 });
 
-test("the ACPX sidecar schema widens turn ids without narrowing existing identifiers", () => {
+test("the ACPX sidecar schema shares the durable stable-identity boundary", () => {
   const longestTurnId = "t".repeat(240);
   assert.equal(validate({ ...messages[2], turnId: longestTurnId }), true);
   assert.equal(validate({ ...messages[2], turnId: "t".repeat(241) }), false);
-  for (const turnId of ["turn 1", "réturn-1", "turn/1"]) {
-    assert.equal(validate({ ...messages[2], turnId }), true, turnId);
+  for (const turnId of ["turn 1", "réturn-1", "turn/1", "_turn-1"]) {
+    assert.equal(validate({ ...messages[2], turnId }), false, turnId);
   }
   assert.equal(validate({ ...messages[2], runId: "r".repeat(161) }), false);
-  for (const runId of ["run 1", "rún-1", "run/1"]) {
-    assert.equal(validate({ ...messages[2], runId }), true, runId);
+  for (const runId of ["run 1", "rún-1", "run/1", "_run-1"]) {
+    assert.equal(validate({ ...messages[2], runId }), false, runId);
   }
 });
 
