@@ -2439,6 +2439,9 @@ export const questionSetSchema = {
         "description": {
           "type": "string",
           "maxLength": 4000
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

@@ -11,7 +11,7 @@ fn question_set() -> Value {
                 "prompt":"Which target?",
                 "required":true,
                 "answerMode":"single_select",
-                "options":[{"id":"first","label":"First"},{"id":"second","label":"Second"}],
+                "options":[{"id":"first","label":"First","recommended":true},{"id":"second","label":"Second"}],
                 "customAnswer":{"enabled":true}
             },
             {
@@ -182,6 +182,54 @@ fn rejects_malformed_persisted_text_constraints() {
 }
 
 #[test]
+fn rejects_semantically_malformed_unanswered_questions() {
+    let cases = [
+        ("duplicate option ids", {
+            let mut value = question_set();
+            value["questions"][0]["options"][1]["id"] = json!("first");
+            value
+        }),
+        ("inverted text length bounds", {
+            let mut value = question_set();
+            value["questions"][2]["textValidation"]["minLength"] = json!(6);
+            value
+        }),
+        ("inverted numeric bounds", {
+            let mut value = question_set();
+            value["questions"][3]["textValidation"]["minimum"] = json!(4);
+            value
+        }),
+        ("invalid text pattern", {
+            let mut value = question_set();
+            value["questions"][2]["textValidation"]["pattern"] = json!("[");
+            value
+        }),
+    ];
+    let response = json!({"schema":"paperclip.question_response.v1","answers":{}});
+    for (label, mut set) in cases {
+        for question in set["questions"].as_array_mut().unwrap() {
+            question["required"] = json!(false);
+        }
+        assert!(
+            validate_question_response(&set, &response).is_err(),
+            "{label} unexpectedly passed without an answer"
+        );
+    }
+}
+
+#[test]
+fn counts_text_lengths_like_javascript_utf16() {
+    let mut bounded_set = question_set();
+    bounded_set["questions"][2]["textValidation"] = json!({"minLength":2,"maxLength":2});
+    let mut response = valid_response();
+    response["answers"]["notes"] = json!({"text":"😀"});
+    validate_question_response(&bounded_set, &response).unwrap();
+
+    bounded_set["questions"][2]["textValidation"] = json!({"maxLength":1});
+    assert!(validate_question_response(&bounded_set, &response).is_err());
+}
+
+#[test]
 fn rejects_cross_document_and_answer_mode_mismatches() {
     let cases = [
         ("missing required", {
@@ -259,4 +307,14 @@ fn rejects_malformed_or_oversized_response_envelopes() {
         })
     )
     .is_err());
+    let mut unconstrained_set = question_set();
+    unconstrained_set["questions"][2]
+        .as_object_mut()
+        .unwrap()
+        .remove("textValidation");
+    let mut code_unit_bounded = valid_response();
+    code_unit_bounded["answers"]["notes"] = json!({"text":"😀".repeat(50_000)});
+    validate_question_response(&unconstrained_set, &code_unit_bounded).unwrap();
+    code_unit_bounded["answers"]["notes"] = json!({"text":"😀".repeat(50_001)});
+    assert!(validate_question_response(&unconstrained_set, &code_unit_bounded).is_err());
 }

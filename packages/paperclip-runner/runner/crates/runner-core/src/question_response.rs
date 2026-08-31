@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use crate::local_runner::LocalRunnerError;
 
 const MAX_QUESTION_RESPONSE_BYTES: usize = 768 * 1024;
+const MAX_QUESTION_ANSWER_CODE_UNITS: usize = 100_000;
 
 /// Validates a provider-neutral response against the exact persisted question
 /// set that produced it. The JSON Schema owns the wire shape; this function
@@ -64,6 +65,9 @@ pub fn validate_question_response(
             "persisted question set has invalid or duplicate ids",
         ));
     }
+    for question in questions {
+        validate_persisted_question(question)?;
+    }
     if answers.keys().any(|id| !question_ids.contains(id.as_str())) {
         return Err(LocalRunnerError::invalid(
             "question response contains an unknown question id",
@@ -117,6 +121,15 @@ fn validate_answer(question: &Value, answer: Option<&Value>) -> Result<(), Local
         .transpose()?;
     let text = answer.get("text").and_then(Value::as_str);
     let custom = answer.get("customText").and_then(Value::as_str);
+    if [text, custom]
+        .into_iter()
+        .flatten()
+        .any(|value| javascript_string_length(value) > MAX_QUESTION_ANSWER_CODE_UNITS)
+    {
+        return Err(LocalRunnerError::invalid(format!(
+            "question response answer {question_id} exceeds its text bound"
+        )));
+    }
     let has_value = selected.as_ref().is_some_and(|values| !values.is_empty())
         || text.is_some_and(|value| !value.trim_matches(is_ecmascript_whitespace).is_empty())
         || custom.is_some_and(|value| !value.trim_matches(is_ecmascript_whitespace).is_empty());
@@ -207,7 +220,7 @@ fn validate_text_constraints(
     let Some(validation) = question.get("textValidation") else {
         return Ok(());
     };
-    let length = text.chars().count() as u64;
+    let length = javascript_string_length(text) as u64;
     if validation
         .get("minLength")
         .and_then(Value::as_u64)
@@ -256,6 +269,60 @@ fn validate_text_constraints(
         }
     }
     Ok(())
+}
+
+fn validate_persisted_question(question: &Value) -> Result<(), LocalRunnerError> {
+    let question_id = question
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| LocalRunnerError::invalid("persisted question id is malformed"))?;
+    if let Some(options) = question.get("options").and_then(Value::as_array) {
+        let option_ids = options
+            .iter()
+            .filter_map(|option| option.get("id").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>();
+        if option_ids.len() != options.len() {
+            return Err(LocalRunnerError::invalid(format!(
+                "persisted question {question_id} has invalid or duplicate option ids"
+            )));
+        }
+    }
+    let Some(validation) = question.get("textValidation") else {
+        return Ok(());
+    };
+    if validation
+        .get("minLength")
+        .and_then(Value::as_u64)
+        .zip(validation.get("maxLength").and_then(Value::as_u64))
+        .is_some_and(|(minimum, maximum)| minimum > maximum)
+    {
+        return Err(LocalRunnerError::invalid(format!(
+            "persisted question {question_id} has inverted text length bounds"
+        )));
+    }
+    if validation
+        .get("minimum")
+        .and_then(Value::as_f64)
+        .zip(validation.get("maximum").and_then(Value::as_f64))
+        .is_some_and(|(minimum, maximum)| minimum > maximum)
+    {
+        return Err(LocalRunnerError::invalid(format!(
+            "persisted question {question_id} has inverted numeric bounds"
+        )));
+    }
+    if let Some(pattern) = validation.get("pattern").and_then(Value::as_str) {
+        let pattern_schema = json!({"type":"string","pattern":pattern});
+        jsonschema::validator_for(&pattern_schema).map_err(|_| {
+            LocalRunnerError::invalid(format!(
+                "persisted question {question_id} has an invalid text pattern"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn javascript_string_length(value: &str) -> usize {
+    value.encode_utf16().count()
 }
 
 fn parse_javascript_number(value: &str) -> Option<f64> {
