@@ -367,6 +367,24 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
     expect(profiles).toHaveLength(1);
   });
 
+  it("resets installed smoke fixtures without leaving connection-backed applications", async () => {
+    const company = await createCompany(db);
+    await enableSmokeLab(db);
+    const app = createRouteApp(db, boardActor(company.id));
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/install-fixtures`)
+      .expect(201);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/smoke-lab/reset`)
+      .expect(200, { reset: true });
+
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(toolApplications).where(eq(toolApplications.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).toHaveLength(0);
+  });
+
   it("creates runs and lets an agent JWT actor record step results", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

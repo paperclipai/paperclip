@@ -1243,12 +1243,27 @@ export function smokeLabService(db: Db, options: {
       codes.clear();
       accessTokens.clear();
       refreshTokens.clear();
-      await db.delete(smokeRuns).where(eq(smokeRuns.companyId, companyId));
-      await db.delete(toolApplications).where(and(
-        eq(toolApplications.companyId, companyId),
-        inArray(toolApplications.applicationKey, [HTTP_APP_KEY, STDIO_APP_KEY]),
-      ));
-      await db.delete(toolProfiles).where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, PROFILE_KEY)));
+      await db.transaction(async (tx) => {
+        await tx.delete(smokeRuns).where(eq(smokeRuns.companyId, companyId));
+        const fixtureApplications = await tx.select({ id: toolApplications.id })
+          .from(toolApplications)
+          .where(and(
+            eq(toolApplications.companyId, companyId),
+            inArray(toolApplications.applicationKey, [HTTP_APP_KEY, STDIO_APP_KEY]),
+          ))
+          .for("update");
+        if (fixtureApplications.length > 0) {
+          await tx.delete(toolConnections).where(and(
+            eq(toolConnections.companyId, companyId),
+            inArray(toolConnections.applicationId, fixtureApplications.map((application) => application.id)),
+          ));
+        }
+        await tx.delete(toolApplications).where(and(
+          eq(toolApplications.companyId, companyId),
+          inArray(toolApplications.applicationKey, [HTTP_APP_KEY, STDIO_APP_KEY]),
+        ));
+        await tx.delete(toolProfiles).where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, PROFILE_KEY)));
+      });
       return { reset: true };
     },
   };

@@ -212,6 +212,8 @@ interface ActorMiddlewareOptions {
 }
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+const managedMcpGatewayProtocolPath =
+  /^\/api\/tool-gateway\/gateways\/[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\/mcp\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -232,14 +234,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+    const hasGatewayBearer = /^bearer\s+pcgw_/i.test(authHeader ?? "");
 
     // Public MCP gateway protocol requests carry a pcgw_* bearer that is
     // validated by the gateway service itself. Do not interpret that bearer as
     // a board key or agent JWT here: doing so rejects the MCP handshake before
-    // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
-    // the normal actor authentication path below.
-    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+    // the protocol route can verify its run-scoped credential. The internal
+    // managed route gets the same handoff only for an actual pcgw_* bearer;
+    // every other /api request retains normal actor authentication below.
+    if (
+      (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path))
+      || (hasGatewayBearer && managedMcpGatewayProtocolPath.test(req.path))
+    ) {
+      req.actor = { type: "none", source: "none" };
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;

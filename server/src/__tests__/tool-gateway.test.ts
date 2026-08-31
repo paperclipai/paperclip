@@ -44,6 +44,7 @@ import {
   userSecretDefinitions,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { actorMiddleware } from "../middleware/auth.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import {
@@ -458,10 +459,21 @@ function createTestToolGatewayService(db: Db, options: ToolGatewayServiceOptions
 function createGatewayRouteApp(
   db: Db,
   gateway = createTestToolGatewayService(db),
-  actor?: Express.Request["actor"],
+  actorOrOptions?: Express.Request["actor"] | {
+    actor?: Express.Request["actor"];
+    withActorMiddleware?: boolean;
+  },
 ) {
+  const options = actorOrOptions && ("actor" in actorOrOptions || "withActorMiddleware" in actorOrOptions)
+    ? actorOrOptions
+    : { actor: actorOrOptions };
+  if (options.actor && options.withActorMiddleware) {
+    throw new Error("createGatewayRouteApp accepts either an explicit actor or actorMiddleware, not both");
+  }
   const app = express();
   app.use(express.json());
+  if (options.withActorMiddleware) app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+  const actor = options.actor;
   if (actor) {
     app.use((req, _res, next) => {
       req.actor = actor;
@@ -637,7 +649,17 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(token.ownerNote).toBe("QA fixture token");
       expect(token.tokenPrefix).toMatch(/^pcgw_[a-f0-9]{8}$/);
 
-      const app = createGatewayRouteApp(db, gateway);
+      const app = createGatewayRouteApp(db, gateway, { withActorMiddleware: true });
+      await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${tamperToken(token.token)}`)
+        .send({ jsonrpc: "2.0", id: 0, method: "tools/list" })
+        .expect(401);
+      await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${tamperToken(token.token)}`)
+        .send({ jsonrpc: "2.0", method: "notifications/initialized" })
+        .expect(401);
       const listed = await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
         .set("authorization", `Bearer ${token.token}`)
