@@ -7504,6 +7504,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
@@ -12901,7 +12902,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue: {
               status: fencedIssue.status,
               assigneeAgentId: fencedIssue.assigneeAgentId,
-              assigneeUserId: null,
+              assigneeUserId: fencedIssue.assigneeUserId,
               executionPolicy: normalizeIssueExecutionPolicy(fencedIssue.executionPolicy ?? null),
               executionState: parseIssueExecutionState(fencedIssue.executionState),
             },
