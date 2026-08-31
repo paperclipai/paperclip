@@ -1896,6 +1896,104 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(stillBlocked!.status).toBe("disabled");
   });
 
+  it("marks a catalog entry removed once its upstream tool disappears from a refresh, instead of leaving it active forever", async () => {
+    // Regression for a real production incident: 1mcp renamed a downstream
+    // client (crw -> scrape), so its tools started listing under new names
+    // (scrape_1mcp_crw_search) while the old ones (crw_1mcp_crw_search)
+    // stopped appearing in any future tools/list response. Nothing here ever
+    // revisited rows for tools that dropped out of the descriptor list, so
+    // the stale entry sat "active" indefinitely - agents kept discovering and
+    // calling it, and every call failed at the transport layer against a
+    // target that no longer resolved, sitting right next to the real,
+    // working tool with a near-identical name.
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      {
+        name: "crw_1mcp_crw_search",
+        description: "Search the web.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "stable_tool",
+        description: "Unrelated tool that stays.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const connection = await service.createConnection(company.id, {
+      name: "Remote fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const firstRefresh = await service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+    expect(firstRefresh.discoveredCount).toBe(2);
+    expect(firstRefresh.removedCount).toBe(0);
+    expect(firstRefresh.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "crw_1mcp_crw_search", status: "active" }),
+        expect.objectContaining({ toolName: "stable_tool", status: "active" }),
+      ]),
+    );
+
+    // Simulate the rename: the next refresh's upstream tools/list only
+    // returns the tool under its new name, plus the unrelated stable tool.
+    mockToolsList([
+      {
+        name: "scrape_1mcp_crw_search",
+        description: "Search the web.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "stable_tool",
+        description: "Unrelated tool that stays.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+    const secondRefresh = await service.refreshCatalog(connection.id);
+
+    expect(secondRefresh.discoveredCount).toBe(2);
+    expect(secondRefresh.removedCount).toBe(1);
+    expect(secondRefresh.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "scrape_1mcp_crw_search", status: "active" }),
+        expect.objectContaining({ toolName: "stable_tool", status: "active" }),
+      ]),
+    );
+
+    const staleEntry = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.connectionId, connection.id), eq(toolCatalogEntries.toolName, "crw_1mcp_crw_search")));
+    expect(staleEntry).toHaveLength(1);
+    expect(staleEntry[0]).toMatchObject({ status: "removed" });
+
+    // A third refresh where the old name never reappears must not keep
+    // re-touching (or re-counting) an already-removed entry.
+    mockToolsList([
+      {
+        name: "scrape_1mcp_crw_search",
+        description: "Search the web.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "stable_tool",
+        description: "Unrelated tool that stays.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+    const thirdRefresh = await service.refreshCatalog(connection.id);
+    expect(thirdRefresh.removedCount).toBe(0);
+  });
+
   it("sends the MCP Streamable HTTP Accept header and decodes an SSE catalog response", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

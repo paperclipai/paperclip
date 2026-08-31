@@ -5491,6 +5491,31 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const normalizedTransportConfig = refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
+
+    // Entries that existed before this refresh but weren't in this refresh's
+    // descriptor list no longer exist upstream (renamed, removed, or the
+    // upstream connection's tool naming changed - e.g. 1mcp relabeling a
+    // downstream client). Left untouched, a stale row stays "active" forever:
+    // agents keep discovering and calling it (it still passes every policy
+    // check, since nothing here ever revisits it), and every call fails at
+    // the transport layer against a target that no longer resolves - the
+    // real, live tools sit right next to a landmine with an identical-looking
+    // name. Mark them "removed" so every status="active" query (discovery,
+    // policy, catalog listings) stops surfacing them, without touching genuine
+    // quarantine/disable state on tools that are still present upstream.
+    const freshNames = new Set(descriptors.map((descriptor) => descriptor.name));
+    const staleEntries = existingRows.filter(
+      (entry) => !freshNames.has(entry.toolName) && entry.status !== "removed",
+    );
+    let removedCount = 0;
+    for (const stale of staleEntries) {
+      await db
+        .update(toolCatalogEntries)
+        .set({ status: "removed", updatedAt: refreshedAt })
+        .where(eq(toolCatalogEntries.id, stale.id));
+      removedCount += 1;
+    }
+
     const [updatedConnection] = await db
       .update(toolConnections)
       .set({
@@ -5540,7 +5565,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       connectionId: connection.id,
       action: "tool_connection.catalog_refresh",
       outcome: "success",
-      details: { discoveredCount: descriptors.length, quarantinedCount },
+      details: { discoveredCount: descriptors.length, quarantinedCount, removedCount },
       actor,
     });
 
@@ -5549,6 +5574,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       catalog: updatedEntries,
       discoveredCount: descriptors.length,
       quarantinedCount,
+      removedCount,
     };
   }
 
