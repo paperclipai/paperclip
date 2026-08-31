@@ -24,6 +24,8 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+const CLAUDE_CONTEXT_OVERFLOW_RE =
+  /(?:prompt\s+is\s+too\s+long|input\s+length\s+and\s+`?max_tokens`?\s+exceed\s+context\s+limit|context[\s_-]?length[\s_-]?exceeded|maximum\s+context\s+length)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
@@ -331,6 +333,29 @@ export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, un
   );
 }
 
+/**
+ * Prompt overflow is deterministic: the same prompt is the same size on the
+ * next attempt, so a plain retry cannot succeed. It needs its own classifier
+ * because the transient haystack below reads the whole `stdout`, and the
+ * Claude CLI stream carries a `rate_limit_info` block on every run —
+ * `rateLimitType` alone matches CLAUDE_TRANSIENT_UPSTREAM_RE. Without this
+ * classifier running first, an overflow is retried as a transient upstream
+ * blip until the attempt budget is gone.
+ *
+ * Like the other deterministic classifiers, this one reads only the parsed
+ * result payload, never `stdout` — that is what keeps it immune to whatever
+ * the run happened to print.
+ */
+export function isClaudeContextOverflowError(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) => CLAUDE_CONTEXT_OVERFLOW_RE.test(msg));
+}
+
 export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
@@ -521,7 +546,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed) || isClaudeContextOverflowError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
@@ -544,7 +569,7 @@ export function isClaudeProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const parsed = input.parsed ?? null;
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed) || isClaudeContextOverflowError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({

@@ -73,6 +73,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  isClaudeContextOverflowError,
 } from "./parse.js";
 import {
   materializeRemoteClaudeConfig,
@@ -1154,12 +1155,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: proc.stderr,
         errorMessage,
       });
+    // Deterministic: the same prompt is the same size next time. Must be
+    // decided before the transient branch — the transient haystack reads the
+    // whole stdout, and the CLI stream carries `rate_limit_info` on every run.
+    const contextOverflow = failed && isClaudeContextOverflowError(parsed);
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
+      !contextOverflow &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -1192,6 +1198,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "max_turns_exhausted"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
+      : contextOverflow
+      ? "claude_context_overflow"
       : providerQuota
       ? "provider_quota"
       : transientUpstream
@@ -1199,7 +1207,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : claudeRefusal
       ? "claude_refusal"
       : null;
-    const errorFamily = providerQuota
+    const errorFamily = contextOverflow
+      ? "context_overflow"
+      : providerQuota
       ? "provider_quota"
       : transientUpstream
       ? "transient_upstream"
