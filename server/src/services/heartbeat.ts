@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -6689,6 +6689,126 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+// Detects the Postgres unique-violation (23505) raised by the
+// `issues_open_routine_execution_uq` partial unique index, which enforces at most
+// one *locked* (execution_run_id set) open routine-execution issue per routine
+// identity (companyId, originKind, originId, originFingerprint). The error can
+// arrive as the raw pg error or wrapped by Drizzle's query error, so we walk the
+// cause chain. See routines.ts for the sibling detection on the dispatch path.
+function isOpenRoutineExecutionLockConflict(error: unknown): boolean {
+  const constraint = "issues_open_routine_execution_uq";
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    // node-postgres surfaces the index on `constraint`; the porsager `postgres`
+    // driver used here surfaces it on `constraint_name`. Match either.
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      cause?: unknown;
+    };
+    if (
+      candidate.code === "23505" &&
+      (candidate.constraint === constraint || candidate.constraint_name === constraint)
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+const ROUTINE_EXECUTION_OPEN_ISSUE_STATUSES = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+] as const;
+
+async function routineExecutionLockHeldBySiblingIssue(
+  executor: Pick<Db, "select">,
+  issue: {
+    id: string;
+    companyId: string;
+    originKind: string | null;
+    originId: string | null;
+    originFingerprint: string | null;
+  },
+): Promise<boolean> {
+  if (issue.originKind !== "routine_execution" || !issue.originId || !issue.originFingerprint) {
+    return false;
+  }
+  const holder = await executor
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, issue.companyId),
+        eq(issues.originKind, "routine_execution"),
+        eq(issues.originId, issue.originId),
+        eq(issues.originFingerprint, issue.originFingerprint),
+        ne(issues.id, issue.id),
+        isNull(issues.hiddenAt),
+        inArray(issues.status, [...ROUTINE_EXECUTION_OPEN_ISSUE_STATUSES]),
+        isNotNull(issues.executionRunId),
+      ),
+    )
+    .limit(1);
+  return holder.length > 0;
+}
+
+async function lockRoutineExecutionIdentityRows(
+  executor: Pick<Db, "execute">,
+  issue: {
+    companyId: string;
+    originKind: string | null;
+    originId: string | null;
+    originFingerprint: string | null;
+  },
+) {
+  if (issue.originKind !== "routine_execution" || !issue.originId || !issue.originFingerprint) {
+    return;
+  }
+  await executor.execute(sql`
+    select id from issues
+    where company_id = ${issue.companyId}
+      and origin_kind = 'routine_execution'
+      and origin_id = ${issue.originId}
+      and origin_fingerprint = ${issue.originFingerprint}
+      and hidden_at is null
+      and status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+    order by id
+    for update
+  `);
+}
+
+async function abortQueuedRunPromotionAfterRoutineLockConflict(
+  executor: Pick<Db, "update">,
+  input: { queuedRunId: string; wakeupRequestId: string; now: Date },
+) {
+  const message = "Another open routine execution issue already holds this lane lock";
+  await executor
+    .update(heartbeatRuns)
+    .set({
+      status: "cancelled",
+      finishedAt: input.now,
+      error: message,
+      errorCode: "routine_execution_lock_contended",
+      updatedAt: input.now,
+    })
+    .where(eq(heartbeatRuns.id, input.queuedRunId));
+  await executor
+    .update(agentWakeupRequests)
+    .set({
+      status: "skipped",
+      finishedAt: input.now,
+      error: message,
+      updatedAt: input.now,
+    })
+    .where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -10251,7 +10371,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
 
       const issue = await tx
-        .select({ id: issues.id })
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          originFingerprint: issues.originFingerprint,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
         .then((rows) => rows[0] ?? null);
@@ -10304,6 +10430,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: now,
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await lockRoutineExecutionIdentityRows(tx, issue);
+      if (await routineExecutionLockHeldBySiblingIssue(tx, issue)) {
+        await abortQueuedRunPromotionAfterRoutineLockConflict(tx, {
+          queuedRunId: queuedRun.id,
+          wakeupRequestId: wakeupRequest.id,
+          now,
+        });
+        return null;
+      }
 
       await tx
         .update(issues)
@@ -12952,6 +13088,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
+
+    // Fix A (lazy locking): stamp executionRunId at claim time (not at queue time).
+    // Guard is idempotent — safe if called more than once.
+    //
+    // This runs BEFORE flipping the run to "running" so a routine-execution lock
+    // contention leaves the run cleanly queued for a later tick instead of failing
+    // the fire. The issues_open_routine_execution_uq partial unique index
+    // permits only one *locked* open routine-execution issue per routine identity;
+    // under always_enqueue a later fire can be claimed while a prior fire's
+    // execution issue still holds the lock, and the null->set transition then hits
+    // that index. Previously the unhandled 23505 surfaced as "Failed query" and
+    // killed the run, dropping the digest with no visible error. We now serialize:
+    // leave this run queued and retry once the prior execution issue completes or
+    // the stale-lock backstop sweeper clears the lock.
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    if (issueId && wakeReason !== "source_scoped_recovery_action") {
+      const claimedAgent = await getAgent(run.agentId);
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: run.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, run.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, run.id)),
+            ),
+          );
+      } catch (error) {
+        if (!isOpenRoutineExecutionLockConflict(error)) throw error;
+        // Another open execution issue for the same routine identity currently
+        // holds the lock. Leave this run queued (do not flip to "running") so a
+        // later tick retries it once the lock frees, instead of failing the fire.
+        logger.info(
+          { runId: run.id, issueId, agentId: run.agentId },
+          "claimQueuedRun: deferred routine execution run; routine lock held by a concurrent execution",
+        );
+        return null;
+      }
+    }
+
     const claimed = await db
       .update(heartbeatRuns)
       .set({
@@ -12983,33 +13168,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
@@ -17986,6 +18144,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
+        await lockRoutineExecutionIdentityRows(tx, issue);
+        if (await routineExecutionLockHeldBySiblingIssue(tx, issue)) {
+          await abortQueuedRunPromotionAfterRoutineLockConflict(tx, {
+            queuedRunId: newRun.id,
+            wakeupRequestId: deferred.id,
+            now,
+          });
+          return { kind: "released" as const };
+        }
+
         await tx
           .update(issues)
           .set({
@@ -18144,6 +18312,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: now,
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        if (await routineExecutionLockHeldBySiblingIssue(tx, issue)) {
+          await abortQueuedRunPromotionAfterRoutineLockConflict(tx, {
+            queuedRunId: queuedRun.id,
+            wakeupRequestId: wakeupRequest.id,
+            now,
+          });
+          return { kind: "released" as const };
+        }
 
         await tx
           .update(issues)
@@ -18306,6 +18483,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: now,
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await lockRoutineExecutionIdentityRows(tx, issue);
+      if (await routineExecutionLockHeldBySiblingIssue(tx, issue)) {
+        await abortQueuedRunPromotionAfterRoutineLockConflict(tx, {
+          queuedRunId: queuedRun.id,
+          wakeupRequestId: wakeupRequest.id,
+          now,
+        });
+        return { kind: "released" as const };
+      }
 
       await tx
         .update(issues)
