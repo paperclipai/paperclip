@@ -17,7 +17,153 @@ export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.";
+  "Paperclip could not resolve this issue's missing disposition automatically. Recovery is exhausted and waiting on a board owner; this is not a live agent wake path.";
+
+export type SuccessfulRunHandoffAttemptEvidence = {
+  handoffAttempt: number;
+  maxHandoffAttempts: number;
+  exhausted?: boolean;
+};
+
+const LIVE_SOURCE_STATUSES = new Set(["todo", "in_progress", "in_review"]);
+
+export function isSuccessfulRunHandoffAttemptExhausted(
+  evidence: SuccessfulRunHandoffAttemptEvidence | null | undefined,
+): boolean {
+  if (!evidence) return false;
+  if (typeof evidence.exhausted === "boolean") return evidence.exhausted;
+  return evidence.handoffAttempt >= evidence.maxHandoffAttempts;
+}
+
+export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_WAKE_POLICY = {
+  type: "board_escalation",
+  reason: "successful_run_handoff_exhausted",
+} as const;
+
+export type RecoveryActionExhaustionSource = {
+  status: string;
+  cause: string;
+  ownerType?: string | null;
+  ownerAgentId?: string | null;
+  ownerUserId?: string | null;
+  evidence?: unknown;
+  maxAttempts?: number | null;
+  wakePolicy?: unknown;
+};
+
+function readFiniteInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.trunc(value);
+}
+
+function readEvidenceRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function readWakePolicyType(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" && type.trim().length > 0 ? type.trim() : null;
+}
+
+export function successfulRunHandoffEvidenceFromRecoveryAction(
+  action: RecoveryActionExhaustionSource | null | undefined,
+): SuccessfulRunHandoffAttemptEvidence | null {
+  if (!action || action.cause !== SUCCESSFUL_RUN_MISSING_STATE_REASON) return null;
+  const evidence = readEvidenceRecord(action.evidence);
+  const handoffAttempt = readFiniteInt(evidence.handoffAttempt);
+  const maxHandoffAttempts = readFiniteInt(evidence.maxHandoffAttempts)
+    ?? readFiniteInt(action.maxAttempts);
+  if (typeof evidence.exhausted === "boolean") {
+    return {
+      handoffAttempt: handoffAttempt ?? 1,
+      maxHandoffAttempts: maxHandoffAttempts ?? DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
+      exhausted: evidence.exhausted,
+    };
+  }
+  if (handoffAttempt == null || maxHandoffAttempts == null) return null;
+  return { handoffAttempt, maxHandoffAttempts };
+}
+
+export function isPersistedExhaustedMissingDispositionAction(
+  action: RecoveryActionExhaustionSource | null | undefined,
+): boolean {
+  return isSuccessfulRunHandoffAttemptExhausted(
+    successfulRunHandoffEvidenceFromRecoveryAction(action),
+  );
+}
+
+export function exhaustedMissingDispositionNormalizationPatch() {
+  return {
+    status: "escalated" as const,
+    ownerType: "board" as const,
+    ownerAgentId: null,
+    ownerUserId: null,
+    wakePolicy: {
+      type: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_WAKE_POLICY.type,
+      reason: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_WAKE_POLICY.reason,
+    },
+  };
+}
+
+function hasOwnerUserId(action: RecoveryActionExhaustionSource): boolean {
+  return typeof action.ownerUserId === "string" && action.ownerUserId.trim().length > 0;
+}
+
+export function needsExhaustedMissingDispositionNormalization(
+  action: RecoveryActionExhaustionSource | null | undefined,
+): boolean {
+  if (!isPersistedExhaustedMissingDispositionAction(action) || !action) return false;
+  const patch = exhaustedMissingDispositionNormalizationPatch();
+  return action.status !== patch.status
+    || action.ownerType !== patch.ownerType
+    || Boolean(action.ownerAgentId)
+    || hasOwnerUserId(action)
+    || readWakePolicyType(action.wakePolicy) !== patch.wakePolicy.type;
+}
+
+export type BoardAttentionRecoveryActionPresentation = {
+  status: "active" | "escalated";
+  ownerType: "user" | "board";
+  ownerUserId: string | null;
+  exhausted: boolean;
+  whyNow: string;
+  severity: "high" | "medium";
+};
+
+export function presentRecoveryActionForBoardAttention(
+  action: RecoveryActionExhaustionSource,
+): BoardAttentionRecoveryActionPresentation | null {
+  const exhausted = isPersistedExhaustedMissingDispositionAction(action);
+  const normalized = needsExhaustedMissingDispositionNormalization(action)
+    ? { ...action, ...exhaustedMissingDispositionNormalizationPatch() }
+    : action;
+  if (normalized.status !== "active" && normalized.status !== "escalated") return null;
+  if (normalized.ownerType !== "user" && normalized.ownerType !== "board") return null;
+  return {
+    status: normalized.status,
+    ownerType: normalized.ownerType,
+    ownerUserId: hasOwnerUserId(normalized) ? normalized.ownerUserId ?? null : null,
+    exhausted,
+    whyNow: normalized.status === "escalated"
+      ? "Recovery action escalated to a human owner."
+      : "Recovery action is assigned to a human owner.",
+    severity: normalized.status === "escalated" ? "high" : "medium",
+  };
+}
+
+export function recoveryIssueStatusForExhaustedMissingDisposition(input: {
+  unresolvedBlockerCount: number;
+  currentStatus: string;
+}): "blocked" | "todo" | "in_progress" | "in_review" {
+  if (input.unresolvedBlockerCount > 0) return "blocked";
+  if (LIVE_SOURCE_STATUSES.has(input.currentStatus)) {
+    return input.currentStatus as "todo" | "in_progress" | "in_review";
+  }
+  return "todo";
+}
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -205,7 +351,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
     body: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
     presentation: systemNoticePresentation({
       tone: "danger",
-      title: "Missing disposition recovery blocked",
+      title: "Missing disposition recovery exhausted",
     }),
     metadata: {
       version: 1,
@@ -222,6 +368,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
               ? agentLinkRow("Recovery owner", input.recoveryOwner)
               : keyValueRow("Recovery owner", "Board decision required"),
             agentLinkRow("Source assignee", input.sourceAssignee),
+            keyValueRow("Wake path", "exhausted — not a live agent wake"),
             keyValueRow("Suggested action", "inspect the evidence, then retry the original owner, explicitly reassign, or record a valid issue disposition"),
           ],
         },

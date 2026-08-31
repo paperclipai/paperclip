@@ -60,7 +60,9 @@ import {
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
   isPluginManagedIssueLifecycle,
+  isSuccessfulRunHandoffAttemptExhausted,
   noticeMetadataReferencesRecoveryAction,
+  recoveryIssueStatusForExhaustedMissingDisposition,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
@@ -188,6 +190,7 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   missingDisposition: string;
   handoffAttempt: number;
   maxHandoffAttempts: number;
+  exhausted?: boolean;
 };
 
 function compactRecoveryPresentation(title: string): IssueCommentPresentation {
@@ -565,6 +568,14 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   if (!evidence) return null;
   if (evidence.handoffAttempt < evidence.maxHandoffAttempts) return { ...evidence, exhausted: false };
   return { ...evidence, exhausted: true };
+}
+
+function isExhaustedMissingDispositionRecovery(
+  recoveryCause: StrandedRecoveryCause,
+  evidence?: SuccessfulRunHandoffRecoveryEvidence | null,
+) {
+  return recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+    && isSuccessfulRunHandoffAttemptExhausted(evidence);
 }
 
 function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -2118,6 +2129,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestRun: input.latestRun,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const exhaustedMissingDisposition = isExhaustedMissingDispositionRecovery(
+      recoveryCause,
+      input.successfulRunHandoffEvidence,
+    );
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2129,6 +2144,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
+      // Explicit status is reserved for the exhausted active -> escalated
+      // contract change. Passing status: "active" on every upsert disables
+      // preserveExistingOwner and rewrites owner/routing/wake/monitor.
+      ...(exhaustedMissingDisposition ? { status: "escalated" as const } : {}),
       ownerType: isProviderQuotaWait ? "system" : "board",
       ownerAgentId: null,
       ownerUserId: null,
@@ -2148,6 +2167,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           recoveryCause,
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
         }),
+        exhausted: exhaustedMissingDisposition,
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
       evidenceOnCreate: isProviderQuotaWait
@@ -2177,6 +2197,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "monitor_only",
           reason: recoveryCause,
         }
+        : exhaustedMissingDisposition
+        ? {
+          type: "board_escalation",
+          reason: "successful_run_handoff_exhausted",
+          preservesSourceAssignee: true,
+        }
         : {
           type: "board_escalation",
           reason: recoveryCause,
@@ -2185,7 +2211,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: isProviderQuotaWait
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
-      maxAttempts: null,
+      maxAttempts: input.successfulRunHandoffEvidence?.maxHandoffAttempts ?? null,
       lastAttemptAt: now,
     });
 
@@ -2242,6 +2268,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issueId: input.issue.id,
             retryOfRunId: input.latestRun?.id ?? null,
             retryReason: "provider_quota_recovery",
+            retrySourceIssueStatus: input.issue.status,
+            retrySourceIssueStartedAt: input.issue.startedAt?.toISOString() ?? null,
             providerQuotaRetryNotBefore: retryAt.toISOString(),
           }, "normal_model"),
           status: "queued",
@@ -2270,6 +2298,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             taskId: input.issue.id,
             wakeReason: "provider_quota_recovery",
             retryReason: "provider_quota_recovery",
+            retrySourceIssueStatus: input.issue.status,
+            retrySourceIssueStartedAt: input.issue.startedAt?.toISOString() ?? null,
             providerQuotaRetryNotBefore: retryAt.toISOString(),
           }, "normal_model"),
           updatedAt: now,
@@ -3234,8 +3264,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const exhaustedMissingDisposition = isExhaustedMissingDispositionRecovery(
+      recoveryCause,
+      input.successfulRunHandoffEvidence,
+    );
+    const targetStatus = exhaustedMissingDisposition
+      ? recoveryIssueStatusForExhaustedMissingDisposition({
+          unresolvedBlockerCount: blockerIds.length,
+          currentStatus: input.issue.status,
+        })
+      : "blocked";
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: targetStatus,
       blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
@@ -3530,6 +3570,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const exhaustedMissingDisposition = await recoveryActionsSvc.normalizeExhaustedMissingDispositionActions();
     const candidates = await db
       .select()
       .from(issues)
@@ -3554,6 +3595,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      exhaustedMissingDispositionNormalized: exhaustedMissingDisposition.normalized,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,

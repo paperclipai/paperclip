@@ -113,6 +113,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -1068,6 +1069,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
+
+    return action;
+  }
+
+  async function expectExhaustedMissingDispositionRecoveryAction(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    runId: string;
+    previousStatus: "todo" | "in_progress" | "in_review";
+  }) {
+    const action = await waitForValue(async () =>
+      db.select().from(issueRecoveryActions).where(
+        and(
+          eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, input.issueId),
+          eq(issueRecoveryActions.status, "escalated"),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    if (!action) throw new Error("Expected exhausted missing-disposition recovery action");
+
+    expect(action).toMatchObject({
+      companyId: input.companyId,
+      sourceIssueId: input.issueId,
+      recoveryIssueId: null,
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: input.agentId,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      maxAttempts: 1,
+    });
+    expect(action.wakePolicy).toMatchObject({
+      type: "board_escalation",
+      reason: "successful_run_handoff_exhausted",
+    });
+    expect(action.evidence).toMatchObject({
+      sourceIssueId: input.issueId,
+      previousStatus: input.previousStatus,
+      latestRunId: input.runId,
+      exhausted: true,
+    });
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, input.issueId),
+      ));
+    expect(recoveryIssues).toHaveLength(0);
+
+    const recoveryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, input.agentId));
+    expect(recoveryWakeups.some((wakeup) => {
+      const payload = wakeup.payload as Record<string, unknown> | null;
+      return wakeup.reason === "source_scoped_recovery_action" &&
+        payload?.recoveryActionId === action.id;
+    })).toBe(false);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).not.toBe("blocked");
 
     return action;
   }
@@ -3992,15 +4064,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulRunHandoffEscalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+    const recoveryAction = await expectExhaustedMissingDispositionRecoveryAction({
       companyId,
       agentId,
       issueId,
       runId,
       previousStatus: "in_progress",
-      retryReason: null,
-      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-      kind: "missing_disposition",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -4008,11 +4077,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "failed",
       latestRunErrorCode: "adapter_failed",
       recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      exhausted: true,
+      maxHandoffAttempts: 1,
+      handoffAttempt: 1,
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-successful-handoff-secret");
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe("in_progress");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -4032,6 +4104,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           rows: expect.arrayContaining([
             expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
             expect.objectContaining({ type: "key_value", label: "Recovery owner", value: "Board decision required" }),
+            expect.objectContaining({ type: "key_value", label: "Wake path", value: "exhausted — not a live agent wake" }),
           ]),
         }),
         expect.objectContaining({
@@ -4081,20 +4154,132 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulContinuationObserved).toBe(0);
     expect(result.successfulRunHandoffEscalated).toBe(1);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+    const recoveryAction = await expectExhaustedMissingDispositionRecoveryAction({
       companyId,
       agentId,
       issueId,
       runId,
       previousStatus: "in_progress",
-      retryReason: null,
-      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-      kind: "missing_disposition",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
+      exhausted: true,
+    });
+  });
+
+  it("keeps a hand-release after the next exhausted plan-only run and does not re-park edge-free blocked", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "plan_only",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(first.successfulRunHandoffEscalated).toBe(1);
+    const firstAction = await expectExhaustedMissingDispositionRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+    });
+
+    await issueRecoveryActionService(db).resolveActiveForIssue({
+      companyId,
+      sourceIssueId: issueId,
+      actionId: firstAction.id,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue is in_progress with an agent owner.",
+    });
+    await db.update(issues).set({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      updatedAt: new Date("2026-03-19T00:10:00.000Z"),
+    }).where(eq(issues.id, issueId));
+
+    const releasedRunId = randomUUID();
+    const releasedWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: releasedWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "completed",
+      runId: releasedRunId,
+      claimedAt: new Date("2026-03-19T00:11:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:12:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: releasedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      wakeupRequestId: releasedWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        sourceRunId: releasedRunId,
+        resumeFromRunId: releasedRunId,
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+      startedAt: new Date("2026-03-19T00:11:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:12:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:12:00.000Z"),
+      livenessState: "plan_only",
+    });
+
+    const second = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(second.successfulRunHandoffEscalated).toBe(1);
+    expect(second.continuationRequeued).toBe(0);
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_progress");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const recoveryAction = await expectExhaustedMissingDispositionRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId: releasedRunId,
+      previousStatus: "in_progress",
+    });
+    expect(recoveryAction.id).not.toBe(firstAction.id);
+    expect(recoveryAction.status).toBe("escalated");
+    expect(recoveryAction.wakePolicy).toMatchObject({
+      type: "board_escalation",
+      reason: "successful_run_handoff_exhausted",
     });
   });
 

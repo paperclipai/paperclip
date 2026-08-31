@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -61,6 +61,10 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
+import {
+  SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  presentRecoveryActionForBoardAttention,
+} from "./recovery/successful-run-handoff.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -1395,7 +1399,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueRecoveryActions.companyId, companyId),
           inArray(issueRecoveryActions.status, [...OPEN_RECOVERY_STATUSES]),
-          inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+          or(
+            inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+            eq(issueRecoveryActions.cause, SUCCESSFUL_RUN_MISSING_STATE_REASON),
+          ),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
       const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
@@ -1408,6 +1415,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       ]);
 
       for (const recovery of recoveryRows) {
+        const presented = presentRecoveryActionForBoardAttention(recovery);
+        if (!presented) continue;
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
@@ -1420,30 +1429,29 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             companyId,
             title: recovery.nextAction,
             identifier: null,
-            status: recovery.status,
+            status: presented.status,
             href: recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
             metadata: {
               kind: recovery.kind,
               cause: recovery.cause,
-              ownerType: recovery.ownerType,
-              ownerUserId: recovery.ownerUserId,
+              ownerType: presented.ownerType,
+              ownerUserId: presented.ownerUserId,
               sourceIssueId: recovery.sourceIssueId,
               recoveryIssueId: recovery.recoveryIssueId,
+              exhausted: presented.exhausted,
             },
           },
-          whyNow: recovery.status === "escalated"
-            ? "Recovery action escalated to a human owner."
-            : "Recovery action is assigned to a human owner.",
+          whyNow: presented.whyNow,
           decisionVerbs: decisionVerbs(
             { id: "resolve", label: "Resolve", description: "Record the recovery outcome." },
             { id: "reassign", label: "Reassign", description: "Move the recovery to another owner." },
             { id: "cancel", label: "Cancel", description: "Cancel the recovery action." },
           ),
           inlineResolvable: false,
-          entryRule: "issue_recovery_actions.status in ('active','escalated') and owner_type in ('user','board')",
+          entryRule: "issue_recovery_actions.status in ('active','escalated') and (owner_type in ('user','board') or exhausted successful_run_missing_state)",
           exitRule: "Recovery action resolves, is cancelled, or moves back to an agent/system owner.",
           dedupKey,
-          severity: recovery.status === "escalated" ? "high" : "medium",
+          severity: presented.severity,
           activityAt: toIso(recovery.updatedAt),
           createdAt: toIso(recovery.createdAt),
           updatedAt: toIso(recovery.updatedAt),

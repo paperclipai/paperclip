@@ -243,7 +243,7 @@ export function SystemNoticeUxLab() {
             label="System alert"
             source={{ label: "Paperclip", href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
-            body="Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required."
+            body="Paperclip could not resolve this issue's missing disposition automatically. Recovery is exhausted and waiting on a board owner; this is not a live agent wake path."
             metadata={[
               {
                 title: "Recovery owner",

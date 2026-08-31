@@ -10,10 +10,16 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isSuccessfulRunHandoffAttemptExhausted,
   isSuccessfulRunHandoffValidPathSkip,
   isPluginManagedIssueLifecycle,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  isPersistedExhaustedMissingDispositionAction,
+  needsExhaustedMissingDispositionNormalization,
+  presentRecoveryActionForBoardAttention,
+  successfulRunHandoffEvidenceFromRecoveryAction,
   noticeMetadataReferencesRecoveryAction,
+  recoveryIssueStatusForExhaustedMissingDisposition,
 } from "./successful-run-handoff.js";
 import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
@@ -66,6 +72,189 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     ...overrides,
   });
 }
+
+describe("exhausted missing-disposition recovery semantics", () => {
+  it("treats handoffAttempt at maxHandoffAttempts as exhausted", () => {
+    expect(isSuccessfulRunHandoffAttemptExhausted({
+      handoffAttempt: 1,
+      maxHandoffAttempts: 1,
+    })).toBe(true);
+    expect(isSuccessfulRunHandoffAttemptExhausted({
+      handoffAttempt: 1,
+      maxHandoffAttempts: 2,
+    })).toBe(false);
+    expect(isSuccessfulRunHandoffAttemptExhausted({
+      handoffAttempt: 1,
+      maxHandoffAttempts: 2,
+      exhausted: true,
+    })).toBe(true);
+  });
+
+  it("does not present exhausted recovery as a live agent park when a release already restored a live status", () => {
+    expect(recoveryIssueStatusForExhaustedMissingDisposition({
+      unresolvedBlockerCount: 0,
+      currentStatus: "in_progress",
+    })).toBe("in_progress");
+    expect(recoveryIssueStatusForExhaustedMissingDisposition({
+      unresolvedBlockerCount: 0,
+      currentStatus: "todo",
+    })).toBe("todo");
+    expect(recoveryIssueStatusForExhaustedMissingDisposition({
+      unresolvedBlockerCount: 0,
+      currentStatus: "blocked",
+    })).toBe("todo");
+    expect(recoveryIssueStatusForExhaustedMissingDisposition({
+      unresolvedBlockerCount: 1,
+      currentStatus: "in_progress",
+    })).toBe("blocked");
+  });
+
+  it("normalizes a pre-existing capped active row into board attention as exhausted", () => {
+    const legacy = {
+      status: "active",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "agent",
+      ownerAgentId: "agent-1",
+      maxAttempts: 1,
+      evidence: {
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+      wakePolicy: {
+        type: "wake_owner",
+        reason: "source_scoped_recovery_action",
+        ownerAgentId: "agent-1",
+      },
+    };
+
+    expect(successfulRunHandoffEvidenceFromRecoveryAction(legacy)).toEqual({
+      handoffAttempt: 1,
+      maxHandoffAttempts: 1,
+    });
+    expect(isPersistedExhaustedMissingDispositionAction(legacy)).toBe(true);
+    expect(needsExhaustedMissingDispositionNormalization(legacy)).toBe(true);
+    expect(presentRecoveryActionForBoardAttention(legacy)).toEqual({
+      status: "escalated",
+      ownerType: "board",
+      ownerUserId: null,
+      exhausted: true,
+      whyNow: "Recovery action escalated to a human owner.",
+      severity: "high",
+    });
+  });
+
+  it("does not treat a live uncapped missing-disposition action as board attention", () => {
+    const live = {
+      status: "active",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "agent",
+      ownerAgentId: "agent-1",
+      evidence: {
+        handoffAttempt: 1,
+        maxHandoffAttempts: 2,
+      },
+      wakePolicy: { type: "wake_owner" },
+    };
+
+    expect(isPersistedExhaustedMissingDispositionAction(live)).toBe(false);
+    expect(needsExhaustedMissingDispositionNormalization(live)).toBe(false);
+    expect(presentRecoveryActionForBoardAttention(live)).toBeNull();
+  });
+
+  it("does not rewrite an already honest exhausted row", () => {
+    const honest = {
+      status: "escalated",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "board",
+      ownerAgentId: null,
+      evidence: {
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+        exhausted: true,
+      },
+      wakePolicy: {
+        type: "board_escalation",
+        reason: "successful_run_handoff_exhausted",
+      },
+    };
+
+    expect(needsExhaustedMissingDispositionNormalization(honest)).toBe(false);
+    expect(presentRecoveryActionForBoardAttention(honest)).toEqual({
+      status: "escalated",
+      ownerType: "board",
+      ownerUserId: null,
+      exhausted: true,
+      whyNow: "Recovery action escalated to a human owner.",
+      severity: "high",
+    });
+  });
+
+  it("treats a leftover ownerUserId on a board-owned exhausted row as inconsistent", () => {
+    const staleOwner = {
+      status: "escalated",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "board",
+      ownerAgentId: null,
+      ownerUserId: "user-1",
+      evidence: {
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+        exhausted: true,
+      },
+      wakePolicy: {
+        type: "board_escalation",
+        reason: "successful_run_handoff_exhausted",
+      },
+    };
+
+    expect(needsExhaustedMissingDispositionNormalization(staleOwner)).toBe(true);
+    expect(presentRecoveryActionForBoardAttention(staleOwner)).toEqual({
+      status: "escalated",
+      ownerType: "board",
+      ownerUserId: null,
+      exhausted: true,
+      whyNow: "Recovery action escalated to a human owner.",
+      severity: "high",
+    });
+  });
+
+  it("does not invent exhaustion when attempt evidence is missing", () => {
+    const incomplete = {
+      status: "active",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      ownerType: "agent",
+      ownerAgentId: "agent-1",
+      evidence: {},
+      wakePolicy: { type: "wake_owner" },
+    };
+
+    expect(successfulRunHandoffEvidenceFromRecoveryAction(incomplete)).toBeNull();
+    expect(isPersistedExhaustedMissingDispositionAction(incomplete)).toBe(false);
+    expect(presentRecoveryActionForBoardAttention(incomplete)).toBeNull();
+  });
+
+  it("names board ownership and denies a live agent wake in the exhausted notice", () => {
+    const notice = buildSuccessfulRunHandoffExhaustedNotice({
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Finish backend handoff", status: "in_progress" },
+      sourceRun: { id: "run-1", status: "succeeded", agentId: "agent-1" },
+      correctiveRun: { id: "run-2", status: "succeeded", agentId: "agent-1" },
+      sourceAssignee: { id: "agent-1", name: "CodexCoder" },
+      recoveryIssue: null,
+      recoveryActionId: "action-1",
+      recoveryOwner: null,
+      latestIssueStatus: "in_progress",
+      latestHandoffRunStatus: "succeeded",
+      missingDisposition: "clear_next_step",
+    });
+    expect(notice.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+    expect(notice.body).not.toContain("blocked on a recovery owner");
+    expect(notice.presentation).toMatchObject({ title: "Missing disposition recovery exhausted" });
+    expect(notice.metadata.sections?.[0]?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "key_value", label: "Recovery owner", value: "Board decision required" }),
+      expect.objectContaining({ type: "key_value", label: "Wake path", value: "exhausted — not a live agent wake" }),
+    ]));
+  });
+});
 
 describe("successful run handoff decision", () => {
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {

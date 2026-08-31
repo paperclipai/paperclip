@@ -117,6 +117,213 @@ describe("issueRecoveryActionService", () => {
     expect(fakeDb.update).toHaveBeenCalledTimes(1);
     expect(fakeDb.insert).toHaveBeenCalledTimes(1);
   });
+
+  it("persists an explicit escalated status instead of forcing active", async () => {
+    const createdRow = makeRecoveryActionRow({
+      id: "escalated-action",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      maxAttempts: 1,
+    });
+    const fakeDb = {
+      select: vi.fn(() => ({
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit() {
+          return Promise.resolve([]);
+        },
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn((values: Record<string, unknown>) => {
+          expect(values).toMatchObject({
+            status: "escalated",
+            ownerType: "board",
+            ownerAgentId: null,
+            maxAttempts: 1,
+          });
+          return {
+            returning: vi.fn(async () => [createdRow]),
+          };
+        }),
+      })),
+    };
+
+    const result = await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
+      companyId: "company-1",
+      sourceIssueId: "source-1",
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:exhausted",
+      nextAction: "Choose a valid issue disposition.",
+      maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ id: "escalated-action", status: "escalated" });
+    expect(fakeDb.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves existing owner and wake contract on an idempotent active upsert", async () => {
+    const existingRow = makeRecoveryActionRow({
+      id: "existing-action",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: "manager-1",
+      previousOwnerAgentId: "coder-1",
+      returnOwnerAgentId: "coder-1",
+      kind: "stranded_assigned_issue",
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:fingerprint",
+      evidence: { routingPolicy: "board_escalation_no_takeover_v1", latestRunId: "run-1" },
+      nextAction: "Repair the execution path.",
+      wakePolicy: { type: "bounded_recovery_owner", ownerAgentId: "manager-1" },
+      monitorPolicy: { type: "watch_retry" },
+      attemptCount: 1,
+    });
+    let persisted: Record<string, unknown> | null = null;
+    const fakeDb = {
+      select: vi.fn(() => ({
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit() {
+          return Promise.resolve([existingRow]);
+        },
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          persisted = values;
+          return {
+            where: vi.fn(() => ({
+              returning: vi.fn(async () => [{ ...existingRow, ...values, attemptCount: 2 }]),
+            })),
+          };
+        }),
+      })),
+      insert: vi.fn(),
+    };
+
+    const result = await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
+      companyId: "company-1",
+      sourceIssueId: "source-1",
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: "coder-1",
+      returnOwnerAgentId: "coder-1",
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:fingerprint",
+      evidence: { latestRunId: "run-2" },
+      evidenceOnCreate: { routingPolicy: "generated_stranded_evidence" },
+      nextAction: "Board decision required.",
+      wakePolicy: { type: "board_escalation" },
+      preserveExistingOwner: true,
+    });
+
+    expect(fakeDb.insert).not.toHaveBeenCalled();
+    expect(persisted).toMatchObject({
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: "manager-1",
+      previousOwnerAgentId: "coder-1",
+      returnOwnerAgentId: "coder-1",
+      nextAction: "Repair the execution path.",
+      wakePolicy: { type: "bounded_recovery_owner", ownerAgentId: "manager-1" },
+      monitorPolicy: { type: "watch_retry" },
+      evidence: {
+        routingPolicy: "board_escalation_no_takeover_v1",
+        latestRunId: "run-2",
+      },
+    });
+    expect(result).toMatchObject({
+      id: "existing-action",
+      ownerType: "agent",
+      ownerAgentId: "manager-1",
+      status: "active",
+    });
+  });
+
+  it("does not preserve owner when an explicit status actually changes the row", async () => {
+    const existingRow = makeRecoveryActionRow({
+      id: "existing-action",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: "agent-1",
+      kind: "missing_disposition",
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:fingerprint",
+      evidence: { latestRunId: "run-1" },
+      wakePolicy: { type: "wake_owner", ownerAgentId: "agent-1" },
+    });
+    let persisted: Record<string, unknown> | null = null;
+    const fakeDb = {
+      select: vi.fn(() => ({
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit() {
+          return Promise.resolve([existingRow]);
+        },
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          persisted = values;
+          return {
+            where: vi.fn(() => ({
+              returning: vi.fn(async () => [{ ...existingRow, ...values }]),
+            })),
+          };
+        }),
+      })),
+      insert: vi.fn(),
+    };
+
+    await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
+      companyId: "company-1",
+      sourceIssueId: "source-1",
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:fingerprint",
+      evidence: { exhausted: true },
+      nextAction: "Board operator: choose a valid issue disposition.",
+      wakePolicy: { type: "board_escalation" },
+      preserveExistingOwner: true,
+    });
+
+    expect(persisted).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      wakePolicy: { type: "board_escalation" },
+      evidence: { exhausted: true },
+    });
+  });
 });
 
 if (!embeddedPostgresSupport.supported) {

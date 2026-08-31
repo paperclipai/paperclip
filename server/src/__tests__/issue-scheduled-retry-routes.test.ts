@@ -562,7 +562,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       scheduledRetry: {
         runId: retryRunId,
         status: "cancelled",
-        errorCode: "issue_dependencies_blocked",
+        errorCode: "issue_not_in_progress",
       },
     });
   });

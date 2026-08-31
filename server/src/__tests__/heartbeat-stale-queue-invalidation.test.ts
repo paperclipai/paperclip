@@ -1606,6 +1606,110 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "cancels queued transient retries when a newer %s disposition supersedes them",
+    async (issueStatus) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Superseded transient retry",
+        status: issueStatus,
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+
+      const { runId, wakeupRequestId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "transient_failure_retry",
+        invocationSource: "automation",
+        scheduledRetryReason: "transient_failure",
+        contextExtras: {
+          retryReason: "transient_failure",
+          retrySourceIssueStatus: "in_progress",
+          retrySourceIssueStartedAt: null,
+        },
+      });
+
+      await heartbeat.resumeQueuedRuns();
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "cancelled";
+      });
+
+      const [run, wakeup] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(run).toEqual({
+        status: "cancelled",
+        errorCode: "issue_not_in_progress",
+      });
+      expect(wakeup?.status).toBe("skipped");
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    },
+  );
+
+  it("cancels a due issue-monitor wake after the issue is parked", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Parked monitor target",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_monitor_due",
+      invocationSource: "automation",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toEqual({
+      status: "cancelled",
+      errorCode: "issue_not_in_progress",
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

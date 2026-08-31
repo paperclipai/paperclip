@@ -1409,6 +1409,130 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     },
   );
 
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "cancels a due transient retry when a newer %s disposition supersedes it",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture();
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      expect(scheduled.run.contextSnapshot).toMatchObject({
+        retrySourceIssueStatus: "in_progress",
+        retrySourceIssueStartedAt: null,
+      });
+
+      await db.update(issues).set({
+        status: issueStatus,
+        updatedAt: new Date(now.getTime() + 500),
+      }).where(eq(issues.id, issueId));
+
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+      const retryRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRun).toMatchObject({
+        status: "cancelled",
+        errorCode: "issue_not_in_progress",
+      });
+
+      const wakeupRequest = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeupRequest?.status).toBe("cancelled");
+    },
+  );
+
+  it.each(["blocked", "backlog"] as const)(
+    "does not schedule a transient retry when the issue is already %s",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus });
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+
+      expect(scheduled).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: "issue_not_in_progress",
+        issueId,
+      });
+    },
+  );
+
+  it("promotes a transient retry when its pre-checkout todo disposition is unchanged", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "todo" });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.run.contextSnapshot).toMatchObject({
+      retrySourceIssueStatus: "todo",
+      retrySourceIssueStartedAt: null,
+    });
+
+    const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("cancels a due transient retry when the issue re-enters in_progress under a newer checkout", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    await db.update(issues).set({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() + 500),
+      updatedAt: new Date(now.getTime() + 500),
+    }).where(eq(issues.id, issueId));
+
+    const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+    expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+    const retryRun = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toEqual({
+      status: "cancelled",
+      errorCode: "issue_not_in_progress",
+    });
+  });
+
   it("does not queue max-turn continuations after the configured cap", async () => {
     const { runId, now } = await seedMaxTurnFixture({ scheduledRetryAttempt: 2 });
 

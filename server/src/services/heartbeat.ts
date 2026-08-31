@@ -482,6 +482,13 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const PROVIDER_QUOTA_RECOVERY_RETRY_REASON = "provider_quota_recovery";
+const ISSUE_MONITOR_DUE_WAKE_REASON = "issue_monitor_due";
+const DISPOSITION_BOUND_RETRY_REASONS = new Set([
+  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON,
+  PROVIDER_QUOTA_RECOVERY_RETRY_REASON,
+]);
+const DISPOSITION_BOUND_RETRY_RUNNABLE_STATUSES = new Set(["todo", "in_progress", "in_review"]);
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
@@ -11132,6 +11139,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
   type BlockedScheduledRetryGate = Extract<ScheduledRetryGate, { allowed: false }>;
 
+  function evaluateRetryDispositionFence(input: {
+    contextSnapshot: Record<string, unknown>;
+    currentStatus: string;
+    currentStartedAt: Date | null;
+    retryReason: string | null;
+    wakeReason: string | null;
+    phase: "scheduled retry" | "queued run";
+  }) {
+    const isDispositionBoundRetry = input.retryReason
+      ? DISPOSITION_BOUND_RETRY_REASONS.has(input.retryReason)
+      : false;
+    const isIssueMonitorWake = input.wakeReason === ISSUE_MONITOR_DUE_WAKE_REASON;
+    if (!isDispositionBoundRetry && !isIssueMonitorWake) return null;
+
+    const hasSourceSnapshot = Object.prototype.hasOwnProperty.call(
+      input.contextSnapshot,
+      "retrySourceIssueStatus",
+    );
+    const expectedStatus = readNonEmptyString(input.contextSnapshot.retrySourceIssueStatus);
+    const expectedStartedAtRaw = input.contextSnapshot.retrySourceIssueStartedAt;
+    const expectedStartedAt = expectedStartedAtRaw === null
+      ? null
+      : readNonEmptyString(expectedStartedAtRaw);
+    const currentStartedAt = input.currentStartedAt?.toISOString() ?? null;
+    const sourceDispositionMatches =
+      expectedStatus === input.currentStatus && expectedStartedAt === currentStartedAt;
+    const sourceDispositionRunnable = expectedStatus
+      ? DISPOSITION_BOUND_RETRY_RUNNABLE_STATUSES.has(expectedStatus)
+      : false;
+
+    if (
+      hasSourceSnapshot &&
+      expectedStatus &&
+      sourceDispositionMatches &&
+      sourceDispositionRunnable
+    ) {
+      return null;
+    }
+
+    // Older retry rows predate the source-disposition snapshot. Keep them
+    // runnable only while the issue is still in an active execution lane. This
+    // fail-closed compatibility rule is what contains already-scheduled rows
+    // when a newer blocked/todo/backlog disposition has superseded them.
+    if (
+      !hasSourceSnapshot &&
+      (input.currentStatus === "in_progress" || input.currentStatus === "in_review")
+    ) {
+      return null;
+    }
+
+    return {
+      reason: hasSourceSnapshot && sourceDispositionMatches
+        ? `Cancelled because the issue disposition is not runnable for the ${input.phase} (${input.currentStatus})`
+        : hasSourceSnapshot
+          ? `Cancelled because the issue disposition changed after the ${input.phase} was armed`
+        : `Cancelled because a legacy ${input.phase} has no source-disposition snapshot and the issue is no longer active`,
+      details: {
+        currentStatus: input.currentStatus,
+        currentStartedAt,
+        expectedStatus,
+        expectedStartedAt,
+        retryReason: input.retryReason,
+        wakeReason: input.wakeReason,
+        sourceDispositionSnapshotPresent: hasSourceSnapshot,
+      },
+    };
+  }
+
   async function evaluateScheduledRetryGate(input: {
     run: typeof heartbeatRuns.$inferSelect;
     agent: typeof agents.$inferSelect;
@@ -11199,6 +11274,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        startedAt: issues.startedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -11266,6 +11342,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
         issueId,
         details: { issueId, currentStatus: issue.status },
+      };
+    }
+
+    const retryDispositionFence = evaluateRetryDispositionFence({
+      contextSnapshot,
+      currentStatus: issue.status,
+      currentStartedAt: issue.startedAt,
+      retryReason,
+      wakeReason: readNonEmptyString(contextSnapshot.wakeReason),
+      phase: "scheduled retry",
+    });
+    if (retryDispositionFence) {
+      return {
+        allowed: false,
+        reason: retryDispositionFence.reason,
+        errorCode: "issue_not_in_progress",
+        issueId,
+        details: { issueId, ...retryDispositionFence.details },
       };
     }
 
@@ -11572,6 +11666,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retrySourceIssue = issueId && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      ? await db
+        .select({
+          status: issues.status,
+          startedAt: issues.startedAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null)
+      : null;
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -11602,6 +11706,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome: "retry_exhausted" as const,
         attempt: nextAttempt,
         maxAttempts,
+      };
+    }
+
+    if (
+      retrySourceIssue &&
+      !DISPOSITION_BOUND_RETRY_RUNNABLE_STATUSES.has(retrySourceIssue.status)
+    ) {
+      const reason =
+        `Scheduled transient retry suppressed because the issue disposition is not runnable (${retrySourceIssue.status})`;
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: {
+          issueId,
+          retryReason,
+          currentStatus: retrySourceIssue.status,
+          scheduledRetryAttempt: nextAttempt,
+          maxAttempts,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason,
+        errorCode: "issue_not_in_progress" as const,
+        issueId,
       };
     }
 
@@ -11695,6 +11826,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
+      ...(retrySourceIssue
+        ? {
+            retrySourceIssueStatus: retrySourceIssue.status,
+            retrySourceIssueStartedAt: retrySourceIssue.startedAt?.toISOString() ?? null,
+          }
+        : {}),
       ...(shouldQuarantineWorkspaceForRetry
         ? {
             workspaceValidationRecovery: {
@@ -11938,6 +12075,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             retryOfRunId: run.id,
             ...interactionContinuationPayload,
             retryReason,
+            ...(retrySourceIssue
+              ? {
+                  retrySourceIssueStatus: retrySourceIssue.status,
+                  retrySourceIssueStartedAt: retrySourceIssue.startedAt?.toISOString() ?? null,
+                }
+              : {}),
             ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
             scheduledRetryAttempt: schedule.attempt,
             scheduledRetryAt: schedule.dueAt.toISOString(),
@@ -13152,6 +13295,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        startedAt: issues.startedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -13280,6 +13424,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: { issueId, currentStatus: issue.status },
         };
       }
+    }
+
+    const retryDispositionFence = evaluateRetryDispositionFence({
+      contextSnapshot: context,
+      currentStatus: issue.status,
+      currentStartedAt: issue.startedAt,
+      retryReason,
+      wakeReason,
+      phase: "queued run",
+    });
+    if (retryDispositionFence) {
+      return {
+        stale: true,
+        errorCode: "issue_not_in_progress",
+        reason: retryDispositionFence.reason,
+        details: { issueId, ...retryDispositionFence.details },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {

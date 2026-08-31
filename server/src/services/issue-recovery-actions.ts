@@ -8,6 +8,12 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
+import {
+  SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  exhaustedMissingDispositionNormalizationPatch,
+  needsExhaustedMissingDispositionNormalization,
+  successfulRunHandoffEvidenceFromRecoveryAction,
+} from "./recovery/successful-run-handoff.js";
 
 const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
@@ -38,6 +44,7 @@ export type UpsertIssueRecoveryActionInput = {
   nextAction: string;
   wakePolicy?: Record<string, unknown> | null;
   monitorPolicy?: Record<string, unknown> | null;
+  status?: Extract<IssueRecoveryActionStatus, "active" | "escalated">;
   maxAttempts?: number | null;
   timeoutAt?: Date | null;
   lastAttemptAt?: Date | null;
@@ -204,7 +211,7 @@ export function issueRecoveryActionService(db: Db) {
       sourceIssueId: input.sourceIssueId,
       recoveryIssueId: input.recoveryIssueId ?? null,
       kind: input.kind,
-      status: "active" as const,
+      status: input.status ?? "active",
       ownerType,
       ownerAgentId: input.ownerAgentId ?? null,
       ownerUserId: input.ownerUserId ?? null,
@@ -289,54 +296,59 @@ export function issueRecoveryActionService(db: Db) {
       ) {
         return supersedePriorAndInsert(input, existing.id, ownerType, now, retryCount);
       }
+      // An explicit status write is a contract change only when it actually
+      // changes status (exhausted active -> escalated). An idempotent
+      // `status: "active"` refresh must still preserve owner/wake/monitor.
+      const preserveOwner = Boolean(input.preserveExistingOwner)
+        && (input.status == null || input.status === existing.status);
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
-          recoveryIssueId: input.preserveExistingOwner
+          recoveryIssueId: preserveOwner
             ? existing.recoveryIssueId
             : input.recoveryIssueId ?? null,
-          kind: input.preserveExistingOwner ? existing.kind : input.kind,
-          status: input.preserveExistingOwner ? existing.status : "active",
-          ownerType: input.preserveExistingOwner ? existing.ownerType : ownerType,
-          ownerAgentId: input.preserveExistingOwner
+          kind: preserveOwner ? existing.kind : input.kind,
+          status: input.status ?? (preserveOwner ? existing.status : "active"),
+          ownerType: preserveOwner ? existing.ownerType : ownerType,
+          ownerAgentId: preserveOwner
             ? existing.ownerAgentId
             : input.ownerAgentId ?? null,
-          ownerUserId: input.preserveExistingOwner
+          ownerUserId: preserveOwner
             ? existing.ownerUserId
             : input.ownerUserId ?? null,
-          previousOwnerAgentId: input.preserveExistingOwner
+          previousOwnerAgentId: preserveOwner
             ? existing.previousOwnerAgentId
             : input.previousOwnerAgentId ?? existing.previousOwnerAgentId,
-          returnOwnerAgentId: input.preserveExistingOwner
+          returnOwnerAgentId: preserveOwner
             ? existing.returnOwnerAgentId
             : input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
-          cause: input.preserveExistingOwner ? existing.cause : input.cause,
-          fingerprint: input.preserveExistingOwner ? existing.fingerprint : input.fingerprint,
-          evidence: input.preserveExistingOwner
+          cause: preserveOwner ? existing.cause : input.cause,
+          fingerprint: preserveOwner ? existing.fingerprint : input.fingerprint,
+          evidence: preserveOwner
             ? {
               ...(existing.evidence ?? {}),
               ...(input.evidence ?? {}),
             }
             : input.evidence ?? existing.evidence,
-          nextAction: input.preserveExistingOwner ? existing.nextAction : input.nextAction,
-          wakePolicy: input.preserveExistingOwner
+          nextAction: preserveOwner ? existing.nextAction : input.nextAction,
+          wakePolicy: preserveOwner
             ? existing.wakePolicy
             : input.wakePolicy ?? null,
-          monitorPolicy: input.preserveExistingOwner
+          monitorPolicy: preserveOwner
             ? existing.monitorPolicy
             : input.monitorPolicy ?? null,
           attemptCount: input.attemptCount ?? existing.attemptCount + 1,
-          maxAttempts: input.preserveExistingOwner
+          maxAttempts: preserveOwner
             ? existing.maxAttempts
             : input.maxAttempts ?? null,
-          timeoutAt: input.preserveExistingOwner
+          timeoutAt: preserveOwner
             ? asDatabaseDate(existing.timeoutAt)
             : input.timeoutAt ?? null,
-          lastAttemptAt: input.preserveExistingOwner
+          lastAttemptAt: preserveOwner
             ? asDatabaseDate(existing.lastAttemptAt)
             : input.lastAttemptAt ?? now,
-          outcome: input.preserveExistingOwner ? existing.outcome : null,
-          resolutionNote: input.preserveExistingOwner ? existing.resolutionNote : null,
+          outcome: preserveOwner ? existing.outcome : null,
+          resolutionNote: preserveOwner ? existing.resolutionNote : null,
           resolvedAt: null,
           updatedAt: now,
         })
@@ -409,10 +421,75 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function normalizeExhaustedMissingDispositionActions(): Promise<{
+    scanned: number;
+    normalized: number;
+    actionIds: string[];
+  }> {
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+          eq(issueRecoveryActions.cause, SUCCESSFUL_RUN_MISSING_STATE_REASON),
+        ),
+      );
+    const result = {
+      scanned: rows.length,
+      normalized: 0,
+      actionIds: [] as string[],
+    };
+
+    for (const row of rows) {
+      const action = toReadModel(row);
+      if (!needsExhaustedMissingDispositionNormalization(action)) continue;
+      const patch = exhaustedMissingDispositionNormalizationPatch();
+      const attemptEvidence = successfulRunHandoffEvidenceFromRecoveryAction(action);
+      const now = new Date();
+      const [updated] = await db
+        .update(issueRecoveryActions)
+        .set({
+          status: patch.status,
+          ownerType: patch.ownerType,
+          ownerAgentId: patch.ownerAgentId,
+          ownerUserId: patch.ownerUserId,
+          previousOwnerAgentId: action.previousOwnerAgentId ?? action.ownerAgentId,
+          wakePolicy: patch.wakePolicy,
+          evidence: {
+            ...action.evidence,
+            exhausted: true,
+            ...(attemptEvidence
+              ? {
+                handoffAttempt: attemptEvidence.handoffAttempt,
+                maxHandoffAttempts: attemptEvidence.maxHandoffAttempts,
+              }
+              : {}),
+          },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issueRecoveryActions.id, action.id),
+            eq(issueRecoveryActions.cause, SUCCESSFUL_RUN_MISSING_STATE_REASON),
+            eq(issueRecoveryActions.updatedAt, row.updatedAt),
+            inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+          ),
+        )
+        .returning({ id: issueRecoveryActions.id });
+      if (!updated) continue;
+      result.normalized += 1;
+      result.actionIds.push(updated.id);
+    }
+
+    return result;
+  }
+
   return {
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,
+    normalizeExhaustedMissingDispositionActions,
   };
 }
