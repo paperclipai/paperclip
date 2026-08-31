@@ -100,6 +100,8 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  FEEDBACK_DELIVERY_RETRY_REASON,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
@@ -572,6 +574,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function prepareFeedbackWake(
+    fixture: Awaited<ReturnType<typeof seedRunFixture>>,
+    input?: {
+      commentId?: string;
+      retryGeneration?: number;
+      rootWakeupRequestId?: string;
+      issueStatus?: "in_progress" | "in_review" | "done";
+    },
+  ) {
+    const commentId = input?.commentId ?? randomUUID();
+    const rootWakeupRequestId = input?.rootWakeupRequestId ?? fixture.wakeupRequestId;
+    const retryGeneration = input?.retryGeneration ?? 0;
+    const createdAt = new Date("2026-03-19T00:00:01.000Z");
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "Please incorporate this review feedback.",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        triggerDetail: "user",
+        reason: retryGeneration > 0 ? FEEDBACK_DELIVERY_RETRY_WAKE_REASON : "issue_commented",
+        payload: { issueId: fixture.issueId, commentId },
+        requestedByActorType: "user",
+        requestedByActorId: "responsible-user",
+      })
+      .where(eq(agentWakeupRequests.id, rootWakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          wakeReason: retryGeneration > 0 ? FEEDBACK_DELIVERY_RETRY_WAKE_REASON : "issue_commented",
+          commentId,
+          wakeCommentId: commentId,
+          wakeCommentIds: [commentId],
+          ...(retryGeneration > 0
+            ? {
+                retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+                feedbackDeliveryRootWakeupRequestId: rootWakeupRequestId,
+                feedbackDeliveryRetryGeneration: retryGeneration,
+              }
+            : {}),
+        },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db
+      .update(issues)
+      .set({ status: input?.issueStatus ?? "in_progress" })
+      .where(eq(issues.id, fixture.issueId));
+
+    return { commentId, rootWakeupRequestId };
   }
 
   async function seedEnvironmentLeaseFixture(input: {
@@ -1332,6 +1397,337 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("replays a user feedback wake once when restart loses it before process identity exists", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the recovered feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((run) => run.id !== fixture.runId);
+    expect(retryRun).toMatchObject({
+      retryOfRunId: fixture.runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId: fixture.issueId,
+      wakeReason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliverySourceRunId: fixture.runId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [commentId],
+    });
+
+    const retryWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRun?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(retryWake).toMatchObject({
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      requestedByActorType: "system",
+    });
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_retry_queued"),
+      ));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.details).toMatchObject({
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      sourceCommentIds: [commentId],
+      retryRunId: retryRun?.id,
+      retryGeneration: 1,
+    });
+
+    if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: retryRun.id,
+      body: "Applied the requested feedback.",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, retryRun.id, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(retryRun.id);
+
+    const finalRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(finalRuns).toHaveLength(2);
+  });
+
+  it("creates one source-scoped recovery action when the feedback replay is exhausted", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture, { retryGeneration: 1 });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(recoveryRows).toHaveLength(1);
+    expect(recoveryRows[0]).toMatchObject({
+      kind: "feedback_delivery",
+      status: "active",
+      ownerAgentId: fixture.agentId,
+      cause: "feedback_delivery_exhausted",
+      maxAttempts: 1,
+    });
+    expect(recoveryRows[0]?.evidence).toMatchObject({
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      outstandingCommentIds: [commentId],
+      retryGeneration: 1,
+    });
+    const recoveryAudits = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_recovery_exhausted"),
+      ));
+    expect(recoveryAudits).toHaveLength(1);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+    expect(await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
+  });
+
+  it("preserves terminal issue gates instead of replaying stale feedback", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    await prepareFeedbackWake(fixture, { issueStatus: "done" });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+    expect(await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({ status: "done", executionRunId: null });
+  });
+
+  it("preserves pause gates and records recovery instead of invoking the agent", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "paused",
+      processPid: null,
+      processGroupId: null,
+    });
+    await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+    const recovery = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recovery).toMatchObject({
+      kind: "feedback_delivery",
+      cause: "feedback_delivery_exhausted",
+      evidence: {
+        gateErrorCode: "agent_not_invokable",
+      },
+    });
+  });
+
+  it("coalesces a recovered feedback wake ahead of a newer queued comment without another handler", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the coalesced feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const first = await prepareFeedbackWake(fixture);
+    const secondCommentId = randomUUID();
+    const secondWakeId = randomUUID();
+    const secondRunId = randomUUID();
+    const secondCreatedAt = new Date("2026-03-19T00:00:02.000Z");
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "One more adjustment after the first review.",
+      createdAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: secondWakeId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "automation",
+      triggerDetail: "user",
+      reason: "issue_commented",
+      payload: { issueId: fixture.issueId, commentId: secondCommentId },
+      status: "queued",
+      runId: secondRunId,
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      requestedAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      invocationSource: "automation",
+      triggerDetail: "user",
+      status: "queued",
+      wakeupRequestId: secondWakeId,
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        wakeReason: "issue_commented",
+        commentId: secondCommentId,
+        wakeCommentId: secondCommentId,
+        wakeCommentIds: [secondCommentId],
+      },
+      createdAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: secondRunId, updatedAt: secondCreatedAt })
+      .where(eq(issues.id, fixture.issueId));
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("coalesced retry did not start")), 3_000)),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(2);
+    const coalescedRun = runs.find((run) => run.id === secondRunId);
+    expect(coalescedRun?.contextSnapshot).toMatchObject({
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [first.commentId, secondCommentId],
+      commentId: secondCommentId,
+      wakeCommentId: secondCommentId,
+    });
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_retry_queued"),
+      ));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.details).toMatchObject({
+      retryRunId: secondRunId,
+      disposition: "coalesced",
+      sourceCommentIds: [first.commentId],
+    });
+
+    if (!releaseAdapter) throw new Error("coalesced feedback run did not reach the adapter");
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: secondRunId,
+      body: "Applied both feedback comments in order.",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, secondRunId, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(secondRunId);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
