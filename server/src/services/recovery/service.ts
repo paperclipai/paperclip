@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } fro
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  isAgentInvokableForRecovery,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -759,6 +760,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+    if (!isAgentInvokableForRecovery(agent?.status ?? null)) return false;
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
