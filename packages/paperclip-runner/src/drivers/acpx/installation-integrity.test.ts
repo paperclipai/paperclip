@@ -1436,7 +1436,7 @@ describe("ACPX installation integrity", () => {
   );
 
   it.runIf(process.platform === "linux")(
-    "keeps emergency guardian termination effective across a stopped retry",
+    "reaps a stopped provider across repeated guardian cleanup requests",
     async () => {
       const fixture = await persistentInstallationFixture();
       const pidFile = join(fixture.root, "emergency-provider.pid");
@@ -1465,15 +1465,22 @@ describe("ACPX installation integrity", () => {
       await awaitVerifiedAcpxProviderOwnership(guardian);
       const providerPid = Number.parseInt(await waitForFile(pidFile), 10);
       const guardianExit = once(guardian, "exit");
+      process.kill(providerPid, "SIGSTOP");
       process.kill(guardian.pid!, "SIGSTOP");
       try {
         expect(guardian.kill("SIGKILL")).toBe(true);
         // Retry synchronously while the resumed guardian has not yet processed
-        // owner-pipe EOF. The exact ChildProcess remains the signal authority.
+        // owner-pipe EOF. Each retry wakes the exact guardian; the guardian
+        // remains alive to reap the whole provider group itself.
         expect(guardian.kill("SIGKILL")).toBe(true);
         await guardianExit;
         await waitUntil(() => !processAlive(providerPid));
       } finally {
+        if (processAlive(providerPid)) {
+          // The stopped provider still pins this exact PID. Resume it only for
+          // failure cleanup so guardian-pipe EOF can make it self-reap.
+          process.kill(providerPid, "SIGCONT");
+        }
         if (guardian.exitCode === null && guardian.signalCode === null) {
           process.kill(guardian.pid!, "SIGCONT");
           guardian.kill("SIGKILL");

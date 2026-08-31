@@ -1230,9 +1230,10 @@ class SpawnedChildSet {
 async function terminatePostSealChild(child: ChildProcess): Promise<unknown[]> {
   const errors: unknown[] = [];
   if (!running(child)) return errors;
-  // Verified production children override ChildProcess.kill so this one
-  // synchronous SIGKILL reaches the whole group while the live guardian still
-  // pins its identity. Never copy the numeric PGID into a later signal owner.
+  // Verified production children override ChildProcess.kill so this SIGKILL
+  // request revokes the owner pipe and wakes the live guardian, which retains
+  // authority to reap the whole group. Never copy the numeric PGID into a
+  // later signal owner.
   const killOutcome = await signalAndWaitForExit(
     child,
     "SIGKILL",
@@ -1263,7 +1264,8 @@ async function terminateChild(child: ChildProcess): Promise<unknown[]> {
   if (!terminateOutcome.exited && running(child)) {
     errors.push(new Error("ACPX provider did not exit after SIGTERM"));
     // The verified guardian is still live and pins the PGID. Its protected
-    // `kill` override synchronously signals the whole group exactly once.
+    // `kill` override revokes the owner pipe and wakes the guardian so it can
+    // reap the whole group without transferring numeric process identity.
     const killOutcome = await signalAndWaitForExit(
       child,
       "SIGKILL",

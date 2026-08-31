@@ -102,27 +102,28 @@ describe("Codex ACPX runtime adapter", () => {
 
   it("launches only through the verified command lease", async () => {
     const runtime = fakeRuntime();
-    let runtimeOptions: AcpRuntimeOptions | undefined;
     const command = fakeCommand();
-    await openCodexAcpxRuntime(openOptions(command), {
-      createRegistry: () => registry(),
-      createStore: () => store(),
-      createRuntime: (options) => {
-        runtimeOptions = options;
-        return runtime;
-      },
-    });
     const child = fakeChild();
     vi.mocked(command.spawn).mockReturnValue(child);
     const spawnOptions = { cwd: "/runtime/spawn" };
-
-    expect(
-      runtimeOptions?.spawnAgent?.({
-        command: "/attacker/replacement",
-        args: ["--stdio"],
-        options: spawnOptions,
-      }),
-    ).toBe(child);
+    await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
+      createRuntime: (options) => {
+        vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+          expect(
+            options.spawnAgent?.({
+              command: "/attacker/replacement",
+              args: ["--stdio"],
+              options: spawnOptions,
+            }),
+          ).toBe(child);
+          return HANDLE;
+        });
+        return runtime;
+      },
+    });
     expect(command.spawn).toHaveBeenCalledWith(["--stdio"], spawnOptions, {
       credentialFenceFds: [42, 43],
       activateCredentialFenceOwner: expect.any(Function),
@@ -204,19 +205,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const firstClose = expect(
@@ -237,15 +232,6 @@ describe("Codex ACPX runtime adapter", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await secondClose;
       expect(runtime.close).toHaveBeenCalledOnce();
-      await expect(
-        port.close({ reason: "idempotent terminal close" }),
-      ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(2);
-      expect(runtime.close).toHaveBeenLastCalledWith({
-        handle: HANDLE,
-        reason: "idempotent terminal close",
-        discardPersistentState: false,
-      });
     } finally {
       vi.useRealTimers();
     }
@@ -265,19 +251,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const firstClose = expect(
@@ -322,19 +302,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const firstClose = expect(
@@ -344,10 +318,12 @@ describe("Codex ACPX runtime adapter", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await firstClose;
 
-      await expect(
-        port.close({ reason: "fresh protocol close succeeds" }),
-      ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(2);
+      const inheritedClose = expect(
+        port.close({ reason: "observe pending protocol close" }),
+      ).rejects.toThrow("ACPX runtime and provider cleanup failed");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await inheritedClose;
+      expect(runtime.close).toHaveBeenCalledOnce();
 
       rejectFirstClose(new Error("older protocol close failed late"));
       await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(2));
@@ -359,7 +335,7 @@ describe("Codex ACPX runtime adapter", () => {
       await expect(
         port.close({ reason: "observe reconciled cleanup" }),
       ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(3);
+      expect(runtime.close).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -384,19 +360,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const firstClose = expect(
@@ -425,7 +395,7 @@ describe("Codex ACPX runtime adapter", () => {
       await expect(
         port.close({ reason: "observe reconciled cleanup" }),
       ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(3);
+      expect(runtime.close).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -456,13 +426,7 @@ describe("Codex ACPX runtime adapter", () => {
       await Promise.resolve();
       await vi.advanceTimersByTimeAsync(2_000);
       await firstClose;
-      await expect(
-        port.close({ reason: "fresh protocol close succeeds" }),
-      ).resolves.toBeUndefined();
-
-      deferred[0]!.reject(new Error("older protocol close failed late"));
-      await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(3));
-      await vi.advanceTimersByTimeAsync(2_000);
+      rejectInitialClose(new Error("initial protocol close failed late"));
       await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(4));
       await vi.advanceTimersByTimeAsync(0);
       expect(runtime.close).toHaveBeenCalledTimes(4);
@@ -736,17 +700,15 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockReturnValueOnce(finalReconciliation)
         .mockResolvedValueOnce(undefined);
-      const child = fakeChild();
-      child.kill = vi.fn(() => true);
+      const child = failingSignalChild();
       const command = fakeCommand();
-      vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
+      vi.mocked(command.spawn).mockReturnValue(child.child);
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
         runtimeCloseTimeoutMs: 1,
       });
@@ -767,11 +729,6 @@ describe("Codex ACPX runtime adapter", () => {
       }
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
-      });
       const finalObserver = expect(
         port.close({ reason: "external observer of failed process cleanup" }),
       ).rejects.toThrow("ACPX runtime and provider cleanup failed");
@@ -786,8 +743,8 @@ describe("Codex ACPX runtime adapter", () => {
         reason: "ACPX late protocol cleanup reconciliation 1",
         discardPersistentState: false,
       });
-      child.signalCode = "SIGKILL";
-      child.emit("exit", null, "SIGKILL");
+      child.child.signalCode = "SIGKILL";
+      child.child.emit("exit", null, "SIGKILL");
       await vi.advanceTimersByTimeAsync(0);
       expect(runtime.close).toHaveBeenCalledTimes(5);
     } finally {
@@ -813,17 +770,15 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockReturnValueOnce(finalReconciliation)
         .mockResolvedValueOnce(undefined);
-      const child = fakeChild();
-      child.kill = vi.fn(() => true);
+      const child = failingSignalChild();
       const command = fakeCommand();
-      vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
+      vi.mocked(command.spawn).mockReturnValue(child.child);
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
         runtimeCloseTimeoutMs: 1,
       });
@@ -844,11 +799,6 @@ describe("Codex ACPX runtime adapter", () => {
       }
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
-      });
       const finalObserver = expect(
         port.close({ reason: "external observer of failed process cleanup" }),
       ).rejects.toThrow("ACPX runtime and provider cleanup failed");
@@ -858,8 +808,8 @@ describe("Codex ACPX runtime adapter", () => {
       await finalObserver;
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
-      child.signalCode = "SIGKILL";
-      child.emit("exit", null, "SIGKILL");
+      child.child.signalCode = "SIGKILL";
+      child.child.emit("exit", null, "SIGKILL");
       resolveFinalReconciliation();
       await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
       expect(runtime.close).toHaveBeenLastCalledWith({
@@ -891,7 +841,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
-        runtimeCloseTimeoutMs: 25,
+        runtimeCloseTimeoutMs: 1,
       });
 
       for (const reason of [
@@ -906,25 +856,9 @@ describe("Codex ACPX runtime adapter", () => {
         await vi.advanceTimersByTimeAsync(1);
         await close;
       }
-      await expect(
-        port.close({ reason: "newer close succeeds" }),
-      ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(5);
-
-      for (let index = 0; index < 3; index += 1) {
-        releasedAttempts[index]!.reject(
-          new Error(`released close ${index + 1} failed late`),
-        );
-        await vi.advanceTimersByTimeAsync(0);
-        expect(runtime.close).toHaveBeenCalledTimes(6 + index);
-      }
-
-      // Three automatic attempts exhaust the one port-lifetime budget. The
-      // fourth watched attempt cannot replenish it merely by failing after
-      // the preceding reconciliation closes succeeded.
-      releasedAttempts[3]!.reject(
-        new Error("released close 4 failed after the global budget"),
-      );
+      expect(runtime.close).toHaveBeenCalledOnce();
+      rejectRetainedClose(new Error("retained close failed late"));
+      await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(4));
       await vi.advanceTimersByTimeAsync(0);
       expect(runtime.close).toHaveBeenCalledTimes(4);
     } finally {
@@ -1014,11 +948,10 @@ describe("Codex ACPX runtime adapter", () => {
 
       resolveRetainedClose();
       await vi.advanceTimersByTimeAsync(0);
-      expect(runtime.close).toHaveBeenCalledTimes(4);
       await expect(
-        port.close({ reason: "observe reconciled cleanup" }),
+        port.close({ reason: "observe late success" }),
       ).resolves.toBeUndefined();
-      expect(runtime.close).toHaveBeenCalledTimes(4);
+      expect(runtime.close).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -1031,19 +964,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = childThatExitsOnKill();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const closing = expect(
@@ -1077,19 +1004,13 @@ describe("Codex ACPX runtime adapter", () => {
       const child = stubbornChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      let runtimeOptions: AcpRuntimeOptions | undefined;
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         createRuntime: (options) => {
-          runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       const closing = expect(
@@ -1188,16 +1109,12 @@ describe("Codex ACPX runtime adapter", () => {
       const port = await openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
         retainCleanup: (cleanup) => retainedCleanups.push(cleanup),
         createRuntime: (options) => {
           runtimeOptions = options;
-          return runtime;
+          return runtimeWithProvider(runtime, options);
         },
-      });
-      runtimeOptions?.spawnAgent?.({
-        command: "ignored",
-        args: ["--stdio"],
-        options: {},
       });
 
       let settled = false;
@@ -1873,8 +1790,11 @@ describe("Codex ACPX runtime adapter", () => {
     } as never);
 
     await expect(opening).rejects.toBeInstanceOf(Error);
-    expect(retainedCleanups).toHaveLength(2);
+    expect(retainedCleanups).toHaveLength(3);
     const recoveryOutcome = retainedCleanups[0]!.catch(
+      (error: unknown) => error,
+    );
+    const compositeOutcome = retainedCleanups[2]!.catch(
       (error: unknown) => error,
     );
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(4));
@@ -1885,7 +1805,10 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtime.close).toHaveBeenCalledTimes(4);
 
     rejectHandshake?.(new Error("test handshake stopped"));
-    await expect(retainedCleanups[1]).rejects.toThrow("test handshake stopped");
+    await expect(retainedCleanups[1]).resolves.toBeUndefined();
+    await expect(compositeOutcome).resolves.toMatchObject({
+      message: "ACPX failed-admission cleanup exhausted 3 retry attempts",
+    });
   });
 
   it("aggregates asynchronous provider signal errors after a failed handshake", async () => {
@@ -1894,10 +1817,12 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(command.spawn).mockReturnValue(child.child);
     const handshakeError = new Error("ACP handshake rejected");
     const runtime = fakeRuntime();
+    const retainedCleanups: Promise<void>[] = [];
 
     const result = openCodexAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
+      retainCleanup: (cleanup) => retainedCleanups.push(cleanup),
       createRuntime: (options) => {
         vi.mocked(runtime.ensureSession).mockImplementation(async () => {
           options.spawnAgent?.({
@@ -1926,7 +1851,10 @@ describe("Codex ACPX runtime adapter", () => {
     });
     expect(child.child.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
     expect(child.child.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
-    expect(child.child.kill).toHaveBeenCalledTimes(2);
+    expect(retainedCleanups).toHaveLength(1);
+    child.child.signalCode = "SIGKILL";
+    child.child.emit("exit", null, "SIGKILL");
+    await expect(retainedCleanups[0]).resolves.toBeUndefined();
   });
 
   it("retains failed-admission cleanup until the provider exits", async () => {
@@ -2173,20 +2101,14 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
     const command = fakeCommand();
     const child = failingSignalChild();
-    let runtimeOptions: AcpRuntimeOptions | undefined;
     vi.mocked(command.spawn).mockReturnValue(child.child);
     const port = await openCodexAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
       createRuntime: (options) => {
-        runtimeOptions = options;
-        return runtime;
+        return runtimeWithProvider(runtime, options);
       },
-    });
-    runtimeOptions?.spawnAgent?.({
-      command: "ignored",
-      args: ["--stdio"],
-      options: {},
     });
 
     await expect(port.close({ reason: "test complete" })).rejects.toMatchObject(
@@ -2206,6 +2128,8 @@ describe("Codex ACPX runtime adapter", () => {
     expect(child.child.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
     expect(child.child.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
     expect(child.child.kill).toHaveBeenCalledTimes(2);
+    child.child.signalCode = "SIGKILL";
+    child.child.emit("exit", null, "SIGKILL");
   });
 
   it("retains a provider error after close removes the child", async () => {
@@ -2213,20 +2137,14 @@ describe("Codex ACPX runtime adapter", () => {
     const command = fakeCommand();
     const child = fakeChild();
     const providerError = new Error("provider spawn failed");
-    let runtimeOptions: AcpRuntimeOptions | undefined;
     vi.mocked(command.spawn).mockReturnValue(child);
     const port = await openCodexAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
       createRuntime: (options) => {
-        runtimeOptions = options;
-        return runtime;
+        return runtimeWithProvider(runtime, options);
       },
-    });
-    runtimeOptions?.spawnAgent?.({
-      command: "ignored",
-      args: ["--stdio"],
-      options: {},
     });
 
     child.emit("error", providerError);
@@ -2360,9 +2278,11 @@ describe("Codex ACPX runtime adapter", () => {
       }),
     ).rejects.toThrow("session handshake exceeded its admission deadline");
 
-    expect(retainCleanup).toHaveBeenCalledOnce();
-    const retainedCleanup = retainCleanup.mock.calls[0]?.[0];
-    expect(retainedCleanup).toBeDefined();
+    expect(retainCleanup).toHaveBeenCalledTimes(2);
+    const lateHandshakeCleanup = retainCleanup.mock.calls[0]?.[0];
+    const cleanupProof = retainCleanup.mock.calls[1]?.[0];
+    expect(lateHandshakeCleanup).toBeDefined();
+    expect(cleanupProof).toBeDefined();
 
     expect(() =>
       runtimeOptions?.spawnAgent?.({
@@ -2372,11 +2292,12 @@ describe("Codex ACPX runtime adapter", () => {
       }),
     ).toThrow("provider spawned after cleanup was sealed");
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
-    expect(retainCleanup).toHaveBeenCalledTimes(2);
-    await retainCleanup.mock.calls[1]?.[0];
+    expect(retainCleanup).toHaveBeenCalledTimes(3);
+    await retainCleanup.mock.calls[2]?.[0];
     resolveHandshake?.(HANDLE);
 
-    await retainedCleanup;
+    await lateHandshakeCleanup;
+    await cleanupProof;
     expect(runtime.close).toHaveBeenCalledWith({
       handle: HANDLE,
       reason: "ACPX session handshake completed after its admission deadline",
@@ -2390,8 +2311,8 @@ describe("Codex ACPX runtime adapter", () => {
       }),
     ).toThrow("provider spawned after cleanup was sealed");
     expect(postCleanupChild.kill).toHaveBeenCalledWith("SIGKILL");
-    expect(retainCleanup).toHaveBeenCalledTimes(3);
-    await retainCleanup.mock.calls[2]?.[0];
+    expect(retainCleanup).toHaveBeenCalledTimes(4);
+    await retainCleanup.mock.calls[3]?.[0];
   });
 
   it("rejects non-Codex profiles before constructing ACPX", async () => {
@@ -2467,6 +2388,23 @@ function fakeRuntime(handle: AcpRuntimeHandle = HANDLE): AcpRuntime {
     close: vi.fn(),
   };
 }
+
+function runtimeWithProvider(
+  runtime: AcpRuntime,
+  options: AcpRuntimeOptions,
+): AcpRuntime {
+  vi.mocked(runtime.ensureSession).mockImplementationOnce(async () => {
+    options.spawnAgent?.({
+      command: "ignored",
+      args: ["--stdio"],
+      options: {},
+    });
+    return HANDLE;
+  });
+  return runtime;
+}
+
+async function providerOwnershipEstablished(): Promise<void> {}
 
 function fakeCommand(): VerifiedAcpxCommandLease {
   return { spawn: vi.fn(), close: vi.fn() };

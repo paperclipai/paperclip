@@ -846,18 +846,18 @@ function protectProviderGroupKill(
       // guardian and lets a stopped guardian observe EOF and reap its own
       // still-pinned group. Do not mark the group reaped until exit is seen.
       guardianOwnerPipe.destroy();
-      try {
-        signalGuardian("SIGCONT");
-      } catch {
-        // The pipe close remains the primary revocation operation. A later
-        // retry still owns the exact ChildProcess signal handle below.
-      }
-      return true;
     }
-    // If the guardian did not process EOF, a retry can still terminate this
-    // exact direct child. Its live ChildProcess remains pinned until the exit
-    // event; no saved numeric PID or process-group identifier is reused.
-    return signalGuardian("SIGKILL");
+    try {
+      // Every retry wakes the exact live guardian so it can observe the owner
+      // pipe EOF and reap the whole group itself. Never SIGKILL the guardian:
+      // a stopped real provider could otherwise survive after the adapter
+      // forgets the only process that still pins its group identity.
+      signalGuardian("SIGCONT");
+    } catch {
+      // The pipe close remains the primary revocation operation. Retained
+      // cleanup keeps waiting for observed guardian exit and may retry wakeup.
+    }
+    return true;
   };
 }
 
