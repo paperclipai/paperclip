@@ -1347,3 +1347,205 @@ describe("dispatchLiveEventToSubscribers", () => {
     expect(received).toEqual(["still-called"]);
   });
 });
+
+describe("invalidateIssueQueriesForAgentAvailabilityTransition", () => {
+  function makeQueryClient(options: {
+    cachedIssueQueries?: { data: unknown }[];
+  } = {}) {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryCache: () => ({
+        findAll: () => (options.cachedIssueQueries ?? []).map((q) => ({ state: { data: q.data } })),
+      }),
+    };
+    return { queryClient, invalidations };
+  }
+
+  it("invalidates issue lists and details when an agent enters error", () => {
+    const { queryClient, invalidations } = makeQueryClient();
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "error" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("invalidates when an agent leaves error and the cache still shows its attention signal", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        { data: [{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-1" } }] },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("matches issues nested inside paginated InfiniteData pages", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        {
+          data: {
+            pages: [
+              [{ id: "issue-0", assigneeAttention: null }],
+              [{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-1" } }],
+            ],
+            pageParams: [0, 50],
+          },
+        },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("does not invalidate when InfiniteData pages show no error attention for the agent", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        {
+          data: {
+            pages: [[{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-other" } }]],
+            pageParams: [0],
+          },
+        },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+
+  it("matches cached issue detail objects, not just list arrays", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        { data: { id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-1" } } },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+  });
+
+  it("does not invalidate on non-error transitions when no cached issue shows the agent in error", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        { data: [{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-other" } }] },
+        { data: [{ id: "issue-2", assigneeAttention: null }] },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "running" },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+
+  it("invalidates issue lists and details when an agent enters paused", () => {
+    const { queryClient, invalidations } = makeQueryClient();
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "paused", outcome: "paused" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("invalidates when an agent is resumed and the cache still shows its paused attention", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        { data: [{ id: "issue-1", assigneeAttention: { state: "agent_paused", agentId: "agent-1" } }] },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle", outcome: "resumed" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("does not invalidate on a resume when no cached issue shows paused attention for the agent", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        { data: [{ id: "issue-1", assigneeAttention: { state: "agent_paused", agentId: "agent-other" } }] },
+        { data: [{ id: "issue-2", assigneeAttention: null }] },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle", outcome: "resumed" },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+
+  it("ignores payloads without an agent id or status", () => {
+    const { queryClient, invalidations } = makeQueryClient();
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { status: "error" },
+    );
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentAvailabilityTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1" },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+});

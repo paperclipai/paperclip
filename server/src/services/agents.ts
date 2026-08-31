@@ -32,6 +32,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { publishLiveEvent } from "./live-events.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -851,6 +852,19 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) {
+        // Issue reads derive assigneeAttention from the assigned agent's
+        // dormant status, so clients need a live signal to refresh caches.
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: updated.status,
+            outcome: "paused",
+          },
+        });
+      }
       return updated ? getById(updated.id) : null;
     },
 
@@ -874,6 +888,17 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) {
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: updated.status,
+            outcome: "resumed",
+          },
+        });
+      }
       return updated ? getById(updated.id) : null;
     },
 
@@ -904,6 +929,15 @@ export function agentService(db: Db) {
       if (!updated) {
         throw conflict("Only agents in error status can have their error cleared");
       }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          outcome: "error_cleared",
+        },
+      });
       return getById(updated.id);
     },
 

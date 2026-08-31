@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
   listReviewAttention: vi.fn(),
+  listAssigneeAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   getActiveInboxArchiveFields: vi.fn(),
@@ -212,6 +213,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockIssueService.listAssigneeAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});

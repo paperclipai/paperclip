@@ -35,6 +35,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueAssigneeAttention,
   IssueAttachment,
   IssueBlockerAttention,
   IssueRecoveryAction,
@@ -182,6 +183,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
+import { IssueAssigneeAttentionNotice } from "./IssueAssigneeAttentionNotice";
 import {
   IssueRecoveryActionCard,
   type RecoveryReissueRequest,
@@ -454,6 +456,7 @@ interface IssueChatThreadProps {
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  assigneeAttention?: IssueAssigneeAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
@@ -4453,6 +4456,7 @@ export function IssueChatThread({
   blockedBy = [],
   liveIssueIds,
   blockerAttention = null,
+  assigneeAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
@@ -5204,6 +5208,7 @@ export function IssueChatThread({
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssigneeAttentionNotice attention={assigneeAttention} />
                   <IssueAssignedBacklogNotice
                     issueStatus={issueStatus ?? ""}
                     assigneeAgent={assignedAgent}

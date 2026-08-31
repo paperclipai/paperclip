@@ -638,3 +638,82 @@ describe("IssueRow", () => {
     });
   });
 });
+
+describe("IssueRow assignee attention indicators", () => {
+  function renderRow(issue: Issue, testId: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+    const badge = container.querySelector(`[data-testid="${testId}"]`);
+    const snapshot = badge
+      ? {
+        text: badge.textContent ?? "",
+        title: badge.getAttribute("title") ?? "",
+        ariaLabel: badge.getAttribute("aria-label") ?? "",
+        className: badge.getAttribute("class") ?? "",
+      }
+      : null;
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    return snapshot;
+  }
+
+  const erroredIssue = () => createIssue({
+    assigneeAgentId: "agent-err",
+    assigneeAttention: {
+      state: "agent_error",
+      agentId: "agent-err",
+      agentName: "CodexCoder",
+      errorReasonExcerpt: "Adapter crashed on startup",
+    },
+  });
+
+  const pausedIssue = () => createIssue({
+    assigneeAgentId: "agent-paused",
+    assigneeAttention: {
+      state: "agent_paused",
+      agentId: "agent-paused",
+      agentName: "CodexCoderAcpx",
+      pauseReasonExcerpt: "manual",
+    },
+  });
+
+  it("renders a blocking badge when the assigned agent is in error status", () => {
+    const badge = renderRow(erroredIssue(), "issue-row-assignee-error");
+    expect(badge).not.toBeNull();
+    expect(badge?.text).toContain("Agent error");
+    expect(badge?.ariaLabel).toContain("CodexCoder");
+    expect(badge?.title).toContain("Adapter crashed on startup");
+    expect(badge?.title).toContain("Clear error");
+    expect(badge?.className).toContain("destructive");
+  });
+
+  it("renders a warning badge when the assigned agent is paused, distinct from error", () => {
+    const badge = renderRow(pausedIssue(), "issue-row-assignee-paused");
+    expect(badge).not.toBeNull();
+    expect(badge?.text).toContain("Agent paused");
+    expect(badge?.ariaLabel).toContain("CodexCoderAcpx");
+    expect(badge?.title).toContain("pause reason: manual");
+    expect(badge?.title).toContain("Resume the agent");
+    expect(badge?.className).toContain("amber");
+    // Base Badge classes carry aria-invalid:*destructive tokens, so assert on
+    // the error badge's own tokens instead of any "destructive" substring.
+    expect(badge?.className).not.toContain("text-destructive");
+    expect(badge?.className).not.toContain("border-destructive/60");
+  });
+
+  it("never renders the error badge for a paused assignee, or vice versa", () => {
+    expect(renderRow(pausedIssue(), "issue-row-assignee-error")).toBeNull();
+    expect(renderRow(erroredIssue(), "issue-row-assignee-paused")).toBeNull();
+  });
+
+  it("renders no badge when the issue carries no assignee attention", () => {
+    expect(renderRow(createIssue({ assigneeAgentId: "agent-idle" }), "issue-row-assignee-error")).toBeNull();
+    expect(renderRow(createIssue({ assigneeAgentId: "agent-idle" }), "issue-row-assignee-paused")).toBeNull();
+  });
+});
