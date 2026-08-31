@@ -363,6 +363,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "harness_liveness_escalation",
   "issue_productivity_review",
   "stranded_issue_recovery",
+  "hire_kickoff",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,

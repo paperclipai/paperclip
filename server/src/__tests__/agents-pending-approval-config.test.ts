@@ -3,18 +3,24 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   agents,
+  agentWakeupRequests,
   approvals,
   activityLog,
   budgetPolicies,
   companies,
   createDb,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
+import { heartbeatService } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,7 +45,12 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issues);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
     await db.delete(agents);

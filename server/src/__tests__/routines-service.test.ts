@@ -1226,9 +1226,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
     expect(wakeups).toEqual([
-      {
+      expect.objectContaining({
         agentId,
-        opts: {
+        opts: expect.objectContaining({
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
@@ -1236,8 +1236,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           requestedByActorType: undefined,
           requestedByActorId: null,
           contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
-        },
-      },
+        }),
+      }),
     ]);
   });
 

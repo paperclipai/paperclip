@@ -34,6 +34,10 @@
 //   - `writeReplyDelayMs`: when a positive number, the fixture delays each
 //     `duplexChannelWrite` reply by that many milliseconds, so a test proves the
 //     host holds the pending-write reservation until the RPC settles.
+//   - `dataDelayMs`: when a positive number, the fixture delays the scripted
+//     data and exit frames after the open reply by that many milliseconds, so a
+//     test can force the post-bind buffered-queue path instead of the separate
+//     pre-open hold path.
 //   - `stopReadingStdinAfterOpen`: when true, the fixture stops reading its stdin
 //     right after it sends the open reply. The host writes then stay in the host
 //     stdin write buffer, so a test proves the host meters the transport buffer and
@@ -222,9 +226,18 @@ rl.on("line", (line) => {
     // Emit the scripted data and the exit after the open reply, so the host
     // binds the route first. Each frame echoes the exact pair; a test overrides
     // `sid` or `rid` to force a mismatch.
-    setImmediate(() => {
+    const emitFrames = () => {
       process.stdout.write(scriptedFrameLines(directive, hostRouteId, workerSessionId));
-    });
+    };
+    const dataDelayMs =
+      typeof directive.dataDelayMs === "number" && directive.dataDelayMs > 0
+        ? directive.dataDelayMs
+        : 0;
+    if (dataDelayMs > 0) {
+      setTimeout(emitFrames, dataDelayMs);
+    } else {
+      setImmediate(emitFrames);
+    }
     return;
   }
 

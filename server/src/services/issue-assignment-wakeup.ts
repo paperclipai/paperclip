@@ -11,9 +11,14 @@ export interface IssueAssignmentWakeupDeps {
       triggerDetail?: WakeupTriggerDetail;
       reason?: string | null;
       payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
+      issueStateGuard?: {
+        statuses: string[];
+        assigneeAgentId: string;
+      };
     },
   ) => Promise<unknown>;
 }
@@ -27,6 +32,11 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   taskKey?: string | null;
+  idempotencyKey?: string | null;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -41,6 +51,7 @@ export function queueIssueAssignmentWakeup(input: {
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
       },
+      idempotencyKey: input.idempotencyKey ?? null,
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: {
@@ -48,6 +59,7 @@ export function queueIssueAssignmentWakeup(input: {
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
       },
+      issueStateGuard: input.issueStateGuard,
     })
     .catch((err) => {
       logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");

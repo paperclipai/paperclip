@@ -197,13 +197,14 @@ export function approvalService(db: Db) {
               decidedByUserId,
             );
           }
-          void notifyHireApproved(db, {
+          await notifyHireApproved(db, {
             companyId: updated.companyId,
             agentId: hireApprovedAgentId,
             source: "approval",
             sourceId: id,
             approvedAt: now,
-          }).catch(() => {});
+            awaitAdapterHook: false,
+          });
         }
       }
 
