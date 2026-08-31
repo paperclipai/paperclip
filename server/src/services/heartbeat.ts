@@ -2416,6 +2416,21 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 }
 
+/**
+ * The execution workspace is realized after the adapter configuration has been
+ * resolved. Its CWD must therefore override any persisted adapter CWD, so the
+ * child process starts in the workspace that passed runtime preflight.
+ */
+export function bindRuntimeConfigToExecutionWorkspace(
+  runtimeConfig: Record<string, unknown>,
+  executionWorkspaceCwd: string,
+): Record<string, unknown> {
+  return {
+    ...runtimeConfig,
+    cwd: executionWorkspaceCwd,
+  };
+}
+
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
@@ -15958,6 +15973,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
+    runtimeConfig = bindRuntimeConfigToExecutionWorkspace(runtimeConfig, executionWorkspace.cwd);
     const runtimeSessionFallback = taskKey || resetTaskSession
       ? null
       : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)

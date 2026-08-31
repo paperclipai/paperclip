@@ -15,6 +15,7 @@ import {
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
+  bindRuntimeConfigToExecutionWorkspace,
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
@@ -67,6 +68,23 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     ...overrides,
   };
 }
+
+describe("bindRuntimeConfigToExecutionWorkspace", () => {
+  it("overrides a persisted adapter cwd with the realized execution workspace cwd", () => {
+    const config = {
+      cwd: "/paperclip/server",
+      model: "gpt-5.5",
+      env: { KEEP: "value" },
+    };
+
+    expect(bindRuntimeConfigToExecutionWorkspace(config, "/workspace/WPR2-pr-1542")).toEqual({
+      cwd: "/workspace/WPR2-pr-1542",
+      model: "gpt-5.5",
+      env: { KEEP: "value" },
+    });
+    expect(config.cwd).toBe("/paperclip/server");
+  });
+});
 
 type WorkspaceValidationInput = Parameters<typeof assertGitSensitiveAdapterWorkspaceValid>[0];
 
