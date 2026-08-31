@@ -72,6 +72,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { classifyProviderQuotaFailure } from "@paperclipai/adapter-utils/provider-quota";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -3164,10 +3165,10 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
-function classifyError(
+export function classifyAcpxError(
   err: unknown,
   phase?: AcpxExecutionPhase,
-): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
+): Pick<AdapterExecutionResult, "errorCode" | "errorMeta" | "errorFamily" | "retryNotBefore"> {
   const message = err instanceof Error ? err.message : String(err);
   const diagnostics = describeErrorDiagnostics(err);
   const { acpCode, errorName, causeMessage, retryable, stackPreview } = diagnostics;
@@ -3202,6 +3203,20 @@ function classifyError(
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },
+    };
+  }
+  // Quota exhaustion is about *why* the provider refused, not about which
+  // protocol phase noticed. Classify it before the phase dispatch below,
+  // otherwise every quota failure inside a turn collapses into
+  // `acpx_turn_failed` and recovery retries it immediately instead of waiting
+  // for the reset stated in the message.
+  const quota = classifyProviderQuotaFailure([message, causeMessage ?? ""].join("\n"));
+  if (quota) {
+    return {
+      errorCode: quota.errorCode,
+      errorFamily: quota.errorFamily,
+      retryNotBefore: quota.retryNotBefore,
+      errorMeta: { category: "provider_quota", ...baseMeta },
     };
   }
   const phaseCode = (() => {
@@ -3272,14 +3287,14 @@ async function emitAcpxFailure(input: {
   // sandbox-provided bytes become durable host run-log content.
   suppressChildStderrTail?: boolean;
 }): Promise<{
-  classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
+  classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta" | "errorFamily" | "retryNotBefore">;
   message: string;
   childStderrTail: string | null;
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
   const message = messageOverride ?? rawMessage;
-  const classified = classifyError(err, phase);
+  const classified = classifyAcpxError(err, phase);
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
@@ -4659,6 +4674,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        // A turn that ends `failed` because the plan's quota ran out is not a
+        // protocol fault: it is a wait. Tag it so recovery holds off until the
+        // reset the provider named instead of burning a run every heartbeat.
+        const terminalQuota = terminal.status === "failed" && !timedOut && !channelLost
+          ? classifyProviderQuotaFailure([errorMessage, terminalStopReason ?? ""].join("\n"))
+          : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -4674,13 +4695,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed"
-            ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
-                : null,
+          errorCode: terminalQuota
+            ? terminalQuota.errorCode
+            : terminal.status === "failed"
+              ? "acpx_turn_failed"
+              : timedOut
+                ? "acpx_timeout"
+                : channelLost
+                  ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                  : null,
+          ...(terminalQuota
+            ? { errorFamily: terminalQuota.errorFamily, retryNotBefore: terminalQuota.retryNotBefore }
+            : {}),
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
