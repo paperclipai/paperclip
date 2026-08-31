@@ -8,6 +8,7 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  NATIVE_SPARK_EXECUTOR_AGENT_ID,
   ISSUE_COMMENT_AUTHOR_TYPES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
@@ -300,7 +301,15 @@ export const issueExecutionPolicySchema = z.object({
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),
+  assignmentFence: z.object({
+    kind: z.literal("native_spark_only"),
+    allowedAgentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
+  }).strict().optional().nullable().default(null),
 });
+
+export const recordIssueAssignmentFenceReceiptSchema = z.object({
+  agentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
+}).strict();
 
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
@@ -336,6 +345,17 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  assignmentFenceReceipt: z.object({
+    agentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
+    observedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    source: z.literal("native"),
+  }).strict().optional().nullable().default(null),
+  assignmentFenceAuthorization: z.object({
+    agentId: z.literal(NATIVE_SPARK_EXECUTOR_AGENT_ID),
+    assignedAt: z.string().datetime(),
+    source: z.literal("explicit"),
+  }).strict().optional().nullable().default(null),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({

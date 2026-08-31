@@ -694,6 +694,25 @@ export interface IssueExecutionPolicy {
    * default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  assignmentFence?: IssueAssignmentFence | null;
+}
+
+export interface IssueAssignmentFence {
+  kind: "native_spark_only";
+  allowedAgentId: string;
+}
+
+export interface IssueAssignmentFenceReceipt {
+  agentId: string;
+  observedAt: string;
+  expiresAt: string;
+  source: "native";
+}
+
+export interface IssueAssignmentFenceAuthorization {
+  agentId: string;
+  assignedAt: string;
+  source: "explicit";
 }
 
 export interface IssueExecutionMonitorState {
@@ -731,6 +750,8 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  assignmentFenceReceipt?: IssueAssignmentFenceReceipt | null;
+  assignmentFenceAuthorization?: IssueAssignmentFenceAuthorization | null;
 }
 
 export interface IssueExecutionDecision {

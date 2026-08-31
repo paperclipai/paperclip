@@ -40,6 +40,7 @@ import {
   createIssueLabelSchema,
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
+  recordIssueAssignmentFenceReceiptSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -9874,6 +9875,7 @@ export function issueRoutes(
     const postCommitIssueActions: IssuePostCommitAction[] = [];
     const issueUpdateData = {
       ...updateFields,
+      ...(normalizedAssigneeAgentId !== undefined ? { assignmentFenceIntent: "explicit" as const } : {}),
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     };
@@ -11010,6 +11012,32 @@ export function issueRoutes(
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
+  });
+
+  router.post("/issues/:id/assignment-fence/receipt", validate(recordIssueAssignmentFenceReceiptSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only the board may record an assignment fence receipt" });
+      return;
+    }
+
+    const updated = await svc.recordAssignmentFenceReceipt(id, req.body.agentId as string);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.assignment_fence_receipt_recorded",
+      entityType: "issue",
+      entityId: updated.id,
+      details: { agentId: req.body.agentId },
+    });
+    res.json(updated);
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {

@@ -433,6 +433,7 @@ export {
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
+  recordIssueAssignmentFenceReceiptSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,

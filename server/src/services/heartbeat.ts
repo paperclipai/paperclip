@@ -267,6 +267,7 @@ import {
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
+import { assertIssueAssignmentFence } from "./issue-assignment-fence.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -12893,6 +12894,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
+      const fencedIssue = await getIssueExecutionContext(run.companyId, issueId);
+      if (fencedIssue) {
+        try {
+          assertIssueAssignmentFence({
+            issue: {
+              status: fencedIssue.status,
+              assigneeAgentId: fencedIssue.assigneeAgentId,
+              assigneeUserId: null,
+              executionPolicy: normalizeIssueExecutionPolicy(fencedIssue.executionPolicy ?? null),
+              executionState: parseIssueExecutionState(fencedIssue.executionState),
+            },
+            nextAssigneeAgentId: run.agentId,
+            nextAssigneeUserId: null,
+            nextStatus: fencedIssue.status,
+            assignmentIntent: "checkout",
+          });
+        } catch (err) {
+          if (!(err instanceof HttpError)) throw err;
+          await cancelRunInternal(run.id, err.message, {
+            errorCode: "issue_assignment_fence",
+          });
+          logger.info({ runId: run.id, issueId, reason: err.message }, "claimQueuedRun: cancelled by issue assignment fence");
+          return null;
+        }
+      }
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
         companyId: run.companyId,
