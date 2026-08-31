@@ -501,3 +501,6 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 <p align="center">
   <sub>基于 MIT 协议开源。专为想要高效完成工作、而非整天盯着智能体的人群打造。</sub>
 </p>
+---
+
+> 💡 **文档维护说明**：本中文文档由社区志愿者（@JasonYeYuhe）翻译维护，最后同步更新于 2026年8月31日。如发现内容与官方英文原版存在差异或新特性滞后，欢迎提交 PR 共同完善！
