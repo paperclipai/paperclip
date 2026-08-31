@@ -386,6 +386,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const LOCAL_BOARD_USER_ID = "local-board";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
@@ -17841,9 +17842,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Suppress reopen only when every referenced comment came from this run;
         // mixed batches must still reopen because they contain a real follow-up.
         let deferredCommentWakeIsSelfAuthored = false;
+        let deferredCommentWakeHasCompleteCommentSet = false;
+        let deferredCommentWakeContainsRealHuman = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
+            .select({
+              authorUserId: issueComments.authorUserId,
+              createdByRunId: issueComments.createdByRunId,
+            })
             .from(issueComments)
             .where(
               and(
@@ -17853,15 +17859,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             )
             .then((rows) => rows);
+          deferredCommentWakeHasCompleteCommentSet =
+            deferredComments.length === new Set(deferredCommentIds).size;
           deferredCommentWakeIsSelfAuthored =
             deferredComments.length > 0 &&
             deferredComments.every((comment) => comment.createdByRunId === run.id);
+          deferredCommentWakeContainsRealHuman = deferredComments.some(
+            (comment) =>
+              comment.authorUserId !== null &&
+              comment.authorUserId !== LOCAL_BOARD_USER_ID &&
+              comment.createdByRunId !== run.id,
+          );
         }
+        // `local-board` is also the fail-open attribution used when a local run's
+        // bearer expires. A generic deferred comment from that sentinel cannot be
+        // distinguished from a real board write, so keep it record-only if the
+        // active run closes the issue before promotion. Explicit reopen/resume
+        // wakes keep their existing behavior. Classify every coalesced comment,
+        // because the deferred request retains the first comment's actor.
+        const deferredCommentWakeIsImplicitLocalBoard =
+          deferred.requestedByActorType === "user" &&
+          deferred.requestedByActorId === LOCAL_BOARD_USER_ID &&
+          deferredWakeReason === "issue_commented" &&
+          deferredCommentWakeHasCompleteCommentSet &&
+          !deferredCommentWakeContainsRealHuman &&
+          deferredContextSeed.resumeIntent !== true &&
+          deferredContextSeed.followUpRequested !== true;
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
+          !deferredCommentWakeIsImplicitLocalBoard &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||

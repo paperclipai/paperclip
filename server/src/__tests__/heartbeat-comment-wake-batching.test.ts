@@ -1159,7 +1159,34 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not reopen a finished issue when the deferred comment wake is self-authored by the closing run", async () => {
+  it.each([
+    {
+      caseName: "self-authored by the closing run",
+      authorUserId: "local-cli-user",
+      requestedByActorId: "local-cli-user",
+      stampClosingRunId: true,
+      terminalStatus: "done" as const,
+    },
+    {
+      caseName: "attributed to local-board without a run id",
+      authorUserId: "local-board",
+      requestedByActorId: "local-board",
+      stampClosingRunId: false,
+      terminalStatus: "done" as const,
+    },
+    {
+      caseName: "attributed to local-board without a run id on a cancelled issue",
+      authorUserId: "local-board",
+      requestedByActorId: "local-board",
+      stampClosingRunId: false,
+      terminalStatus: "cancelled" as const,
+    },
+  ])("does not reopen a $terminalStatus issue when the deferred comment wake is $caseName", async ({
+    authorUserId,
+    requestedByActorId,
+    stampClosingRunId,
+    terminalStatus,
+  }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1233,17 +1260,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return run?.status === "running";
       });
 
-      // Local-CLI agents post comments under user auth, but stamp the heartbeat
-      // run id on each comment via createdByRunId. Simulate that here: a "user"
-      // comment that was actually authored by the run that is about to close
-      // the issue. Without the Path A guard this would trigger a reopen.
+      // Cover both the normal local-CLI attribution path and the expired-bearer
+      // fallback observed in production, where the comment is stored as
+      // local-board without a createdByRunId.
       const selfComment = await db
         .insert(issueComments)
         .values({
           companyId,
           issueId,
-          authorUserId: "local-cli-user",
-          createdByRunId: firstRun?.id ?? null,
+          authorUserId,
+          createdByRunId: stampClosingRunId ? firstRun?.id ?? null : null,
           body: "Closing comment from the same run",
         })
         .returning()
@@ -1262,7 +1288,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           wakeReason: "issue_commented",
         },
         requestedByActorType: "user",
-        requestedByActorId: "local-cli-user",
+        requestedByActorId,
       });
 
       expect(deferredRun).toBeNull();
@@ -1282,11 +1308,13 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      const terminalAt = new Date();
       await db
         .update(issues)
         .set({
-          status: "done",
-          completedAt: new Date(),
+          status: terminalStatus,
+          completedAt: terminalStatus === "done" ? terminalAt : null,
+          cancelledAt: terminalStatus === "cancelled" ? terminalAt : null,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
@@ -1312,22 +1340,39 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
+          cancelledAt: issues.cancelledAt,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       expect(issueAfterPromotion).toMatchObject({
-        status: "done",
+        status: terminalStatus,
       });
-      expect(issueAfterPromotion?.completedAt).not.toBeNull();
+      expect(terminalStatus === "done"
+        ? issueAfterPromotion?.completedAt
+        : issueAfterPromotion?.cancelledAt).not.toBeNull();
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
     }
   }, 120_000);
 
-  it("still reopens a finished issue when a deferred batch mixes self-authored and human comments", async () => {
+  it.each([
+    {
+      caseName: "starts with a stamped self-comment",
+      firstAuthorUserId: "local-cli-user",
+      stampClosingRunId: true,
+    },
+    {
+      caseName: "starts with an unstamped local-board comment",
+      firstAuthorUserId: "local-board",
+      stampClosingRunId: false,
+    },
+  ])("still reopens a finished issue when a deferred batch $caseName before a human comment", async ({
+    firstAuthorUserId,
+    stampClosingRunId,
+  }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1401,14 +1446,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return run?.status === "running";
       });
 
-      const selfComment = await db
+      const firstComment = await db
         .insert(issueComments)
         .values({
           companyId,
           issueId,
-          authorUserId: "local-cli-user",
-          createdByRunId: firstRun?.id ?? null,
-          body: "Closing note from the same run",
+          authorUserId: firstAuthorUserId,
+          createdByRunId: stampClosingRunId ? firstRun?.id ?? null : null,
+          body: "First comment queued behind the active run",
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1417,16 +1462,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
-        payload: { issueId, commentId: selfComment.id },
+        payload: { issueId, commentId: firstComment.id },
         contextSnapshot: {
           issueId,
           taskId: issueId,
-          commentId: selfComment.id,
-          wakeCommentId: selfComment.id,
+          commentId: firstComment.id,
+          wakeCommentId: firstComment.id,
           wakeReason: "issue_commented",
         },
         requestedByActorType: "user",
-        requestedByActorId: "local-cli-user",
+        requestedByActorId: firstAuthorUserId,
       });
 
       expect(firstDeferredRun).toBeNull();
@@ -1523,7 +1568,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       const secondWake = parseWakePayloadFromMessage(secondPayload.message);
       expect(secondWake).toMatchObject({
         reason: "issue_commented",
-        commentIds: [selfComment.id, humanComment.id],
+        commentIds: [firstComment.id, humanComment.id],
         latestCommentId: humanComment.id,
         issue: {
           id: issueId,
