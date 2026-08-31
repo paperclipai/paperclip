@@ -299,6 +299,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeRecordedModelId } from "@paperclipai/adapter-utils/model-identity";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
@@ -14336,7 +14337,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         biller,
         billingType,
         costStatus,
-        model: result.model ?? "unknown",
+        // Normalize rather than `?? "unknown"`: an adapter that echoes a model
+        // picker's placeholder id would otherwise write a string into the ledger
+        // that looks like a model but cannot be priced or audited.
+        model: normalizeRecordedModelId(result.model),
         inputTokens,
         cachedInputTokens,
         outputTokens,
@@ -17004,7 +17008,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               configFreshness: configFreshnessResultMetadata,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
-              model: readNonEmptyString(adapterResult.model) ?? "unknown",
+              model: normalizeRecordedModelId(adapterResult.model),
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
