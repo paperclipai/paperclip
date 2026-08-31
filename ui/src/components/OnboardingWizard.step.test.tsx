@@ -32,6 +32,7 @@ const mockGoalsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({
   create: vi.fn(),
   adapterModels: vi.fn(),
@@ -40,9 +41,16 @@ const mockAgentsApi = vi.hoisted(() => ({
   saveInstructionsFile: vi.fn(),
   testEnvironment: vi.fn(),
 }));
-const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+const mockCompaniesApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  detachInflightList: vi.fn(),
+  create: vi.fn(),
+}));
+const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn() }));
+const mockIssuesApi = vi.hoisted(() => ({ create: vi.fn() }));
 
 const routerState = vi.hoisted(() => ({ pathname: "/" }));
+const mockNavigate = vi.hoisted(() => vi.fn());
 const dialogState = vi.hoisted(() => ({
   onboardingOpen: false,
   onboardingOptions: {} as { initialStep?: number; companyId?: string },
@@ -61,15 +69,16 @@ const companyState = vi.hoisted(() => ({
 
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
+vi.mock("../api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
-vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
-vi.mock("../api/projects", () => ({ projectsApi: { list: vi.fn(), create: vi.fn() } }));
+vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: routerState.pathname }),
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useParams: () => ({}),
 }));
 
@@ -96,6 +105,12 @@ function currentStep(): "mission" | "agent" | "closed" | "other" {
   if (headings.includes("Define your mission")) return "mission";
   if (body.querySelector("input[placeholder='Chief of staff']")) return "agent";
   return "other";
+}
+
+function getStartedButton(): HTMLButtonElement | undefined {
+  return [...document.body.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("Get started"),
+  );
 }
 
 function confirmMissionButton(): HTMLButtonElement | null {
@@ -176,10 +191,23 @@ describe("OnboardingWizard — which step it lands on", () => {
     // The wizard restores its step from localStorage, so a step left behind by
     // an earlier case would decide the next one.
     localStorage.clear();
+    mockNavigate.mockReset();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockCompaniesApi.list.mockResolvedValue(companyState.companies);
+    mockProjectsApi.list.mockResolvedValue([]);
+    mockProjectsApi.create.mockResolvedValue({ id: "project-1" });
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PC1-1" });
     routerState.pathname = "/";
     dialogState.onboardingOpen = false;
     dialogState.onboardingOptions = {};
     dialogState.onboardingRouteDismissed = false;
+    dialogState.setOnboardingRouteDismissed.mockImplementation((dismissed: boolean) => {
+      dialogState.onboardingRouteDismissed = dismissed;
+    });
+    dialogState.closeOnboarding.mockImplementation(() => {
+      dialogState.onboardingOpen = false;
+      dialogState.onboardingOptions = {};
+    });
     mockAdaptersApi.list.mockResolvedValue([]);
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
@@ -213,6 +241,86 @@ describe("OnboardingWizard — which step it lands on", () => {
     await settle();
 
     expect(currentStep()).toBe("agent");
+  });
+
+  it("restores Confirm mission reloads at the agent step", async () => {
+    localStorage.setItem(
+      "paperclip-onboarding-state",
+      JSON.stringify({
+        step: 1,
+        companyName: "Acme",
+        companyGoal: "Ship the thing",
+        missionConfirmed: false,
+        createdCompanyId: "company-1",
+        createdCompanyGoalId: "goal-1",
+      }),
+    );
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+
+    await render();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+
+  it("keeps Step 5 stable through pending writes and query invalidation, then dismisses the route", async () => {
+    let resolveProject!: (project: { id: string }) => void;
+    mockProjectsApi.create.mockReturnValue(
+      new Promise<{ id: string }>((resolve) => {
+        resolveProject = resolve;
+      }),
+    );
+    localStorage.setItem(
+      "paperclip-onboarding-state",
+      JSON.stringify({
+        step: 5,
+        companyName: "Acme",
+        companyGoal: "Ship the thing",
+        missionConfirmed: true,
+        createdCompanyId: "company-1",
+        createdCompanyPrefix: "PC1",
+        createdCompanyGoalId: "goal-1",
+        createdAgentId: "agent-1",
+      }),
+    );
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    routerState.pathname = "/PC1/onboarding";
+    dialogState.onboardingOpen = true;
+    mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+
+    await render();
+    await settle();
+    expect(getStartedButton()).toBeDefined();
+
+    await act(async () => {
+      getStartedButton()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle(2);
+    expect(document.body.textContent).toContain("Launching...");
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.goals.list("company-1") });
+    });
+    await settle(2);
+    expect(document.body.textContent).toContain("Launching...");
+    expect(currentStep()).not.toBe("agent");
+
+    await act(async () => resolveProject({ id: "project-1" }));
+    await settle();
+
+    expect(dialogState.setOnboardingRouteDismissed).toHaveBeenCalledWith(true);
+    expect(mockNavigate).toHaveBeenCalledWith("/PC1/issues/PC1-1");
+    expect(localStorage.getItem("paperclip-onboarding-state")).toBeNull();
+    expect(currentStep()).toBe("closed");
+
+    // Simulate the destination render/reload. With the draft cleared and the
+    // pathname off onboarding, the route cannot resurrect the wizard.
+    routerState.pathname = "/PC1/issues/PC1-1";
+    await rerender();
+    await settle();
+    expect(currentStep()).toBe("closed");
   });
 
   it("stays closed until the mission lookup settles", async () => {
