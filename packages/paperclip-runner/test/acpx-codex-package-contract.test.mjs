@@ -37,6 +37,12 @@ test("the runner pins only the Codex ACPX production dependencies", () => {
   );
 });
 
+test("the package exposes only the reviewed Codex ACPX sidecar binary", () => {
+  assert.deepEqual(runnerPackage.bin, {
+    "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+  });
+});
+
 test("old and new pnpm configuration both apply the exact runtime patches", () => {
   assert.equal(
     rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],

@@ -18,34 +18,57 @@ import type {
   AcpxRuntimePortIdentity,
   AcpxRuntimePortOpenOptions,
 } from "./runtime-host.js";
+import {
+  assertVerifiedAcpxProviderPlatform,
+  awaitVerifiedAcpxProviderOwnership,
+} from "./installation-integrity.js";
 import { decideAcpxPermission } from "./permission-policy.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
+const MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS = 3;
+const MAX_ADMISSION_CLEANUP_ATTEMPTS = 1 + MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS;
 const RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS = 10;
-const RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS = 30_000;
+const RETAINED_ADMISSION_CLEANUP_RETRY_MAX_MS = 100;
 const PROVIDER_TERM_EXIT_TIMEOUT_MS = 2_000;
 const PROVIDER_KILL_EXIT_TIMEOUT_MS = 2_000;
+const PROVIDER_SHUTDOWN_SCHEDULING_MARGIN_MS = 1_000;
 const MAX_LATE_RUNTIME_CLEANUP_RECONCILIATION_ATTEMPTS = 3;
 // Production shutdown waits for the protocol close bound before beginning the
-// sequential TERM/KILL verification windows. Keep this exported package-local
-// bound aligned with the implementation so admission can include the complete
-// provider cleanup path instead of accounting for only part of it.
+// sequential TERM/KILL verification windows plus a finite scheduling margin.
+// Keep this exported package-local bound aligned with the complete
+// implementation.
 export const DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS =
   DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS +
   PROVIDER_TERM_EXIT_TIMEOUT_MS +
-  PROVIDER_KILL_EXIT_TIMEOUT_MS;
+  PROVIDER_KILL_EXIT_TIMEOUT_MS +
+  PROVIDER_SHUTDOWN_SCHEDULING_MARGIN_MS;
 // A close may outlive its caller-facing wait bound. Keep every exact attempt
 // owned until it settles. A handle never starts a second protocol close while
 // the first remains unresolved; late failure can start bounded reconciliation
 // only after the exact attempt reaches a terminal outcome.
 const activeRuntimeCleanupOwners = new Set<Promise<unknown>>();
 const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
+const SESSION_HANDSHAKE_TIMEOUT_MS = 8_000;
 
 class AcpxRuntimeCloseTimeoutError extends Error {
   constructor() {
     super("ACPX runtime close timed out");
     this.name = "AcpxRuntimeCloseTimeoutError";
+  }
+}
+
+class AcpxRuntimeCloseFinalTimeoutError extends Error {
+  constructor() {
+    super("ACPX runtime close remained pending after its final cleanup watch");
+    this.name = "AcpxRuntimeCloseFinalTimeoutError";
+  }
+}
+
+class AcpxSessionHandshakeTimeoutError extends Error {
+  constructor() {
+    super("ACPX session handshake exceeded its admission deadline");
+    this.name = "AcpxSessionHandshakeTimeoutError";
   }
 }
 
@@ -56,8 +79,14 @@ export interface CodexAcpxRuntimeDependencies {
   }) => AcpAgentRegistry;
   createStore?: (input: { stateDir: string }) => AcpSessionStore;
   runtimeCloseTimeoutMs?: number;
-  /** Internal test seam for autonomous failed-admission cleanup ownership. */
+  /** Internal test seam for the provider-session admission deadline. */
+  sessionHandshakeTimeoutMs?: number;
+  /** Internal test seam for verified guardian ownership transfer. */
+  awaitProviderOwnership?: (child: ChildProcess) => Promise<void>;
+  /** Retains autonomous cleanup ownership across the sidecar lifecycle. */
   retainCleanup?: (cleanup: Promise<void>) => void;
+  /** Internal test seam for the fail-closed platform admission boundary. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -77,21 +106,31 @@ export async function openCodexAcpxRuntime(
     options.retainFailedAdmissionCleanup(Promise.resolve());
     throw options.signal.reason;
   }
+  // Verified ACPX command admission already fails closed on Windows because
+  // Node cannot atomically open the provider executable with O_NOFOLLOW there.
+  // Reject at the adapter boundary too: allowing a fabricated command lease to
+  // start a provider would create a cleanup state that cannot guarantee both a
+  // bounded sidecar exit and retained ownership of an unresponsive process
+  // tree when Node cannot safely signal a verified provider process group.
+  assertVerifiedAcpxProviderPlatform(dependencies.platform ?? process.platform);
   if (options.profile.agent !== "codex") {
     throw new Error(
       "The production ACPX runtime currently supports Codex only",
     );
   }
-  // The verified-command boundary already refuses to mint a Windows command
-  // lease, because Node cannot pin its executable there. Repeat the platform
-  // gate at this lower boundary so alternate host wiring cannot launch a
-  // credential-bearing provider without a killable tree. `child.kill()` only
-  // terminates the direct Windows process, and taskkill cannot reliably find
-  // descendants after their original parent has exited; Windows support must
-  // therefore wait for an owned Job Object or equivalent containment.
-  if (process.platform === "win32") {
+  options.signal?.throwIfAborted();
+  const credentialFenceFds = options.credentialFenceFds;
+  if (
+    !Array.isArray(credentialFenceFds) ||
+    credentialFenceFds.length !== 2 ||
+    credentialFenceFds.some(
+      (fd) => !Number.isSafeInteger(fd) || (fd as number) < 0,
+    ) ||
+    credentialFenceFds[0] === credentialFenceFds[1] ||
+    typeof options.activateCredentialFenceOwner !== "function"
+  ) {
     throw new Error(
-      "The production ACPX runtime requires provider process-tree containment unavailable on Windows",
+      "The production ACPX runtime requires an inherited credential-home fence",
     );
   }
 
@@ -100,11 +139,6 @@ export async function openCodexAcpxRuntime(
   const createRuntime = dependencies.createRuntime ?? createAcpRuntime;
   const runtimeCloseTimeoutMs =
     dependencies.runtimeCloseTimeoutMs ?? DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS;
-  const children = new SpawnedChildSet();
-  const baseStore = createStore({ stateDir: options.stateDirectory });
-  let failedHandshakeHandle: AcpRuntimeHandle | null = null;
-  let admissionCleanup: RuntimeAdmissionCleanup | null = null;
-  let abortedHandshakeCleanup: Promise<void> | null = null;
   const retainedCleanupOwners = new WeakSet<Promise<void>>();
   const retainCleanup = (cleanup: Promise<void>): void => {
     if (retainedCleanupOwners.has(cleanup)) {
@@ -114,6 +148,13 @@ export async function openCodexAcpxRuntime(
     dependencies.retainCleanup?.(cleanup);
     retainCodexRuntimeCleanup(cleanup);
   };
+  const children = new SpawnedChildSet(
+    retainCleanup,
+    dependencies.awaitProviderOwnership,
+  );
+  const baseStore = createStore({ stateDir: options.stateDirectory });
+  let failedHandshakeHandle: AcpRuntimeHandle | null = null;
+  let admissionCleanup: RuntimeAdmissionCleanup | null = null;
   const rememberHandshakeHandle = (record: AcpSessionRecord): void => {
     const runtimeSessionName = record.name?.trim();
     if (
@@ -219,16 +260,12 @@ export async function openCodexAcpxRuntime(
       // been cancelled. Check at the last host-owned boundary so a late
       // handshake cannot create a provider process after authority is gone.
       options.signal?.throwIfAborted();
-      // A verified provider can create descendants that inherit its launch
-      // credential. Give the provider a dedicated POSIX process group so
-      // cleanup authority covers that complete credential-bearing tree.
       options.assertWorkspaceHeld?.();
       return children.add(
-        options.command.spawn(input.args, {
-          ...input.options,
-          detached: true,
+        options.command.spawn(input.args, input.options, {
+          credentialFenceFds,
+          activateCredentialFenceOwner: options.activateCredentialFenceOwner!,
         }) as ChildProcess,
-        true,
       );
     },
   });
@@ -236,75 +273,66 @@ export async function openCodexAcpxRuntime(
     runtime,
     children,
     runtimeCloseTimeoutMs,
-    retainCleanup,
   );
 
+  const handshake = Promise.resolve().then(() =>
+    runtime.ensureSession({
+      sessionKey: options.providerSessionKey,
+      agent: "codex",
+      mode: "persistent",
+      cwd: options.cwd,
+      sessionOptions: {
+        model: options.profile.qualificationModel,
+        ...(options.systemInstructions
+          ? { systemPrompt: { append: options.systemInstructions } }
+          : {}),
+      },
+    }),
+  );
   let handle: AcpRuntimeHandle | null = null;
+  let lateCleanup: Promise<void> | null = null;
   try {
-    const handshake = Promise.resolve().then(() =>
-      runtime.ensureSession({
-        sessionKey: options.providerSessionKey,
-        agent: "codex",
-        mode: "persistent",
-        cwd: options.cwd,
-        sessionOptions: {
-          model: options.profile.qualificationModel,
-          ...(options.systemInstructions
-            ? { systemPrompt: { append: options.systemInstructions } }
-            : {}),
-        },
-      }),
+    const boundedHandshake = boundedSessionHandshake(
+      handshake,
+      dependencies.sessionHandshakeTimeoutMs ?? SESSION_HANDSHAKE_TIMEOUT_MS,
     );
-    if (options.signal === undefined) {
-      handle = await handshake;
-    } else {
-      try {
-        handle = await raceRuntimeHandshakeWithAbort(handshake, options.signal);
-      } catch (error) {
-        if (options.signal.aborted) {
-          abortedHandshakeCleanup = handshake.then(
-            (lateHandle) =>
-              admissionCleanup!.runRetained(
-                lateHandle,
-                "ACPX runtime admission aborted",
-              ),
-            () =>
-              admissionCleanup!.runRetained(
-                failedHandshakeHandle,
-                "ACPX runtime admission aborted",
-              ),
-          );
-          retainCleanup(abortedHandshakeCleanup);
-        }
-        throw error;
-      }
-      // The promise and abort notification can settle in the same turn. Do
-      // not admit a handle if cancellation won immediately afterward.
-      options.signal.throwIfAborted();
-    }
+    handle = options.signal
+      ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
+      : await boundedHandshake;
+    // A provider can answer only after the verified sentinel is armed, but do
+    // not admit the session until the owner has observed that exact handoff.
+    await children.verifyLifetimeOwnership();
+    // The handshake or lifetime-ownership observation can settle in the same
+    // turn as cancellation. Never admit that newly acquired authority.
+    options.signal?.throwIfAborted();
   } catch (error) {
+    const aborted = options.signal?.aborted === true;
+    if (aborted || error instanceof AcpxSessionHandshakeTimeoutError) {
+      lateCleanup = lateHandshakeCleanup(
+        handshake,
+        admissionCleanup,
+        aborted
+          ? "ACPX runtime admission aborted"
+          : "ACPX session handshake completed after its admission deadline",
+      );
+      retainCleanup(lateCleanup);
+    }
     const cleanupHandle = handle ?? failedHandshakeHandle;
+    const cleanupReason = aborted
+      ? "ACPX runtime admission aborted"
+      : "ACPX session handshake failed";
     const cleanupErrors = await admissionCleanup.run(
       cleanupHandle,
-      options.signal?.aborted
-        ? "ACPX runtime admission aborted"
-        : "ACPX session handshake failed",
+      cleanupReason,
     );
     const retainedCleanup =
       cleanupErrors.length === 0
         ? Promise.resolve()
-        : admissionCleanup.runRetained(
-            cleanupHandle,
-            options.signal?.aborted
-              ? "ACPX runtime admission aborted"
-              : "ACPX session handshake failed",
-          );
+        : admissionCleanup.runRetained(cleanupHandle, cleanupReason);
     const cleanupProof =
-      abortedHandshakeCleanup === null
+      lateCleanup === null
         ? retainedCleanup
-        : Promise.all([retainedCleanup, abortedHandshakeCleanup]).then(
-            () => undefined,
-          );
+        : Promise.all([retainedCleanup, lateCleanup]).then(() => undefined);
     options.retainFailedAdmissionCleanup(cleanupProof);
     retainCleanup(cleanupProof);
     if (cleanupErrors.length > 0) {
@@ -330,17 +358,12 @@ export async function openCodexAcpxRuntime(
       runtimeCloseTimeoutMs,
     );
   } catch (error) {
-    const cleanupErrors = await admissionCleanup.run(
-      handle,
-      "ACPX runtime identity validation failed",
-    );
+    const cleanupReason = "ACPX runtime identity validation failed";
+    const cleanupErrors = await admissionCleanup.run(handle, cleanupReason);
     const cleanupProof =
       cleanupErrors.length === 0
         ? Promise.resolve()
-        : admissionCleanup.runRetained(
-            handle,
-            "ACPX runtime identity validation failed",
-          );
+        : admissionCleanup.runRetained(handle, cleanupReason);
     options.retainFailedAdmissionCleanup(cleanupProof);
     retainCleanup(cleanupProof);
     if (cleanupErrors.length > 0) {
@@ -398,6 +421,7 @@ class RuntimeAdmissionCleanup {
     string,
     Promise<unknown | undefined>
   >();
+  readonly #handleAttemptCounts = new Map<string, number>();
   readonly #registeredTargets = new Map<
     string,
     RuntimeAdmissionCleanupTarget
@@ -409,7 +433,6 @@ class RuntimeAdmissionCleanup {
     private readonly runtime: AcpRuntime,
     private readonly children: SpawnedChildSet,
     private readonly runtimeCloseTimeoutMs: number,
-    private readonly retainCleanup: (cleanup: Promise<void>) => void,
   ) {}
 
   run(handle: AcpRuntimeHandle | null, reason: string): Promise<unknown[]> {
@@ -417,12 +440,9 @@ class RuntimeAdmissionCleanup {
       runtimeAdmissionCleanupTargetKey(handle),
       handle,
     );
-    return this.#runAttempt(targetKey, handle, reason).then(({ errors }) => {
-      if (errors.length > 0) {
-        this.retainCleanup(this.runRetained(handle, reason));
-      }
-      return errors;
-    });
+    return this.#runAttempt(targetKey, handle, reason).then(
+      ({ errors }) => errors,
+    );
   }
 
   runRetained(handle: AcpRuntimeHandle | null, reason: string): Promise<void> {
@@ -430,12 +450,13 @@ class RuntimeAdmissionCleanup {
     const targetKey = this.#resolveTargetKey(rawTargetKey, handle);
     const existing = this.#registeredTargets.get(targetKey);
     if (existing !== undefined) {
-      existing.handle =
-        existing.handle === null
-          ? handle
-          : handle === null
-            ? existing.handle
-            : preferRuntimeAdmissionCleanupHandle(existing.handle, handle);
+      if (existing.handle === null) existing.handle = handle;
+      else if (handle !== null) {
+        existing.handle = preferRuntimeAdmissionCleanupHandle(
+          existing.handle,
+          handle,
+        );
+      }
       this.#targetAliases.set(rawTargetKey, targetKey);
       return existing.cleanup!;
     }
@@ -492,24 +513,58 @@ class RuntimeAdmissionCleanup {
     targetKey: string,
     target: RuntimeAdmissionCleanupTarget,
   ): Promise<void> {
+    let runtimeTerminalError: unknown | null = null;
+    let processErrors: unknown[] = [];
     let retryDelayMs = RETAINED_ADMISSION_CLEANUP_RETRY_MIN_MS;
-    // Retained cleanup is the continuing owner. Keep one runtime-close attempt
-    // in flight at a time and retry process-tree termination until both are
-    // confirmed complete; a finite budget would recreate an orphan boundary.
     for (;;) {
       const attempt = await this.#runAttempt(
         targetKey,
-        target.handle,
+        runtimeTerminalError === null ? target.handle : null,
         target.reason,
       );
-      const runtimeNeedsRetry =
-        target.handle !== null &&
-        attempt.runtimeError !== undefined &&
-        !this.#closedHandles.has(targetKey);
-      const processNeedsRetry = attempt.processErrors.length > 0;
-      if (!runtimeNeedsRetry && !processNeedsRetry) {
-        return;
+      let runtimeError = attempt.runtimeError;
+      processErrors = attempt.processErrors;
+      if (attempt.pendingRuntimeClose !== undefined) {
+        // The configured timeout bounds the caller-facing pass, not the exact
+        // close promise. Give that exact promise one final bounded watch. A
+        // late rejection can then admit the next actual close attempt, while
+        // a second timeout terminalizes protocol cleanup without overlap.
+        const lateOutcome = await closeOutcomeWithin(
+          attempt.pendingRuntimeClose,
+          this.runtimeCloseTimeoutMs,
+        );
+        if (lateOutcome instanceof AcpxRuntimeCloseTimeoutError) {
+          runtimeTerminalError = new AcpxRuntimeCloseFinalTimeoutError();
+          runtimeError = runtimeTerminalError;
+        } else {
+          runtimeError = lateOutcome;
+        }
       }
+      if (
+        runtimeTerminalError === null &&
+        runtimeError !== undefined &&
+        (this.#handleAttemptCounts.get(targetKey) ?? 0) >=
+          MAX_ADMISSION_CLEANUP_ATTEMPTS
+      ) {
+        runtimeTerminalError = new AggregateError(
+          [runtimeError],
+          `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
+        );
+      }
+      const runtimeNeedsRetry =
+        runtimeTerminalError === null &&
+        runtimeError !== undefined &&
+        !this.#closedHandles.has(targetKey);
+      const processNeedsRetry = processErrors.length > 0;
+      if (!runtimeNeedsRetry && !processNeedsRetry) {
+        if (runtimeTerminalError === null) return;
+        throw runtimeTerminalError;
+      }
+      // Runtime close retries are bounded above, but a live provider cannot
+      // be abandoned merely because its first termination passes failed.
+      // Keep this retained owner active with bounded backoff until process
+      // exit is observed. Once the process is gone, any terminal protocol
+      // cleanup error is still reported to the owner below.
       await delay(retryDelayMs);
       retryDelayMs = Math.min(
         retryDelayMs * 2,
@@ -526,13 +581,21 @@ class RuntimeAdmissionCleanup {
     errors: unknown[];
     runtimeError: unknown | undefined;
     processErrors: unknown[];
+    pendingRuntimeClose?: Promise<unknown | undefined>;
   }> {
     const cleanup = this.#tail.then(async () => {
       const errors: unknown[] = [];
       let runtimeError: unknown | undefined;
+      let pendingRuntimeClose: Promise<unknown | undefined> | undefined;
       if (handle !== null && !this.#closedHandles.has(targetKey)) {
-        runtimeError = await this.#closeHandleWithin(targetKey, handle, reason);
+        const runtimeOutcome = await this.#closeHandleWithin(
+          targetKey,
+          handle,
+          reason,
+        );
+        runtimeError = runtimeOutcome.error;
         if (runtimeError !== undefined) errors.push(runtimeError);
+        pendingRuntimeClose = runtimeOutcome.pendingAttempt;
       }
       const processErrors = await this.children.terminate();
       errors.push(...processErrors);
@@ -540,6 +603,7 @@ class RuntimeAdmissionCleanup {
         errors,
         runtimeError,
         processErrors,
+        ...(pendingRuntimeClose === undefined ? {} : { pendingRuntimeClose }),
       };
     });
     this.#tail = cleanup.then(
@@ -553,9 +617,21 @@ class RuntimeAdmissionCleanup {
     targetKey: string,
     handle: AcpRuntimeHandle,
     reason: string,
-  ): Promise<unknown | undefined> {
+  ): Promise<{
+    error: unknown | undefined;
+    pendingAttempt?: Promise<unknown | undefined>;
+  }> {
     let attempt = this.#activeHandleAttempts.get(targetKey);
     if (attempt === undefined) {
+      const attemptCount = this.#handleAttemptCounts.get(targetKey) ?? 0;
+      if (attemptCount >= MAX_ADMISSION_CLEANUP_ATTEMPTS) {
+        return {
+          error: new Error(
+            `ACPX failed-admission cleanup exhausted ${MAX_ADMISSION_CLEANUP_RETRY_ATTEMPTS} retry attempts`,
+          ),
+        };
+      }
+      this.#handleAttemptCounts.set(targetKey, attemptCount + 1);
       attempt = runtimeCloseOutcome(this.runtime, {
         handle,
         reason,
@@ -569,7 +645,10 @@ class RuntimeAdmissionCleanup {
         if (error === undefined) this.#closedHandles.add(targetKey);
       });
     }
-    return await closeOutcomeWithin(attempt, this.runtimeCloseTimeoutMs);
+    const error = await closeOutcomeWithin(attempt, this.runtimeCloseTimeoutMs);
+    return error instanceof AcpxRuntimeCloseTimeoutError
+      ? { error, pendingAttempt: attempt }
+      : { error };
   }
 }
 
@@ -642,6 +721,38 @@ function nonEmptyRuntimeIdentity(
   value: string | undefined,
 ): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+async function boundedSessionHandshake(
+  handshake: Promise<AcpRuntimeHandle>,
+  timeoutMs: number,
+): Promise<AcpRuntimeHandle> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      handshake,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new AcpxSessionHandshakeTimeoutError()),
+          timeoutMs,
+        );
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function lateHandshakeCleanup(
+  handshake: Promise<AcpRuntimeHandle>,
+  cleanup: RuntimeAdmissionCleanup,
+  reason: string,
+): Promise<void> {
+  return handshake.then(
+    (lateHandle) => cleanup.runRetained(lateHandle, reason),
+    () => undefined,
+  );
 }
 
 function runtimePort(
@@ -901,9 +1012,7 @@ function runtimePort(
         mode: "prompt",
         requestId: input.requestId,
         ...(input.signal ? { signal: input.signal } : {}),
-        ...(input.onElicitation
-          ? { onElicitation: input.onElicitation }
-          : {}),
+        ...(input.onElicitation ? { onElicitation: input.onElicitation } : {}),
       });
     },
     close: closeRuntime,
@@ -1005,175 +1114,212 @@ async function boundedCloseOutcome(
 }
 
 function delay(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs);
-    timer.unref?.();
-  });
+  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
 class SpawnedChildSet {
-  readonly #children = new Map<ChildProcess, SpawnedProviderProcess>();
+  readonly #children = new Set<ChildProcess>();
   readonly #errors = new Set<unknown>();
+  readonly #terminations = new Map<ChildProcess, Promise<unknown[]>>();
+  readonly #lifetimeOwnership: Promise<void>[] = [];
+  #lifetimeOwnershipSealed = false;
+  #sealed = false;
 
-  add(child: ChildProcess, processGroup: boolean): ChildProcess {
+  constructor(
+    private readonly retainCleanup?: (cleanup: Promise<void>) => void,
+    private readonly awaitProviderOwnership: (
+      child: ChildProcess,
+    ) => Promise<void> = awaitVerifiedAcpxProviderOwnership,
+  ) {}
+
+  add(child: ChildProcess): ChildProcess {
+    this.#track(child);
+    const ownership = this.awaitProviderOwnership(child);
+    void ownership.catch(() => undefined);
+    this.#lifetimeOwnership.push(ownership);
+    if (this.#sealed || this.#lifetimeOwnershipSealed) {
+      // Once the stable-empty cleanup point is sealed, ACPX no longer has
+      // authority to create provider work. Retain an immediate-kill attempt
+      // through exit verification before rejecting the spawn itself.
+      const termination = this.#startTermination(child, true);
+      const cleanup = termination.then((errors) => {
+        if (errors.length > 0) {
+          throw new AggregateError(
+            errors,
+            "ACPX post-seal provider cleanup failed",
+          );
+        }
+      });
+      this.retainCleanup?.(cleanup);
+      void cleanup.catch(() => undefined);
+      throw new Error(
+        this.#sealed
+          ? "ACPX provider spawned after cleanup was sealed"
+          : "ACPX provider spawned after ownership admission was sealed",
+      );
+    }
+    return child;
+  }
+
+  async verifyLifetimeOwnership(): Promise<void> {
+    for (;;) {
+      const ownership = this.#lifetimeOwnership.splice(0);
+      if (ownership.length === 0) {
+        // This check and seal are synchronous. Any spawn added while an
+        // earlier batch was pending is observed by the next loop iteration;
+        // no later provider can race admission after the stable-empty point.
+        this.#lifetimeOwnershipSealed = true;
+        return;
+      }
+      await Promise.all(ownership);
+    }
+  }
+
+  #track(child: ChildProcess): void {
+    this.#children.add(child);
     const onError = (error: unknown) => this.#errors.add(error);
-    const tracked: SpawnedProviderProcess = {
-      child,
-      processGroupId: processGroup ? (child.pid ?? null) : null,
-      onError,
-    };
-    this.#children.set(child, tracked);
-    const forgetExitedTree = () => {
-      if (!providerTreeRunning(tracked)) this.#forget(tracked);
+    const forget = () => this.#children.delete(child);
+    const forgetAndDetach = () => {
+      forget();
+      child.off("error", onError);
     };
     // ChildProcess reports some spawn and signal-delivery failures through an
     // asynchronous `error` event. Observe those for the child's whole tracked
     // lifetime so cleanup can report them instead of crashing runnerd.
     child.on("error", onError);
-    child.once("exit", forgetExitedTree);
-    child.once("close", forgetExitedTree);
-    return child;
+    child.once("exit", forget);
+    child.once("close", forgetAndDetach);
   }
 
   async terminate(): Promise<unknown[]> {
-    const errors: unknown[] = [];
-    const children = [...this.#children.values()];
-    await Promise.all(
-      children.map(async (tracked) => {
-        if (providerTreeRunning(tracked)) {
-          const terminateOutcome = await signalAndWaitForExit(
-            tracked,
-            "SIGTERM",
-            PROVIDER_TERM_EXIT_TIMEOUT_MS,
-          );
-          if (terminateOutcome.error !== undefined) {
-            pushUnique(errors, terminateOutcome.error);
-          }
-          if (!terminateOutcome.exited && providerTreeRunning(tracked)) {
-            const killOutcome = await signalAndWaitForExit(
-              tracked,
-              "SIGKILL",
-              PROVIDER_KILL_EXIT_TIMEOUT_MS,
-            );
-            if (killOutcome.error !== undefined) {
-              pushUnique(errors, killOutcome.error);
-            }
-            if (!killOutcome.exited && providerTreeRunning(tracked)) {
-              errors.push(
-                new Error("ACPX provider did not exit after SIGKILL"),
-              );
-            }
-          }
-        }
-        if (!providerTreeRunning(tracked)) this.#forget(tracked);
-      }),
-    );
+    // Revoke spawn authority synchronously before the first await. Children
+    // already owned here receive the normal TERM/KILL sequence; every later
+    // spawn is rejected and its independently retained post-seal cleanup
+    // cannot extend this caller-facing shutdown without bound.
+    this.#sealed = true;
+    for (const child of this.#children) this.#startTermination(child);
+    const ownedTerminations = [...this.#terminations.values()];
+    const errors = (await Promise.all(ownedTerminations)).flat();
     // A failed spawn or signal can emit `error` and then `close` before this
     // method snapshots the live children. Keep those errors independently of
-    // child membership, report each object once, and drain them only after all
-    // in-flight termination attempts have had a chance to emit.
+    // child membership and report each object once after all owned attempts.
     for (const error of this.#errors) pushUnique(errors, error);
     this.#errors.clear();
     return errors;
   }
 
-  #forget(tracked: SpawnedProviderProcess): void {
-    if (this.#children.get(tracked.child) !== tracked) return;
-    this.#children.delete(tracked.child);
-    tracked.child.off("error", tracked.onError);
+  #startTermination(
+    child: ChildProcess,
+    immediateKill = false,
+  ): Promise<unknown[]> {
+    const existing = this.#terminations.get(child);
+    if (existing) return existing;
+    const termination = (
+      immediateKill ? terminatePostSealChild(child) : terminateChild(child)
+    ).catch((error: unknown) => [error]);
+    this.#terminations.set(child, termination);
+    termination.then(() => {
+      if (this.#terminations.get(child) === termination) {
+        this.#terminations.delete(child);
+      }
+    });
+    return termination;
   }
 }
 
-interface SpawnedProviderProcess {
-  child: ChildProcess;
-  processGroupId: number | null;
-  onError: (error: unknown) => void;
+async function terminatePostSealChild(child: ChildProcess): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  if (!running(child)) return errors;
+  // Verified production children override ChildProcess.kill so this one
+  // synchronous SIGKILL reaches the whole group while the live guardian still
+  // pins its identity. Never copy the numeric PGID into a later signal owner.
+  const killOutcome = await signalAndWaitForExit(
+    child,
+    "SIGKILL",
+    PROVIDER_KILL_EXIT_TIMEOUT_MS,
+  );
+  if (killOutcome.error !== undefined) {
+    pushUnique(errors, killOutcome.error);
+  }
+  if (!killOutcome.exited && running(child)) {
+    errors.push(
+      new Error("ACPX post-seal provider did not exit after SIGKILL"),
+    );
+  }
+  return errors;
+}
+
+async function terminateChild(child: ChildProcess): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  if (!running(child)) return errors;
+  const terminateOutcome = await signalAndWaitForExit(
+    child,
+    "SIGTERM",
+    PROVIDER_TERM_EXIT_TIMEOUT_MS,
+  );
+  if (terminateOutcome.error !== undefined) {
+    pushUnique(errors, terminateOutcome.error);
+  }
+  if (!terminateOutcome.exited && running(child)) {
+    errors.push(new Error("ACPX provider did not exit after SIGTERM"));
+    // The verified guardian is still live and pins the PGID. Its protected
+    // `kill` override synchronously signals the whole group exactly once.
+    const killOutcome = await signalAndWaitForExit(
+      child,
+      "SIGKILL",
+      PROVIDER_KILL_EXIT_TIMEOUT_MS,
+    );
+    if (killOutcome.error !== undefined) {
+      pushUnique(errors, killOutcome.error);
+    }
+    if (!killOutcome.exited && running(child)) {
+      errors.push(new Error("ACPX provider did not exit after SIGKILL"));
+    }
+  }
+  // Never unref a child whose exit was not observed. Its live ChildProcess
+  // remains the local cleanup owner instead of transferring a reusable PGID.
+  return errors;
 }
 
 function running(child: ChildProcess): boolean {
   return child.exitCode === null && child.signalCode === null;
 }
 
-function providerTreeRunning(tracked: SpawnedProviderProcess): boolean {
-  if (tracked.processGroupId === null) return running(tracked.child);
-  try {
-    process.kill(-tracked.processGroupId, 0);
-    return true;
-  } catch (error) {
-    return errorCode(error) !== "ESRCH";
-  }
-}
-
 async function signalAndWaitForExit(
-  tracked: SpawnedProviderProcess,
+  child: ChildProcess,
   signal: NodeJS.Signals,
   timeoutMs: number,
 ): Promise<{ exited: boolean; error?: unknown }> {
-  if (!providerTreeRunning(tracked)) return { exited: true };
-  const { child } = tracked;
+  if (!running(child)) return { exited: true };
   return await new Promise<{ exited: boolean; error?: unknown }>((resolve) => {
     let settled = false;
     const finish = (outcome: { exited: boolean; error?: unknown }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (poll !== undefined) clearInterval(poll);
       child.off("exit", onExit);
       child.off("close", onExit);
       child.off("error", onError);
       resolve(outcome);
     };
-    const onExit = () => {
-      if (!providerTreeRunning(tracked)) finish({ exited: true });
-    };
+    const onExit = () => finish({ exited: true });
     const onError = (error: unknown) => finish({ exited: false, error });
-    const timer = setTimeout(
-      () => finish({ exited: !providerTreeRunning(tracked) }),
-      timeoutMs,
-    );
+    const timer = setTimeout(() => finish({ exited: false }), timeoutMs);
     timer.unref();
-    const poll =
-      tracked.processGroupId === null
-        ? undefined
-        : setInterval(() => {
-            if (!providerTreeRunning(tracked)) finish({ exited: true });
-          }, 25);
-    poll?.unref();
     child.once("exit", onExit);
     child.once("close", onExit);
     child.once("error", onError);
-    if (!providerTreeRunning(tracked)) {
+    if (!running(child)) {
       finish({ exited: true });
       return;
     }
     try {
-      if (tracked.processGroupId === null) {
-        if (!child.kill(signal) && providerTreeRunning(tracked)) {
-          finish({
-            exited: false,
-            error: new Error(`ACPX provider rejected ${signal}`),
-          });
-          return;
-        }
-      } else {
-        process.kill(-tracked.processGroupId, signal);
-      }
-      if (!providerTreeRunning(tracked)) finish({ exited: true });
+      child.kill(signal);
+      if (!running(child)) finish({ exited: true });
     } catch (error) {
-      if (errorCode(error) === "ESRCH" && !providerTreeRunning(tracked)) {
-        finish({ exited: true });
-      } else {
-        finish({ exited: false, error });
-      }
+      finish({ exited: false, error });
     }
   });
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return undefined;
-  }
-  return typeof error.code === "string" ? error.code : undefined;
 }
 
 function pushUnique(errors: unknown[], error: unknown): void {

@@ -49,6 +49,12 @@ an installed server does not depend on a separate system Rust installation or
 a manually copied binary. `pnpm-lock.yaml` remains under the repository's
 existing lockfile process.
 
+The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
+stdin/stdout bridge admits the qualified Codex ACPX profile only. It validates
+the exact model, session identity, tool catalog, structured input, and terminal
+settlement at the process boundary. Runnerd and the server do not select this
+sidecar in this slice. Other ACPX agents remain unavailable.
+
 Run the complete contract gate with:
 
 ```sh

@@ -62,6 +62,7 @@ import {
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
+  type AcpxRetainedCleanupFailure,
   type AcpxRuntimeTurn,
   type OpenAcpxRuntimeHostOptions,
 } from "./runtime-host.js";
@@ -197,8 +198,6 @@ export class CodexAcpxDriver implements HarnessDriver {
         AcpxRuntimeHost.open(hostOptions, {
           openRuntime: openCodexAcpxRuntime,
           reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
-        } as Parameters<typeof AcpxRuntimeHost.open>[1] & {
-          reportRetainedCleanupFailure: typeof reportRetainedAcpxCleanupFailure;
         }));
     this.#closeSettlementTimeoutMs =
       dependencies.closeSettlementTimeoutMs ?? CLOSE_TURN_SETTLEMENT_TIMEOUT_MS;
@@ -1999,11 +1998,9 @@ function safeMessage(error: unknown): string {
     .slice(0, 4_000);
 }
 
-function reportRetainedAcpxCleanupFailure(input: {
-  resource: "credential" | "command" | "runtime";
-  attempt: number;
-  error: unknown;
-}): void {
+function reportRetainedAcpxCleanupFailure(
+  input: AcpxRetainedCleanupFailure,
+): void {
   const errorName = input.error instanceof Error ? input.error.name : "Error";
   process.emitWarning(
     JSON.stringify({

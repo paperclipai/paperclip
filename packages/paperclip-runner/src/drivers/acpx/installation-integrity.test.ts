@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ChildProcess } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
   link,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rename,
   rm,
@@ -13,6 +14,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -20,14 +22,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
+  awaitVerifiedAcpxProviderOwnership,
   guardSnapshotModuleLookup,
   guardSnapshotModuleResolution,
+  reapCurrentProviderProcessGroup,
   sanitizedNodeEnvironment,
   snapshotDescriptorAncestorIndex,
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
+  type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
+import { stageManagedCodexCredential } from "./codex-credentials.js";
 
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
@@ -41,6 +47,51 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it("never signals a dead guardian's saved process-group identity", () => {
+    const signalCurrentGroup = vi.fn(
+      (_pid: number, _signal: NodeJS.Signals) => true,
+    );
+    reapCurrentProviderProcessGroup(
+      signalCurrentGroup,
+      4_321,
+      vi.fn((_code: number) => undefined),
+    );
+    expect(signalCurrentGroup).toHaveBeenCalledOnce();
+    expect(signalCurrentGroup).toHaveBeenCalledWith(0, "SIGKILL");
+
+    const signalSelfAfterGroupFailure = vi.fn(
+      (pid: number, _signal: NodeJS.Signals) => {
+        if (pid === 0) throw new Error("group signal unavailable");
+      },
+    );
+    const exit = vi.fn((_code: number) => undefined);
+    reapCurrentProviderProcessGroup(signalSelfAfterGroupFailure, 4_321, exit);
+    expect(signalSelfAfterGroupFailure.mock.calls).toEqual([
+      [0, "SIGKILL"],
+      [4_321, "SIGKILL"],
+    ]);
+    expect(exit).not.toHaveBeenCalled();
+
+    const failedSignals = vi.fn((_pid: number, _signal: NodeJS.Signals) => {
+      throw new Error("signal unavailable");
+    });
+    reapCurrentProviderProcessGroup(failedSignals, 4_321, exit);
+    expect(failedSignals.mock.calls).toEqual([
+      [0, "SIGKILL"],
+      [4_321, "SIGKILL"],
+    ]);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(
+      [
+        ...signalCurrentGroup.mock.calls,
+        ...signalSelfAfterGroupFailure.mock.calls,
+        ...failedSignals.mock.calls,
+      ]
+        .map(([pid]) => pid)
+        .filter((pid) => pid < 0),
+    ).toEqual([]);
+  });
+
   it("does not delegate non-Linux snapshot filesystem lookups", () => {
     for (const platform of ["darwin", "freebsd", "win32"] as const) {
       const nextResolve = vi.fn(() => ({ url: "file:///attacker.js" }));
@@ -1115,6 +1166,323 @@ describe("ACPX installation integrity", () => {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
     }
   });
+  it.runIf(process.platform !== "win32")(
+    "rejects incomplete or duplicate provider credential quorum descriptors",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const installation = await verifyQualifiedAcpxInstallation(
+        fixture.profile,
+        fixture.resolve,
+      );
+      const invalidLifetimes = [
+        {
+          credentialFenceFds: [42],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+        {
+          credentialFenceFds: [42, 42],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+        {
+          credentialFenceFds: [42, -1],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+        {
+          credentialFenceFds: [42, 43],
+        },
+      ] as unknown as readonly VerifiedAcpxProviderLifetime[];
+
+      for (const lifetime of invalidLifetimes) {
+        const command = await installation.openCommand();
+        expect(() => command.spawn([], {}, lifetime)).toThrow(
+          "ACPX provider credential fence is invalid",
+        );
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "keeps the staged credential fenced through owner SIGKILL and reaps the provider group",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const ownerScript = join(fixture.root, "provider-owner.mjs");
+      const pidFile = join(fixture.root, "provider.pid");
+      const credentialHome = join(fixture.root, "codex-home");
+      await mkdir(credentialHome, { mode: 0o700 });
+      const moduleUrl = new URL("./installation-integrity.ts", import.meta.url)
+        .href;
+      const credentialModuleUrl = new URL(
+        "./codex-credentials.ts",
+        import.meta.url,
+      ).href;
+      await writeFile(
+        ownerScript,
+        [
+          `const module = await import(${JSON.stringify(moduleUrl)});`,
+          `const credentials = await import(${JSON.stringify(credentialModuleUrl)});`,
+          `const profile = ${JSON.stringify(fixture.profile)};`,
+          `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
+          `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          "const lease = await installation.openCommand();",
+          `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
+          "await module.awaitVerifiedAcpxProviderOwnership(provider);",
+          'process.send?.({ type: "ready", guardianPid: provider.pid });',
+          "process.stdin.resume();",
+        ].join("\n"),
+      );
+
+      const owner = fork(ownerScript, [], {
+        execArgv: ["--import", "tsx"],
+        stdio: ["pipe", "ignore", "pipe", "ipc"],
+      });
+      let guardianPid = 0;
+      let providerPid = 0;
+      try {
+        const ready = (await childMessage(owner, "ready")) as {
+          guardianPid: number;
+        };
+        guardianPid = ready.guardianPid;
+        providerPid = Number.parseInt(await waitForFile(pidFile), 10);
+        expect(processAlive(providerPid)).toBe(true);
+
+        process.kill(guardianPid, "SIGSTOP");
+        try {
+          owner.kill("SIGKILL");
+          await once(owner, "exit");
+          // The stopped sentinel cannot answer any application protocol. Its
+          // two inherited quorum listeners nevertheless prevent a second owner.
+          await expect(
+            stageManagedCodexCredential({
+              agentHomeDirectory: credentialHome,
+              environment: {
+                PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+              },
+            }),
+          ).rejects.toThrow("already has an active lease");
+          expect(processAlive(providerPid)).toBe(true);
+        } finally {
+          if (owner.exitCode === null && owner.signalCode === null) {
+            owner.kill("SIGKILL");
+            await once(owner, "exit").catch(() => undefined);
+          }
+          // SIGSTOP pins this exact live guardian PID against reuse until the
+          // matching resume. Owner-pipe EOF then makes it self-reap its group.
+          process.kill(guardianPid, "SIGCONT");
+          await waitUntil(() => !processAlive(providerPid));
+        }
+        let contender: Awaited<
+          ReturnType<typeof stageManagedCodexCredential>
+        > | null = null;
+        await waitUntilAsync(async () => {
+          try {
+            contender = await stageManagedCodexCredential({
+              agentHomeDirectory: credentialHome,
+              environment: {
+                PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+              },
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        await contender!.close();
+      } finally {
+        if (owner.exitCode === null && owner.signalCode === null) {
+          // This direct child handle owns the guardian pipe. Closing it lets
+          // the live guardian reap only its own still-pinned group; never
+          // signal a saved guardian PGID from cleanup.
+          owner.kill("SIGKILL");
+          await once(owner, "exit").catch(() => undefined);
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "reaps a fenced provider when its lifetime guardian is SIGKILLed",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const ownerScript = join(fixture.root, "guardian-owner.mjs");
+      const pidFile = join(fixture.root, "guardian-provider.pid");
+      const credentialHome = join(fixture.root, "guardian-codex-home");
+      await mkdir(credentialHome, { mode: 0o700 });
+      const moduleUrl = new URL("./installation-integrity.ts", import.meta.url)
+        .href;
+      const credentialModuleUrl = new URL(
+        "./codex-credentials.ts",
+        import.meta.url,
+      ).href;
+      await writeFile(
+        ownerScript,
+        [
+          `const module = await import(${JSON.stringify(moduleUrl)});`,
+          `const credentials = await import(${JSON.stringify(credentialModuleUrl)});`,
+          `const profile = ${JSON.stringify(fixture.profile)};`,
+          `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
+          `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          "const lease = await installation.openCommand();",
+          `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
+          "await module.awaitVerifiedAcpxProviderOwnership(provider);",
+          'process.send?.({ type: "ready", guardianPid: provider.pid });',
+          "process.stdin.resume();",
+        ].join("\n"),
+      );
+
+      const owner = fork(ownerScript, [], {
+        execArgv: ["--import", "tsx"],
+        stdio: ["pipe", "ignore", "pipe", "ipc"],
+      });
+      let guardianPid = 0;
+      let providerPid = 0;
+      try {
+        const ready = (await childMessage(owner, "ready")) as {
+          guardianPid: number;
+        };
+        guardianPid = ready.guardianPid;
+        providerPid = Number.parseInt(await waitForFile(pidFile), 10);
+        expect(processAlive(providerPid)).toBe(true);
+
+        // Freeze the provider so the guardian and runner can die first. The
+        // provider's inherited quorum must still reject a competing owner, and
+        // guardian-pipe EOF must reap it as soon as it can run again.
+        process.kill(providerPid, "SIGSTOP");
+        try {
+          process.kill(guardianPid, "SIGKILL");
+          owner.kill("SIGKILL");
+          await once(owner, "exit");
+          // The provider's inherited quorum remains authoritative whether the
+          // dead guardian is still observable as a zombie or has been reaped.
+          await expect(
+            stageManagedCodexCredential({
+              agentHomeDirectory: credentialHome,
+              environment: {
+                PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+              },
+            }),
+          ).rejects.toThrow("already has an active lease");
+        } finally {
+          if (owner.exitCode === null && owner.signalCode === null) {
+            owner.kill("SIGKILL");
+            await once(owner, "exit").catch(() => undefined);
+          }
+          // The stopped provider PID cannot be reused before this matching
+          // resume; guardian-pipe EOF then reaps that exact live process.
+          process.kill(providerPid, "SIGCONT");
+          await waitUntil(() => !processAlive(providerPid));
+        }
+        const contender = await stageManagedCodexCredential({
+          agentHomeDirectory: credentialHome,
+          environment: {
+            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+          },
+        });
+        await contender.close();
+      } finally {
+        if (owner.exitCode === null && owner.signalCode === null) {
+          // Cleanup is authorized only through the direct child handle and
+          // its owner pipe. Saved guardian/provider identifiers may be reused.
+          owner.kill("SIGKILL");
+          await once(owner, "exit").catch(() => undefined);
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "dismisses the lifetime sentinel only after normal provider-group cleanup",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const pidFile = join(fixture.root, "normal-provider.pid");
+      const fences = await Promise.all([
+        listenOnLoopback(),
+        listenOnLoopback(),
+      ]);
+      const fenceFds = fences.map(
+        (fence) =>
+          (fence as Server & { _handle?: { fd?: number } })._handle?.fd,
+      );
+      expect(fenceFds.every(Number.isSafeInteger)).toBe(true);
+      expect(fenceFds[0]).not.toBe(fenceFds[1]);
+      const installation = await verifyQualifiedAcpxInstallation(
+        fixture.profile,
+        fixture.resolve,
+      );
+      const provider = (await installation.openCommand()).spawn(
+        [],
+        { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: pidFile } },
+        {
+          credentialFenceFds: [fenceFds[0]!, fenceFds[1]!],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+      );
+      await awaitVerifiedAcpxProviderOwnership(provider);
+      const providerPid = Number.parseInt(await waitForFile(pidFile), 10);
+      const ports = fences.map(
+        (fence) => (fence.address() as { port: number }).port,
+      );
+      provider.kill("SIGTERM");
+      await Promise.all(fences.map(closeServer));
+      await once(provider, "exit");
+      await waitUntil(() => !processAlive(providerPid));
+      await Promise.all(
+        ports.map((port) =>
+          expect(canBindLoopbackPort(port)).resolves.toBe(true),
+        ),
+      );
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "keeps emergency guardian termination effective across a stopped retry",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const pidFile = join(fixture.root, "emergency-provider.pid");
+      const fences = await Promise.all([
+        listenOnLoopback(),
+        listenOnLoopback(),
+      ]);
+      const fenceFds = fences.map(
+        (fence) =>
+          (fence as Server & { _handle?: { fd?: number } })._handle?.fd,
+      );
+      expect(fenceFds.every(Number.isSafeInteger)).toBe(true);
+      expect(fenceFds[0]).not.toBe(fenceFds[1]);
+      const installation = await verifyQualifiedAcpxInstallation(
+        fixture.profile,
+        fixture.resolve,
+      );
+      const guardian = (await installation.openCommand()).spawn(
+        [],
+        { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: pidFile } },
+        {
+          credentialFenceFds: [fenceFds[0]!, fenceFds[1]!],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+      );
+      await awaitVerifiedAcpxProviderOwnership(guardian);
+      const providerPid = Number.parseInt(await waitForFile(pidFile), 10);
+      const guardianExit = once(guardian, "exit");
+      process.kill(guardian.pid!, "SIGSTOP");
+      try {
+        expect(guardian.kill("SIGKILL")).toBe(true);
+        // Retry synchronously while the resumed guardian has not yet processed
+        // owner-pipe EOF. The exact ChildProcess remains the signal authority.
+        expect(guardian.kill("SIGKILL")).toBe(true);
+        await guardianExit;
+        await waitUntil(() => !processAlive(providerPid));
+      } finally {
+        if (guardian.exitCode === null && guardian.signalCode === null) {
+          process.kill(guardian.pid!, "SIGCONT");
+          guardian.kill("SIGKILL");
+          await guardianExit.catch(() => undefined);
+        }
+        await Promise.all(fences.map(closeServer));
+      }
+    },
+  );
 });
 
 async function expectOutput(
@@ -1159,6 +1527,120 @@ async function expectFailure(
   const [exitCode] = await once(child, "exit");
   expect(exitCode).not.toBe(0);
   expect(stderr).toContain(expected);
+}
+
+async function persistentInstallationFixture() {
+  const fixture = await installationFixture();
+  const command = [
+    "#!/usr/bin/env node",
+    'const fs = require("node:fs");',
+    "fs.writeFileSync(process.env.PAPERCLIP_PROVIDER_PID_FILE, String(process.pid));",
+    "setInterval(() => undefined, 1_000);",
+  ].join("\n");
+  await writeFile(fixture.commandPath, command);
+  return {
+    ...fixture,
+    command,
+    profile: {
+      ...fixture.profile,
+      commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+    },
+  };
+}
+
+async function childMessage(
+  child: ChildProcess,
+  type: string,
+): Promise<Record<string, unknown>> {
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Timed out waiting for child message ${type}`)),
+      5_000,
+    );
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      reject(new Error(`Child exited before ${type}: ${code ?? signal}`));
+    };
+    child.once("exit", onExit);
+    child.on("message", (message) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        (message as { type?: unknown }).type !== type
+      )
+        return;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolve(message as Record<string, unknown>);
+    });
+  });
+}
+
+async function waitForFile(path: string): Promise<string> {
+  let value = "";
+  await waitUntilAsync(async () => {
+    try {
+      value = await readFile(path, "utf8");
+      return value.length > 0;
+    } catch {
+      return false;
+    }
+  });
+  return value;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listenOnLoopback(port = 0): Promise<Server> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(
+      { host: "127.0.0.1", port, exclusive: true, reusePort: false },
+      resolve,
+    );
+  });
+  return server;
+}
+
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+}
+
+async function canBindLoopbackPort(port: number): Promise<boolean> {
+  try {
+    const server = await listenOnLoopback(port);
+    await closeServer(server);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") return false;
+    throw error;
+  }
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  await waitUntilAsync(async () => predicate());
+}
+
+async function waitUntilAsync(
+  predicate: () => Promise<boolean>,
+): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for subprocess state");
 }
 
 async function installationFixture() {
@@ -1206,6 +1688,7 @@ async function installationFixture() {
     runtimeDirectory,
     serverPackageJsonPath,
     runtimePackageJsonPath,
+    paths,
     resolve(packageName: string): string {
       const resolved = paths.get(packageName);
       if (!resolved) throw new Error(`unexpected package ${packageName}`);

@@ -7,6 +7,9 @@
     "node": ">=24.11.0"
   },
   "type": "module",
+  "bin": {
+    "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -59,6 +62,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }

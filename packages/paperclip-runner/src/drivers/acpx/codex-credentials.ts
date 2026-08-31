@@ -46,6 +46,8 @@ try {
 
 interface CredentialHomeLock {
   assertHeld(): void;
+  inheritanceFds(): readonly [number, number];
+  activateLifetimeOwner(pid: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -112,6 +114,10 @@ export type ManagedCodexCredentialMode =
 export interface ManagedCodexCredentialLease {
   readonly path: string;
   readonly mode: ManagedCodexCredentialMode;
+  /** Duplicate both quorum listeners into the provider lifetime sentinel. */
+  readonly lifetimeFenceFds: readonly [number, number];
+  /** Validate the guardian while the credential quorum is still held. */
+  activateLifetimeOwner(pid: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -340,6 +346,24 @@ async function acquireCredentialHomeLock(
     await Promise.allSettled(servers.map(closeCredentialLeaseServer));
     throw error;
   }
+  let inheritanceFds: readonly [number, number];
+  try {
+    const first = credentialLeaseServerFd(servers[0]!);
+    const second = credentialLeaseServerFd(servers[1]!);
+    if (first === second) {
+      throw new Error(
+        "Managed Codex credential ownership listeners are not distinct",
+      );
+    }
+    inheritanceFds = Object.freeze([first, second]) as readonly [
+      number,
+      number,
+    ];
+  } catch (error) {
+    released = true;
+    await Promise.allSettled(servers.map(closeCredentialLeaseServer));
+    throw error;
+  }
 
   return Object.freeze({
     assertHeld(): void {
@@ -350,6 +374,16 @@ async function acquireCredentialHomeLock(
           CREDENTIAL_LEASE_QUORUM
       ) {
         throw new Error("Managed Codex credential ownership was lost");
+      }
+    },
+    inheritanceFds(): readonly [number, number] {
+      this.assertHeld();
+      return inheritanceFds;
+    },
+    async activateLifetimeOwner(pid: number): Promise<void> {
+      this.assertHeld();
+      if (!Number.isSafeInteger(pid) || pid < 1) {
+        throw new Error("Managed Codex credential lifetime owner is invalid");
       }
     },
     async release(): Promise<void> {
@@ -396,6 +430,15 @@ function credentialLeasePorts(home: string): readonly number[] {
   );
 }
 
+function credentialLeaseServerFd(server: Server): number {
+  const fd = (server as Server & { _handle?: { fd?: unknown } })._handle?.fd;
+  if (!Number.isSafeInteger(fd) || (fd as number) < 0) {
+    throw new Error(
+      "Managed Codex credential ownership listener cannot be inherited",
+    );
+  }
+  return fd as number;
+}
 async function listenForCredentialLease(
   server: Server,
   port: number,
@@ -551,13 +594,29 @@ function credentialLease(
   lock.assertHeld();
   let closed = false;
   let closeAttempt: Promise<void> | null = null;
+  let lifetimeOwnerAttempt: Promise<void> | null = null;
   return Object.freeze({
     path,
     mode,
+    lifetimeFenceFds: lock.inheritanceFds(),
+    async activateLifetimeOwner(pid: number): Promise<void> {
+      if (closed || closeAttempt !== null) {
+        throw new Error("Managed Codex credential lease is closing");
+      }
+      if (lifetimeOwnerAttempt !== null) return await lifetimeOwnerAttempt;
+      const attempt = lock.activateLifetimeOwner(pid);
+      lifetimeOwnerAttempt = attempt;
+      try {
+        await attempt;
+      } finally {
+        if (lifetimeOwnerAttempt === attempt) lifetimeOwnerAttempt = null;
+      }
+    },
     async close(): Promise<void> {
       if (closed) return;
       if (closeAttempt !== null) return await closeAttempt;
       const attempt = (async () => {
+        await lifetimeOwnerAttempt?.catch(() => undefined);
         const activeGeneration = activeCredentialLeaseGenerations.get(home);
         if (activeGeneration !== ownerGeneration) {
           // A failed close releases its generation only after publishing a
