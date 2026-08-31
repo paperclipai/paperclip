@@ -85,14 +85,14 @@ async function enableSmokeLab(request: APIRequestContext) {
   await json(await request.patch("/api/instance/settings/experimental", { data: { enableSmokeLab: true, enableApps: true } }));
 }
 
-async function createSmokeRun(request: APIRequestContext, companyId: string) {
+async function createSmokeRun(request: APIRequestContext, companyId: string, scenarioCount: number) {
   const result = await json<{ run: SmokeRun }>(
     await request.post(`/api/companies/${companyId}/smoke-lab/runs`, {
       data: {
         trigger: "ci",
         summary: {
           catalog: "tests/e2e/smoke-lab.catalog.ts",
-          scenarioCount: ciSmokeLabScenarios.length,
+          scenarioCount,
         },
       },
     }),
@@ -180,11 +180,12 @@ async function runRecordedStep(
   scenario: SmokeLabScenario,
   step: string,
   action: () => Promise<string | null | undefined>,
+  captureSuccessScreenshot = false,
 ) {
   const start = Date.now();
   try {
     const screenshotHint = await action();
-    const screenshotPath = await screenshot(page, scenario, step);
+    const screenshotPath = captureSuccessScreenshot ? await screenshot(page, scenario, step) : null;
     await recordStep(request, seed.companyId, runId, {
       path: scenario.path,
       scenarioStep: step,
@@ -207,8 +208,11 @@ async function runRecordedStep(
   }
 }
 
-async function startAndInstallFixtures(request: APIRequestContext, companyId: string): Promise<FixtureInstall> {
+async function startSmokeLabServices(request: APIRequestContext, companyId: string) {
   await json(await request.post(`/api/companies/${companyId}/smoke-lab/services/start`));
+}
+
+async function installFixtures(request: APIRequestContext, companyId: string): Promise<FixtureInstall> {
   return await json<FixtureInstall>(await request.post(`/api/companies/${companyId}/smoke-lab/install-fixtures`));
 }
 
@@ -300,36 +304,37 @@ async function gatewayFetch(request: APIRequestContext, path: string, token: str
   return await request.get(path, { headers });
 }
 
-test.describe.serial("Smoke Lab scenario catalog mirror", () => {
-  // The lifecycle test walks all CI-safe scenarios, and each scenario records
-  // eight steps with a real navigation and a full-page screenshot. On a loaded
-  // CI runner the whole walk needs a little more than four minutes, so the
-  // earlier 240s budget could expire on the final step. Six minutes gives
-  // headroom for runner variance without slowing a healthy run, because this is
-  // a ceiling, not the normal run time.
+export const defineSmokeLabSuite = (label: string, scenarios: SmokeLabScenario[]) => test.describe.serial(`Smoke Lab scenario catalog mirror (${label})`, () => {
+  // The lifecycle test walks all CI-safe scenarios and records eight steps per
+  // scenario. Each scenario keeps one representative success screenshot, while
+  // every failed step still captures its own evidence. On a loaded CI runner
+  // the whole walk can take several minutes, so this ceiling keeps enough
+  // headroom for runner variance without slowing a healthy run.
   test.setTimeout(360_000);
 
-  test("records the P1-P7 CI-safe Smoke Lab lifecycle into the results API @smoke-lab", async ({ page, request }) => {
+  test(`records the ${label} CI-safe Smoke Lab lifecycle into the results API @smoke-lab`, async ({ page, request }) => {
     const seed = await newCompany(request, "catalog");
     const scout = await createScout(request, seed.companyId);
     await enableSmokeLab(request);
-    const smokeRun = await createSmokeRun(request, seed.companyId);
+    const smokeRun = await createSmokeRun(request, seed.companyId, scenarios.length);
     const failed: string[] = [];
+    const isPartialRun = scenarios.length < ciSmokeLabScenarios.length;
 
     try {
-      for (const scenario of ciSmokeLabScenarios) {
-        const fixtures = await startAndInstallFixtures(request, seed.companyId);
+      await startSmokeLabServices(request, seed.companyId);
+
+      for (const scenario of scenarios) {
+        const fixtures = await installFixtures(request, seed.companyId);
         const connection = connectionForScenario(fixtures, scenario);
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "connect", async () => {
           await navigateForEvidence(page, seed, connection.id, scenario);
           return scenario.lifecycle.connect;
-        });
+        }, true);
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "discover-catalog", async () => {
           const discovered = await catalog(request, connection.id);
           expect(discovered.catalog.map((entry) => entry.toolName)).toContain(scenario.lifecycle.allowedRead.name);
-          await navigateForEvidence(page, seed, connection.id, scenario);
           return `${scenario.lifecycle.discoverCatalog}: ${discovered.catalog.length} entries`;
         });
 
@@ -440,20 +445,26 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
     } finally {
       await updateSmokeRun(request, seed.companyId, smokeRun.id, failed.length > 0 ? "failed" : "passed", {
         catalog: "tests/e2e/smoke-lab.catalog.ts",
-        scenarioCount: ciSmokeLabScenarios.length,
+        scenarioCount: scenarios.length,
+        catalogScenarioCount: ciSmokeLabScenarios.length,
+        partial: isPartialRun,
         failed,
       }).catch(() => undefined);
     }
 
-    const completed = await json<{ run: SmokeRun; steps: Array<{ path: string; status: string; screenshotArtifactRef: Json | null }> }>(
+    const completed = await json<{
+      run: SmokeRun;
+      steps: Array<{ path: string; scenarioStep: string; status: string; screenshotArtifactRef: Json | null }>;
+    }>(
       await request.get(`/api/companies/${seed.companyId}/smoke-lab/runs/${smokeRun.id}`),
     );
     expect(completed.run.status).toBe("passed");
-    for (const scenario of ciSmokeLabScenarios) {
+    for (const scenario of scenarios) {
       const steps = completed.steps.filter((step) => step.path === scenario.path);
       expect(steps.length, `${scenario.path} should record lifecycle steps`).toBeGreaterThanOrEqual(8);
       expect(steps.every((step) => step.status === "pass")).toBe(true);
-      expect(steps.every((step) => step.screenshotArtifactRef?.kind === "playwright_screenshot")).toBe(true);
+      const screenshotSteps = steps.filter((step) => step.screenshotArtifactRef?.kind === "playwright_screenshot");
+      expect(screenshotSteps.map((step) => step.scenarioStep)).toEqual(["connect"]);
     }
   });
 });

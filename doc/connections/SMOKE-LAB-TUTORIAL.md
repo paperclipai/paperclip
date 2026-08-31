@@ -12,9 +12,10 @@ button or label is quoted, that's the exact text in the product.
 
 > Companion docs: the automated counterparts live in
 > [`SMOKE-LAB-BROWSER-RUNNER.md`](./SMOKE-LAB-BROWSER-RUNNER.md) (the agent-driven
-> browser runner) and `tests/e2e/smoke-lab.spec.ts` (the headless CI mirror). The
-> daily recurring routine that runs the browser smoke for you is described in
-> [§8](#8-the-daily-routine-hands-off).
+> browser runner), `tests/e2e/smoke-lab.shared.ts` (the shared headless runner),
+> and the `tests/e2e/smoke-lab-p1-p4.spec.ts` and
+> `tests/e2e/smoke-lab-p5-p7.spec.ts` CI halves. The daily recurring routine that
+> runs the browser smoke for you is described in [§8](#8-the-daily-routine-hands-off).
 
 ---
 
