@@ -6689,6 +6689,35 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+// Detects the Postgres unique-violation (23505) raised by the
+// `issues_open_routine_execution_uq` partial unique index, which enforces at most
+// one *locked* (execution_run_id set) open routine-execution issue per routine
+// identity (companyId, originKind, originId, originFingerprint). The error can
+// arrive as the raw pg error or wrapped by Drizzle's query error, so we walk the
+// cause chain. See routines.ts for the sibling detection on the dispatch path.
+function isOpenRoutineExecutionLockConflict(error: unknown): boolean {
+  const constraint = "issues_open_routine_execution_uq";
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    // node-postgres surfaces the index on `constraint`; the porsager `postgres`
+    // driver used here surfaces it on `constraint_name`. Match either.
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      cause?: unknown;
+    };
+    if (
+      candidate.code === "23505" &&
+      (candidate.constraint === constraint || candidate.constraint_name === constraint)
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -12952,6 +12981,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
+
+    // Fix A (lazy locking): stamp executionRunId at claim time (not at queue time).
+    // Guard is idempotent — safe if called more than once.
+    //
+    // This runs BEFORE flipping the run to "running" so a routine-execution lock
+    // contention leaves the run cleanly queued for a later tick instead of failing
+    // the fire. The issues_open_routine_execution_uq partial unique index
+    // permits only one *locked* open routine-execution issue per routine identity;
+    // under always_enqueue a later fire can be claimed while a prior fire's
+    // execution issue still holds the lock, and the null->set transition then hits
+    // that index. Previously the unhandled 23505 surfaced as "Failed query" and
+    // killed the run, dropping the digest with no visible error. We now serialize:
+    // leave this run queued and retry once the prior execution issue completes or
+    // the stale-lock backstop sweeper clears the lock.
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    if (issueId && wakeReason !== "source_scoped_recovery_action") {
+      const claimedAgent = await getAgent(run.agentId);
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: run.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, run.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, run.id)),
+            ),
+          );
+      } catch (error) {
+        if (!isOpenRoutineExecutionLockConflict(error)) throw error;
+        // Another open execution issue for the same routine identity currently
+        // holds the lock. Leave this run queued (do not flip to "running") so a
+        // later tick retries it once the lock frees, instead of failing the fire.
+        logger.info(
+          { runId: run.id, issueId, agentId: run.agentId },
+          "claimQueuedRun: deferred routine execution run; routine lock held by a concurrent execution",
+        );
+        return null;
+      }
+    }
+
     const claimed = await db
       .update(heartbeatRuns)
       .set({
@@ -12983,33 +13061,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
