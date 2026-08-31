@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  ISSUE_REWAKE_BASE_COOLDOWN_MS,
-  ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
-  computeIssueRewakeCooldownMs,
+  ISSUE_REWAKE_STOP_THRESHOLD,
+  buildIssueRewakeStallDisclosure,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "../services/issue-rewake-throttle.ts";
@@ -36,7 +35,7 @@ describe("isThrottleCandidateIssueRewake", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_continuation_needed" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_assignment_recovery" })).toBe(true);
-    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_graph_liveness_backstop" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "finish_successful_run_handoff" })).toBe(true);
   });
 
   it("keeps agent comments throttle-eligible without granting human comment privileges", () => {
@@ -56,7 +55,15 @@ describe("isThrottleCandidateIssueRewake", () => {
 
   it("never throttles trusted explicit escalation wakes", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, forceFreshSession: true })).toBe(false);
-    expect(isThrottleCandidateIssueRewake({ ...base, hasExplicitResume: true })).toBe(false);
+    // A resume escapes only on a wake that is not itself a state poll. The
+    // server attaches a resume to its own throttled wakes, so an
+    // unconditional escape here is an escape for everything.
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      hasExplicitResume: true,
+    })).toBe(false);
+    expect(isThrottleCandidateIssueRewake({ ...base, hasExplicitResume: true })).toBe(true);
   });
 
   it("keeps agent-authored explicit resume comments throttle-eligible", () => {
@@ -67,6 +74,43 @@ describe("isThrottleCandidateIssueRewake", () => {
       requestedByActorType: "agent",
       hasExplicitResume: true,
     })).toBe(true);
+  });
+
+  it("lets a person through: an operator invoke is the door out of a stopped issue", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: null,
+      requestedByActorType: "user",
+    })).toBe(false);
+    // An agent invoking itself is not that door.
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: null,
+      requestedByActorType: "agent",
+    })).toBe(true);
+  });
+
+  it("throttles the successful-run handoff even though it carries a resume", () => {
+    // The real handoff payload always has `resumeFromRunId`, so it arrives here
+    // with hasExplicitResume set. Reading the resume escape first is what made
+    // an earlier version of this rule inert on every actual dispatch.
+    for (const hasExplicitResume of [false, true]) {
+      expect(isThrottleCandidateIssueRewake({
+        ...base,
+        reason: "finish_successful_run_handoff",
+        requestedByActorType: "system",
+        hasExplicitResume,
+      })).toBe(true);
+    }
+  });
+
+  it("keeps the resume escape for wakes that are not throttled reasons", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      requestedByActorType: "system",
+      hasExplicitResume: true,
+    })).toBe(false);
   });
 
   it("passes event-shaped wake reasons through", () => {
@@ -84,126 +128,191 @@ describe("isThrottleCandidateIssueRewake", () => {
   });
 });
 
-describe("computeIssueRewakeCooldownMs", () => {
-  it("starts at the base cooldown and doubles per extra no-progress run, capped", () => {
-    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
-    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 1)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 2);
-    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 3)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 8);
-    expect(computeIssueRewakeCooldownMs(100)).toBe(ISSUE_REWAKE_MAX_COOLDOWN_MS);
-  });
-});
-
 describe("evaluateIssueRewakeThrottle", () => {
   it("allows when there is no run history", () => {
     expect(
       evaluateIssueRewakeThrottle({
-        now: NOW,
         recentTerminalRuns: [],
         runIdsWithIssueProgress: new Set(),
-        hasNewIssueInputSinceLastRun: false,
+        newIssueInputAt: null,
       }),
-    ).toEqual({ blocked: false, noProgressStreak: 0 });
+    ).toEqual({ action: "proceed", noProgressStreak: 0 });
   });
 
   it("allows below the no-progress threshold", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 10 })],
       runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: false,
+      newIssueInputAt: null,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 1 });
   });
 
-  it("blocks inside the cooldown once the streak reaches the threshold", () => {
+  it("discloses once when the streak reaches the disclosure threshold", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [
         runSample({ id: "r2", finishedSecondsAgo: 10 }),
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: false,
+      newIssueInputAt: null,
     });
-    expect(decision.blocked).toBe(true);
-    if (decision.blocked) {
-      expect(decision.noProgressStreak).toBe(2);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
-      expect(decision.nextAllowedAt.getTime()).toBe(
-        NOW.getTime() - 10_000 + ISSUE_REWAKE_BASE_COOLDOWN_MS,
-      );
-    }
+    expect(decision).toEqual({
+      action: "disclose",
+      noProgressStreak: ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
+      lastRunFinishedAt: new Date(NOW.getTime() - 10_000),
+    });
   });
 
-  it("allows again after the cooldown elapses", () => {
+  it("stops once the disclosed wake also produced no progress", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [
-        runSample({ id: "r2", finishedSecondsAgo: ISSUE_REWAKE_BASE_COOLDOWN_MS / 1000 + 1 }),
-        runSample({ id: "r1", finishedSecondsAgo: ISSUE_REWAKE_BASE_COOLDOWN_MS / 1000 + 30 }),
+        runSample({ id: "r3", finishedSecondsAgo: 10 }),
+        runSample({ id: "r2", finishedSecondsAgo: 40 }),
+        runSample({ id: "r1", finishedSecondsAgo: 70 }),
       ],
       runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: false,
+      newIssueInputAt: null,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 2 });
+    expect(decision).toEqual({
+      action: "stop",
+      noProgressStreak: ISSUE_REWAKE_STOP_THRESHOLD,
+      lastRunFinishedAt: new Date(NOW.getTime() - 10_000),
+    });
   });
 
-  it("escalates the cooldown as the streak grows", () => {
-    const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
-      recentTerminalRuns: [
-        runSample({ id: "r4", finishedSecondsAgo: 10 }),
-        runSample({ id: "r3", finishedSecondsAgo: 30 }),
-        runSample({ id: "r2", finishedSecondsAgo: 60 }),
-        runSample({ id: "r1", finishedSecondsAgo: 90 }),
-      ],
-      runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: false,
-    });
-    expect(decision.blocked).toBe(true);
-    if (decision.blocked) {
+  it("stays stopped however old the stalled runs get", () => {
+    // The defect this replaces, in both its forms: a cooldown that expired, and
+    // a lookback window the stalled runs would eventually age out of. Either
+    // way the next poll woke a full-price session that again did nothing,
+    // forever. Age is not an input to this decision.
+    for (const secondsAgo of [10, 3_600, 86_400]) {
+      const decision = evaluateIssueRewakeThrottle({
+        recentTerminalRuns: [
+          runSample({ id: "r4", finishedSecondsAgo: secondsAgo }),
+          runSample({ id: "r3", finishedSecondsAgo: secondsAgo + 30 }),
+          runSample({ id: "r2", finishedSecondsAgo: secondsAgo + 60 }),
+          runSample({ id: "r1", finishedSecondsAgo: secondsAgo + 90 }),
+        ],
+        runIdsWithIssueProgress: new Set(),
+        newIssueInputAt: null,
+      });
+      expect(decision.action).toBe("stop");
       expect(decision.noProgressStreak).toBe(4);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 4);
     }
+  });
+
+  it("breaks the streak on a run with no finish time rather than reasoning past it", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      recentTerminalRuns: [
+        { id: "r3", status: "succeeded", finishedAt: null },
+        runSample({ id: "r2", finishedSecondsAgo: 40 }),
+        runSample({ id: "r1", finishedSecondsAgo: 70 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      newIssueInputAt: null,
+    });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 0 });
   });
 
   it("resets at the most recent run with issue-visible progress", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [
         runSample({ id: "r3", finishedSecondsAgo: 10 }),
         runSample({ id: "r2", finishedSecondsAgo: 40 }),
         runSample({ id: "r1", finishedSecondsAgo: 70 }),
       ],
       runIdsWithIssueProgress: new Set(["r2"]),
-      hasNewIssueInputSinceLastRun: false,
+      newIssueInputAt: null,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 1 });
   });
 
   it("does not delay recovery after a failed run", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [
         runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10 }),
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: false,
+      newIssueInputAt: null,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 0 });
   });
 
   it("allows when new issue input landed after the last run", () => {
     const decision = evaluateIssueRewakeThrottle({
-      now: NOW,
       recentTerminalRuns: [
         runSample({ id: "r2", finishedSecondsAgo: 10 }),
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
-      hasNewIssueInputSinceLastRun: true,
+      newIssueInputAt: new Date(NOW.getTime() - 5_000),
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 0 });
+  });
+
+  it("gives new input a whole fresh episode, not one borrowed wake", () => {
+    // The subtle version of the same defect: input arrives, one wake is let
+    // through, that run also does nothing, and the next poll counts it together
+    // with the spent streak and stops immediately. Runs before the input are
+    // not part of this episode at all.
+    const inputAt = new Date(NOW.getTime() - 50_000);
+    const decision = evaluateIssueRewakeThrottle({
+      recentTerminalRuns: [
+        runSample({ id: "r4", finishedSecondsAgo: 10 }),
+        runSample({ id: "r3", finishedSecondsAgo: 70 }),
+        runSample({ id: "r2", finishedSecondsAgo: 100 }),
+        runSample({ id: "r1", finishedSecondsAgo: 130 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      newIssueInputAt: inputAt,
+    });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 1 });
+  });
+
+  it("counts input at exactly a run's finish time as opening the episode", () => {
+    // The boundary the SQL lower bound has to match: `gt` there would have
+    // dropped this row, turning this proceed into a disclose.
+    const boundary = new Date(NOW.getTime() - 40_000);
+    const decision = evaluateIssueRewakeThrottle({
+      recentTerminalRuns: [
+        runSample({ id: "r2", finishedSecondsAgo: 10 }),
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      newIssueInputAt: boundary,
+    });
+    expect(decision).toEqual({ action: "proceed", noProgressStreak: 1 });
+  });
+
+  it("ignores input older than the runs it is meant to explain", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      recentTerminalRuns: [
+        runSample({ id: "r3", finishedSecondsAgo: 10 }),
+        runSample({ id: "r2", finishedSecondsAgo: 40 }),
+        runSample({ id: "r1", finishedSecondsAgo: 70 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      newIssueInputAt: new Date(NOW.getTime() - 600_000),
+    });
+    expect(decision.action).toBe("stop");
+    expect(decision.noProgressStreak).toBe(3);
+  });
+});
+
+describe("buildIssueRewakeStallDisclosure", () => {
+  it("states the evidence and that this is the last wake, without prescribing an outcome", () => {
+    const text = buildIssueRewakeStallDisclosure({
+      noProgressStreak: 2,
+      lastRunFinishedAt: new Date("2026-07-12T18:13:50.000Z"),
+    });
+    expect(text).toContain("last 2 runs");
+    expect(text).toContain("2026-07-12T18:13:50.000Z");
+    expect(text).toContain("only further wake");
+    // Every disposition the agent may choose is offered; none is mandated.
+    for (const option of ["finish it", "block it", "record a finding", "escalate"]) {
+      expect(text).toContain(option);
+    }
   });
 });
