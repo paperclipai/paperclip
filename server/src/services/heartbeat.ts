@@ -293,7 +293,12 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import {
+  createSensitiveTextStreamRedactor,
+  redactEventPayload,
+  redactSensitiveText,
+  redactSensitiveValue,
+} from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
@@ -10140,14 +10145,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
+      ? redactSensitiveText(redactCurrentUserText(event.message, currentUserRedactionOptions))
       : event.message;
     const boundedPayload = event.payload
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
       : event.payload;
     const secretSanitizedPayload = boundedPayload ? redactEventPayload(boundedPayload) : boundedPayload;
     const sanitizedPayload = secretSanitizedPayload
-      ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
+      ? redactSensitiveValue(redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions))
       : secretSanitizedPayload;
     const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
     const progress = buildRunEventRuntimeProgress({
@@ -16362,6 +16367,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
+    let flushPendingLogChunks: () => Promise<void> = async () => {};
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
       if (!pendingOutputProgress) return;
@@ -16467,10 +16473,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-      const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
-        );
+      const sanitizeLogFrame = (frame: string) =>
+        compactRunLogChunk(redactCurrentUserText(frame, currentUserRedactionOptions));
+      const logRedactors = {
+        stdout: createSensitiveTextStreamRedactor({
+          sanitize: sanitizeLogFrame,
+          maxPendingChars: MAX_PERSISTED_LOG_CHUNK_CHARS,
+        }),
+        stderr: createSensitiveTextStreamRedactor({
+          sanitize: sanitizeLogFrame,
+          maxPendingChars: MAX_PERSISTED_LOG_CHUNK_CHARS,
+        }),
+      };
+      let logWriteChain: Promise<void> = Promise.resolve();
+      let hasLogWriteFailure = false;
+      let logWriteFailure: unknown = null;
+
+      const writeSanitizedLogFrame = async (
+        stream: "stdout" | "stderr",
+        sanitizedChunk: string,
+      ) => {
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -16535,6 +16557,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             chunk: payloadChunk,
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
+        });
+      };
+      const enqueueLogWrite = (operation: () => Promise<void>) => {
+        const queued = logWriteChain.then(async () => {
+          if (hasLogWriteFailure) throw logWriteFailure;
+          try {
+            await operation();
+          } catch (error) {
+            hasLogWriteFailure = true;
+            logWriteFailure = error;
+            throw error;
+          }
+        });
+        logWriteChain = queued.catch(() => undefined);
+        return queued;
+      };
+      const onLog = (stream: "stdout" | "stderr", chunk: string) =>
+        enqueueLogWrite(async () => {
+          for (const sanitizedFrame of logRedactors[stream].push(chunk)) {
+            await writeSanitizedLogFrame(stream, sanitizedFrame);
+          }
+        });
+      flushPendingLogChunks = async () => {
+        await logWriteChain;
+        if (hasLogWriteFailure) throw logWriteFailure;
+        await enqueueLogWrite(async () => {
+          for (const stream of ["stdout", "stderr"] as const) {
+            for (const sanitizedFrame of logRedactors[stream].flush()) {
+              await writeSanitizedLogFrame(stream, sanitizedFrame);
+            }
+          }
         });
       };
       if (runScopedMentionedSkillKeys.length > 0) {
@@ -17151,9 +17204,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // state. Best-effort record finalize=failed so the dependent readiness
         // check keeps the gate closed instead of waking on stale local state,
         // and surface the original error to the caller.
+        const sanitizedWorkspaceFinalizeError = redactSensitiveText(
+          redactCurrentUserText(
+            adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            currentUserRedactionOptions,
+          ),
+        );
         try {
           await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            errorMessage: sanitizedWorkspaceFinalizeError,
           });
         } catch (recordErr) {
           logger.warn(
@@ -17164,16 +17223,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         throw adapterErr;
       } finally {
         try {
-          await revokeHeartbeatRunGatewayTokens({
-            db,
-            companyId: agent.companyId,
-            runId: run.id,
-          });
-        } catch (revokeErr) {
-          logger.warn(
-            { err: revokeErr, runId: run.id, companyId: agent.companyId },
-            "failed to revoke heartbeat-run MCP gateway tokens",
-          );
+          await flushPendingLogChunks();
+        } finally {
+          try {
+            await revokeHeartbeatRunGatewayTokens({
+              db,
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+          } catch (revokeErr) {
+            logger.warn(
+              { err: revokeErr, runId: run.id, companyId: agent.companyId },
+              "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
         }
       }
       // Reconcile the referenced-project set against the real remote staging outcome. A referenced
@@ -17286,15 +17349,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         usageBasis: adapterResult.usageBasis ?? null,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
-      const runErrorMessage =
+      const rawAdapterErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              );
+            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed");
+      const sanitizedAdapterErrorMessage =
+        rawAdapterErrorMessage === null
+          ? null
+          : redactSensitiveText(redactCurrentUserText(rawAdapterErrorMessage, currentUserRedactionOptions));
+      const sanitizedAdapterResult = {
+        ...adapterResult,
+        errorMessage: sanitizedAdapterErrorMessage,
+      };
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
       const runErrorCode =
@@ -17307,6 +17375,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      await flushPendingLogChunks();
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
@@ -17369,7 +17438,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...parseObject(adapterResult.resultJson),
+                ...redactSensitiveValue(
+                  redactCurrentUserValue(parseObject(adapterResult.resultJson), currentUserRedactionOptions),
+                ),
                 configFreshness: configFreshnessResultMetadata,
               },
               errorFamily: adapterResult.errorFamily ?? null,
@@ -17378,14 +17449,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             modelProfileApplication,
           ),
           errorCode: runErrorCode,
-          errorMessage: runErrorMessage,
+          errorMessage: sanitizedAdapterErrorMessage,
         }),
-        adapterResult.summary ?? null,
+        adapterResult.summary
+          ? redactSensitiveText(redactCurrentUserText(adapterResult.summary, currentUserRedactionOptions))
+          : null,
       );
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: sanitizedAdapterErrorMessage,
         errorCode: runErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -17439,7 +17512,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: sanitizedAdapterErrorMessage,
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
@@ -17460,7 +17533,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issueId,
             issueWorkMode: issueRef?.workMode ?? null,
             outcome,
-            error: runErrorMessage,
+            error: sanitizedAdapterErrorMessage,
           });
         } catch (err) {
           logger.warn(
@@ -17559,7 +17632,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(agent, finalizedRun, sanitizedAdapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
@@ -17581,7 +17654,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: runErrorMessage,
+              lastError: outcome === "succeeded" ? null : (sanitizedAdapterErrorMessage ?? "run_failed"),
             });
           }
         }
@@ -17589,7 +17662,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(
         agent.id,
         outcome,
-        runErrorMessage,
+        outcome === "succeeded" ? null : sanitizedAdapterErrorMessage,
         {
           keepIdleOnFailure:
             outcome === "failed" &&
@@ -17599,9 +17672,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       );
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
-        await getCurrentUserRedactionOptions(),
+      const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const message = redactSensitiveText(
+        redactCurrentUserText(
+          err instanceof Error ? err.message : "Unknown adapter failure",
+          currentUserRedactionOptions,
+        ),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
@@ -17613,9 +17689,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ?? nativeRunnerErrorCode(err)
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
-      logger.error({ err, runId }, "heartbeat execution failed");
+      logger.error(
+        { runId, errorCode: failureErrorCode, error: message },
+        "heartbeat execution failed",
+      );
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+      await flushPendingLogChunks().catch((flushErr) => {
+        logger.warn({ err: flushErr, runId }, "failed to flush redacted run log frames after error");
+      });
       if (handle) {
         try {
           logSummary = await runLogStore.finalize(handle);
@@ -17638,7 +17720,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+          resultJson: redactSensitiveValue(
+            redactCurrentUserValue(
+              workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+              currentUserRedactionOptions,
+            ),
+          ),
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -17751,9 +17838,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } else {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = redactCurrentUserText(
-            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
-            await getCurrentUserRedactionOptions(),
+          const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+          const message = redactSensitiveText(
+            redactCurrentUserText(
+              outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+              currentUserRedactionOptions,
+            ),
           );
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
@@ -17774,7 +17864,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             nativeRunnerErrorCode(outerErr) ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
-          logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+          logger.error(
+            { runId, errorCode: setupFailureErrorCode, error: message },
+            "heartbeat execution setup failed",
+          );
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
@@ -17784,12 +17877,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
-                resultJson:
-                  workspaceValidationSetupFailure?.resultJson ??
-                  configurationIncompleteSetupFailure?.resultJson ??
-                  (unresolvedBaseRefSetupFailure
-                    ? buildUnresolvedWorkspaceBaseRefResultJson(run, unresolvedBaseRefSetupFailure)
-                    : null),
+                resultJson: redactSensitiveValue(
+                  redactCurrentUserValue(
+                    workspaceValidationSetupFailure?.resultJson
+                      ?? configurationIncompleteSetupFailure?.resultJson
+                      ?? (unresolvedBaseRefSetupFailure
+                        ? buildUnresolvedWorkspaceBaseRefResultJson(run, unresolvedBaseRefSetupFailure)
+                        : null),
+                    currentUserRedactionOptions,
+                  ),
+                ),
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
