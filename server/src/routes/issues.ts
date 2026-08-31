@@ -204,6 +204,7 @@ import {
   readAcceptedPlanConfirmationTarget,
   type IssuePostCommitAction,
 } from "../services/issues.js";
+import { resolveAgentIssueProjectId } from "../services/issue-project-inference.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -2976,6 +2977,20 @@ export function issueRoutes(
       input.executionWorkspaceId !== undefined ||
       input.executionWorkspacePreference !== undefined ||
       input.executionWorkspaceSettings !== undefined;
+  }
+
+  /**
+   * Whether the create request already carries a signal the service turns into a
+   * project on its own: a named project, a parent or inheritance source to copy
+   * it from, or a workspace that belongs to one. Each of those outranks anything
+   * we could infer, so inference only runs when none of them is present.
+   */
+  function hasExplicitIssueProjectCreateSelection(input: Record<string, unknown>) {
+    return input.projectId != null ||
+      input.parentId != null ||
+      input.inheritExecutionWorkspaceFromIssueId != null ||
+      input.projectWorkspaceId != null ||
+      input.executionWorkspaceId != null;
   }
 
   async function resolveRunIssueWorkspaceInheritanceSource(
@@ -8635,10 +8650,23 @@ export function issueRoutes(
         : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
+    // A project here is one git repo, and an agent filing a task knows which
+    // repo it affects even when nothing on the request says so. Resolve that
+    // before the assignment-scope and source-trust decisions below: a project
+    // carries its own authorization policy, so both have to see the project the
+    // issue is actually going to land in, not the empty one it arrived with.
+    const inferredProjectId = hasExplicitIssueProjectCreateSelection(createBody)
+      ? null
+      : await resolveAgentIssueProjectId(db, companyId, {
+        createdByAgentId: actor.agentId,
+        actorRunId: actor.runId,
+        title: createBody.title,
+        description: createBody.description,
+      });
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
-        projectId: createBody.projectId,
+        projectId: createBody.projectId ?? inferredProjectId ?? undefined,
         parentIssueId: createBody.parentId,
       }),
       parentIssueId: createBody.parentId ?? null,
@@ -8660,13 +8688,14 @@ export function issueRoutes(
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
-      projectId: createBody.projectId ?? null,
+      projectId: createBody.projectId ?? inferredProjectId ?? null,
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
     const createInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
+      ...(inferredProjectId ? { projectId: inferredProjectId } : {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,
