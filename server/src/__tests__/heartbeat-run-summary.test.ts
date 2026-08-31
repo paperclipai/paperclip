@@ -3,6 +3,8 @@ import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
   mergeHeartbeatRunResultJson,
+  boundHeartbeatRunResultJson,
+  HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
 } from "../services/heartbeat-run-summary.js";
 
 describe("summarizeHeartbeatRunResultJson", () => {
@@ -159,5 +161,35 @@ describe("mergeHeartbeatRunResultJson", () => {
       summary: "adapter result",
       stdout: "raw stdout",
     });
+  });
+});
+
+describe("boundHeartbeatRunResultJson", () => {
+  it("caps oversized stdout/stderr to the tail and records what was dropped", () => {
+    const stdout = "x".repeat(HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS + 500) + "LAST";
+    const bounded = boundHeartbeatRunResultJson({ stdout, stderr: "short", summary: "done" });
+
+    expect(bounded).not.toBeNull();
+    expect((bounded!.stdout as string).length).toBe(HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS);
+    // the tail is what a failing run explains itself with
+    expect(bounded!.stdout as string).toMatch(/LAST$/);
+    expect(bounded!.stdoutTruncated).toBe(true);
+    expect(bounded!.stdoutFullChars).toBe(stdout.length);
+    // untouched fields survive, and a short stream gains no truncation marker
+    expect(bounded!.stderr).toBe("short");
+    expect(bounded!.summary).toBe("done");
+    expect("stderrTruncated" in bounded!).toBe(false);
+  });
+
+  it("returns the original object untouched when nothing exceeds the cap", () => {
+    const input = { stdout: "small", stderr: "small", result: "ok" };
+    expect(boundHeartbeatRunResultJson(input)).toBe(input);
+  });
+
+  it("ignores non-string and absent streams", () => {
+    const input = { stdout: 42, summary: "no streams" };
+    expect(boundHeartbeatRunResultJson(input)).toBe(input);
+    expect(boundHeartbeatRunResultJson(null)).toBeNull();
+    expect(boundHeartbeatRunResultJson(undefined)).toBeNull();
   });
 });

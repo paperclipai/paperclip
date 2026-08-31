@@ -119,6 +119,7 @@ import {
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
+  boundHeartbeatRunResultJson,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import {
@@ -17017,7 +17018,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
+      const persistedResultJson = boundHeartbeatRunResultJson(mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
@@ -17034,7 +17035,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorMessage: runErrorMessage,
         }),
         adapterResult.summary ?? null,
-      );
+      ));
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),

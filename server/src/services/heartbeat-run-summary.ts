@@ -17,6 +17,38 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Write-side counterpart of heartbeatRunSafeResultJsonColumn. That read guard
+// already decided that once result_json passes HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES
+// only the first HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS of stdout/stderr are ever
+// projected — so anything past that was stored, dumped hourly and never read back.
+// Adapters return the whole stream (the full log already goes to the out-of-band
+// log store: log_store/log_ref/log_bytes/log_sha256), which is why heartbeat_runs
+// grew to 7.9 GB with result_json alone accounting for 7.0 GB of it. Bound it here,
+// at the single point where every adapter's result is persisted, rather than in each
+// of the dozen adapter execute.ts files where a new adapter would silently regress it.
+export function boundHeartbeatRunResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
+    return null;
+  }
+
+  let bounded: Record<string, unknown> | null = null;
+  for (const key of ["stdout", "stderr"] as const) {
+    const value = resultJson[key];
+    if (typeof value !== "string" || value.length <= HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS) {
+      continue;
+    }
+    bounded ??= { ...resultJson };
+    // Keep the tail: a failing run says why it failed at the end, not the start.
+    bounded[key] = value.slice(value.length - HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS);
+    bounded[`${key}Truncated`] = true;
+    bounded[`${key}FullChars`] = value.length;
+  }
+
+  return bounded ?? resultJson;
+}
+
 export function mergeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   summary: string | null | undefined,
