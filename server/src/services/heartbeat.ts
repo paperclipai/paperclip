@@ -2729,7 +2729,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
   useProjectWorkspace: boolean | null;
 }
 
-type ModelProfileRequestSource = "issue_override" | "wake_context";
+type ModelProfileRequestSource = "issue_override" | "wake_context" | "agent_autonomous_default";
 type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
 
 export interface ModelProfileApplication {
@@ -3832,18 +3832,48 @@ export function normalizeModelProfileWakeContext(input: {
 function readAgentRuntimeModelProfile(
   runtimeConfig: unknown,
   key: ModelProfileKey,
-): { enabled: boolean; adapterConfig: Record<string, unknown>; configured: boolean } {
+): { enabled: boolean; adapterConfig: Record<string, unknown>; configured: boolean; applyToAutonomousWork: boolean } {
   const modelProfiles = parseObject(parseObject(runtimeConfig).modelProfiles);
   const profile = parseObject(modelProfiles[key]);
   if (Object.keys(profile).length === 0) {
-    return { enabled: true, adapterConfig: {}, configured: false };
+    return { enabled: true, adapterConfig: {}, configured: false, applyToAutonomousWork: false };
   }
 
   return {
     enabled: profile.enabled !== false,
     adapterConfig: parseObject(profile.adapterConfig),
     configured: true,
+    applyToAutonomousWork: profile.applyToAutonomousWork === true,
   };
+}
+
+/**
+ * The lowest-precedence model profile source: an agent can opt a profile into
+ * applying automatically to autonomous work (no human-created issue, no human
+ * comment on the thread) via `runtimeConfig.modelProfiles.<key>.applyToAutonomousWork`.
+ * Never beats an explicit per-issue override or wake-context choice — see call site.
+ */
+function readAutonomousDefaultModelProfile(agentRuntimeConfig: unknown): ModelProfileKey | null {
+  for (const key of MODEL_PROFILE_KEYS) {
+    if (readAgentRuntimeModelProfile(agentRuntimeConfig, key).applyToAutonomousWork) {
+      return key;
+    }
+  }
+  return null;
+}
+
+/**
+ * Pure predicate for whether an issue's work is "autonomous": no human opened it
+ * and no human has ever commented on the thread. Both must hold — an agent-created
+ * issue a human later joins is human-joined, not autonomous. Evaluate this fresh at
+ * every admission (not just issue creation) so a human comment on a previously
+ * autonomous thread immediately routes the next run back to the agent's primary model.
+ */
+export function isIssueAutonomousWork(input: {
+  createdByUserId: string | null | undefined;
+  hasUserComment: boolean;
+}): boolean {
+  return !input.createdByUserId && !input.hasUserComment;
 }
 
 export function resolveModelProfileApplication(input: {
@@ -3852,15 +3882,22 @@ export function resolveModelProfileApplication(input: {
   issueModelProfile: ModelProfileKey | null | undefined;
   contextSnapshot: Record<string, unknown> | null | undefined;
   profileResolutionFallbackReason?: string | null;
+  isAutonomousWork?: boolean;
 }): ModelProfileApplication {
   const issueModelProfile = input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
+  const autonomousDefaultProfile =
+    !issueModelProfile && !contextModelProfile && input.isAutonomousWork
+      ? readAutonomousDefaultModelProfile(input.agentRuntimeConfig)
+      : null;
+  const requested = issueModelProfile ?? contextModelProfile ?? autonomousDefaultProfile;
   const requestedBy: ModelProfileRequestSource | null = issueModelProfile
     ? "issue_override"
     : contextModelProfile
       ? "wake_context"
-      : null;
+      : autonomousDefaultProfile
+        ? "agent_autonomous_default"
+        : null;
 
   if (!requested) {
     return {
@@ -3920,6 +3957,26 @@ export function mergeModelProfileAdapterConfig(input: {
     ...(input.modelProfile.adapterConfig ?? {}),
     ...(input.issueAdapterConfig ?? {}),
   };
+}
+
+/**
+ * Whether a human has ever joined this issue's thread. Queried on demand (not
+ * pre-loaded) since it only matters for agents that opted a model profile into
+ * `applyToAutonomousWork` — most heartbeats never need this.
+ */
+async function issueHasUserComment(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.issueId, issueId),
+        eq(issueComments.companyId, companyId),
+        eq(issueComments.authorType, "user"),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
 }
 
 function modelProfileRunMetadata(
@@ -15107,12 +15164,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "Failed to resolve adapter model profiles; falling back to primary adapter config",
       );
     }
+    const autonomousDefaultModelProfileKey = readAutonomousDefaultModelProfile(agent.runtimeConfig);
+    const isAutonomousWork =
+      autonomousDefaultModelProfileKey && issueContext
+        ? isIssueAutonomousWork({
+            createdByUserId: issueContext.createdByUserId,
+            hasUserComment: await issueHasUserComment(db, agent.companyId, issueContext.id),
+          })
+        : false;
     const modelProfileApplication = resolveModelProfileApplication({
       adapterModelProfiles,
       agentRuntimeConfig: agent.runtimeConfig,
       issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
       contextSnapshot: context,
       profileResolutionFallbackReason,
+      isAutonomousWork,
     });
     const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
     if (modelProfileMetadata) {
