@@ -877,7 +877,9 @@ export function toolAccessRoutes(
     const state = typeof req.query.state === "string" ? req.query.state : "";
     if (!enrollmentId || !approvalCode || !state) throw badRequest("Invalid Paperclip Cloud enrollment callback");
     const pending = loadPaperclipCloudConnectorIdentity()?.pending;
-    if (pending?.companyId) assertCompanyAccess(req, pending.companyId);
+    if (pending?.companyId && !hasCompanyAccess(req, pending.companyId)) {
+      throw notFound("Paperclip Cloud enrollment not found");
+    }
     let status;
     try {
       status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
