@@ -166,13 +166,23 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
   writeFileSync(deployedPackagePath, `${JSON.stringify(publishManifest, null, 2)}\n`);
   applyBundledDependencyPatches(destinationDir, bundledDependencies);
 
-  if (
-    bundledDependencies.includes("acpx") &&
-    !readFileSync(resolve(destinationDir, "node_modules/acpx/dist/runtime.js"), "utf8").includes(
-      "onAgentStderr",
-    )
-  ) {
-    throw new Error("staged acpx runtime is missing the repository patch");
+  if (bundledDependencies.includes("acpx")) {
+    const acpxPackage = JSON.parse(
+      readFileSync(resolve(destinationDir, "node_modules/acpx/package.json"), "utf8"),
+    );
+    const expectedPatchMarker = {
+      "0.12.0": "onAgentStderr",
+      "0.13.1": "spawnEnvironment",
+    }[acpxPackage.version];
+    const acpxRuntime = readFileSync(
+      resolve(destinationDir, "node_modules/acpx/dist/runtime.js"),
+      "utf8",
+    );
+    if (!expectedPatchMarker || !acpxRuntime.includes(expectedPatchMarker)) {
+      throw new Error(
+        `staged acpx@${acpxPackage.version} runtime is missing the repository patch`,
+      );
+    }
   }
 
   if (bundledDependencies.includes("embedded-postgres")) {
