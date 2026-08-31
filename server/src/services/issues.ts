@@ -6153,7 +6153,7 @@ export function issueService(db: Db) {
           now,
         );
         if (!run || !finalization || finalization.phase !== "completed" || provenanceBlockReason) {
-          throw conflict("Native Spark Executor does not have a fresh clean invokability heartbeat", {
+          throw conflict("Native Spark Executor does not have fresh successful native run provenance", {
             code: "issue_assignment_fence",
             reason: finalization?.phase !== "completed"
               ? "native_finalization_not_completed"
