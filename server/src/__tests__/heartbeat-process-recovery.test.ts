@@ -30,6 +30,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -38,6 +39,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  labels,
   plugins,
   projects,
   projectWorkspaces,
@@ -401,6 +403,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(issueLabels);
+    await db.delete(labels);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -694,6 +698,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    perpetualTracker?: boolean;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -812,6 +817,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         reason: "pause recovery subtree",
         releasePolicy: { strategy: "manual" },
       });
+    }
+
+    if (input.perpetualTracker) {
+      const labelId = randomUUID();
+      await db.insert(labels).values({
+        id: labelId,
+        companyId,
+        name: "perpetual-tracker",
+        color: "#888888",
+      });
+      await db.insert(issueLabels).values({ issueId, labelId, companyId });
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
@@ -4205,6 +4221,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             "recovery.reconcile_continuation_waiting_on_review",
       ),
     ).toBe(true);
+  });
+
+  it("leaves a perpetual-tracker issue out of the stranded candidate set entirely", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      perpetualTracker: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The label must keep the issue out of the candidate set: nothing escalated,
+    // nothing requeued, and the issue itself is not reported as touched.
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.companyId, companyId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("still recovers an identical stranded issue that carries no perpetual-tracker label", async () => {
+    // Pins the exemption to the label. Without this, an exemption that matched
+    // everything would keep the test above green while disabling recovery.
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).toContain(issueId);
   });
 
   it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {
