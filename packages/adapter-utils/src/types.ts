@@ -32,6 +32,8 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** Cache-creation (write) tokens, a subset of inputTokens billed at the creation rate. */
+  cacheWriteInputTokens?: number;
 }
 
 export type AdapterBillingType =

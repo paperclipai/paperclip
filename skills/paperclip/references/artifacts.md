@@ -2,10 +2,10 @@
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
-Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
+Use the helper bundled with this skill. It is installed on your `PATH` — call it by bare name. Do **not** prefix it with `scripts/`; your CWD is the project/agent workspace, not the skill directory, so a relative path will fail with `no such file or directory`:
 
 ```bash
-scripts/paperclip-upload-artifact.sh path/to/output.webm \
+paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```
