@@ -1334,6 +1334,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("keeps an unassigned process-loss retry on the source run session", async () => {
+    const sourceSessionId = "source-run-session";
+    const unrelatedSessionId = "unrelated-concurrent-run-session";
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      includeIssue: false,
+      processPid: 999_999_999,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ sessionIdBefore: sourceSessionId })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      sessionId: unrelatedSessionId,
+      stateJson: {},
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const retry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retry?.sessionIdBefore).toBe(sourceSessionId);
+    expect(retry?.sessionIdBefore).not.toBe(unrelatedSessionId);
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",

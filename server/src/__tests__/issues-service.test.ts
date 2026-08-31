@@ -5906,13 +5906,10 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
-  it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
-    // Regression for PR #2482 checkout-adoption review finding: any adoption
-    // helper that re-locks an existing in_progress issue (e.g. when the prior
-    // checkout/execution run is terminal) must not strip the row's
-    // assigneeUserId. We exercise this via the adoptStaleCheckoutRun path,
-    // which fires when checkoutRunId points at a terminal run while
-    // executionRunId still points at a different, non-terminal run.
+  it("does not adopt a stale checkoutRunId when the issue has a user co-assignee", async () => {
+    // A human assignee is an execution boundary even on legacy rows that also
+    // carry an agent assignee. Stale-lock recovery must leave the row untouched
+    // rather than silently turning the human-owned issue into active agent work.
     const companyId = randomUUID();
     const agentId = randomUUID();
     const userId = randomUUID();
@@ -5977,8 +5974,8 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
     });
 
-    const result = await svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId);
-    expect(result).toBeTruthy();
+    await expect(svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId))
+      .rejects.toMatchObject({ status: 409 });
 
     const row = await db
       .select({
@@ -5995,8 +5992,67 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       status: "in_progress",
       assigneeAgentId: agentId,
       assigneeUserId: userId,
-      checkoutRunId: successorRunId,
-      executionRunId: successorRunId,
+      checkoutRunId: failedCheckoutRunId,
+      executionRunId: queuedExecutionRunId,
+    });
+  });
+
+  it("does not allow checkout to overwrite a board/user-owned issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-06-10T10:07:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board action awaiting human reply",
+      status: "todo",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], checkoutRunId))
+      .rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeUserId: issues.assigneeUserId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "todo",
+      assigneeUserId: "local-board",
+      assigneeAgentId: null,
     });
   });
 });
