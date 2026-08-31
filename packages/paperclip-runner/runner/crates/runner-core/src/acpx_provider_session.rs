@@ -4,7 +4,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::acpx_provider_state::{AcpxProviderState, AcpxProviderStateEvent};
+use crate::acpx_provider_state::{
+    is_reserved_terminal_operation, AcpxProviderState, AcpxProviderStateEvent, PRP_BLOCK_TOOL_NAME,
+    PRP_COMPLETION_TOOL_NAME,
+};
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -15,13 +18,12 @@ use crate::provider_bridge::{
     ToolResult, TOOL_SET_SCHEMA,
 };
 use crate::question_response::validate_question_response;
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
-const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -73,10 +75,10 @@ impl AcpxProviderSessionConfig {
             ));
         }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
-        validate_text(&self.run_id, 160, "ACPX run id")?;
-        validate_text(
+        validate_stable_id(&self.run_id, SHORT_STABLE_ID_CHARS, "ACPX run id")?;
+        validate_stable_id(
             &self.normalized_session_id,
-            160,
+            SHORT_STABLE_ID_CHARS,
             "ACPX normalized session id",
         )?;
         if self.catalog_revision == 0 || self.catalog_revision > MAX_JSON_SAFE_INTEGER {
@@ -247,7 +249,7 @@ impl AcpxProviderSession {
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         validate_turn_message(message)?;
         if working_directory != self.working_directory {
             return Err(LocalRunnerError::invalid(
@@ -342,7 +344,7 @@ impl AcpxProviderSession {
         reason: &str,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         if self.state.active_turn_id() != Some(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX interruption named a stale or inactive turn",
@@ -572,7 +574,17 @@ impl AcpxProviderSession {
         resolution: &Value,
     ) -> Result<(), LocalRunnerError> {
         self.ensure_bound_turn(turn_id)?;
-        validate_text(request_id, 240, "ACPX input request id")?;
+        validate_text(request_id, SHORT_STABLE_ID_CHARS, "ACPX input request id")?;
+        if !is_stable_id(request_id, SHORT_STABLE_ID_CHARS) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX input request id is not a stable runtime request identity",
+            ));
+        }
+        let provider_request_id = self
+            .state
+            .pending_provider_input_request_id(request_id)
+            .ok_or_else(|| LocalRunnerError::invalid("ACPX input request is stale or unknown"))?
+            .to_owned();
         let question_set = self
             .state
             .pending_question_set(request_id)
@@ -582,7 +594,7 @@ impl AcpxProviderSession {
         next_state.complete_input(request_id)?;
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::InputResolve,
-            json!({"requestId":request_id,"turnId":turn_id,"resolution":resolution}),
+            json!({"requestId":provider_request_id,"turnId":turn_id,"resolution":resolution}),
         ) {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),
@@ -727,7 +739,7 @@ impl AcpxProviderSession {
     }
 
     fn ensure_bound_turn(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
-        validate_text(turn_id, 160, "ACPX turn id")?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         if self.ensure_active_turn()? != turn_id {
             return Err(LocalRunnerError::invalid(
                 "ACPX resolution named a stale or inactive turn",
@@ -753,10 +765,6 @@ impl AcpxProviderSession {
 
 fn is_reserved_terminal_result(result: &crate::acpx_provider_state::AcpxSemanticResult) -> bool {
     is_reserved_terminal_operation(&result.operation_id)
-}
-
-fn is_reserved_terminal_operation(operation_id: &str) -> bool {
-    matches!(operation_id, PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME)
 }
 
 fn validate_reserved_terminal_result(
@@ -1014,6 +1022,13 @@ fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), Local
         || value.chars().count() > max_chars
         || value.chars().any(char::is_control)
     {
+        return Err(LocalRunnerError::invalid(format!("{label} is invalid")));
+    }
+    Ok(())
+}
+
+fn validate_stable_id(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
+    if !is_stable_id(value, max_chars) {
         return Err(LocalRunnerError::invalid(format!("{label} is invalid")));
     }
     Ok(())

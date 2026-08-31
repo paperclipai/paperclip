@@ -13,6 +13,7 @@ use crate::provider_bridge::semantic_value_digest;
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_ID_CHARS: usize = 160;
+const MAX_INPUT_REQUEST_ID_CHARS: usize = 240;
 const MAX_RUNTIME_TEXT_CHARS: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +112,12 @@ pub fn decode_acpx_event(
             let question_set = sanitize_question_set(question_set);
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
             Ok(AcpxEventPayload::InputRequested {
-                request_id: required_id(&event.payload, "requestId", "input request")?,
+                request_id: required_id_with_limit(
+                    &event.payload,
+                    "requestId",
+                    "input request",
+                    MAX_INPUT_REQUEST_ID_CHARS,
+                )?,
                 question_set,
                 origin: origin.map(|value| sanitize_value(&value)),
             })
@@ -405,11 +411,20 @@ fn validate_question_set(value: &Value) -> Result<(), LocalRunnerError> {
 }
 
 fn required_id(value: &Value, key: &str, label: &str) -> Result<String, LocalRunnerError> {
+    required_id_with_limit(value, key, label, MAX_ID_CHARS)
+}
+
+fn required_id_with_limit(
+    value: &Value,
+    key: &str,
+    label: &str,
+    max_chars: usize,
+) -> Result<String, LocalRunnerError> {
     let id = value
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| LocalRunnerError::invalid(format!("ACPX {label} omitted its identity")))?;
-    if id.is_empty() || id.chars().count() > MAX_ID_CHARS || id.chars().any(char::is_control) {
+    if id.is_empty() || id.chars().count() > max_chars || id.chars().any(char::is_control) {
         return Err(LocalRunnerError::invalid(format!(
             "ACPX {label} identity is invalid"
         )));

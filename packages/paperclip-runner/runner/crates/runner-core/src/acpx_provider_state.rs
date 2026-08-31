@@ -10,14 +10,19 @@ use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::ToolResult;
 use crate::provider_events::{normalize_acpx_runtime_event, NormalizedProviderEvent};
+use crate::stable_identity::project_acpx_runtime_request_id;
 
 const MAX_ASSISTANT_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_TOOLS: usize = 4_096;
 const MAX_PENDING_TOOL_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 1_024;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 16 * 1024 * 1024;
-const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
-const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
+pub(crate) const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
+pub(crate) const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
+
+pub(crate) fn is_reserved_terminal_operation(operation_id: &str) -> bool {
+    matches!(operation_id, PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcpxPendingTool {
@@ -75,6 +80,7 @@ pub enum AcpxProviderStateEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 struct PendingInput {
+    runtime_request_id: String,
     value_bytes: usize,
     question_set: Value,
 }
@@ -204,6 +210,15 @@ impl AcpxProviderState {
             } => {
                 let value_bytes = value_bytes(&details)?;
                 self.admit_runtime_request(&request_id, value_bytes)?;
+                if self
+                    .pending_inputs
+                    .values()
+                    .any(|pending| pending.runtime_request_id == request_id)
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX permission request identity collides with a pending input projection",
+                    ));
+                }
                 self.pending_permissions
                     .insert(request_id.clone(), value_bytes);
                 self.pending_runtime_request_bytes += value_bytes;
@@ -221,11 +236,24 @@ impl AcpxProviderState {
             } => {
                 let value_bytes = value_bytes(&question_set)?;
                 self.admit_runtime_request(&request_id, value_bytes)?;
+                let runtime_request_id = project_acpx_runtime_request_id(&request_id)
+                    .expect("a decoded ACPX input request has a bounded identity");
+                if self
+                    .pending_inputs
+                    .values()
+                    .any(|pending| pending.runtime_request_id == runtime_request_id)
+                    || self.pending_permissions.contains_key(&runtime_request_id)
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input request identity collides after durable projection",
+                    ));
+                }
                 if self
                     .pending_inputs
                     .insert(
                         request_id.clone(),
                         PendingInput {
+                            runtime_request_id,
                             value_bytes,
                             question_set: question_set.clone(),
                         },
@@ -354,9 +382,16 @@ impl AcpxProviderState {
     }
 
     pub fn complete_input(&mut self, request_id: &str) -> Result<(), LocalRunnerError> {
+        let provider_request_id = self
+            .pending_inputs
+            .iter()
+            .find_map(|(provider_request_id, pending)| {
+                (pending.runtime_request_id == request_id).then(|| provider_request_id.clone())
+            })
+            .ok_or_else(|| LocalRunnerError::invalid("ACPX input result has no pending request"))?;
         let pending = self
             .pending_inputs
-            .remove(request_id)
+            .remove(&provider_request_id)
             .ok_or_else(|| LocalRunnerError::invalid("ACPX input result has no pending request"))?;
         self.pending_runtime_request_bytes = self
             .pending_runtime_request_bytes
@@ -366,8 +401,16 @@ impl AcpxProviderState {
 
     pub fn pending_question_set(&self, request_id: &str) -> Option<&Value> {
         self.pending_inputs
-            .get(request_id)
+            .values()
+            .find(|pending| pending.runtime_request_id == request_id)
             .map(|pending| &pending.question_set)
+    }
+
+    pub(crate) fn pending_provider_input_request_id(&self, request_id: &str) -> Option<&str> {
+        self.pending_inputs
+            .iter()
+            .find(|(_, pending)| pending.runtime_request_id == request_id)
+            .map(|(provider_request_id, _)| provider_request_id.as_str())
     }
 
     pub fn semantic_result(&self) -> Option<&AcpxSemanticResult> {
@@ -428,10 +471,7 @@ impl AcpxProviderState {
                 result_digest: semantic_result_digest
                     .expect("decoded ACPX semantic result has a raw correlation digest"),
             };
-            if matches!(
-                result.operation_id.as_str(),
-                PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME
-            ) {
+            if is_reserved_terminal_operation(&result.operation_id) {
                 return match self.semantic_result.as_ref() {
                     None => {
                         self.semantic_result = Some(result.clone());

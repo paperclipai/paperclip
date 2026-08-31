@@ -6,9 +6,13 @@ use std::time::Duration;
 use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig,
 };
+use paperclip_runner_core::acpx_provider_state::AcpxProviderStateEvent;
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 use paperclip_runner_core::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet, ToolResult,
+};
+use paperclip_runner_core::provider_events::{
+    project_acpx_state_event, AcpxEventProjectionContext,
 };
 use serde_json::json;
 
@@ -95,6 +99,47 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
     assert!(session
         .deliver_tool_result(&tool_result("issues.read"))
         .is_err());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn projected_request_id_resolves_the_exact_upstream_sidecar_request() {
+    let mut session = AcpxProviderSession::start(&config("resolutions-projected-id")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    let mut input = None;
+    for _ in 0..2 {
+        for event in session.poll_event(Duration::from_secs(1)).unwrap().unwrap() {
+            if matches!(&event, AcpxProviderStateEvent::InputRequest { .. }) {
+                input = Some(event);
+            }
+        }
+    }
+    let input = input.expect("observe the upstream input request");
+    let projected = project_acpx_state_event(
+        &AcpxEventProjectionContext {
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            item_id: "item-1".to_owned(),
+        },
+        &input,
+    )
+    .unwrap();
+    let request_id = projected[0].payload["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(request_id.starts_with("acpx-request-"));
+
+    session
+        .deliver_tool_result(&tool_result("issues.read"))
+        .unwrap();
+    session
+        .resolve_input(&request_id, "turn-1", &input_resolution("first"))
+        .unwrap();
+    assert!(session.state().pending_question_set(&request_id).is_none());
     session.shutdown("test complete").unwrap();
 }
 

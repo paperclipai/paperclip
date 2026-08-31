@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
 use crate::local_runner::LocalRunnerError;
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
-const MAX_SCOPE_ID_CHARS: usize = 160;
 const MAX_SETTLED_TURN_IDS: usize = 4_096;
 
 /// Holds the run and turn authority used to admit ACPX sidecar events.
@@ -22,7 +22,7 @@ pub struct AcpxEventScope {
 impl AcpxEventScope {
     pub fn new(run_id: impl Into<String>) -> Result<Self, LocalRunnerError> {
         let run_id = run_id.into();
-        validate_scope_id(&run_id, "run")?;
+        validate_scope_id(&run_id, "run", SHORT_STABLE_ID_CHARS)?;
         Ok(Self {
             run_id,
             active_turn_id: None,
@@ -44,7 +44,7 @@ impl AcpxEventScope {
 
     pub fn bind_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         let turn_id = turn_id.into();
-        validate_scope_id(&turn_id, "turn")?;
+        validate_scope_id(&turn_id, "turn", DURABLE_STABLE_ID_CHARS)?;
         match self.active_turn_id.as_deref() {
             Some(active_turn_id) if active_turn_id == turn_id.as_str() => Ok(()),
             Some(_) => Err(LocalRunnerError::invalid(
@@ -72,7 +72,7 @@ impl AcpxEventScope {
         &self,
         turn_id: &str,
     ) -> Result<(), LocalRunnerError> {
-        validate_scope_id(turn_id, "turn")?;
+        validate_scope_id(turn_id, "turn", DURABLE_STABLE_ID_CHARS)?;
         if self.settled_turn_ids.contains(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX event scope reused a settled turn identity",
@@ -103,7 +103,7 @@ impl AcpxEventScope {
     }
 
     pub fn clear_turn(&mut self, turn_id: &str) -> Result<(), LocalRunnerError> {
-        validate_scope_id(turn_id, "turn")?;
+        validate_scope_id(turn_id, "turn", DURABLE_STABLE_ID_CHARS)?;
         if self.active_turn_id.as_deref() != Some(turn_id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX event scope cannot clear a stale turn",
@@ -125,10 +125,10 @@ impl AcpxEventScope {
 
     pub fn validate_event(&self, event: &AcpxSidecarEvent) -> Result<(), LocalRunnerError> {
         if let Some(run_id) = event.run_id.as_deref() {
-            validate_scope_id(run_id, "event run")?;
+            validate_scope_id(run_id, "event run", SHORT_STABLE_ID_CHARS)?;
         }
         if let Some(turn_id) = event.turn_id.as_deref() {
-            validate_scope_id(turn_id, "event turn")?;
+            validate_scope_id(turn_id, "event turn", DURABLE_STABLE_ID_CHARS)?;
         }
         let global_event = matches!(
             event.event_type,
@@ -203,11 +203,8 @@ mod tests {
     }
 }
 
-fn validate_scope_id(value: &str, label: &str) -> Result<(), LocalRunnerError> {
-    if value.is_empty()
-        || value.chars().count() > MAX_SCOPE_ID_CHARS
-        || value.chars().any(char::is_control)
-    {
+fn validate_scope_id(value: &str, label: &str, max_chars: usize) -> Result<(), LocalRunnerError> {
+    if !is_stable_id(value, max_chars) {
         return Err(LocalRunnerError::invalid(format!(
             "ACPX event scope {label} id is invalid"
         )));

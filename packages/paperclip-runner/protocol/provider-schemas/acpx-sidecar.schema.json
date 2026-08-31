@@ -100,8 +100,8 @@
         "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
         "sequence": { "type": "integer", "minimum": 1 },
         "eventType": { "$ref": "#/$defs/eventType" },
-        "runId": { "type": ["string", "null"], "maxLength": 160 },
-        "turnId": { "type": ["string", "null"], "maxLength": 160 },
+        "runId": { "type": ["string", "null"], "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "turnId": { "type": ["string", "null"], "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
         "payload": { "type": "object" }
       },
       "additionalProperties": false

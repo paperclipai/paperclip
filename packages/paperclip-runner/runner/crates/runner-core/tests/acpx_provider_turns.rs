@@ -104,6 +104,43 @@ fn rejects_invalid_turn_inputs_without_mutating_the_session() {
 }
 
 #[test]
+fn preserves_the_durable_turn_identity_boundary_through_the_sidecar() {
+    let mut session = AcpxProviderSession::start(&config("turns")).unwrap();
+    let turn_id = "t".repeat(240);
+    let response = session
+        .start_turn(&turn_id, "Please help", &std::env::temp_dir())
+        .unwrap();
+    assert_eq!(response["turnId"], turn_id);
+
+    let activity = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &activity[0],
+        AcpxProviderStateEvent::Activity(event)
+            if event.event_type == "item.delta" && event.payload["text"] == "hello"
+    ));
+    session
+        .interrupt_turn(&turn_id, "Paperclip interruption")
+        .unwrap();
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. } if settled == &turn_id
+    ));
+    session.shutdown("test complete").unwrap();
+
+    let mut session = AcpxProviderSession::start(&config("turns")).unwrap();
+    for invalid_turn_id in ["t".repeat(241), "turn 1".to_owned()] {
+        assert!(session
+            .start_turn(&invalid_turn_id, "Please help", &std::env::temp_dir(),)
+            .unwrap_err()
+            .to_string()
+            .contains("turn id is invalid"));
+    }
+    assert_eq!(session.state().active_turn_id(), None);
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn fails_closed_when_turn_start_acknowledges_another_turn() {
     let mut session = AcpxProviderSession::start(&config("turns-wrong-turn")).unwrap();
     let error = session

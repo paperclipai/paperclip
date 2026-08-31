@@ -2,6 +2,9 @@ use paperclip_runner_core::acpx_event_payload::AcpxTurnStatus;
 use paperclip_runner_core::acpx_provider_state::{AcpxProviderState, AcpxProviderStateEvent};
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarEvent;
 use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
+use paperclip_runner_core::provider_events::{
+    project_acpx_state_event, AcpxEventProjectionContext,
+};
 use serde_json::{json, Value};
 
 fn event(
@@ -153,6 +156,38 @@ fn tracks_structured_input_and_permission_requests_without_cross_kind_reuse() {
             if request_id == "permission-1"
     ));
     state.complete_permission("permission-1").unwrap();
+}
+
+#[test]
+fn correlates_projected_runtime_requests_to_the_upstream_input_id() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let upstream_request_id = format!("input / {}", "é".repeat(200));
+    let emitted = state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+            Some("turn-1"),
+            json!({"requestId":upstream_request_id,"questionSet":question_set()}),
+        ))
+        .unwrap();
+    let projected = project_acpx_state_event(
+        &AcpxEventProjectionContext {
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            item_id: "item-1".to_owned(),
+        },
+        &emitted[0],
+    )
+    .unwrap();
+    let runtime_request_id = projected[0].payload["request"]["requestId"]
+        .as_str()
+        .unwrap();
+    assert!(runtime_request_id.starts_with("acpx-request-"));
+    assert!(state.pending_question_set(runtime_request_id).is_some());
+    state.complete_input(runtime_request_id).unwrap();
+    assert!(state.pending_question_set(runtime_request_id).is_none());
 }
 
 #[test]

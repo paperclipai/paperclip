@@ -12,6 +12,7 @@ use crate::generated_acpx_sidecar_contract::{
 };
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{BoundedLogBuffer, ProcessOutput, SupervisedProcess};
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BUFFERED_EVENTS: usize = 512;
@@ -441,8 +442,8 @@ fn parse_frame(line: &str) -> Result<ParsedFrame, LocalRunnerError> {
                 "ACPX sidecar event sequence is invalid",
             ));
         }
-        let run_id = nullable_identifier(frame.run_id, "event runId")?;
-        let turn_id = nullable_identifier(frame.turn_id, "event turnId")?;
+        let run_id = nullable_identifier(frame.run_id, "event runId", SHORT_STABLE_ID_CHARS)?;
+        let turn_id = nullable_identifier(frame.turn_id, "event turnId", DURABLE_STABLE_ID_CHARS)?;
         if !frame.payload.is_object() {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar event payload must be an object",
@@ -509,7 +510,11 @@ fn parse_frame(line: &str) -> Result<ParsedFrame, LocalRunnerError> {
     Ok(ParsedFrame::Response(frame))
 }
 
-fn nullable_identifier(value: Value, field: &str) -> Result<Option<String>, LocalRunnerError> {
+fn nullable_identifier(
+    value: Value,
+    field: &str,
+    max_chars: usize,
+) -> Result<Option<String>, LocalRunnerError> {
     if value.is_null() {
         return Ok(None);
     }
@@ -518,7 +523,7 @@ fn nullable_identifier(value: Value, field: &str) -> Result<Option<String>, Loca
             "ACPX sidecar {field} must be a string or null"
         )));
     };
-    if value.chars().count() > 160 || value.chars().any(char::is_control) {
+    if !is_stable_id(value, max_chars) {
         return Err(LocalRunnerError::invalid(format!(
             "ACPX sidecar {field} is invalid"
         )));

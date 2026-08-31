@@ -2,6 +2,7 @@
 
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
+pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
 pub mod acpx_sidecar_transport;
@@ -16,6 +17,7 @@ pub mod provider_bridge;
 pub mod provider_events;
 pub mod question_response;
 pub mod replay;
+mod stable_identity;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

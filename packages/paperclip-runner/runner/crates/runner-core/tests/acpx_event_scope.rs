@@ -174,8 +174,20 @@ fn bounds_settled_turn_identity_retention() {
 fn rejects_invalid_scope_identifiers() {
     assert!(AcpxEventScope::new("").is_err());
     assert!(AcpxEventScope::new("run\n1").is_err());
+    assert!(AcpxEventScope::new("run 1").is_err());
     let mut scope = AcpxEventScope::new("run-1").unwrap();
-    assert!(scope.bind_turn("t".repeat(161)).is_err());
+    let longest_turn_id = "t".repeat(240);
+    scope.bind_turn(&longest_turn_id).unwrap();
+    scope
+        .validate_event(&event(
+            GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
+            Some("run-1"),
+            Some(&longest_turn_id),
+        ))
+        .unwrap();
+    scope.clear_turn(&longest_turn_id).unwrap();
+    assert!(scope.bind_turn("t".repeat(241)).is_err());
+    assert!(scope.bind_turn("turn 1").is_err());
     let oversized_run_id = "r".repeat(161);
     assert!(scope
         .validate_event(&event(
