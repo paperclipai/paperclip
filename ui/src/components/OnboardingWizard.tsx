@@ -909,6 +909,12 @@ function OnboardingWizardInner({
       // "restore last page" (which falls back to /dashboard) must not fire and
       // clobber the first-task URL. See PAP-404.
       setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
+      // The route is still /:prefix/onboarding until `navigate` commits. Mark
+      // that route as dismissed before clearing the draft: reset() renders
+      // Step 0 synchronously, and a company/goal invalidation in this handoff
+      // window can otherwise make the route reopen the wizard at Step 3.
+      // Dismissal is reset by the pathname effect once navigation lands.
+      setRouteDismissed(true);
       reset();
       closeOnboarding();
       // Drop the user straight into the first task's detail page (not the
