@@ -98,6 +98,13 @@ type InteractionActor = {
   agentId?: string | null;
   runId?: string | null;
   userId?: string | null;
+  /**
+   * Whether `userId` was proved by a credential rather than assigned by
+   * default. See `humanPresenceVerified` on the resolver actor: a
+   * `local_trusted` deployment hands the board principal to every
+   * unauthenticated request, so a `userId` alone cannot satisfy `human_only`.
+   */
+  userPresenceVerified?: boolean;
   systemId?: string | null;
   resolverPolicyRestriction?:
     | IssueThreadInteractionCanonicalResolverPolicy
@@ -320,7 +327,13 @@ function resolverActor(actor: InteractionActor) {
   if (actor.agentId) {
     return { type: "agent" as const, agentId: actor.agentId, runId: actor.runId };
   }
-  if (actor.userId) return { type: "user" as const, userId: actor.userId };
+  if (actor.userId) {
+    return {
+      type: "user" as const,
+      userId: actor.userId,
+      humanPresenceVerified: actor.userPresenceVerified === true,
+    };
+  }
   // Missing principals must fail closed. Internal maintenance paths that are
   // intentionally system-owned provide an explicit systemId.
   return { type: "agent" as const, agentId: null, runId: null };

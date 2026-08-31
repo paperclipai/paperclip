@@ -2132,6 +2132,8 @@ describe.sequential("issue thread interaction routes", () => {
         agentId: ASSIGNEE_AGENT_ID,
         runId: RUN_2,
         userId: null,
+        // An agent actor never claims verified human presence; see AIC-119.
+        userPresenceVerified: false,
         resolverPolicyRestriction: "anyone",
         suggestedTaskEffectsAuthorized: true,
       },
@@ -3082,5 +3084,180 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
     expect(mockDbTransaction).not.toHaveBeenCalled();
     expect(mockCrossIssueInfluence.inserted).toEqual([]);
+  });
+});
+
+// AIC-119. `local_trusted` assigns the board principal to every request before
+// it reads the auth header, so an agent resolving an interaction without a
+// token used to write `resolvedByUserId: "local-board"` with a null agent id —
+// a record that does not merely fail to name the agent, it positively
+// classifies the answer as a human's. That row is what an approval gate later
+// reads back as proof a person answered.
+describe.sequential("interaction resolution actor attribution", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
+    mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
+    mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(createIssue());
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-attrib",
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      continuationPolicy: "wake_assignee",
+      status: "pending",
+      payload: { version: 1, questions: [] },
+    });
+    mockInteractionService.answerQuestions.mockResolvedValue({
+      id: "interaction-attrib",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [] },
+      result: { version: 1, outcome: "answered" },
+    });
+    mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
+    mockCrossIssueInfluence.priorCount = 0;
+    mockCrossIssueInfluence.inserted = [];
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+    };
+  });
+
+  it("refuses to attribute a resolution from a run that did not authenticate", async () => {
+    // The board principal plus a live run header is precisely the shape an
+    // agent produces on a secretless `local_trusted` install.
+    const app = await createApp();
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-attrib/respond`)
+      .set("x-paperclip-run-id", RUN_1)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      code: "interaction_run_attribution_required",
+      details: { runId: RUN_1 },
+    });
+    // The decisive assertion: no record was written at all. A missing row is
+    // recoverable; a row that says a human answered is not.
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
+
+  it("does not record a caller-supplied run id as attribution for a user actor", async () => {
+    // A run header that names no run in this company is not evidence of
+    // anything, so the request proceeds — but the header must not be laundered
+    // into `resolvedByRunId`, which reads back as provenance.
+    mockDbSelectWhere.mockReturnValueOnce({
+      then: (onFulfilled: (rows: unknown[]) => unknown) => Promise.resolve([]).then(onFulfilled),
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-attrib/respond`)
+      .set("x-paperclip-run-id", RUN_9)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-attrib",
+      expect.anything(),
+      expect.objectContaining({ agentId: null, runId: null, userId: "local-board" }),
+    );
+  });
+
+  it("records the agent id and run id when the agent authenticated", async () => {
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: null,
+    };
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-attrib/respond`)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-attrib",
+      expect.anything(),
+      expect.objectContaining({
+        agentId: ASSIGNEE_AGENT_ID,
+        runId: RUN_2,
+        userId: null,
+        userPresenceVerified: false,
+      }),
+    );
+  });
+
+  it("marks an implicit local board actor as unverified so human_only can bite", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-attrib/respond`)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-attrib",
+      expect.anything(),
+      expect.objectContaining({ userId: "local-board", userPresenceVerified: false }),
+    );
+  });
+
+  it("marks a session-authenticated board actor as a verified human", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-1"],
+      source: "session",
+      sessionId: "session-1",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-attrib/respond`)
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-attrib",
+      expect.anything(),
+      expect.objectContaining({ userId: "user-1", userPresenceVerified: true }),
+    );
   });
 });
