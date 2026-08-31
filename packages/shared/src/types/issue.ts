@@ -1,5 +1,6 @@
 import type {
   IssueCommentAuthorType,
+  IssueCommentDispositionWarningCode,
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
@@ -969,6 +970,35 @@ export interface IssueComment {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Warning half of the `disposition` envelope returned by
+ * POST /issues/:id/comments when the requested status transition did not run.
+ * The comment itself is committed either way; this only reports the
+ * transition outcome.
+ */
+export interface IssueCommentDispositionWarning {
+  code: IssueCommentDispositionWarningCode;
+  message: string;
+  /** Present on `issue_not_in_progress`: the issue's status at comment time. */
+  issueStatus?: IssueStatus;
+  /**
+   * Present on `transition_rejected` when an authorization gate denied the
+   * transition: the gate's stable machine-readable denial code (e.g.
+   * `issue_checked_out_by_another_agent`, `recovery_action_owner_mismatch`).
+   */
+  gateCode?: string;
+  details?: unknown;
+}
+
+/**
+ * Response-side envelope for a structured disposition comment (request side:
+ * `IssueCommentDispositionStatus` in constants.ts). Attached as `disposition`
+ * on the created-comment response whenever the request carried a disposition.
+ */
+export type IssueCommentDispositionResult =
+  | { applied: true; status: IssueStatus }
+  | { applied: false; warning: IssueCommentDispositionWarning };
 
 interface IssueCommentMetadataRowBase {
   type: IssueCommentMetadataRowType;

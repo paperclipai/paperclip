@@ -707,6 +707,8 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueCommentDerivedAuthorSource,
+  IssueCommentDispositionResult,
+  IssueCommentDispositionWarning,
   IssueCommentMetadata,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,

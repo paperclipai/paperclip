@@ -9,6 +9,7 @@ import {
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
+  ISSUE_COMMENT_DISPOSITION_STATUSES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
@@ -731,6 +732,10 @@ export const addIssueCommentSchema = z.object({
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
+  // Structured disposition: maps the comment to the same status transition the
+  // issue PATCH route performs, so successful-run handoff recovery resolves
+  // through the normal clearing path instead of requiring a separate PATCH.
+  disposition: z.enum(ISSUE_COMMENT_DISPOSITION_STATUSES).optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

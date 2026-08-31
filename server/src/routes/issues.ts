@@ -90,10 +90,13 @@ import {
   type IssueWakeDiagnosticWakeFailureClass,
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
+  type IssueCommentDispositionResult,
+  type IssueCommentDispositionStatus,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueCommentPresentation,
+  type IssueStatus,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -12630,6 +12633,325 @@ export function issueRoutes(
       });
     }
 
+    // Structured disposition comments (upstream #7682): the missing_disposition
+    // recovery card is only cleared by a status transition out of in_progress,
+    // which historically required a separate PATCH that agents never issue —
+    // they re-comment instead and the heartbeat re-files the card. When the
+    // comment carries a `disposition` and the issue is in_progress, this block
+    // deliberately mirrors the PATCH /issues/:id transition path piece by
+    // piece — verify any change here against that handler. Mirrored pieces:
+    //   - assertAgentIssueMutationAllowed + assertRecoveryActionAuthority gates
+    //   - applyIssueExecutionPolicyTransition + execution-decision insert
+    //   - active-run cancellation when the transition lands `cancelled`
+    //   - routinesSvc.syncRunStatusForIssue after the committed update
+    //   - `issue.updated` activity + successful-run handoff resolution logging
+    //   - agent-task-completed telemetry when the transition lands `done`
+    //   - skill-test run finalization on terminal skill_test dispositions
+    // `disposition` is an agent-facing capability with no UI surface by design
+    // (upstream #7682). The comment is already committed above, so a rejected
+    // transition must degrade to a machine-readable warning — never a 500.
+    let dispositionResult: IssueCommentDispositionResult | null = null;
+    let dispositionApplied = false;
+    const requestedDisposition = req.body.disposition as IssueCommentDispositionStatus | undefined;
+    if (requestedDisposition && currentIssue.status !== "in_progress") {
+      dispositionResult = {
+        applied: false,
+        warning: {
+          code: "issue_not_in_progress",
+          message: `Disposition comments only transition in_progress issues; this issue is ${currentIssue.status}.`,
+          issueStatus: currentIssue.status as IssueStatus,
+        },
+      };
+    } else if (requestedDisposition) {
+      // The shared mutation gates respond through `res` on denial; capture the
+      // denial instead of sending it because the committed comment must still
+      // return a 201 with a warning. The gates deny via respondAuthzDenial,
+      // which chains `res.status(...).type(...).json(...)`, so every method in
+      // that chain must exist here and return `this`.
+      const gateCapture: { body: unknown } = { body: null };
+      const gateRes = {
+        status() {
+          return this;
+        },
+        type() {
+          return this;
+        },
+        json(body: unknown) {
+          gateCapture.body = body;
+          return this;
+        },
+      } as unknown as Response;
+      try {
+        const issueBeforeDisposition = currentIssue;
+        // Known side effect: on the self-assignee in_progress branch this gate
+        // adopts a stale checkout and logs `issue.checkout_lock_adopted`
+        // (svc.assertCheckoutOwner) — the coupling is intentional, same as PATCH.
+        const mutationAllowed = await assertAgentIssueMutationAllowed(req, gateRes, issueBeforeDisposition, {
+          allowVisibleIssueWrite: true,
+        });
+        const activeRecoveryAction = mutationAllowed
+          ? await recoveryActionsSvc.getActiveForIssue(issueBeforeDisposition.companyId, issueBeforeDisposition.id)
+          : null;
+        const recoveryAuthorityAllowed =
+          mutationAllowed &&
+          (await assertRecoveryActionAuthority(req, gateRes, issueBeforeDisposition, activeRecoveryAction, {
+            source: "issue_update",
+          }));
+        if (!mutationAllowed || !recoveryAuthorityAllowed) {
+          const captured = gateCapture.body as { error?: unknown; code?: unknown; details?: unknown } | null;
+          dispositionResult = {
+            applied: false,
+            warning: {
+              code: "transition_rejected",
+              message: typeof captured?.error === "string" ? captured.error : "Disposition transition rejected",
+              ...(typeof captured?.code === "string" ? { gateCode: captured.code } : {}),
+              details: captured?.details,
+            },
+          };
+        } else {
+          // Mirror PATCH /issues/:id (shouldCancelActiveRunForCancelledStatus):
+          // resolve the active run before the update so a disposition into
+          // `cancelled` can cancel it afterwards. PATCH also requires the
+          // existing status !== "cancelled"; that conjunct is implicit here
+          // because this block only runs for in_progress issues.
+          const runToCancelForCancelledDisposition = requestedDisposition === "cancelled"
+            ? await resolveActiveIssueRun(issueBeforeDisposition)
+            : null;
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: issueBeforeDisposition,
+            policy: normalizeIssueExecutionPolicy(issueBeforeDisposition.executionPolicy ?? null),
+            requestedStatus: requestedDisposition,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            commentBody: req.body.body,
+          });
+          const dispositionDecision = transition.decision;
+          const dispositionDecisionId = dispositionDecision ? randomUUID() : null;
+          if (dispositionDecisionId) {
+            const nextExecutionState = transition.patch.executionState;
+            if (!nextExecutionState || typeof nextExecutionState !== "object") {
+              throw new Error("Execution policy decision patch is missing executionState");
+            }
+            transition.patch.executionState = {
+              ...nextExecutionState,
+              lastDecisionId: dispositionDecisionId,
+            };
+          }
+          const dispositionUpdateFields = {
+            ...transition.patch,
+            status: typeof transition.patch.status === "string" ? transition.patch.status : requestedDisposition,
+          };
+          await assertAgentInReviewReviewPath({
+            existing: issueBeforeDisposition,
+            updateFields: dispositionUpdateFields,
+            actorType: req.actor.type,
+          });
+          const dispositionUpdatePatch = {
+            ...dispositionUpdateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          };
+          const updated = dispositionDecision && dispositionDecisionId
+            ? await db.transaction(async (tx) => {
+                const row = await svc.update(id, dispositionUpdatePatch, tx);
+                if (!row) return null;
+                await tx.insert(issueExecutionDecisions).values({
+                  id: dispositionDecisionId,
+                  companyId: row.companyId,
+                  issueId: row.id,
+                  stageId: dispositionDecision.stageId,
+                  stageType: dispositionDecision.stageType,
+                  actorAgentId: actor.agentId ?? null,
+                  actorUserId: actor.actorType === "user" ? actor.actorId : null,
+                  outcome: dispositionDecision.outcome,
+                  body: dispositionDecision.body,
+                  createdByRunId: actor.runId ?? null,
+                });
+                return row;
+              })
+            : await svc.update(id, dispositionUpdatePatch);
+          if (!updated) {
+            dispositionResult = {
+              applied: false,
+              warning: { code: "transition_rejected", message: "Issue not found" },
+            };
+          } else {
+            currentIssue = updated;
+            dispositionApplied = issueBeforeDisposition.status !== updated.status;
+            dispositionResult = { applied: true, status: updated.status as IssueStatus };
+
+            // Mirror PATCH /issues/:id: a transition into `cancelled` cancels
+            // the issue's active run and logs the same heartbeat activity.
+            let cancelledStatusRunId: string | null = null;
+            if (runToCancelForCancelledDisposition) {
+              try {
+                const cancelled = await heartbeat.cancelRun(runToCancelForCancelledDisposition.id);
+                if (cancelled) {
+                  cancelledStatusRunId = cancelled.id;
+                  await logActivity(db, {
+                    companyId: cancelled.companyId,
+                    actorType: actor.actorType,
+                    actorId: actor.actorId,
+                    agentId: actor.agentId,
+                    runId: actor.runId,
+                    agentApiKeyId: actor.agentApiKeyId,
+                    action: "heartbeat.cancelled",
+                    entityType: "heartbeat_run",
+                    entityId: cancelled.id,
+                    issueId: updated.id,
+                    details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: updated.id },
+                  });
+                }
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: updated.id, runId: runToCancelForCancelledDisposition.id },
+                  "failed to cancel run for cancelled issue",
+                );
+                await logActivity(db, {
+                  companyId: updated.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "heartbeat.cancel_failed",
+                  entityType: "heartbeat_run",
+                  entityId: runToCancelForCancelledDisposition.id,
+                  issueId: updated.id,
+                  details: { source: "issue_status_cancelled", issueId: updated.id },
+                });
+              }
+            }
+
+            // Mirror PATCH /issues/:id: resync routine run status after any
+            // committed issue update.
+            await routinesSvc.syncRunStatusForIssue(updated.id);
+
+            await logActivity(db, {
+              companyId: updated.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: updated.id,
+              details: {
+                status: updated.status,
+                identifier: updated.identifier,
+                source: "disposition_comment",
+                disposition: requestedDisposition,
+                commentId: comment.id,
+                ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
+                _previous: { status: issueBeforeDisposition.status },
+              },
+            });
+
+            if (issueBeforeDisposition.status === "in_progress" && updated.status !== "in_progress") {
+              await listSuccessfulRunHandoffStates(db, updated.companyId, [updated.id], { hydrateLiveness: false })
+                .then(async (handoffStates) => {
+                  const handoff = handoffStates.get(updated.id);
+                  if (handoff?.state !== "required") return;
+                  await logActivity(db, {
+                    companyId: updated.companyId,
+                    actorType: actor.actorType,
+                    actorId: actor.actorId,
+                    agentId: actor.agentId,
+                    runId: actor.runId,
+                    agentApiKeyId: actor.agentApiKeyId,
+                    action: "issue.successful_run_handoff_resolved",
+                    entityType: "issue",
+                    entityId: updated.id,
+                    details: {
+                      identifier: updated.identifier,
+                      sourceRunId: handoff.sourceRunId,
+                      correctiveRunId: handoff.correctiveRunId,
+                      resolvedByStatus: updated.status,
+                    },
+                  });
+                })
+                .catch((err) => {
+                  logger.warn({ err, issueId: updated.id }, "failed to log successful run handoff resolution");
+                });
+            }
+
+            // Mirror PATCH /issues/:id: completing an issue emits the
+            // agent-task-completed telemetry event.
+            if (updated.status === "done" && issueBeforeDisposition.status !== "done") {
+              const tc = getTelemetryClient();
+              if (tc && actor.agentId) {
+                const actorAgent = await agentsSvc.getById(actor.agentId);
+                if (actorAgent) {
+                  const model = typeof actorAgent.adapterConfig?.model === "string"
+                    ? actorAgent.adapterConfig.model
+                    : undefined;
+                  trackAgentTaskCompleted(tc, {
+                    agentRole: actorAgent.role,
+                    agentId: actorAgent.id,
+                    adapterType: actorAgent.adapterType,
+                    model,
+                  });
+                }
+              }
+            }
+
+            // Mirror PATCH /issues/:id: a terminal transition on a skill_test
+            // harness issue finalizes its company skill test run.
+            if (
+              updated.harnessKind === "skill_test" &&
+              issueBeforeDisposition.status !== updated.status &&
+              (updated.status === "done" || updated.status === "cancelled")
+            ) {
+              const completedRun = await companySkillsSvc.completeTestRunForIssue({
+                companyId: updated.companyId,
+                issueId: updated.id,
+                outcome: updated.status === "done" ? "succeeded" : "cancelled",
+                error: updated.status === "cancelled" ? "Harness issue was cancelled" : null,
+              });
+              if (completedRun) {
+                await logActivity(db, {
+                  companyId: updated.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "company.skill_test_run_completed",
+                  entityType: "company_skill_test_run",
+                  entityId: completedRun.id,
+                  issueId: updated.id,
+                  details: {
+                    issueId: updated.id,
+                    status: completedRun.status,
+                    outputDocumentKey: completedRun.outputDocumentKey,
+                  },
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // The comment is already committed with visible side effects, so a
+        // failed transition surfaces as a warning instead of failing the write.
+        const httpError = err instanceof HttpError ? err : null;
+        if (!httpError) {
+          logger.warn({ err, issueId: id }, "disposition comment transition failed unexpectedly");
+        }
+        dispositionResult = {
+          applied: false,
+          warning: {
+            code: "transition_rejected",
+            message: httpError?.message ?? "Disposition transition rejected",
+            details: httpError?.details,
+          },
+        };
+      }
+    }
+
     await issueReferencesSvc.syncComment(comment.id);
     await externalObjectsSvc.syncCommentSafely(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
@@ -12712,7 +13034,7 @@ export function issueRoutes(
       issue: currentIssue,
       trigger: "comment",
       actor,
-      statusChanged: reopened || scheduledRetrySupersededByComment,
+      statusChanged: reopened || scheduledRetrySupersededByComment || dispositionApplied,
       resumeRequested: resumeRequested === true,
       reopened,
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
@@ -12996,7 +13318,7 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-    res.status(201).json(comment);
+    res.status(201).json(dispositionResult ? { ...comment, disposition: dispositionResult } : comment);
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
