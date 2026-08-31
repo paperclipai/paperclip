@@ -272,7 +272,10 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
-  return /(?:usage|rate|quota) limit|you(?:'|’)ve hit your (?:\w+ )?limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
+  const error = latestRun.error ?? "";
+  // Share the canonical quota vocabulary rather than keeping a narrower second
+  // copy here, which silently missed "Insufficient Balance" and "session limit".
+  return PROVIDER_QUOTA_ERROR_RE.test(error) || /rate limit|quota reset|try again after/i.test(error);
 }
 
 function resolveStrandedRecoveryCause(
@@ -389,10 +392,15 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+// These match provider wording verbatim, so every clause here is anchored on a
+// message a real adapter has actually emitted. Notably: "session limit" (the
+// OpenCode/Claude phrasing, not "usage limit"), "Insufficient Balance" (the
+// DeepSeek phrasing, which names no limit at all), and "API key is missing"
+// (key-first word order, which the old missing-first clause could not match).
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:usage|session) limit|(?:usage|session|credit) limit(?: reached| exceeded)?|insufficient balance|insufficient (?:credit|funds)|out of credits?|provider quota|quota (?:limit )?(?:exceeded|exhausted)|payment required|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
-  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key[^\n]{0,40}?(?:is )?(?:missing|not set|unavailable|not found|required)|requires explicit opt in)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }

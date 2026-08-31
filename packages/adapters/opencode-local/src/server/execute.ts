@@ -4,6 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  createOutputInactivityMonitor,
+  formatOutputInactivityMonitorErrorMessage,
+  OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  resolveOutputInactivityTimeout,
+  signalAdapterChild,
+} from "@paperclipai/adapter-utils/output-inactivity-monitor";
+import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -70,6 +77,34 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+// OpenCode surfaces the upstream provider's own wording, so a failure that is
+// really "the account ran dry" or "no credentials" arrives as a generic
+// adapter_failed with no family. Classifying it here is what lets the platform
+// tell a retryable stall apart from a config problem no retry can fix.
+const OPENCODE_QUOTA_ERROR_RE =
+  /(?:insufficient balance|insufficient (?:credit|funds)|out of credits?|(?:usage|session|rate|quota|credit) limit|quota (?:exceeded|exhausted)|payment required|402\b)/i;
+const OPENCODE_CONFIG_ERROR_RE =
+  /(?:api key(?:[^\n]{0,40})?(?:is )?(?:missing|not set|not found|unavailable|required)|missing (?:api )?(?:key|credentials?)|no (?:api )?key|unauthorized|invalid api key|401\b|requires explicit opt in)/i;
+
+/**
+ * Classify an OpenCode failure message into the platform's error families.
+ * `provider_quota` and `transient_upstream` earn the bounded retry ladder;
+ * a configuration fault deliberately gets neither, since retrying a missing
+ * key just burns the attempt budget.
+ */
+export function classifyOpenCodeFailure(
+  message: string | null | undefined,
+): { errorCode: string; errorFamily: "provider_quota" | null } | null {
+  if (typeof message !== "string" || message.trim().length === 0) return null;
+  if (OPENCODE_QUOTA_ERROR_RE.test(message)) {
+    return { errorCode: "provider_quota", errorFamily: "provider_quota" };
+  }
+  if (OPENCODE_CONFIG_ERROR_RE.test(message)) {
+    return { errorCode: "configuration_incomplete", errorFamily: null };
+  }
+  return null;
 }
 
 function parseModelProvider(model: string | null): string | null {
@@ -590,6 +625,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    // 10m rather than the monitor's 30m default: measured healthy opencode runs
+    // go up to ~7m between JSON events (long tool calls and reasoning steps),
+    // so 10m clears real work while still catching a wedge well inside the
+    // wall-clock timeoutSec. Set adapterConfig.outputInactivityTimeoutMs to
+    // override, or null to disable.
+    const monitorResolution = resolveOutputInactivityTimeout(
+      config.outputInactivityTimeoutMs === undefined ? 10 * 60 * 1000 : config.outputInactivityTimeoutMs,
+    );
+    if (monitorResolution.mode === "disabled") {
+      await onLog(
+        "stdout",
+        "[paperclip] OpenCode output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung opencode runs will only be caught by the wall-clock timeout.\n",
+      );
+    } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
+      await onLog(
+        "stdout",
+        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
+      );
+    }
+
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
@@ -616,23 +671,90 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        cwd,
-        env: preparedRuntimeConfig.env,
-        stdin: prompt,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
-        runLogTail: paperclipBridge?.runLogTail,
-        settleRunDisposition: paperclipBridge?.settleRunDisposition,
-      });
-      return {
-        proc,
-        rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
-      };
+      // `opencode run` can wedge after emitting a `step_start`: the upstream
+      // request dies, the process keeps its event loop parked with no sockets
+      // open, and it never exits or reports an error. Without this watchdog the
+      // only backstop is the wall-clock timeoutSec, which has to be generous
+      // (healthy runs go minutes between events) and so leaves a hung run
+      // parked for the better part of an hour.
+      let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
+      let monitorFired = false;
+      let monitorElapsedMs = 0;
+      let monitorTerminationSignal: NodeJS.Signals | null = null;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+      let monitorLogPromise: Promise<void> | null = null;
+      const monitor = monitorResolution.mode === "disabled"
+        ? null
+        : createOutputInactivityMonitor({
+          timeoutMs: monitorResolution.timeoutMs,
+          onFire: (state) => {
+            monitorFired = true;
+            monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+            const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs, "opencode");
+            monitorLogPromise = Promise.resolve(
+              onLog(
+                "stderr",
+                `[paperclip] adapter.invoke ${message}; ` +
+                  `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                  `parsedEvents=${state.parsedEventCount}; ` +
+                  `terminating opencode child via SIGTERM (5s grace, then SIGKILL).\n`,
+              ),
+            ).catch(() => {});
+            const target = killTarget;
+            if (!target || (target.pid == null && target.processGroupId == null)) return;
+            if (signalAdapterChild(target, "SIGTERM")) monitorTerminationSignal = "SIGTERM";
+            sigkillTimer = setTimeout(() => {
+              sigkillTimer = null;
+              if (signalAdapterChild(target, "SIGKILL")) monitorTerminationSignal = "SIGKILL";
+            }, OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+            sigkillTimer.unref?.();
+          },
+        });
+
+      try {
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          cwd,
+          env: preparedRuntimeConfig.env,
+          stdin: prompt,
+          timeoutSec,
+          graceSec,
+          onSpawn: async (meta) => {
+            killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+            if (onSpawn) await onSpawn(meta);
+          },
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog: async (stream, chunk) => {
+            monitor?.noteOutputChunk(stream, chunk);
+            await onLog(stream, chunk);
+          },
+          runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        });
+        return {
+          proc,
+          rawStderr: proc.stderr,
+          parsed: parseOpenCodeJsonl(proc.stdout),
+          monitor: monitorFired
+            ? {
+              fired: true as const,
+              terminationSignal: monitorTerminationSignal,
+              elapsedMsSinceLastEvent: monitorElapsedMs,
+              timeoutMs: monitorResolution.mode === "disabled" ? 0 : monitorResolution.timeoutMs,
+            }
+            : { fired: false as const },
+        };
+      } finally {
+        monitor?.stop();
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+        if (monitorLogPromise) {
+          await monitorLogPromise;
+          monitorLogPromise = null;
+        }
+      }
     };
 
     const toResult = (
@@ -640,9 +762,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        monitor?:
+          | { fired: false }
+          | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
+      if (attempt.monitor?.fired) {
+        return {
+          exitCode: null,
+          signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
+          timedOut: false,
+          errorMessage: formatOutputInactivityMonitorErrorMessage(
+            attempt.monitor.elapsedMsSinceLastEvent,
+            "opencode",
+          ),
+          errorCode: "opencode_output_inactivity_monitor",
+          errorFamily: "transient_upstream",
+          usage: {
+            inputTokens: attempt.parsed.usage.inputTokens,
+            outputTokens: attempt.parsed.usage.outputTokens,
+            cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          },
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          provider: parseModelProvider(model || null),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(model || null)),
+          model: model || null,
+          resultJson: {
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            outputInactivityMonitor: {
+              kind: "output_inactivity",
+              timeoutMs: attempt.monitor.timeoutMs,
+              elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+              terminationSignal: attempt.monitor.terminationSignal,
+            },
+          },
+          clearSession: clearSessionOnMissingSession,
+        };
+      }
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
@@ -680,6 +840,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
+      const failureClass =
+        (synthesizedExitCode ?? 0) === 0 ? null : classifyOpenCodeFailure(fallbackErrorMessage);
 
       return {
         exitCode: synthesizedExitCode,
@@ -688,8 +850,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
-        // code; every other result carries no code here.
-        errorCode: attempt.proc.errorCode ?? null,
+        // code; every other result carries no code here. A transport code always
+        // wins over the message-derived one -- it describes the seam that
+        // actually broke.
+        errorCode: attempt.proc.errorCode ?? failureClass?.errorCode ?? null,
+        errorFamily: attempt.proc.errorCode ? null : failureClass?.errorFamily ?? null,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,

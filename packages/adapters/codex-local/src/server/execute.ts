@@ -96,6 +96,7 @@ import {
   formatOutputInactivityMonitorErrorMessage,
   resolveCodexInactivityTimeout,
 } from "./output-inactivity-monitor.js";
+import { signalAdapterChild as signalCodexChild } from "@paperclipai/adapter-utils/output-inactivity-monitor";
 import {
   CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
   createCodexProcessActivityMonitor,
@@ -159,28 +160,6 @@ export function firstMeaningfulStderrLine(text: string): string {
   return meaningful ?? firstNonEmptyLine(text);
 }
 
-function signalCodexChild(
-  target: { pid: number | null; processGroupId: number | null },
-  signal: NodeJS.Signals,
-): boolean {
-  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
-    try {
-      process.kill(-target.processGroupId, signal);
-      return true;
-    } catch {
-      // Fall back to direct child signal if group signaling fails (e.g. group already gone).
-    }
-  }
-  if (target.pid && target.pid > 0) {
-    try {
-      process.kill(target.pid, signal);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];

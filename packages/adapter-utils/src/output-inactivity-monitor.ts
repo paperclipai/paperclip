@@ -1,9 +1,9 @@
-import { parseJson } from "@paperclipai/adapter-utils/server-utils";
+import { parseJson } from "./server-utils.js";
 
-export const DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
-export const CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS = 5_000;
+export const DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+export const OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS = 5_000;
 
-export type CodexOutputInactivityMonitorResolution =
+export type OutputInactivityMonitorResolution =
   | { mode: "default"; timeoutMs: number }
   | { mode: "configured"; timeoutMs: number }
   | { mode: "disabled"; reason: "explicit_null" }
@@ -17,16 +17,16 @@ export type CodexOutputInactivityMonitorResolution =
  * - number > 0     → configured value.
  * - number ≤ 0     → default 30m (and a `non_positive` note for logging).
  */
-export function resolveCodexInactivityTimeout(rawValue: unknown): CodexOutputInactivityMonitorResolution {
+export function resolveOutputInactivityTimeout(rawValue: unknown): OutputInactivityMonitorResolution {
   if (rawValue === null) return { mode: "disabled", reason: "explicit_null" };
   if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
     if (rawValue > 0) return { mode: "configured", timeoutMs: rawValue };
-    return { mode: "default", timeoutMs: DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS, reason: "non_positive" };
+    return { mode: "default", timeoutMs: DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS, reason: "non_positive" };
   }
-  return { mode: "default", timeoutMs: DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS };
+  return { mode: "default", timeoutMs: DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS };
 }
 
-export interface CodexOutputInactivityMonitorState {
+export interface OutputInactivityMonitorState {
   fired: boolean;
   spawnedAt: number;
   lastEventAt: number;
@@ -37,26 +37,26 @@ export interface CodexOutputInactivityMonitorState {
   processActivityCount: number;
 }
 
-export interface CodexOutputInactivityMonitorOptions {
+export interface OutputInactivityMonitorOptions {
   timeoutMs: number;
-  onFire: (state: CodexOutputInactivityMonitorState) => void;
+  onFire: (state: OutputInactivityMonitorState) => void;
   now?: () => number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   /**
    * Per-line predicate. When omitted, any line that successfully parses as
-   * JSON via the codex JSONL parser counts as a heartbeat event.
+   * JSON via the JSONL parser counts as a heartbeat event.
    */
   isHeartbeatLine?: (line: string) => boolean;
 }
 
-export interface CodexOutputInactivityMonitorHandle {
+export interface OutputInactivityMonitorHandle {
   noteOutputChunk(stream: "stdout" | "stderr", chunk: string): void;
   noteProcessActivity(): void;
   /** Returns the current state without stopping the timer. */
-  state(): CodexOutputInactivityMonitorState;
+  state(): OutputInactivityMonitorState;
   /** Cancels any pending timer and returns the final state. */
-  stop(): CodexOutputInactivityMonitorState;
+  stop(): OutputInactivityMonitorState;
 }
 
 function defaultIsHeartbeatLine(line: string): boolean {
@@ -65,9 +65,9 @@ function defaultIsHeartbeatLine(line: string): boolean {
   return parseJson(trimmed) !== null;
 }
 
-export function createCodexOutputInactivityMonitor(
-  options: CodexOutputInactivityMonitorOptions,
-): CodexOutputInactivityMonitorHandle {
+export function createOutputInactivityMonitor(
+  options: OutputInactivityMonitorOptions,
+): OutputInactivityMonitorHandle {
   const now = options.now ?? (() => Date.now());
   const setTimer = options.setTimer ?? ((cb, ms) => setTimeout(cb, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
@@ -75,11 +75,11 @@ export function createCodexOutputInactivityMonitor(
   const timeoutMs = options.timeoutMs;
 
   if (!(timeoutMs > 0)) {
-    throw new Error(`createCodexOutputInactivityMonitor requires timeoutMs > 0 (got ${timeoutMs})`);
+    throw new Error(`createOutputInactivityMonitor requires timeoutMs > 0 (got ${timeoutMs})`);
   }
 
   const spawnedAt = now();
-  const state: CodexOutputInactivityMonitorState = {
+  const state: OutputInactivityMonitorState = {
     fired: false,
     spawnedAt,
     lastEventAt: spawnedAt,
@@ -145,11 +145,40 @@ export function createCodexOutputInactivityMonitor(
 
 /**
  * Format the inactivity monitor error message in the canonical
- * `monitor: no codex activity (output or process) for {N}m {S}s` shape consumed by NEE-81.
+ * `monitor: no {label} activity (output or process) for {N}m {S}s` shape consumed by NEE-81.
+ * `label` defaults to "codex" so codex-local's wording is unchanged.
  */
-export function formatOutputInactivityMonitorErrorMessage(elapsedMs: number): string {
+export function formatOutputInactivityMonitorErrorMessage(elapsedMs: number, label = "codex"): string {
   const total = Math.max(0, Math.round(elapsedMs / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total - minutes * 60;
-  return `monitor: no codex activity (output or process) for ${minutes}m ${seconds}s`;
+  return `monitor: no ${label} activity (output or process) for ${minutes}m ${seconds}s`;
+}
+
+/**
+ * Signal an adapter's child process, preferring its process group so the whole
+ * tree (the CLI plus any MCP servers it spawned) goes down together. Falls back
+ * to the direct pid when group signaling fails or the group is already gone.
+ */
+export function signalAdapterChild(
+  target: { pid: number | null; processGroupId: number | null },
+  signal: NodeJS.Signals,
+): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, signal);
+      return true;
+    } catch {
+      // Fall back to direct child signal if group signaling fails (e.g. group already gone).
+    }
+  }
+  if (target.pid && target.pid > 0) {
+    try {
+      process.kill(target.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }

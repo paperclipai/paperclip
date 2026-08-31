@@ -803,7 +803,7 @@ function resolveCodexTransientFallbackMode(
   return "fresh_session_safer_invocation";
 }
 
-function readHeartbeatRunErrorFamily(
+export function readHeartbeatRunErrorFamily(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
   const resultJson = parseObject(run.resultJson);
@@ -816,7 +816,13 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
-    run.errorCode === "codex_harness_crash"
+    run.errorCode === "codex_harness_crash" ||
+    // A wall-clock timeout and an inactivity-monitor kill both mean the harness
+    // wedged rather than that the work is impossible, so both earn the same
+    // bounded 10m/30m/2h retry ladder as any other transient upstream fault.
+    run.errorCode === "timeout" ||
+    run.errorCode === "codex_output_inactivity_monitor" ||
+    run.errorCode === "opencode_output_inactivity_monitor"
   ) {
     return "transient_upstream";
   }
@@ -21225,7 +21231,11 @@ export function heartbeatService(
               );
             }
           } else if (
-            outcome === "failed" &&
+            // `timed_out` is a distinct outcome from `failed`, so gating on
+            // `failed` alone meant a run killed by the wall-clock timeout or the
+            // inactivity monitor never queued a retry and sat blocked until a
+            // human triggered one by hand.
+            (outcome === "failed" || outcome === "timed_out") &&
             readTransientRecoveryContractFromRun(livenessRun)
           ) {
             await scheduleBoundedRetryForRun(livenessRun, agent);
