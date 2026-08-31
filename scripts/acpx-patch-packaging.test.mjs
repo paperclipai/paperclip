@@ -295,9 +295,15 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.match(releaseScript, /run_bundled_npm_pack pack --pack-destination "\$publish_dir"/);
   assert.match(releaseLib, /BUNDLED_NPM_PACK_VERSION="10\.9\.7"/);
   assert.match(releaseLib, /BUNDLED_NPM_PUBLISH_VERSION="11\.18\.0"/);
-  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PACK_VERSION"/);
-  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PUBLISH_VERSION"/);
-  assert.match(releaseLib, /"\$@" --loglevel verbose/);
+  assert.match(
+    releaseLib,
+    /npx --yes "npm@\$BUNDLED_NPM_PACK_VERSION" "\$@" --ignore-scripts/,
+  );
+  assert.match(
+    releaseLib,
+    /npx --yes "npm@\$BUNDLED_NPM_PUBLISH_VERSION" "\$@" --ignore-scripts/,
+  );
+  assert.match(releaseLib, /"\$@" --ignore-scripts --loglevel verbose/);
   assert.match(releaseLib, /run_bundled_npm_publish publish --tag "\$dist_tag"/);
   assert.doesNotMatch(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
 });

@@ -181,11 +181,11 @@ test("publish_package_to_npm uses trusted publishing from the bundled staging di
   assert.equal(result.status, 0);
   assert.match(
     result.calls,
-    /^npx --yes npm@11\.18\.0 publish --tag canary --access public --loglevel verbose$/m,
+    /^npx --yes npm@11\.18\.0 publish --tag canary --access public --ignore-scripts --loglevel verbose$/m,
   );
   assert.match(
     result.calls,
-    /^npm publish --tag canary --access public --loglevel verbose$/m,
+    /^npm publish --tag canary --access public --ignore-scripts --loglevel verbose$/m,
   );
   assert.doesNotMatch(result.calls, / pack /);
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
@@ -198,7 +198,7 @@ test("publish_package_to_npm retries bundled directory tlog failures without pro
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
   assert.match(
     result.calls,
-    /^npm publish --tag canary --access public --provenance=false --loglevel verbose$/m,
+    /^npm publish --tag canary --access public --provenance=false --ignore-scripts --loglevel verbose$/m,
   );
 });
 
