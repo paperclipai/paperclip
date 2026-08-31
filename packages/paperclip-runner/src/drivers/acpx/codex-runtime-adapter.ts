@@ -1186,9 +1186,13 @@ class SpawnedChildSet {
   ) {}
 
   add(child: ChildProcess): ChildProcess {
-    const providerExit = new ProviderExitObservation(
-      Promise.resolve().then(() => this.awaitProviderExit(child)),
-    );
+    let exitProof: Promise<void>;
+    try {
+      exitProof = this.awaitProviderExit(child);
+    } catch (error) {
+      exitProof = Promise.reject(error);
+    }
+    const providerExit = new ProviderExitObservation(exitProof);
     this.#providerExits.set(child, providerExit);
     this.#track(child, providerExit);
     const ownership = this.awaitProviderOwnership(child);

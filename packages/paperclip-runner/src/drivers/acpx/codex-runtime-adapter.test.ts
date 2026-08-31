@@ -699,16 +699,30 @@ describe("Codex ACPX runtime adapter", () => {
       const finalReconciliation = new Promise<void>((resolve) => {
         resolveFinalReconciliation = resolve;
       });
+      let resolveFinalReconciliationStarted!: () => void;
+      const finalReconciliationStarted = new Promise<void>((resolve) => {
+        resolveFinalReconciliationStarted = resolve;
+      });
       let resolveRenewedReconciliation!: () => void;
       const renewedReconciliation = new Promise<void>((resolve) => {
         resolveRenewedReconciliation = resolve;
+      });
+      let resolveRenewedReconciliationStarted!: () => void;
+      const renewedReconciliationStarted = new Promise<void>((resolve) => {
+        resolveRenewedReconciliationStarted = resolve;
       });
       vi.mocked(runtime.close)
         .mockReturnValueOnce(initialClose)
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
-        .mockReturnValueOnce(finalReconciliation)
-        .mockReturnValueOnce(renewedReconciliation);
+        .mockImplementationOnce(() => {
+          resolveFinalReconciliationStarted();
+          return finalReconciliation;
+        })
+        .mockImplementationOnce(() => {
+          resolveRenewedReconciliationStarted();
+          return renewedReconciliation;
+        });
       const child = failingSignalChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child.child);
@@ -730,13 +744,7 @@ describe("Codex ACPX runtime adapter", () => {
       await vi.advanceTimersByTimeAsync(1);
       await initialObserver;
       rejectInitialClose(new Error("external close failed late"));
-      for (
-        let turn = 0;
-        turn < 50 && vi.mocked(runtime.close).mock.calls.length < 4;
-        turn += 1
-      ) {
-        await Promise.resolve();
-      }
+      await finalReconciliationStarted;
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
       const finalObserver = expect(
@@ -744,14 +752,7 @@ describe("Codex ACPX runtime adapter", () => {
       ).rejects.toThrow("ACPX runtime and provider cleanup failed");
       resolveFinalReconciliation();
       await finalObserver;
-
-      for (
-        let turn = 0;
-        turn < 50 && vi.mocked(runtime.close).mock.calls.length < 5;
-        turn += 1
-      ) {
-        await Promise.resolve();
-      }
+      await renewedReconciliationStarted;
       expect(runtime.close).toHaveBeenCalledTimes(5);
       expect(runtime.close).toHaveBeenLastCalledWith({
         handle: HANDLE,
@@ -781,12 +782,26 @@ describe("Codex ACPX runtime adapter", () => {
       const finalReconciliation = new Promise<void>((resolve) => {
         resolveFinalReconciliation = resolve;
       });
+      let resolveFinalReconciliationStarted!: () => void;
+      const finalReconciliationStarted = new Promise<void>((resolve) => {
+        resolveFinalReconciliationStarted = resolve;
+      });
+      let resolveRenewedReconciliationStarted!: () => void;
+      const renewedReconciliationStarted = new Promise<void>((resolve) => {
+        resolveRenewedReconciliationStarted = resolve;
+      });
       vi.mocked(runtime.close)
         .mockReturnValueOnce(initialClose)
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
-        .mockReturnValueOnce(finalReconciliation)
-        .mockResolvedValueOnce(undefined);
+        .mockImplementationOnce(() => {
+          resolveFinalReconciliationStarted();
+          return finalReconciliation;
+        })
+        .mockImplementationOnce(() => {
+          resolveRenewedReconciliationStarted();
+          return Promise.resolve();
+        });
       const child = failingSignalChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child.child);
@@ -808,13 +823,7 @@ describe("Codex ACPX runtime adapter", () => {
       await vi.advanceTimersByTimeAsync(1);
       await initialObserver;
       rejectInitialClose(new Error("external close failed late"));
-      for (
-        let turn = 0;
-        turn < 50 && vi.mocked(runtime.close).mock.calls.length < 4;
-        turn += 1
-      ) {
-        await Promise.resolve();
-      }
+      await finalReconciliationStarted;
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
       const finalObserver = expect(
@@ -829,7 +838,8 @@ describe("Codex ACPX runtime adapter", () => {
       child.child.signalCode = "SIGKILL";
       child.child.emit("exit", null, "SIGKILL");
       resolveFinalReconciliation();
-      await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
+      await renewedReconciliationStarted;
+      expect(runtime.close).toHaveBeenCalledTimes(5);
       expect(runtime.close).toHaveBeenLastCalledWith({
         handle: HANDLE,
         reason: "ACPX late protocol cleanup reconciliation 1",
