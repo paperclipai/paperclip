@@ -51,11 +51,12 @@
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.7.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=24.11.0"

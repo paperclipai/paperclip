@@ -70,7 +70,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
-import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
@@ -85,6 +85,7 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
@@ -227,6 +228,25 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
       { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
     );
   }
+}
+
+/**
+ * Suffix a manifest-derived company name with " (2)", " (3)", … when it
+ * collides case-insensitively with an existing company, so repeat imports of
+ * the same package do not produce several identically named companies that
+ * only differ by issue prefix. Explicit user-typed names bypass this — they
+ * are the caller's deliberate choice.
+ */
+export function dedupeImportedCompanyName(baseName: string, existingNames: string[]): string {
+  const normalized = new Set(existingNames.map((name) => name.trim().toLowerCase()));
+  if (!normalized.has(baseName.trim().toLowerCase())) return baseName;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidate = `${baseName} (${suffix})`;
+    if (!normalized.has(candidate.toLowerCase())) return candidate;
+  }
+  // Pathological: thousands of identically named companies. Give up on the
+  // suffix rather than fail the import — names carry no uniqueness invariant.
+  return baseName;
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
@@ -2374,7 +2394,6 @@ const YAML_KEY_PRIORITY = [
   "role",
   "icon",
   "capabilities",
-  "brandColor",
   "logoPath",
   "adapter",
   "runtime",
@@ -3129,12 +3148,7 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
-      brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
-      attachmentMaxBytes:
-        typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
-          ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
-          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -4668,9 +4682,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         schema: "paperclip/v1",
         schemaVersion: BUNDLE_SCHEMA_VERSION,
         company: stripEmptyValues({
-          brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          attachmentMaxBytes: company.attachmentMaxBytes,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
@@ -5211,6 +5223,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
+    if (include.agents) {
+      const importedAgentSlugs = new Set(
+        plan.preview.plan.agentPlans
+          .filter((entry) => entry.action !== "skip")
+          .map((entry) => entry.slug),
+      );
+      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+        importedAgentSlugs.has(agent.slug)
+        && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
+          === "paperclip_runner",
+      );
+      if (
+        selectsNativeRunner
+        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
+      ) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
+
     // Content-addressed blobs double as the bundle's tamper seal. Verify every
     // blob before any row is written so a corrupted package cannot leave a
     // partially imported company behind.
@@ -5227,7 +5261,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       id: string;
       name: string;
       requireBoardApprovalForNewAgents?: boolean | null;
-      attachmentMaxBytes?: number | null;
     } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
@@ -5241,18 +5274,24 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           throw unprocessable("Safe new-company import requires at least one active user membership on the source company.");
         }
       }
+      const requestedCompanyName = asString(input.target.newCompanyName);
+      const manifestCompanyName =
+        sourceManifest.company?.name ?? sourceManifest.source?.companyName ?? "Imported Company";
+      // De-duplicate only for board-driven imports. The lookup reads every
+      // company name in the instance, and reflecting a collision back through
+      // the numeric suffix would let a company-scoped agent (agent_safe mode)
+      // probe for the existence of company names outside its own company.
       const companyName =
-        asString(input.target.newCompanyName) ??
-        sourceManifest.company?.name ??
-        sourceManifest.source?.companyName ??
-        "Imported Company";
+        requestedCompanyName ??
+        (mode === "agent_safe"
+          ? manifestCompanyName
+          : dedupeImportedCompanyName(
+              manifestCompanyName,
+              (await companies.list()).map((company) => company.name),
+            ));
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
-        brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
-        attachmentMaxBytes: include.company
-          ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
-          : undefined,
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
           : false,
@@ -5290,8 +5329,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
-          brandColor: sourceManifest.company.brandColor,
-          attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
@@ -5549,10 +5586,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
           };
+          // "import", not "system": the UI reads this to explain that the
+          // agent was parked by the import safety default and to offer a
+          // scoped resume; "system" stays reserved for platform-managed
+          // pauses (plugins, built-ins).
           const automationPausePatch = pauseAutomations
             ? {
                 status: "paused",
-                pauseReason: "system",
+                pauseReason: "import",
                 pausedAt: importedAutomationPausedAt,
               }
             : {};
@@ -5864,7 +5905,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const parentSlugBySlug = new Map<string, string>();
         let unarmedMonitorCount = 0;
         let attachmentsSkippedNoStorage = 0;
-        const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
 
         // Import writes every issue and its children as a single batch instead
         // of one network round-trip per row. The loop below resolves each
@@ -6140,8 +6180,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             if (sha256HexOfBytes(body) !== attachmentEntry.sha256) {
               throw unprocessable(`Attachment blob ${blobPath} does not match its declared sha256; the package is corrupted or was tampered with.`);
             }
-            if (body.length > attachmentMaxBytes) {
-              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this board's attachment size limit of ${attachmentMaxBytes} bytes.`);
+            if (body.length > MAX_ATTACHMENT_BYTES) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this deployment's attachment size limit of ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}.`);
               continue;
             }
             let issueCommentId: string | null = null;

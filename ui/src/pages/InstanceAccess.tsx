@@ -66,7 +66,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
-      pushToast({ title: "Company access updated", tone: "success" });
+      pushToast({ title: "Organization access updated", tone: "success" });
     },
   });
 
@@ -107,7 +107,7 @@ export function InstanceAccess() {
           <h1 className="text-lg font-semibold">Instance Access</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which companies they can access.
+          Search users, manage instance-admin status, and control which organizations they can access.
         </p>
       </div>
 
@@ -144,7 +144,7 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active company memberships
+                  {user.activeCompanyMembershipCount} active organization memberships
                 </div>
               </button>
             ))}
@@ -182,9 +182,9 @@ export function InstanceAccess() {
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Company access</h2>
+                  <h2 className="text-sm font-semibold">Organization access</h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle company membership for this user. New access defaults to an active operator membership.
+                    Toggle organization membership for this user. New access defaults to an active operator membership.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -216,7 +216,7 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save company access"}
+                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save organization access"}
                   </Button>
                 </div>
               </div>

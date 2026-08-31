@@ -74,9 +74,9 @@ function RecentActivity({
   }, [events, lifecycleEvents, issues, actionRequests, nameById, connectionId, appName, userLabelById]);
 
   return (
-    <section className="space-y-2">
+    <section className="space-y-5">
       <div>
-        <h2 className="text-sm font-bold text-foreground">Recent activity</h2>
+        <h2 className="text-lg font-semibold text-foreground">Recent activity</h2>
       </div>
       {loading ? (
         <div className="space-y-2 py-4">

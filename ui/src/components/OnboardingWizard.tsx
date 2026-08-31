@@ -5,16 +5,19 @@ import { MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
+  ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AdapterLoginPanel } from "./AgentConfigForm";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { ApiError } from "../api/client";
 import { companiesApi } from "../api/companies";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
@@ -48,6 +51,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { restoreOnboardingState } from "../lib/onboarding-state";
@@ -71,18 +75,19 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import {
   isExistingCompanyMissionUnresolved,
   planMissionPersistence,
 } from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
-import { AgentCapsule } from "./AgentCapsule";
+import { PillGuy } from "./onboarding/PillGuy";
 import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { FooterNav } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
-import { DEFAULT_AGENT_NAME, nextAgentNameForRole } from "../lib/onboarding-agent-role";
+import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -116,6 +121,44 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   if (q3.trim()) parts.push(`Our biggest challenge is ${q3.trim().toLowerCase()}.`);
   if (q4.trim()) parts.push(`Success looks like ${q4.trim().toLowerCase()}.`);
   return parts.join(" ");
+}
+
+/**
+ * True when an adapter-test result blocks a hire. A `fail` status always
+ * blocks. A `warn` or a `pass` status blocks too when a check reports
+ * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
+ * working authentication, so it cannot run. A `warn` with no such check
+ * still lets the hire proceed. The wizard widened the gate for missing
+ * authentication only, not for every other warning.
+ */
+function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+  if (result.status === "fail") return true;
+  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+}
+
+/** True when `value` is a plain object, so callers can spread it as env config. */
+function isEnvRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
+
+/**
+ * True when the adapter configuration carries a non-empty ANTHROPIC_API_KEY.
+ * The server rejects that key together with the fixed Claude login binding
+ * (see `assertClaudeOAuthBindingInvariant` in `server/src/services/secrets.ts`).
+ * This checks the built configuration first, so onboarding never sends a
+ * hire the server would reject.
+ */
+function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boolean {
+  if (!isEnvRecord(config.env)) return false;
+  const binding = config.env[ANTHROPIC_API_KEY_ENV_KEY];
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (!isEnvRecord(binding)) return false;
+  if (binding.type === "plain") {
+    return typeof binding.value === "string" && binding.value.trim().length > 0;
+  }
+  return binding.type === "secret_ref" || binding.type === "user_secret_ref";
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -168,21 +211,21 @@ Propose, don't decide. Keep it conversational.`;
 const onboardingDraftStorage = {
   read(): string | null {
     try {
-      return localStorage.getItem(ONBOARDING_STORAGE_KEY);
+      return window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
     } catch {
       return null;
     }
   },
   write(value: string): void {
     try {
-      localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
     } catch {
       // Storage unavailable: the draft is simply not resumable this session.
     }
   },
   clear(): void {
     try {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
     } catch {
       // Nothing to do. A draft that cannot be cleared is re-rejected on the
       // next load by the same ownership check that rejected it here.
@@ -339,6 +382,9 @@ function OnboardingWizardInner({
   // kept first so a future move inside the route tree needs no change here.
   const companyPrefix =
     matchedCompanyPrefix ?? companyPrefixFromOnboardingPath(location.pathname);
+  // Managed stacks create organizations on Cloud, so the route below never
+  // resolves into the create wizard there — see resolveRouteOnboardingOptions.
+  const cloudInstance = useCloudInstance();
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
@@ -362,6 +408,7 @@ function OnboardingWizardInner({
           pathname: location.pathname,
           companyPrefix,
           companies,
+          cloudManaged: Boolean(cloudInstance),
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -408,12 +455,24 @@ function OnboardingWizardInner({
   const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
-  // Neither is defaulted. The prototype asks for a role before it will create
-  // anything, and leaves the name optional — a pre-filled "Chief of staff" is a
-  // choice made on the customer's behalf that they then have to notice and
-  // undo. Picking a role fills the name; see nextAgentNameForRole.
+  // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
+  // on the customer's behalf that they then have to notice and undo. It is the
+  // step's only question, and its CTA gates on it.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
-  const [agentRole, setAgentRole] = useState<AgentRole | "">((saved?.agentRole as AgentRole) ?? "");
+  // Defaults to `general` rather than empty. The arc stopped asking for a role
+  // — a customer naming their first agent is describing what it does, not
+  // filing it — but the hire still needs one, and the guard below returns
+  // silently when it is missing. An unset role there would mean Connect
+  // appearing to work and hiring nobody.
+  const [agentRole, setAgentRole] = useState<AgentRole>(
+    // `||`, not `??`: the empty string was this field's default before the arc
+    // stopped asking for a role, so every draft saved by an earlier build holds
+    // `agentRole: ""`. `??` passes that straight through, and an empty role
+    // reaches the silent return in the hire — the exact failure the default
+    // exists to prevent, arriving through a restored draft instead of a fresh
+    // one.
+    (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
+  );
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
@@ -428,6 +487,11 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  // The owner's stored Claude subscription login, read right before the hire
+  // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
+  // so nothing else reads this state yet.
+  const [claudeOAuthStatus, setClaudeOAuthStatus] =
+    useState<ClaudeOAuthTokenStatusResponse | null>(null);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -461,6 +525,17 @@ function OnboardingWizardInner({
   // either, because it is not set until the request it guards has resolved. A
   // ref is written before the request goes out, so the second caller sees it.
   const creatingCompanyRef = useRef(false);
+  // Same shape for the hire. Greptile (round-3 PR): with "Test now" gone the
+  // Connect handler re-runs a cached failed probe — and two overlapping
+  // submissions could then both pass the fresh probe and both hire. `loading`
+  // cannot stop the second caller for the same reason as above.
+  const hiringAgentRef = useRef(false);
+  // True when the last `adapterEnvResult` came from a config that carried
+  // the fixed Claude login binding (see `hireAdapterConfig` in
+  // `handleGiveHeartbeat`). A cached result from a config that did not carry
+  // the binding cannot answer for a config that now does — see the reuse
+  // check in `handleGiveHeartbeat`.
+  const adapterEnvResultAppliedStoredLoginRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -683,6 +758,112 @@ function OnboardingWizardInner({
   });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
+
+  // Resolve the login environment at render time, so the wizard can decide
+  // whether to show the login panel before any adapter test runs. This
+  // mirrors the agent configuration form's own resolution, including the
+  // managed-sandbox-only redirect (see AgentConfigForm.tsx:618-640). A render
+  // must not throw, so a resolver error yields no login environment rather
+  // than an error boundary.
+  const { data: loginEnvironmentList = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.list(createdCompanyId)
+      : ["environments", "none"],
+    queryFn: () => environmentsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4,
+  });
+  const { data: instanceSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const { data: experimentalSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const resolvedLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: instanceSettingsForLogin?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(loginEnvironmentList),
+        managedSandboxOnly: experimentalSettingsForLogin?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(loginEnvironmentList),
+        visibleEnvironmentIds: loginEnvironmentList.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    instanceSettingsForLogin?.defaultEnvironmentId,
+    loginEnvironmentList,
+    experimentalSettingsForLogin?.enableManagedSandboxOnly,
+  ]);
+  const resolvedLoginEnvironment = useMemo(
+    () =>
+      loginEnvironmentList.find((environment) => environment.id === resolvedLoginEnvironmentId) ??
+      null,
+    [loginEnvironmentList, resolvedLoginEnvironmentId],
+  );
+  // Sandbox provider capabilities for the login pseudo-terminal gate, loaded
+  // only when the adapter declares a login capability — the same query the
+  // agent configuration form runs (AgentConfigForm.tsx:652-658).
+  const { data: loginEnvironmentCapabilities } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.capabilities(createdCompanyId)
+      : ["environment-capabilities", "none"],
+    queryFn: () => environmentsApi.capabilities(createdCompanyId!),
+    enabled:
+      Boolean(createdCompanyId) &&
+      adapterCaps.login != null &&
+      effectiveOnboardingOpen &&
+      step === 4,
+  });
+  const loginEnvironmentProvider =
+    typeof resolvedLoginEnvironment?.config?.provider === "string"
+      ? resolvedLoginEnvironment.config.provider
+      : null;
+  const loginProviderSupportsPty =
+    loginEnvironmentProvider != null &&
+    loginEnvironmentCapabilities?.sandboxProviders?.[loginEnvironmentProvider]?.supportsLoginPty ===
+      true;
+  // The same capability gate the agent configuration form uses to show its
+  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
+  // full adapter test result. The cheap auth signal below stands in for that
+  // input here, so this gate alone only decides whether the login mechanism
+  // could ever apply to the current adapter and environment.
+  const canShowAdapterLogin = Boolean(
+    adapterCaps.login != null &&
+      resolvedLoginEnvironment?.driver === "sandbox" &&
+      resolvedLoginEnvironmentId &&
+      createdCompanyId &&
+      loginProviderSupportsPty,
+  );
+  // The cheap signal, re-read whenever the adapter type or the resolved login
+  // environment changes (both are part of the query key). It reports whether
+  // the host already holds a usable credential, with no adapter environment
+  // test. The route reads only host-local state, so a login baked into a
+  // sandbox image rather than held on the host reads as `absent` even though
+  // the owner could already sign in — the panel then shows for one extra step
+  // it did not strictly need, never the reverse.
+  const authSignalQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.authSignal(createdCompanyId, adapterType, resolvedLoginEnvironmentId)
+      : ["agents", "none", "auth-signal", adapterType, resolvedLoginEnvironmentId],
+    queryFn: () =>
+      agentsApi.getAdapterAuthSignal(
+        createdCompanyId!,
+        adapterType,
+        resolvedLoginEnvironmentId ?? undefined,
+      ),
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  const authSignalStatus = authSignalQuery.data?.status ?? null;
+  const showAdapterLoginPanel =
+    canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
     adapterCaps.supportsSkills ||
@@ -764,6 +945,7 @@ function OnboardingWizardInner({
   useEffect(() => {
     if (step !== 4) return;
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
 
@@ -832,21 +1014,22 @@ function OnboardingWizardInner({
     setQ2("");
     setQ3("");
     setQ4("");
-    // Both cleared, matching the mount defaults: a reset that left a name
-    // behind without its role would put the walker back on a step whose CTA
-    // is disabled, next to a name nobody chose.
+    // Back to the mount defaults: an empty name (the step's only question, and
+    // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
-    setAgentRole("");
+    setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
     setArgs("");
     setUrl("");
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
+    setClaudeOAuthStatus(null);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
@@ -1000,11 +1183,12 @@ function OnboardingWizardInner({
   }
 
   async function runAdapterEnvironmentTest(
-    adapterConfigOverride?: Record<string, unknown>
+    adapterConfigOverride?: Record<string, unknown>,
+    appliedStoredClaudeLoginBinding = false
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
-        "Create or select a company before testing adapter environment."
+        "Create or select an organization before testing adapter environment."
       );
       return null;
     }
@@ -1069,6 +1253,7 @@ function OnboardingWizardInner({
         }
       );
       setAdapterEnvResult(result);
+      adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
       setAdapterEnvError(
@@ -1188,7 +1373,7 @@ function OnboardingWizardInner({
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(err instanceof Error ? err.message : "Failed to create organization");
     } finally {
       setLoading(false);
     }
@@ -1234,7 +1419,7 @@ function OnboardingWizardInner({
       setSelectedCompanyId(company.id);
       setStep(3);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(err instanceof Error ? err.message : "Failed to create organization");
     } finally {
       creatingCompanyRef.current = false;
       setLoading(false);
@@ -1256,6 +1441,8 @@ function OnboardingWizardInner({
       setStep(5);
       return;
     }
+    if (hiringAgentRef.current) return;
+    hiringAgentRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -1292,27 +1479,91 @@ function OnboardingWizardInner({
         }
       }
 
+      // Onboarding applies a stored Claude subscription login automatically,
+      // with no extra control. A new user who signs in, leaves, and returns
+      // should not sign in a second time — that is the board's direction.
+      // The binding is a reference to the owner's stored value, never the
+      // value itself (see buildFixedClaudeOAuthBinding). The server rejects
+      // that binding together with a configured ANTHROPIC_API_KEY, so this
+      // checks the built configuration first and asks the status route only
+      // when there is no such conflict.
+      //
+      // Read the stored-login status before the environment test below, and
+      // fold it into one adapter configuration. The test must probe the same
+      // configuration the hire sends — a config without the binding can
+      // report missing authentication for a user the binding would have
+      // covered.
+      const baseAdapterConfig = buildAdapterConfig();
+      let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
+      if (
+        adapterType === "claude_local" &&
+        !adapterConfigHasAnthropicApiKey(baseAdapterConfig)
+      ) {
+        try {
+          storedClaudeLogin = await agentsApi.getClaudeOAuthTokenStatus(createdCompanyId);
+        } catch (err) {
+          // A fixed 404 means the owner has no stored value. It is not a
+          // failure.
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+          storedClaudeLogin = null;
+        }
+        if (stillTheSameCompany(createdCompanyId)) setClaudeOAuthStatus(storedClaudeLogin);
+      }
+      const shouldApplyStoredClaudeLogin = storedClaudeLogin !== null;
+      const hireAdapterConfig = shouldApplyStoredClaudeLogin
+        ? {
+            ...baseAdapterConfig,
+            env: {
+              ...(isEnvRecord(baseAdapterConfig.env) ? baseAdapterConfig.env : {}),
+              ...buildFixedClaudeOAuthBinding(),
+            },
+          }
+        : baseAdapterConfig;
+
       if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        // A cached result is reusable only when it tested the same
+        // configuration the hire below sends, and only when it does not
+        // block the hire — see blocksAgentCreate. With the "Test now" card
+        // gone, this button is the only way to re-probe. Reusing a stale
+        // blocking result, or a result from a config that did not carry the
+        // stored login, would lock out a customer who has since fixed the
+        // problem or signed in.
+        const cachedUsable =
+          adapterEnvResult &&
+          adapterEnvResultAppliedStoredLoginRef.current === shouldApplyStoredClaudeLogin &&
+          !blocksAgentCreate(adapterEnvResult)
+            ? adapterEnvResult
+            : null;
+        const result =
+          cachedUsable ??
+          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin));
         if (!result) return;
-        // Block the hire on a failed environment test. A pass or a warn may
-        // proceed; a fail means the agent cannot run as configured.
-        if (result.status === "fail") {
+        // Block the hire on a failed environment test. Also block it on a
+        // pass or a warn result that reports missing authentication — the
+        // agent cannot run without one of those.
+        if (blocksAgentCreate(result)) {
           setError(
-            "The environment test failed. Fix the reported checks before you hire this agent.",
+            result.status === "fail"
+              ? "The environment test failed. Fix the reported checks before you hire this agent."
+              : "No working authentication was found. Fix the reported checks before you hire this agent.",
           );
           return;
         }
       }
 
+      // `agentRole` always holds a value now (see its default), so this is a
+      // type narrowing rather than a gate — but it stays, because a future
+      // path that clears the role must not reach a hire that silently no-ops.
       if (!agentRole) return;
+
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
         role: agentRole,
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: hireAdapterConfig,
+        ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -1366,6 +1617,7 @@ function OnboardingWizardInner({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
+      hiringAgentRef.current = false;
       setLoading(false);
     }
   }
@@ -1516,7 +1768,7 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "w-full flex flex-col overflow-y-auto transition-(--tp-width) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
+              step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
             <div
@@ -1586,11 +1838,10 @@ function OnboardingWizardInner({
                 />
               )}
 
-              {/* The hero, above the heading, as the prototype has it: one
-                  AgentCapsule held in the same tree slot across steps 3–5, so
-                  React reuses the DOM node and the morph reads as a single
-                  capsule coming to life — dashed slot → traced outline →
-                  liquid fill. Moving between steps never replays the entrance. */}
+              {/* The hero, above the heading: one PillGuy held in the same tree
+                  slot across steps 3–5, so React reuses the DOM node and moving
+                  between steps never replays the entrance. It is dormant while
+                  the agent is being specified and wakes on Review. */}
               {step >= 3 && step <= 5 && (
                 // reducedMotion="user" defers to the OS setting, so the hero
                 // arrives in place for anyone who asked for less movement. The
@@ -1606,19 +1857,14 @@ function OnboardingWizardInner({
                       transition={capsuleHeroMotion.transition}
                       className="flex flex-col items-center gap-2"
                     >
-                      <AgentCapsule
-                        state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
-                        gradient={5}
-                        glow="blue"
-                        size="md"
-                        // The arc is where the agent is born, so the
-                        // slot→configured morph traces the outline on.
-                        strokeDraw
+                      {/* Dormant until the agent is actually hired. Review is
+                          the first step where one exists, so that is where it
+                          wakes — the arc's payoff, not a flourish along it. */}
+                      <PillGuy
+                        state={step === 5 ? "alive" : "dormant"}
+                        className="size-(--sz-72px)"
                       />
-                      <AgentPreview
-                        agentName={agentName}
-                        agentRole={agentRole ? AGENT_ROLE_LABELS[agentRole] : ""}
-                      />
+                      <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
 
                     <OnboardingHeading
@@ -1628,19 +1874,16 @@ function OnboardingWizardInner({
                           ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
-                            : "Review"
+                            : "Let's get started..."
                       }
                       // The agent step carries no lede, as the prototype has it:
                       // the capsule and the heading say what this is, and a
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>
-                            What model would you like your first agent to use? You can
-                            choose different models when creating additional agents.
-                          </>
+                          <>Paperclip works with your existing subscription or API keys.</>
                         ) : (
-                          <>Your first agent is online and ready to work.</>
+                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
                         )
                       }
                     />
@@ -1735,21 +1978,18 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: Name your company (both paths) */}
+              {/* Step 1: name the organization (both paths). One question, one
+                  design: this mirrors the funnel's naming screen — same
+                  question, same sub, same left-aligned heading in a centered
+                  column — so a customer creating their second organization
+                  in-app is asked exactly what their first one asked them. */}
               {step === 1 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Building2 className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Name your organization</h3>
-                      <p className="text-xs text-muted-foreground">
-                        What should we call your team or company?
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 group">
+                <div className="mx-auto w-full max-w-md space-y-6">
+                  <OnboardingHeading
+                    title="What is the name of your organization?"
+                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
+                  />
+                  <div className="group">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -1762,7 +2002,7 @@ function OnboardingWizardInner({
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -1975,47 +2215,22 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 3: role, then an optional name — the prototype's field
-                  pair, in its order and its widths. */}
+              {/* Step 3: the name, and only the name. The role picker went with
+                  the question it was asking — a customer naming their first
+                  agent is describing what it does, and the placeholder carries
+                  the range of answers that fit. Hiring uses the neutral
+                  `general` role; a specific one can be set later, where there
+                  is context to choose it in. */}
               {step === 3 && (
                 <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-role">Role</Label>
-                    {/* Options come from the AgentRole enum, not the prototype's
-                        mock list: four of that list's seven entries have no
-                        equivalent here, and one ("Coder") would fail validation
-                        at hire time. */}
-                    <Select
-                      value={agentRole || undefined}
-                      onValueChange={(value) => {
-                        const nextRole = value as AgentRole;
-                        setAgentRole(nextRole);
-                        setAgentName((current) =>
-                          nextAgentNameForRole({ currentName: current, nextRole }),
-                        );
-                      }}
-                    >
-                      <SelectTrigger id="onboarding-agent-role" className="w-full">
-                        <SelectValue placeholder="Select a role…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {AGENT_ROLES.map((role) => (
-                          <SelectItem key={role} value={role}>
-                            {AGENT_ROLE_LABELS[role]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">
-                      Name <span className="font-normal text-muted-foreground">(optional)</span>
-                    </Label>
+                    <Label htmlFor="onboarding-agent-name">Name</Label>
                     <Input
                       id="onboarding-agent-name"
-                      placeholder="Name"
+                      placeholder="e.g. Chief of staff, Designer, Ron, Clippy..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
+                      autoFocus
                     />
                   </div>
                 </div>
@@ -2024,11 +2239,10 @@ function OnboardingWizardInner({
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* The two cards are self-describing; an "Adapter type"
+                      eyebrow above them named the mechanism rather than the
+                      choice. */}
                   <div>
-                    <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
-                    </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
                         <button
@@ -2052,11 +2266,9 @@ function OnboardingWizardInner({
                             setModel("");
                           }}
                         >
-                          {opt.recommended && (
-                            <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                              Recommended
-                            </Badge>
-                          )}
+                          {/* No "Recommended" badge: it sat on both options,
+                              so it recommended nothing and only added the one
+                              saturated colour on the screen. */}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-(length:--text-nano)">
@@ -2076,7 +2288,7 @@ function OnboardingWizardInner({
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      Advanced settings
                     </button>
 
                     {showMoreAdapters && (
@@ -2129,132 +2341,46 @@ function OnboardingWizardInner({
                     )}
                   </div>
 
-                  {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-(--radix-popover-trigger-width) p-1"
-                            align="start"
-                          >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
-                                  setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                Default
-                              </button>
-                            )}
-                            <div className="max-h-(--sz-240px) overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div
-                                  key={group.provider}
-                                  className="mb-1 last:mb-0"
-                                >
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
-                                  )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span
-                                        className="block w-full text-left truncate"
-                                        title={m.id}
-                                      >
-                                        {adapterType === "opencode_local"
-                                          ? extractModelName(m.id)
-                                          : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                    </div>
+                  {/* Shows as soon as the cheap auth signal reports no ready
+                      credential, well before any adapter environment test
+                      runs. Reuses the same panel the agent configuration form
+                      shows after a test — see AdapterLoginPanel in
+                      AgentConfigForm.tsx. No "Use saved login" control: the
+                      hire step already applies a stored login on its own. */}
+                  {showAdapterLoginPanel && createdCompanyId && resolvedLoginEnvironmentId && (
+                    <AdapterLoginPanel
+                      key={`${adapterType}:${resolvedLoginEnvironmentId}`}
+                      companyId={createdCompanyId}
+                      adapterType={adapterType}
+                      environmentId={resolvedLoginEnvironmentId}
+                      onStored={() => {
+                        queryClient.invalidateQueries({
+                          queryKey: queryKeys.agents.authSignal(
+                            createdCompanyId,
+                            adapterType,
+                            resolvedLoginEnvironmentId,
+                          ),
+                        });
+                      }}
+                    />
                   )}
 
-                  {isLocalAdapter && (
-                    <div className="space-y-2 rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-medium">
-                            Adapter environment check
-                          </p>
-                          <p className="text-(length:--text-micro) text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
-                        >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
-                        </Button>
-                      </div>
+                  {/* Conditional adapter fields */}
+                  {/* No model picker. Every adapter this step offers resolves
+                      its own default (see buildAdapterConfig), so the picker
+                      asked the customer to choose a model before they had any
+                      way to judge one — and the agent's model is changeable
+                      later, where its work gives the choice meaning. */}
 
+                  {/* The environment check runs without being shown: Connect
+                      probes the adapter before hiring (see handleGiveHeartbeat)
+                      and blocks the hire on a fail. The idle card — probe
+                      explainer plus a "Test now" button — is gone from this
+                      step, so this block renders only when a probe has actually
+                      found something: the checks the blocking error tells the
+                      customer to fix have to be visible somewhere. */}
+                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                    <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
                           {adapterEnvError}
@@ -2393,35 +2519,10 @@ function OnboardingWizardInner({
               )}
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
-              {step === 5 && (
-                <div className="space-y-5 py-1">
-                  {/* Review checklist — everything that's now set up */}
-                  <div className="space-y-1.5">
-                    {[
-                      { label: "Organization name", done: Boolean(companyName.trim()) },
-                      { label: "Mission", done: Boolean(companyGoal.trim()) },
-                      { label: "Agent created", done: Boolean(createdAgentId) },
-                      { label: "Model connected", done: Boolean(createdAgentId) },
-                    ].map(({ label, done }) => (
-                      <div key={label} className="flex items-center gap-2 text-sm">
-                        <span
-                          className={cn(
-                            "flex h-4 w-4 items-center justify-center rounded-full shrink-0",
-                            done
-                              ? "bg-green-500/15 text-green-600 dark:text-green-400"
-                              : "bg-muted text-muted-foreground"
-                          )}
-                        >
-                          <Check className="h-2.5 w-2.5" />
-                        </span>
-                        <span className={done ? "text-foreground" : "text-muted-foreground"}>
-                          {label}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Step 5: nothing. The heading names the agent and says it is
+                  ready, and the pill above has just woken to show it — a
+                  checklist restating those in three rows only asked the
+                  customer to audit work they watched happen. */}
 
               {/* Error */}
               {visibleError && (
@@ -2446,7 +2547,7 @@ function OnboardingWizardInner({
                   loading={step === 3 ? false : loading}
                   primaryDisabled={
                     step === 3
-                      ? !agentRole
+                      ? !agentName.trim()
                       : step === 4
                         ? loading || adapterEnvLoading || missionUnresolvedForHire
                         : loading || launchStateIncomplete
@@ -2488,7 +2589,7 @@ function OnboardingWizardInner({
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : null}
-                      Next
+                      Continue
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
@@ -2561,7 +2662,7 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-(--tp-width-opacity) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
+              step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
             <AsciiArtAnimation />

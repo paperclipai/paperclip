@@ -15,6 +15,12 @@
 //   - `http/json`        → @opentelemetry/exporter-trace-otlp-http
 // Any other value logs a warning and falls back to grpc.
 //
+// Before it imports any package, the bootstrap checks the four common
+// packages and the selected exporter against the exact versions this
+// manifest's `peerDependencies` declare. A missing or a mismatched version
+// logs one diagnostic and leaves the server running without tracing; it
+// never throws.
+//
 // Timing guarantee: the bootstrap is async (dynamic imports), so it cannot
 // patch modules "before they are evaluated" — by the time the first await
 // yields, index.ts's static imports (http, express, pg) are already loaded.
@@ -29,6 +35,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { checkExactPeerVersions } from "./peer-version-check.js";
+
+export { checkExactPeerVersions } from "./peer-version-check.js";
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
@@ -274,6 +283,20 @@ export function recordProviderPluginSpan(input: {
 }
 
 /**
+ * The four OTel packages that every protocol needs, regardless of which
+ * exporter `OTEL_EXPORTER_OTLP_PROTOCOL` selects. `bootstrapOtel` reads this
+ * synchronously (before its first `await`), so it must be declared above
+ * `instrumentationReady`: that export calls `bootstrapOtel` at module-init
+ * time, and a `const` declared below it is not yet initialized then.
+ */
+const OTEL_COMMON_PACKAGES = [
+  "@opentelemetry/sdk-node",
+  "@opentelemetry/auto-instrumentations-node",
+  "@opentelemetry/resources",
+  "@opentelemetry/semantic-conventions",
+] as const;
+
+/**
  * Resolves once the OTel SDK has started (or once bootstrap has failed and
  * logged, or immediately when the feature is off). Await before constructing
  * the HTTP server so trace coverage doesn't depend on incidental timing.
@@ -425,6 +448,17 @@ export function resolveServiceVersion(
 async function bootstrapOtel(endpoint: string): Promise<void> {
   const { protocol, packageName: exporterPackage } = resolveProtocol();
 
+  // Gate on exact peer versions before touching a single dynamic import: a
+  // package installed at the wrong version can still load and start, then
+  // fail in a way the operator only sees in the collector, not the server
+  // log. Checking first turns that into one precise, fail-open diagnostic.
+  const versionCheck = checkExactPeerVersions([...OTEL_COMMON_PACKAGES, exporterPackage]);
+  if (!versionCheck.ok) {
+    // eslint-disable-next-line no-console
+    console.warn(versionCheck.diagnostic, versionCheck.detail);
+    return;
+  }
+
   try {
     // Dynamic imports so type-resolution doesn't require the packages to
     // be installed unless the operator actually opts in.
@@ -517,14 +551,16 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     process.once("SIGTERM", () => void shutdownInstrumentation());
     process.once("SIGINT", () => void shutdownInstrumentation());
   } catch (err) {
-    // OTel packages not installed, or dynamic import failed. Fall through
-    // with a single diagnostic so the opt-in path is self-documenting.
+    // The exact-version gate above already confirmed every checked package is
+    // installed at the declared version, so only a load failure after that
+    // point reaches this block: a bad build, a broken native binding, or a
+    // package that throws during its own module init. Fall through with a
+    // single diagnostic so the opt-in path is self-documenting.
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] OTEL_EXPORTER_OTLP_ENDPOINT is set but the @opentelemetry/* " +
-        `packages are not installed. Install @opentelemetry/sdk-node, ` +
-        `@opentelemetry/auto-instrumentations-node, ${exporterPackage}, ` +
-        `@opentelemetry/resources, and @opentelemetry/semantic-conventions to enable tracing.`,
+      "[paperclip] OTEL_EXPORTER_OTLP_ENDPOINT is set and the @opentelemetry/* " +
+        "packages passed the version check, but one of them failed to load. " +
+        "Continuing without tracing.",
       err,
     );
   }

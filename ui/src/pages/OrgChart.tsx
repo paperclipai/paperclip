@@ -13,6 +13,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 
 // Layout constants
 const CARD_W = 200;
@@ -175,6 +177,13 @@ export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
+  // button is hidden rather than dead-ending. Export stays available. Both
+  // buttons also respect the operator-hidden settings registry.
+  const isCloud = Boolean(useCloudInstance());
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const showImport = !isCloud && !hiddenSettings.has("company.import");
+  const showExport = !hiddenSettings.has("company.export");
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -430,7 +439,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message="Select an organization to view the org chart." />;
   }
 
   if (isLoading) {
@@ -444,18 +453,22 @@ export function OrgChart() {
   return (
     <div className="flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0">
       <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
-        <Link to="/company/import">
-          <Button variant="outline" size="sm">
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
-          </Button>
-        </Link>
-        <Link to="/company/export">
-          <Button variant="outline" size="sm">
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
-          </Button>
-        </Link>
+        {showImport && (
+          <Link to="/company/import">
+            <Button variant="outline" size="sm">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              Import organization
+            </Button>
+          </Link>
+        )}
+        {showExport && (
+          <Link to="/company/export">
+            <Button variant="outline" size="sm">
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Export organization
+            </Button>
+          </Link>
+        )}
       </div>
       <div
         ref={containerRef}

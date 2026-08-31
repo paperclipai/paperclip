@@ -37,6 +37,7 @@ import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -50,6 +51,7 @@ export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -96,7 +98,7 @@ export function NewProjectDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
     },
   });
@@ -301,29 +303,38 @@ export function NewProjectDialog() {
             />
           </div>
 
-          <div>
-            <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
-                </TooltipContent>
-              </Tooltip>
+          {/*
+            The local folder is an absolute path on the execution host. Under
+            the managed-sandbox-only policy every agent runs in the
+            platform-managed environment, so the field and its folder picker
+            never render and the create request carries no cwd. The field also
+            stays hidden until the policy is known.
+          */}
+          {!hideHostPaths && (
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label className="block text-xs text-muted-foreground">Local folder</label>
+                <span className="text-xs text-muted-foreground/50">optional</span>
+                <Tooltip delayDuration={300}>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
+                    Set an absolute path on this machine where local agents will read and write files for this project.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                  value={workspaceLocalPath}
+                  onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
+                  placeholder="/absolute/path/to/workspace"
+                />
+                <ChoosePathButton />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                value={workspaceLocalPath}
-                onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
-                placeholder="/absolute/path/to/workspace"
-              />
-              <ChoosePathButton />
-            </div>
-          </div>
+          )}
 
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>

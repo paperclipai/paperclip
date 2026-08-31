@@ -288,6 +288,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
+  // Managed-sandbox-only policy: every agent runs in the platform-managed
+  // environment, so the form hides each host filesystem path and each
+  // execution-engine choice. Declared here because the field gates below and
+  // the adapter field props both read it.
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // The gate the host-path fields use. It fails closed whenever the policy is
+  // unknown — in flight and also on a failed read: an unresolved policy reads as
+  // "not managed", which would show a stored working directory or
+  // instructions-file path.
+  const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
@@ -323,7 +333,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -334,7 +344,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      if (!selectedCompanyId) throw new Error("Select an organization to upload images");
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });
@@ -449,8 +459,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
   
+  // The legacy working directory is an absolute path on the host, so the
+  // managed-sandbox-only policy hides it. A stored value stays untouched; it is
+  // inert while every run happens in the platform-managed environment.
   const showLegacyWorkingDirectoryField =
-    isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
+    isLocal
+    && !hideHostPaths
+    && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
@@ -630,17 +645,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Load the sandbox provider capabilities. A login that runs on a real
   // pseudo-terminal needs a provider that advertises the login pseudo-terminal
   // capability. The login panel gate reads this to hide the panel for a provider
-  // without the capability. Enable the query from the adapter login transport,
-  // not the adapter name: only a pseudo-terminal login consults this data. The
-  // gate is advisory; the server resolves the capability again and fails closed.
+  // without the capability. Enable the query when the adapter declares a login
+  // capability: every login runs on a real pseudo-terminal, so every login
+  // consults this data. The gate is advisory; the server resolves the capability
+  // again and fails closed.
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.environments.capabilities(selectedCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled:
-      Boolean(selectedCompanyId) &&
-      adapterCaps.login?.sandboxTransport === "pseudo_terminal",
+    enabled: Boolean(selectedCompanyId) && adapterCaps.login != null,
   });
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -678,7 +692,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     currentDefaultEnvironmentId.length > 0 ||
     runnableEnvironments.length >= 1
   );
-  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? environmentDisplayLabel(instanceDefaultEnvironment)
     : managedSandboxOnly
@@ -712,7 +725,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["agents", "none", "detect-model", adapterType],
     queryFn: () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company to detect the model");
+        throw new Error("Select an organization to detect the model");
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
@@ -738,7 +751,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
     mark: mark as (group: "adapterConfig", field: string, value: unknown) => void,
     models,
-    hideInstructionsFile,
+    // Resolve the effective instructions-file gate once. The instructions file
+    // is an absolute host path, so the managed-sandbox-only policy hides it for
+    // every adapter without a per-adapter edit.
+    hideInstructionsFile: hideInstructionsFile || hideHostPaths,
+    managedSandboxOnly: hideHostPaths,
   };
 
   // Section toggle state — advanced always starts collapsed
@@ -868,7 +885,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company to test adapter environment");
+        throw new Error("Select an organization to test adapter environment");
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
@@ -1032,11 +1049,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     testResult && testResultSupportsSandboxLogin
       ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
-  // A login that runs on a real pseudo-terminal needs a provider that advertises
-  // the login pseudo-terminal capability. Read the capability for the effective
-  // environment provider. The form reads the adapter login transport, not the
-  // adapter name: a login with a streamed-exec transport does not gate on this
-  // capability, so the requirement applies to a pseudo-terminal login only.
+  // A login runs on a real pseudo-terminal, so it needs a provider that
+  // advertises the login pseudo-terminal capability. Read the capability for the
+  // effective environment provider. The form reads the adapter login capability,
+  // not the adapter name: every adapter login gates on this provider capability.
   const effectiveLoginProvider =
     typeof effectiveLoginEnvironment?.config?.provider === "string"
       ? effectiveLoginEnvironment.config.provider
@@ -1044,7 +1060,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const providerSupportsLoginPty =
     effectiveLoginProvider != null &&
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
-  const loginNeedsPty = adapterCaps.login?.sandboxTransport === "pseudo_terminal";
+  const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
@@ -1054,7 +1070,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
-      throw new Error("Select a company to test adapter environment");
+      throw new Error("Select an organization to test adapter environment");
     }
     setTestActionPending(true);
     setTestActionError(null);
@@ -1190,7 +1206,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
+  const showThinkingEffort = adapterType !== "gemini_local"
+    && adapterType !== "cursor_cloud"
+    && adapterType !== "paperclip_runner";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -1454,7 +1472,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               ) : (
                 <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                   This instance requires the Kubernetes sandbox, but no managed Kubernetes
-                  environment is available for this company yet. Configure one before creating
+                  environment is available for this organization yet. Configure one before creating
                   agents; execution will not fall back to local.
                 </div>
               )}
@@ -1641,39 +1659,52 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.command
-                      : eff(
-                          "adapterConfig",
-                          adapterCommandField,
-                          String(
-                            config.command ?? "",
-                          ),
-                        )
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ command: v })
-                      : mark("adapterConfig", adapterCommandField, v || null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder={
-                    ({
-                      claude_local: "claude",
-                      codex_local: "codex",
-                      gemini_local: "gemini",
-                      kimi_local: "kimi",
-                      pi_local: "pi",
-                      cursor: "agent",
-                      opencode_local: "opencode",
-                    } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                  }
-                />
-              </Field>
+              {/*
+                The command names a binary on the execution host, so the
+                managed-sandbox-only policy hides it: the platform-managed image
+                owns the binary. Hiding is presentation only. A stored
+                `adapterConfig.command` stays as it is and the server does not
+                reject one, because an import carries adapter configuration
+                written on another instance; rejecting it would break that flow.
+                The value is inert while the policy is on. The field also stays
+                hidden until the policy is known, so a stored command never
+                flashes on a managed instance.
+              */}
+              {!hideHostPaths && (
+                <Field label="Command" hint={help.localCommand}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.command
+                        : eff(
+                            "adapterConfig",
+                            adapterCommandField,
+                            String(
+                              config.command ?? "",
+                            ),
+                          )
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ command: v })
+                        : mark("adapterConfig", adapterCommandField, v || null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      ({
+                        claude_local: "claude",
+                        codex_local: "codex",
+                        gemini_local: "gemini",
+                        kimi_local: "kimi",
+                        pi_local: "pi",
+                        cursor: "agent",
+                        opencode_local: "opencode",
+                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                    }
+                  />
+                </Field>
+              )}
 
               {supportsModelProfiles && (
                 <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>

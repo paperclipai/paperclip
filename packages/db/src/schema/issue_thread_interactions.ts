@@ -45,6 +45,7 @@ export const issueThreadInteractions = pgTable(
     summary: text("summary"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     addresseeAgentId: uuid("addressee_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    addresseeUserId: text("addressee_user_id"),
     createdByUserId: text("created_by_user_id"),
     resolvedByAgentId: uuid("resolved_by_agent_id").references(() => agents.id),
     resolvedByRunId: uuid("resolved_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -72,5 +73,6 @@ export const issueThreadInteractions = pgTable(
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
     addresseeAgentIdx: index("issue_thread_interactions_addressee_agent_idx").on(table.addresseeAgentId),
+    addresseeUserIdx: index("issue_thread_interactions_addressee_user_idx").on(table.addresseeUserId),
   }),
 );

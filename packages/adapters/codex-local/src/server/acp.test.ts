@@ -1,9 +1,26 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+
+// Every test in this file needs a real teardown, so the mock below delegates
+// to the actual factory by default. Only the wiring test further down reads
+// the call arguments; it does not change this behavior.
+const mockCreateWorkspaceRestoreTeardown = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/adapter-utils/workspace-restore-teardown", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  mockCreateWorkspaceRestoreTeardown.mockImplementation(
+    actual.createWorkspaceRestoreTeardown as (...args: unknown[]) => unknown,
+  );
+  return {
+    ...actual,
+    createWorkspaceRestoreTeardown: mockCreateWorkspaceRestoreTeardown,
+  };
+});
+
 import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
@@ -1133,6 +1150,59 @@ describe("codex_local ACP lane", () => {
     const hostAuth = JSON.parse(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8"));
     expect(hostAuth.last_refresh).toBe(NEWER_REFRESH);
     expect(hostAuth.tokens.refresh_token).toBe("ref-sandbox-newer");
+  });
+
+  it("passes the Codex-specific teardown messages to the shared workspace-restore-teardown factory", async () => {
+    // Wiring test only: `createWorkspaceRestoreTeardown` owns the
+    // classify-and-redact contract, proven once for all three adapters by its
+    // own table-driven test in `packages/adapter-utils`. This test proves only
+    // that the Codex adapter passes its own two message strings to it.
+    // Clear the shared, hoisted mock first: earlier tests in this file also
+    // call through it, and a leftover call could hide a real wiring bug.
+    mockCreateWorkspaceRestoreTeardown.mockClear();
+    const root = await makeTempRoot("paperclip-codex-acp-teardown-wiring-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: path.join(root, "codex-home") },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(mockCreateWorkspaceRestoreTeardown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+        failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+      }),
+    );
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {

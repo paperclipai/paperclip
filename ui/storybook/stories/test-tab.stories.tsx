@@ -128,7 +128,12 @@ const DECISIONS: Record<string, ToolConnectionTestDecision> = {
   delete_row: "off",
 };
 
-function buildAgent(id: string, name: string, decisions: Record<string, ToolConnectionTestDecision>): ToolConnectionTestAgent {
+function buildAgent(
+  id: string,
+  name: string,
+  decisions: Record<string, ToolConnectionTestDecision>,
+  orgDepth = 1,
+): ToolConnectionTestAgent {
   const tools = CATALOG.map((entry) => decisionTool(entry, decisions[entry.toolName]));
   return {
     id,
@@ -136,6 +141,7 @@ function buildAgent(id: string, name: string, decisions: Record<string, ToolConn
     role: "engineer",
     title: "Engineer",
     status: "active",
+    orgDepth,
     effectiveAccess: {
       connectionId: CONNECTION,
       toolCount: tools.length,
@@ -151,7 +157,7 @@ function buildAgent(id: string, name: string, decisions: Record<string, ToolConn
 }
 
 const AGENTS: ToolConnectionTestAgent[] = [
-  buildAgent("agent-claude", "ClaudeCoder", DECISIONS),
+  buildAgent("agent-claude", "ClaudeCoder", DECISIONS, 0),
   buildAgent("agent-codex", "CodexCoder", {
     ...DECISIONS,
     create_sheet: "ask_first",

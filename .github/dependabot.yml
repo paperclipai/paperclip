@@ -14,6 +14,14 @@ updates:
     open-pull-requests-limit: 20
     labels:
       - "dependencies"
+    # Dependabot's npm parser reads only dependencies, devDependencies, and
+    # optionalDependencies — never peerDependencies. It cannot see the
+    # optional OpenTelemetry peer dependencies in server/package.json, so it
+    # never bumps their declared versions. The same limit applies to the
+    # optional @sentry/node peer dependency in server/package.json: Dependabot
+    # cannot bump it either, for the same reason. @sentry/browser stays a
+    # normal devDependency of ui/package.json, so Dependabot does track that
+    # one.
     ignore:
       # @types/node describes the APIs available in the supported Node runtime.
       # Runtime major upgrades are deliberate compatibility changes, so keep

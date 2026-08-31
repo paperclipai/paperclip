@@ -12,6 +12,9 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  connectionGrantMembers,
+  connectionGrantDelegations,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -23,6 +26,7 @@ import {
   toolApplications,
   toolCatalogEntries,
   toolCallEvents,
+  toolConnectionInstalls,
   toolConnections,
   toolGatewayRateLimitCounters,
   toolGatewaySessions,
@@ -36,11 +40,20 @@ import {
   toolStdioCommandTemplates,
   toolRuntimeSlots,
   secretAccessEvents,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
+import {
+  canonicalToolArguments,
+  readSignedToolArgumentsPayload,
+  signToolArguments,
+  summarizeToolValue,
+} from "../services/tool-content-guards.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
@@ -111,6 +124,16 @@ async function createIssueAndRun(db: Db, companyId: string, agentId: string) {
     .returning()
     .then((rows) => rows[0]!);
   return { project, issue, run };
+}
+
+async function createActiveMember(db: Db, companyId: string, userId: string) {
+  await db.insert(companyMemberships).values({
+    companyId,
+    principalType: "user",
+    principalId: userId,
+    status: "active",
+    membershipRole: "member",
+  });
 }
 
 async function allowToolsForAgent(db: Db, companyId: string, agentId: string, toolNames: string[]) {
@@ -209,11 +232,19 @@ async function createRemoteMcpTool(
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
     healthStatus: input.healthStatus ?? "ok",
-    config: { url: input.url ?? "https://mcp.example.test/mcp" },
-    transportConfig: { url: input.url ?? "https://mcp.example.test/mcp" },
+    config: { url: input.url ?? "https://mcp.example.test/mcp", ...(input.connectionConfig ?? {}) },
+    transportConfig: { url: input.url ?? "https://mcp.example.test/mcp", ...(input.connectionConfig ?? {}) },
     credentialRefs: input.credentialRefs ?? [],
     credentialSecretRefs: input.credentialSecretRefs ?? [],
   }).returning();
+  await db.insert(connectionGrants).values({
+    companyId,
+    connectionId: connection.id,
+    kind: "organization",
+    credentialSecretRefs: connection.credentialSecretRefs,
+    status: "active",
+    isDefault: true,
+  });
   if (input.credentialRefs?.length || input.credentialSecretRefs?.length) {
     await db.insert(companySecretBindings).values([
       ...(input.credentialRefs ?? []).map((ref) => ({
@@ -276,6 +307,11 @@ async function createLocalStdioMcpTool(
     healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
     catalogStatus?: "active" | "disabled" | "quarantined" | "removed";
     riskLevel?: "read" | "write" | "destructive";
+    credentialPolicy?: "shared" | "per_user" | "per_user_with_fallback";
+    credentialSecretRefs?: typeof toolConnections.$inferInsert["credentialSecretRefs"];
+    stdioScript?: string;
+    envKeys?: string[];
+    connectionConfig?: Record<string, unknown>;
   } = {},
 ) {
   const applicationKey = input.applicationKey ?? `local-app-${randomUUID().slice(0, 8)}`;
@@ -333,9 +369,31 @@ rl.on("line", (line) => {
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
     healthStatus: input.healthStatus ?? "ok",
+    credentialPolicy: input.credentialPolicy ?? "shared",
     config: { templateId: templateKey, ...(input.connectionConfig ?? {}) },
     transportConfig: { templateId: templateKey, ...(input.connectionConfig ?? {}) },
+    credentialSecretRefs: input.credentialSecretRefs ?? [],
   }).returning();
+  await db.insert(connectionGrants).values({
+    companyId,
+    connectionId: connection.id,
+    kind: "organization",
+    credentialSecretRefs: connection.credentialSecretRefs,
+    status: "active",
+    isDefault: true,
+  });
+  if (input.credentialSecretRefs?.length) {
+    await db.insert(companySecretBindings).values(input.credentialSecretRefs.map((ref) => ({
+      companyId,
+      secretId: ref.secretId,
+      targetType: "tool_connection" as const,
+      targetId: connection.id,
+      configPath: ref.configPath,
+      versionSelector: String(ref.versionSelector ?? "latest"),
+      required: ref.required ?? true,
+      label: ref.label ?? null,
+    }))).onConflictDoNothing();
+  }
   const [catalogEntry] = await db.insert(toolCatalogEntries).values({
     companyId,
     applicationId: application!.id,
@@ -506,9 +564,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(secretAccessEvents);
+    await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDefinitions);
     await db.delete(issueThreadInteractions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -1189,6 +1249,143 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(otherTools.map((tool) => tool.catalogEntryId)).not.toContain(remoteTool.catalogEntry.id);
   });
 
+  it("invokes an installed Composio child through a tool-scoped session and re-mints once on 401", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remoteTool = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "composio",
+      connectionName: "GitHub (via Composio)",
+      toolName: "GITHUB_LIST_REPOS",
+      title: "List repositories",
+      riskLevel: "read",
+    });
+    const apiKey = await secretService(db).create(company.id, {
+      name: "Composio API key",
+      key: `tool_app.${randomUUID()}.composio_api_key`,
+      provider: "local_encrypted",
+      value: "ak_composio_gateway_fixture",
+    });
+    const [parent] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: remoteTool.application.id,
+      name: "Composio",
+      uid: `composio/${randomUUID()}`,
+      transport: "rest_api",
+      authKind: "api_key",
+      status: "active",
+      enabled: true,
+      config: { sourceTemplateKey: "composio" },
+      transportConfig: { sourceTemplateKey: "composio" },
+      credentialRefs: [{
+        name: "credentials.apiKey",
+        secretId: apiKey.id,
+        version: "latest",
+        placement: "header",
+        key: "x-api-key",
+        prefix: null,
+      }],
+      credentialSecretRefs: [{
+        secretId: apiKey.id,
+        versionSelector: "latest",
+        configPath: "credentials.apiKey",
+        required: true,
+        label: "Composio API key",
+      }],
+    }).returning();
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: apiKey.id,
+      targetType: "tool_connection",
+      targetId: parent!.id,
+      configPath: "credentials.apiKey",
+    });
+    const childConfig = {
+      provider: "composio",
+      parentConnectionId: parent!.id,
+      toolkitSlug: "github",
+      connectedAccountId: "ca_github_fixture",
+    };
+    await db.update(toolConnections).set({ config: childConfig, transportConfig: childConfig })
+      .where(eq(toolConnections.id, remoteTool.connection.id));
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company.id,
+      connectionId: remoteTool.connection.id,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: remoteTool.catalogEntry.id,
+    });
+
+    const sessionRequests: Array<{ apiKey: string; userId: string; options: unknown }> = [];
+    let upstreamCalls = 0;
+    const gateway = createTestToolGatewayService(db, {
+      composioClientFactory: (resolvedApiKey) => ({
+        createSession: async (userId, sessionOptions) => {
+          sessionRequests.push({ apiKey: resolvedApiKey, userId, options: sessionOptions });
+          const suffix = sessionRequests.length;
+          return {
+            session_id: `composio-session-${suffix}`,
+            mcp: {
+              url: `https://mcp.composio.test/session-${suffix}`,
+              headers: { Authorization: `Bearer composio-session-token-${suffix}` },
+            },
+          };
+        },
+      }) as unknown as ComposioClient,
+      remoteHttpRequest: async (url, init) => {
+        upstreamCalls += 1;
+        expect(url).toBe(`https://mcp.composio.test/session-${upstreamCalls}`);
+        expect(new Headers(init.headers).get("authorization")).toBe(`Bearer composio-session-token-${upstreamCalls}`);
+        if (upstreamCalls === 1) return new Response("unauthorized", { status: 401 });
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: "fixture",
+          result: { content: [{ type: "text", text: "repo-a" }], structuredContent: { repositories: ["repo-a"] } },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((candidate) => candidate.connectionId === remoteTool.connection.id);
+    expect(tool).toBeDefined();
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters: {} })).resolves.toMatchObject({
+      status: "completed",
+      result: { content: "repo-a", data: { structuredContent: { repositories: ["repo-a"] } } },
+    });
+    await db.update(connectionGrants).set({ updatedAt: new Date(Date.now() + 1_000) })
+      .where(eq(connectionGrants.connectionId, remoteTool.connection.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters: {} })).resolves.toMatchObject({
+      status: "completed",
+      result: { content: "repo-a" },
+    });
+    expect(sessionRequests).toEqual([
+      expect.objectContaining({
+        apiKey: "ak_composio_gateway_fixture",
+        userId: `paperclip:${company.id}`,
+        options: expect.objectContaining({
+          mcp: true,
+          toolkits: ["github"],
+          tools: { github: { enable: ["GITHUB_LIST_REPOS"] } },
+        }),
+      }),
+      expect.objectContaining({ options: expect.objectContaining({ tools: { github: { enable: ["GITHUB_LIST_REPOS"] } } }) }),
+      expect.objectContaining({ options: expect.objectContaining({ tools: { github: { enable: ["GITHUB_LIST_REPOS"] } } }) }),
+    ]);
+    const [persistedChild] = await db.select().from(toolConnections).where(eq(toolConnections.id, remoteTool.connection.id));
+    expect(JSON.stringify(persistedChild!.config)).not.toContain("session-");
+    expect(JSON.stringify(persistedChild!.transportConfig)).not.toContain("mcp.composio.test");
+    expect(persistedChild!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^composio\.session\.[a-f0-9]+\.url$/),
+      expect.stringMatching(/^composio\.session\.[a-f0-9]+\.header\.[a-f0-9]+$/),
+    ]));
+  });
+
   it("lists and executes connected local stdio MCP catalog tools through the gateway", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -1276,13 +1473,26 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const company = await createCompany(db);
       const agent = await createAgent(db, company.id);
       const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const allowedToken = await secretService(db).create(company.id, {
+        name: `Local stdio token ${randomUUID()}`,
+        key: `local_stdio_token_${randomUUID().replace(/-/g, "")}`,
+        provider: "local_encrypted",
+        value: "allowed-token",
+      });
       const localTool = await createLocalStdioMcpTool(db, company.id, {
         applicationKey: "local-env-demo",
         connectionName: "Local Env Demo",
         toolName: "inspect_env",
         title: "Inspect env",
         envKeys: ["ALLOWED_TOKEN"],
-        connectionConfig: { env: { ALLOWED_TOKEN: "allowed-token", EXTRA_CONFIG: "extra-value", NODE_OPTIONS: "--trace-warnings" } },
+        credentialSecretRefs: [{
+          secretId: allowedToken.id,
+          versionSelector: "latest",
+          configPath: "env.ALLOWED_TOKEN",
+          required: true,
+          label: "Allowed token",
+        }],
+        connectionConfig: { env: { ALLOWED_TOKEN: "connection-level-token", EXTRA_CONFIG: "extra-value", NODE_OPTIONS: "--trace-warnings" } },
         stdioScript: `
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -1352,6 +1562,253 @@ rl.on("line", (line) => {
     }
   });
 
+  it("passes only the selected grant identity to local stdio MCP processes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "alice");
+    await createActiveMember(db, company.id, "bob");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "alice" }).where(eq(heartbeatRuns.id, run.id));
+    const values = {
+      organization: `organization-${randomUUID()}`,
+      alice: `alice-${randomUUID()}`,
+      bob: `bob-${randomUUID()}`,
+    };
+    const organizationSecret = await secretService(db).create(company.id, {
+      name: `Organization stdio token ${randomUUID()}`,
+      key: `organization_stdio_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: values.organization,
+    });
+    const secrets = secretService(db);
+    const identityDefinition = await secrets.createUserSecretDefinition(company.id, {
+      name: `Personal stdio token ${randomUUID()}`,
+      key: `personal_stdio_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+    });
+    const aliceSecret = await secrets.createCurrentUserSecretValue(company.id, "alice", {
+      definitionId: identityDefinition.id,
+      value: values.alice,
+    });
+    const bobSecret = await secrets.createCurrentUserSecretValue(company.id, "bob", {
+      definitionId: identityDefinition.id,
+      value: values.bob,
+    });
+    const localTool = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "local-grant-identity",
+      toolName: "identity",
+      title: "Grant identity",
+      envKeys: ["IDENTITY_TOKEN"],
+      credentialSecretRefs: [{
+        secretId: organizationSecret.id,
+        versionSelector: "latest",
+        configPath: "env.IDENTITY_TOKEN",
+        required: true,
+        label: "Organization identity",
+      }],
+      connectionConfig: { env: { IDENTITY_TOKEN: "legacy-connection-identity" } },
+      stdioScript: `
+const readline = require("node:readline");
+const identities = ${JSON.stringify(values)};
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "identity-stdio", version: "0.0.0" } } }) + "\\n");
+    return;
+  }
+  if (message.method === "tools/call") {
+    const identity = Object.entries(identities).find(([, value]) => value === process.env.IDENTITY_TOKEN)?.[0] ?? "unknown";
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: identity }], structuredContent: { identity } } }) + "\\n");
+  }
+});
+`,
+    });
+    await secrets.syncUserSecretDeclarationsForTarget(
+      company.id,
+      { targetType: "tool_connection", targetId: localTool.connection.id },
+      [{
+        definitionKey: identityDefinition.key,
+        configPath: "env.IDENTITY_TOKEN",
+        envKey: "IDENTITY_TOKEN",
+        versionSelector: "latest",
+        required: true,
+        label: "Personal identity",
+      }],
+      { replaceAll: true },
+    );
+    const grantRef = (secretId: string, label: string) => ({
+      secretId,
+      versionSelector: "latest" as const,
+      configPath: "env.IDENTITY_TOKEN",
+      required: true,
+      label,
+    });
+    const [aliceGrant] = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: localTool.connection.id,
+      kind: "user",
+      subjectUserId: "alice",
+      credentialSecretRefs: [grantRef(aliceSecret.id, "Alice identity")],
+      status: "active",
+      isDefault: false,
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: localTool.connection.id,
+      kind: "user",
+      subjectUserId: "bob",
+      credentialSecretRefs: [grantRef(bobSecret.id, "Bob identity")],
+      status: "active",
+      isDefault: false,
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.connectionId === localTool.connection.id)!;
+    const executeIdentity = async () => {
+      const result = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+      return (result.result as { data?: { structuredContent?: { identity?: string } } }).data?.structuredContent?.identity;
+    };
+
+    expect(await executeIdentity()).toBe("organization");
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, localTool.connection.id));
+    expect(await executeIdentity()).toBe("alice");
+    await db.update(toolConnections).set({ credentialPolicy: "per_user_with_fallback" }).where(eq(toolConnections.id, localTool.connection.id));
+    expect(await executeIdentity()).toBe("alice");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, aliceGrant.id));
+    expect(await executeIdentity()).toBe("organization");
+
+    await db.delete(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id));
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, localTool.connection.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+    expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id))).toHaveLength(0);
+
+    const [organizationGrant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, localTool.connection.id),
+      eq(connectionGrants.kind, "organization"),
+    ));
+    await db.insert(connectionGrantMembers).values({
+      companyId: company.id,
+      grantId: organizationGrant.id,
+      subjectType: "user",
+      subjectId: "sales-user",
+    });
+    await db.update(toolConnections).set({ credentialPolicy: "shared" }).where(eq(toolConnections.id, localTool.connection.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ status: 403, reasonCode: "grant_audience_denied" });
+    expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id))).toHaveLength(0);
+
+    await db.insert(connectionGrantMembers).values({
+      companyId: company.id,
+      grantId: organizationGrant.id,
+      subjectType: "user",
+      subjectId: "alice",
+    });
+    expect(await executeIdentity()).toBe("organization");
+
+    await db.delete(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id));
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, organizationGrant.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ status: 409, reasonCode: "organization_authorization_required" });
+
+    await db.delete(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, organizationGrant.id));
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, localTool.connection.id));
+    await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, run.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+    expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id))).toHaveLength(0);
+  });
+
+  it("uses the signed-in tester's personal grant for Test-tab calls", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const userId = `test-user-${randomUUID()}`;
+    await createActiveMember(db, company.id, userId);
+    const personalValue = `personal-${randomUUID()}`;
+    const definitionKey = `personal_test_${randomUUID().replace(/-/g, "")}`;
+    const [definition] = await db.insert(userSecretDefinitions).values({
+      companyId: company.id,
+      key: definitionKey,
+      name: `Personal Test token ${randomUUID()}`,
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+    }).returning();
+    const personalSecret = await secretService(db).createCurrentUserSecretValue(company.id, userId, {
+      definitionId: definition.id,
+      value: personalValue,
+    });
+    const localTool = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "personal-test-tab",
+      toolName: "identity",
+      title: "Personal test identity",
+      envKeys: ["IDENTITY_TOKEN"],
+      stdioScript: `
+const readline = require("node:readline");
+const expected = ${JSON.stringify(personalValue)};
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "test-identity", version: "0.0.0" } } }) + "\\n");
+    return;
+  }
+  if (message.method === "tools/call") {
+    const identity = process.env.IDENTITY_TOKEN === expected ? "personal" : "wrong";
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: identity }], structuredContent: { identity } } }) + "\\n");
+  }
+});
+`,
+    });
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(
+      toolConnections.id,
+      localTool.connection.id,
+    ));
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: localTool.connection.id,
+      kind: "user",
+      subjectUserId: userId,
+      credentialSecretRefs: [{
+        secretId: personalSecret.id,
+        versionSelector: "latest",
+        configPath: "env.IDENTITY_TOKEN",
+        required: true,
+        label: "Personal identity",
+      }],
+      status: "active",
+      isDefault: false,
+    });
+    await secretService(db).syncUserSecretDeclarationsForTarget(
+      company.id,
+      { targetType: "tool_connection", targetId: localTool.connection.id },
+      [{
+        definitionKey,
+        configPath: "env.IDENTITY_TOKEN",
+        envKey: "IDENTITY_TOKEN",
+        versionSelector: "latest",
+        required: true,
+        label: "Personal identity",
+      }],
+      { replaceAll: true },
+    );
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+
+    await expect(gateway.executeTestCall({
+      companyId: company.id,
+      connectionId: localTool.connection.id,
+      agentId: agent.id,
+      userId,
+      toolName: "identity",
+      parameters: {},
+    })).resolves.toMatchObject({
+      decision: "allowed",
+      result: { data: { structuredContent: { identity: "personal" } } },
+    });
+  });
+
   it("keeps connected remote MCP gateway names collision-safe and excludes inactive catalog sources", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -1405,7 +1862,11 @@ rl.on("line", (line) => {
     ]));
   });
 
-  it("blocks private remote HTTP endpoints in authenticated public deployments before dispatch", async () => {
+  it.each([
+    ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
+    ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
+    ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],
+  ])("always blocks link-local gateway dispatch in %s before fetch", async (_label, deployment) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -1417,10 +1878,7 @@ rl.on("line", (line) => {
     await allowAllToolsForAgent(db, company.id, agent.id);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch should not be called"));
     try {
-      const gateway = createTestToolGatewayService(db, {
-        deploymentMode: "authenticated",
-        deploymentExposure: "public",
-      });
+      const gateway = createTestToolGatewayService(db, deployment);
       const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
       const connectedTool = (await gateway.listToolsForSession(session.token))
         .find((tool) => tool.providerType === "mcp_remote_http");
@@ -1455,6 +1913,7 @@ rl.on("line", (line) => {
     });
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
       expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      expect(fakeRequest.headers["x-posthog-project-id"]).toBe("12345");
       const params = fakeRequest.body?.params as Record<string, unknown>;
       const args = params.arguments as Record<string, unknown>;
       return {
@@ -1490,6 +1949,16 @@ rl.on("line", (line) => {
           required: true,
           label: "Remote MCP token",
         }],
+        connectionConfig: {
+          sourceTemplateKey: "posthog",
+          connectionMethodKey: "mcp-api-key",
+          methodConfig: {
+            projectId: "12345",
+            readOnly: true,
+            features: "insights",
+            mode: "tools",
+          },
+        },
       });
       await allowAllToolsForAgent(db, company.id, agent.id);
       const gateway = createTestToolGatewayService(db);
@@ -1612,6 +2081,162 @@ rl.on("line", (line) => {
         activity: await db.select().from(activityLog),
       });
       expect(persisted).not.toContain(credentialValue);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("creates a personal authorization card and resumes after the user grant exists", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "carol");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "carol" }).where(eq(heartbeatRuns.id, run.id));
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "connected" }] },
+      },
+    }));
+    try {
+      const { connection } = await createRemoteMcpTool(db, company.id, {
+        url: fake.url,
+        toolName: "whoami",
+        riskLevel: "read",
+      });
+      // Personal credentials live on grants, so a company-level health probe
+      // may be unable to authenticate even though this user's grant is valid.
+      // The cached catalog must remain visible so grant resolution can happen.
+      await db.update(toolConnections).set({
+        credentialPolicy: "per_user",
+        healthStatus: "error",
+        healthMessage: "This app needs you to sign in.",
+      }).where(eq(toolConnections.id, connection.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.providerType === "mcp_remote_http")!;
+
+      await db.insert(issueThreadInteractions).values({
+        companyId: company.id,
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        idempotencyKey: `connection-authorization:${connection.id}:carol`,
+        title: "Connect your account",
+        summary: `Connect ${connection.name} to continue`,
+        payload: {
+          version: 1,
+          prompt: `Connect your account to ${connection.name}`,
+          acceptLabel: "Open authorization",
+          rejectLabel: "Not now",
+        },
+      });
+
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+        .rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(interaction).toMatchObject({
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        addresseeUserId: "carol",
+      });
+      expect(interaction!.payload).toMatchObject({
+        prompt: `Connect your ${connection.name} account to continue`,
+        target: { key: `connection:${connection.uid}:user:carol` },
+      });
+
+      await db.insert(connectionGrants).values({
+        companyId: company.id,
+        connectionId: connection.id,
+        kind: "user",
+        subjectUserId: "carol",
+        credentialSecretRefs: [],
+        status: "active",
+        isDefault: false,
+      });
+      const result = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+      expect(result).toMatchObject({ status: "completed", result: { content: "connected" } });
+      expect(fake.requests).toHaveLength(1);
+      await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections).where(
+        eq(toolConnections.id, connection.id),
+      )).resolves.toEqual([{ healthStatus: "ok" }]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("requires an explicit named-agent delegation for autonomous personal-identity runs", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "alice");
+    await db.update(heartbeatRuns).set({
+      responsibleUserId: "alice",
+      invocationSource: "automation",
+    }).where(eq(heartbeatRuns.id, run.id));
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "delegated" }] },
+      },
+    }));
+    try {
+      const { connection } = await createRemoteMcpTool(db, company.id, {
+        url: fake.url,
+        toolName: "whoami",
+        riskLevel: "read",
+      });
+      await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, connection.id));
+      const grant = await db.insert(connectionGrants).values({
+        companyId: company.id,
+        connectionId: connection.id,
+        kind: "user",
+        subjectUserId: "alice",
+        credentialSecretRefs: [],
+        status: "active",
+        isDefault: false,
+      }).returning().then((rows) => rows[0]!);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.providerType === "mcp_remote_http")!;
+
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+        .rejects.toMatchObject({ status: 409, reasonCode: "standing_delegation_required" });
+      expect(fake.requests).toHaveLength(0);
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id)))
+        .toEqual([expect.objectContaining({
+          status: "pending",
+          addresseeUserId: "alice",
+          idempotencyKey: `connection-delegation:${connection.id}:alice:${agent.id}`,
+        })]);
+
+      await db.insert(connectionGrantDelegations).values({
+        companyId: company.id,
+        grantId: grant.id,
+        agentId: agent.id,
+        createdByUserId: "alice",
+      });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+        .resolves.toMatchObject({ status: "completed", result: { content: "delegated" } });
+      expect(fake.requests).toHaveLength(1);
+
+      await db.update(companyMemberships).set({ status: "suspended" }).where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalId, "alice"),
+      ));
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+        .rejects.toMatchObject({ status: 403, reasonCode: "grant_owner_membership_inactive" });
+      expect(fake.requests).toHaveLength(1);
     } finally {
       await fake.close();
     }
@@ -2038,6 +2663,307 @@ rl.on("line", (line) => {
     }
   });
 
+  it("expires legacy managed-connector approvals before provider dispatch", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "should not run" }] },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "shopify",
+        toolName: "kv_set",
+        url: fake.url,
+        connectionConfig: {
+          sourceTemplateKey: "shopify",
+          connectionMethodKey: "ucp-commerce",
+          methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
+        },
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review managed Shopify writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { key: "legacy", value: "reviewed" },
+      }).then(
+        () => {
+          throw new Error("Expected managed Shopify call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      const signedPayload = readSignedToolArgumentsPayload({
+        signedArguments: actionRequest.signedArguments,
+        invocationId: actionRequest.invocationId,
+        toolName,
+        signingSecret: testToolActionSigningSecret,
+      });
+      expect(signedPayload?.executionOnApprove).toBe(true);
+
+      // Model an approval signed before Shopify's UCP agent profile became a
+      // required managed argument. Its signature and hash are valid for that
+      // historical payload, but it is no longer compatible with dispatch.
+      const legacyParameters = { key: "legacy", value: "reviewed" };
+      const legacyCanonical = canonicalToolArguments(legacyParameters);
+      const legacySummary = summarizeToolValue(legacyParameters);
+      await db
+        .update(toolActionRequests)
+        .set({
+          signedArguments: signToolArguments({
+            invocationId: actionRequest.invocationId,
+            toolName,
+            canonicalArguments: legacyCanonical,
+            approvalSnapshot: signedPayload?.approvalSnapshot,
+            executionOnApprove: true,
+            signingSecret: testToolActionSigningSecret,
+          }),
+          canonicalArgumentsHash: legacySummary.sha256,
+          canonicalArgumentsSummary: legacySummary,
+          updatedAt: new Date(),
+        })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+
+      await expect(gateway.approveActionRequest({
+        companyId: company.id,
+        issueId: issue.id,
+        interactionId: actionRequest.interactionId!,
+        actionRequestId: actionRequest.id,
+        actor: { agentId: agent.id },
+      })).resolves.toMatchObject({ status: "expired" });
+
+      expect(fake.requests).toHaveLength(0);
+      const [expiredRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      expect(expiredRequest.status).toBe("expired");
+      const [failedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      expect(failedInvocation).toMatchObject({
+        status: "failed",
+        approvalState: "expired",
+        errorCode: "approved_tool_managed_arguments_changed",
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("does not expire a managed-connector provider execution already in flight", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "concurrent execution won" }] },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "shopify",
+        toolName: "kv_set",
+        url: fake.url,
+        connectionConfig: {
+          sourceTemplateKey: "shopify",
+          connectionMethodKey: "ucp-commerce",
+          methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
+        },
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review raced managed Shopify writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      let driftExpiryReached!: () => void;
+      const driftExpiryStarted = new Promise<void>((resolve) => {
+        driftExpiryReached = resolve;
+      });
+      let resumeDriftExpiry!: () => void;
+      const driftExpiryResume = new Promise<void>((resolve) => {
+        resumeDriftExpiry = resolve;
+      });
+      const gateway = createTestToolGatewayService(db, {
+        beforeManagedArgumentDriftExpiry: async () => {
+          driftExpiryReached();
+          await driftExpiryResume;
+        },
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { key: "raced", value: "reviewed" },
+      }).then(
+        () => {
+          throw new Error("Expected managed Shopify call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      const signedPayload = readSignedToolArgumentsPayload({
+        signedArguments: actionRequest.signedArguments,
+        invocationId: actionRequest.invocationId,
+        toolName,
+        signingSecret: testToolActionSigningSecret,
+      });
+      const legacyParameters = { key: "raced", value: "reviewed" };
+      const legacyCanonical = canonicalToolArguments(legacyParameters);
+      const legacySummary = summarizeToolValue(legacyParameters);
+      await db
+        .update(toolActionRequests)
+        .set({
+          signedArguments: signToolArguments({
+            invocationId: actionRequest.invocationId,
+            toolName,
+            canonicalArguments: legacyCanonical,
+            approvalSnapshot: signedPayload?.approvalSnapshot,
+            executionOnApprove: true,
+            signingSecret: testToolActionSigningSecret,
+          }),
+          canonicalArgumentsHash: legacySummary.sha256,
+          canonicalArgumentsSummary: legacySummary,
+          updatedAt: new Date(),
+        })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+
+      const approvedAt = new Date();
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "accepted", resolvedByAgentId: agent.id, resolvedAt: approvedAt, updatedAt: approvedAt })
+        .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+      await db
+        .update(toolActionRequests)
+        .set({ status: "approved", resolvedByAgentId: agent.id, resolvedAt: approvedAt, updatedAt: approvedAt })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      await db
+        .update(toolInvocations)
+        .set({ approvalState: "approved", updatedAt: approvedAt })
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+
+      const retrying = gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: legacyParameters,
+        approvedActionRequestId: actionRequest.id,
+      });
+      await driftExpiryStarted;
+
+      const executingAt = new Date();
+      await db
+        .update(toolActionRequests)
+        .set({ status: "executing", updatedAt: executingAt })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "executing",
+          approvalState: "approved",
+          errorCode: null,
+          errorMessage: null,
+          startedAt: executingAt,
+          completedAt: null,
+          updatedAt: executingAt,
+        })
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      resumeDriftExpiry();
+
+      await retrying.then(
+        () => {
+          throw new Error("Expected the stale approved retry to request a new approval");
+        },
+        (error) => expectGatewayError(error, 409, "approved_tool_managed_arguments_changed"),
+      );
+      const [inFlightRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      const [inFlightInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      expect(inFlightRequest.status).toBe("executing");
+      expect(inFlightInvocation).toMatchObject({
+        status: "executing",
+        approvalState: "approved",
+        errorCode: null,
+        errorMessage: null,
+      });
+
+      const completedAt = new Date();
+      const winnerSummary = summarizeToolValue({ winner: "concurrent execution" });
+      await db
+        .update(toolActionRequests)
+        .set({ status: "executed", resolvedAt: completedAt, updatedAt: completedAt })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "completed",
+          resultSummary: winnerSummary,
+          completedAt,
+          updatedAt: completedAt,
+        })
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      const [winnerInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      expect(winnerInvocation).toMatchObject({
+        status: "completed",
+        approvalState: "approved",
+        resultSummary: winnerSummary,
+        errorCode: null,
+        errorMessage: null,
+      });
+      expect(fake.requests).toHaveLength(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("enforces policy, approvals, retries, rate limits, and company boundaries for connected remote MCP calls", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -2045,19 +2971,41 @@ rl.on("line", (line) => {
     const otherCompany = await createCompany(db);
     const otherAgent = await createAgent(db, otherCompany.id);
     const { run: otherRun } = await createIssueAndRun(db, otherCompany.id, otherAgent.id);
-    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
-      body: {
-        jsonrpc: "2.0",
-        id: fakeRequest.body?.id,
-        result: {
-          content: [{ type: "text", text: "connected ok" }],
-          structuredContent: {
-            receivedArguments: (fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments,
-            leakedToken: "sk-connected-mcp-secret-123456",
+    let pauseApprovedExecution = false;
+    let approvedExecutionReached!: () => void;
+    const approvedExecutionStarted = new Promise<void>((resolve) => {
+      approvedExecutionReached = resolve;
+    });
+    let releaseApprovedExecution = () => {};
+    const approvedExecutionRelease = new Promise<void>((resolve) => {
+      releaseApprovedExecution = resolve;
+    });
+    const fake = await startFakeRemoteMcpServer(async (fakeRequest) => {
+      const requestArguments = (fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments;
+      if (
+        pauseApprovedExecution
+        && requestArguments
+        && typeof requestArguments === "object"
+        && (requestArguments as Record<string, unknown>).key === "approved"
+      ) {
+        pauseApprovedExecution = false;
+        approvedExecutionReached();
+        await approvedExecutionRelease;
+      }
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: {
+            content: [{ type: "text", text: "connected ok" }],
+            structuredContent: {
+              receivedArguments: requestArguments,
+              leakedToken: "sk-connected-mcp-secret-123456",
+            },
           },
         },
-      },
-    }));
+      };
+    });
 
     try {
       const denyTool = await createRemoteMcpTool(db, company.id, {
@@ -2101,9 +3049,14 @@ rl.on("line", (line) => {
       expect(JSON.stringify(deniedInvocation)).not.toContain("sk-denied-secret-123456");
 
       const approvalTool = await createRemoteMcpTool(db, company.id, {
-        applicationKey: "approval-app",
+        applicationKey: "shopify",
         toolName: "kv_set",
         url: fake.url,
+        connectionConfig: {
+          sourceTemplateKey: "shopify",
+          connectionMethodKey: "ucp-commerce",
+          methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
+        },
       });
       await allowToolsForAgent(db, company.id, agent.id, [
         expectedConnectedToolName({
@@ -2141,6 +3094,9 @@ rl.on("line", (line) => {
         issueId: issue.id,
         status: "pending",
         canonicalArgumentsHash: expect.any(String),
+        canonicalArgumentsSummary: {
+          summary: expect.stringContaining("valid-with-capabilities.json"),
+        },
       });
       const [approvalInteraction] = await db
         .select()
@@ -2183,7 +3139,7 @@ rl.on("line", (line) => {
         policyDecision: "require_approval",
         connectionId: approvalTool.connection.id,
         providerType: "mcp_remote_http",
-        applicationKey: "approval-app",
+        applicationKey: "shopify",
         upstreamToolName: "kv_set",
       });
 
@@ -2197,12 +3153,28 @@ rl.on("line", (line) => {
         })
         .where(eq(issueThreadInteractions.id, approvalRequest.interactionId!));
 
-      await expect(gateway.executeTool({
+      pauseApprovedExecution = true;
+      const approvedExecution = gateway.executeTool({
         sessionToken: session.token,
         tool: approvalToolName,
         parameters: { key: "approved", value: "tampered" },
         approvedActionRequestId: approvalRequest.id,
-      })).resolves.toMatchObject({
+      });
+      await approvedExecutionStarted;
+      const [executingApproval] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, approvalRequest.id));
+      expect(executingApproval.status).toBe("executing");
+
+      const concurrentRetry = gateway.executeTool({
+        sessionToken: session.token,
+        tool: approvalToolName,
+        parameters: { key: "approved", value: "original" },
+      });
+      releaseApprovedExecution();
+
+      await expect(approvedExecution).resolves.toMatchObject({
         status: "completed",
         tool: approvalToolName,
         result: {
@@ -2213,10 +3185,22 @@ rl.on("line", (line) => {
           },
         },
       });
+      await expect(concurrentRetry).resolves.toMatchObject({
+        status: "replayed",
+        result: expect.anything(),
+      });
       expect(fake.requests.at(-1)!.body).toMatchObject({
         params: {
           name: "kv_set",
-          arguments: { key: "approved", value: "original" },
+          arguments: {
+            key: "approved",
+            value: "original",
+            meta: {
+              "ucp-agent": {
+                profile: "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json",
+              },
+            },
+          },
         },
       });
       const [executedApproval] = await db
@@ -2400,9 +3384,10 @@ rl.on("line", (line) => {
       expect(persisted).not.toContain("sk-connected-mcp-secret-123456");
       expect(persisted).not.toContain("sk-denied-secret-123456");
       expect(persisted).toContain("mcp_remote_http");
-      expect(persisted).toContain("approval-app");
+      expect(persisted).toContain("shopify");
       expect(persisted).toContain("kv_set");
     } finally {
+      releaseApprovedExecution();
       await fake.close();
     }
   });
@@ -3309,7 +4294,7 @@ rl.on("line", (line) => {
     expect(audit.body).toHaveProperty("nextCursor");
   });
 
-  it("filters, paginates, and enriches tool gateway audit events server-side", async () => {
+  it("aggregates connection activity with server-side filters, pagination, and enrichment", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const otherAgent = await createAgent(db, company.id);
@@ -3328,6 +4313,25 @@ rl.on("line", (line) => {
       status: "active",
       enabled: true,
     }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `audit-${randomUUID()}`,
+      name: `Audit ${randomUUID()}`,
+    }).returning();
+    const [gateway, otherGateway] = await db.insert(toolMcpGateways).values([
+      {
+        companyId: company.id,
+        name: `Audit gateway ${randomUUID()}`,
+        slug: `audit-${randomUUID()}`,
+        profileId: profile!.id,
+      },
+      {
+        companyId: company.id,
+        name: `Other gateway ${randomUUID()}`,
+        slug: `other-${randomUUID()}`,
+        profileId: profile!.id,
+      },
+    ]).returning();
     const [newerInvocation, olderInvocation, otherInvocation] = await db.insert(toolInvocations).values([
       {
         companyId: company.id,
@@ -3335,9 +4339,16 @@ rl.on("line", (line) => {
         actorId: agent.id,
         agentId: agent.id,
         runId: run.id,
+        gatewayId: gateway!.id,
         applicationId: application!.id,
         connectionId: connection!.id,
         toolName: "mail:send_email",
+        argumentsSummary: { summary: JSON.stringify({ to: "person@example.test", token: "***REDACTED***" }) },
+        resultSummary: { summary: JSON.stringify({ delivered: true }) },
+        policyDecision: "allow",
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 1_500),
+        completedAt: new Date(Date.now() - 1_000),
       },
       {
         companyId: company.id,
@@ -3345,6 +4356,7 @@ rl.on("line", (line) => {
         actorId: agent.id,
         agentId: agent.id,
         runId: run.id,
+        gatewayId: gateway!.id,
         applicationId: application!.id,
         connectionId: connection!.id,
         toolName: "mail:read_email",
@@ -3355,48 +4367,77 @@ rl.on("line", (line) => {
         actorId: otherAgent.id,
         agentId: otherAgent.id,
         runId: run.id,
+        gatewayId: otherGateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
         toolName: "other:delete_everything",
       },
     ]).returning();
     const now = Date.now();
-    await db.insert(activityLog).values([
+    const callEvents = await db.insert(toolCallEvents).values([
       {
         companyId: company.id,
+        eventType: "call_completed",
         actorType: "agent",
         actorId: agent.id,
-        action: "tool_gateway.call_completed",
-        entityType: "issue",
-        entityId: run.id,
         agentId: agent.id,
         runId: run.id,
-        details: { invocationId: newerInvocation!.id, decision: "allow", reasonCode: "tool_completed", tool: "mail:send_email", upstreamToolName: "fixture.todo.list" },
+        gatewayId: gateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: newerInvocation!.id,
+        toolName: "mail:send_email",
+        decision: "allow",
+        reasonCode: "tool_completed",
+        outcome: "success",
+        metadata: { upstreamToolName: "fixture.todo.list" },
         createdAt: new Date(now - 1_000),
       },
       {
         companyId: company.id,
+        eventType: "call_completed",
         actorType: "agent",
         actorId: agent.id,
-        action: "tool_gateway.call_allowed",
-        entityType: "issue",
-        entityId: run.id,
         agentId: agent.id,
         runId: run.id,
-        details: { invocationId: olderInvocation!.id, decision: "allow", reasonCode: "profile_allows_tool", tool: "mail:read_email" },
+        gatewayId: gateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: olderInvocation!.id,
+        toolName: "mail:read_email",
+        decision: "allow",
+        reasonCode: "profile_allows_tool",
+        outcome: "success",
         createdAt: new Date(now - 2_000),
       },
       {
         companyId: company.id,
+        eventType: "call_denied",
         actorType: "agent",
         actorId: otherAgent.id,
-        action: "tool_gateway.call_denied",
-        entityType: "issue",
-        entityId: run.id,
         agentId: otherAgent.id,
         runId: run.id,
-        details: { invocationId: otherInvocation!.id, decision: "deny", reasonCode: "deny_policy_block", tool: "other:delete_everything" },
+        gatewayId: otherGateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: otherInvocation!.id,
+        toolName: "other:delete_everything",
+        decision: "deny",
+        reasonCode: "deny_policy_block",
+        outcome: "denied",
         createdAt: new Date(now - 500),
       },
-    ]);
+    ]).returning();
+    const [connectedEvent] = await db.insert(activityLog).values({
+      companyId: company.id,
+      actorType: "system",
+      actorId: "system",
+      action: "tool_app.connected",
+      entityType: "tool_connection",
+      entityId: connection!.id,
+      details: { galleryKey: "mail" },
+      createdAt: new Date(now - 45 * 24 * 60 * 60 * 1000),
+    }).returning();
 
     const app = createGatewayRouteApp(db, createTestToolGatewayService(db), {
       type: "board",
@@ -3407,9 +4448,27 @@ rl.on("line", (line) => {
       isInstanceAdmin: true,
     });
 
+    const allActivity = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id });
+    expect(allActivity.status).toBe(200);
+    expect(allActivity.body.events.map((event: { id: string }) => event.id)).toEqual([
+      callEvents[2]!.id,
+      callEvents[0]!.id,
+      callEvents[1]!.id,
+      connectedEvent!.id,
+    ]);
+    expect(allActivity.body.events.find((event: { id: string }) => event.id === connectedEvent!.id)).toMatchObject({
+      action: "tool_connection.app_connected",
+      connectionId: connection!.id,
+      applicationId: application!.id,
+      appDisplayName: "Mail",
+      lifecycleType: "app_connected",
+    });
+
     const firstPage = await request(app)
       .get("/api/tool-gateway/audit")
-      .query({ companyId: company.id, app: connection!.id, agent: agent.id, outcome: "allowed", window: "24h", limit: 1 });
+      .query({ companyId: company.id, gateway: gateway!.id, app: connection!.id, agent: agent.id, outcome: "allowed", window: "24h", limit: 1 });
     expect(firstPage.status).toBe(200);
     expect(firstPage.body.events).toEqual([
       expect.objectContaining({
@@ -3421,6 +4480,14 @@ rl.on("line", (line) => {
         appDisplayName: "Mail",
         toolDisplayName: "Send Email",
         normalizedOutcome: "allowed",
+        invocation: expect.objectContaining({
+          id: newerInvocation!.id,
+          toolName: "mail:send_email",
+          status: "succeeded",
+          policyDecision: "allow",
+          argumentsSummary: expect.objectContaining({ summary: expect.stringContaining("***REDACTED***") }),
+          resultSummary: expect.objectContaining({ summary: expect.stringContaining("delivered") }),
+        }),
       }),
     ]);
     expect(typeof firstPage.body.nextCursor).toBe("string");
@@ -3429,6 +4496,7 @@ rl.on("line", (line) => {
       .get("/api/tool-gateway/audit")
       .query({
         companyId: company.id,
+        gateway: gateway!.id,
         app: connection!.id,
         agent: agent.id,
         outcome: "allowed",
@@ -3439,7 +4507,7 @@ rl.on("line", (line) => {
     expect(secondPage.status).toBe(200);
     expect(secondPage.body.events).toEqual([
       expect.objectContaining({
-        action: "tool_gateway.call_allowed",
+        action: "tool_gateway.call_completed",
         toolDisplayName: "Read Email",
       }),
     ]);
@@ -3522,6 +4590,7 @@ rl.on("line", (line) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { project, issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    await db.update(heartbeatRuns).set({ responsibleUserId: "runtime-owner" }).where(eq(heartbeatRuns.id, run.id));
     const profile = await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:runtime_status"]);
     const gateway = createTestToolGatewayService(db);
     const namedGateway = await gateway.createNamedGateway({
@@ -3556,6 +4625,7 @@ rl.on("line", (line) => {
       runId: run.id,
       issueId: issue.id,
       projectId: project.id,
+      responsibleUserId: "runtime-owner",
     });
 
     await request(app)

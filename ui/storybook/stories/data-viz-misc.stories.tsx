@@ -556,10 +556,10 @@ function SwipeToArchiveDemo({ disabled = false }: { disabled?: boolean }) {
 
 function CompanyPatternIconMatrix() {
   const companies = [
-    { name: "Paperclip Storybook", color: "#0f766e" },
-    { name: "Research Bureau", color: "#2563eb" },
-    { name: "Launch Ops", color: "#c2410c" },
-    { name: "Atlas Finance", color: "#7c3aed" },
+    "Paperclip Storybook",
+    "Research Bureau",
+    "Launch Ops",
+    "Atlas Finance",
   ];
   const sizes = ["h-8 w-8 text-xs", "h-11 w-11 text-base", "h-16 w-16 text-xl", "h-24 w-24 text-3xl"];
 
@@ -567,20 +567,15 @@ function CompanyPatternIconMatrix() {
     <StoryShell>
       <Section eyebrow="CompanyPatternIcon" title="Generated company pattern icons by size">
         <div className="grid gap-4 md:grid-cols-2">
-          {companies.map((company) => (
-            <Card key={company.name} className="shadow-none">
+          {companies.map((companyName) => (
+            <Card key={companyName} className="shadow-none">
               <CardHeader>
-                <CardTitle className="text-base">{company.name}</CardTitle>
-                <CardDescription>{company.color}</CardDescription>
+                <CardTitle className="text-base">{companyName}</CardTitle>
+                <CardDescription>Hue derived from the company name</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-wrap items-end gap-4">
                 {sizes.map((size) => (
-                  <CompanyPatternIcon
-                    key={size}
-                    companyName={company.name}
-                    brandColor={company.color}
-                    className={size}
-                  />
+                  <CompanyPatternIcon key={size} companyName={companyName} className={size} />
                 ))}
               </CardContent>
             </Card>

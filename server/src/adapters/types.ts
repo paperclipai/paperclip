@@ -9,6 +9,8 @@ export type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterExecutionContext,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

@@ -19,11 +19,15 @@ import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
 import {
   createBundledInstallManifest,
   materializePublishManifest,
+  selectBundledDependencyPatches,
 } from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
+);
+const serverPackage = JSON.parse(
+  await readFile(new URL("../server/package.json", import.meta.url), "utf8"),
 );
 const dbPackage = JSON.parse(
   await readFile(new URL("../packages/db/package.json", import.meta.url), "utf8"),
@@ -37,8 +41,14 @@ test("published packages preserve the patched ACPX runtime", () => {
     rootPackage.pnpm.patchedDependencies["acpx@0.12.0"],
     "patches/acpx@0.12.0.patch",
   );
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
+    "patches/acpx@0.13.1.patch",
+  );
   assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
+  assert.equal(serverPackage.dependencies.acpx, "0.13.1");
+  assert.deepEqual(serverPackage.bundleDependencies, ["acpx"]);
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
 });
@@ -97,7 +107,90 @@ test("bundled package staging installs only dependencies included in the tarball
   assert.deepEqual(installManifest.bundleDependencies, ["embedded-postgres"]);
 });
 
-test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {
+test("bundled package staging selects only the installed dependency version's patch", (t) => {
+  const destinationDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-patch-selection-"));
+  const installedPackageDir = join(destinationDir, "node_modules", "acpx");
+  mkdirSync(installedPackageDir, { recursive: true });
+  writeFileSync(
+    join(installedPackageDir, "package.json"),
+    JSON.stringify({ name: "acpx", version: "0.12.0" }),
+  );
+  t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    selectBundledDependencyPatches(destinationDir, ["acpx"], {
+      "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+      "acpx@0.13.1": "patches/acpx@0.13.1.patch",
+    }),
+    [
+      {
+        packageName: "acpx",
+        specifier: "acpx@0.12.0",
+        patchPath: "patches/acpx@0.12.0.patch",
+      },
+    ],
+  );
+});
+
+test("bundled package patch selection handles scoped package names", (t) => {
+  const destinationDir = mkdtempSync(join(tmpdir(), "paperclip-scoped-patch-selection-"));
+  const installedPackageDir = join(destinationDir, "node_modules", "@example", "runtime");
+  mkdirSync(installedPackageDir, { recursive: true });
+  writeFileSync(
+    join(installedPackageDir, "package.json"),
+    JSON.stringify({ name: "@example/runtime", version: "1.2.3" }),
+  );
+  t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    selectBundledDependencyPatches(destinationDir, ["@example/runtime"], {
+      "@example/runtime@1.2.3": "patches/runtime@1.2.3.patch",
+      "@example/runtime@2.0.0": "patches/runtime@2.0.0.patch",
+    }),
+    [
+      {
+        packageName: "@example/runtime",
+        specifier: "@example/runtime@1.2.3",
+        patchPath: "patches/runtime@1.2.3.patch",
+      },
+    ],
+  );
+});
+
+test("bundled package patch selection reports missing installed metadata", (t) => {
+  const destinationDir = mkdtempSync(join(tmpdir(), "paperclip-missing-patch-metadata-"));
+  t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
+
+  assert.throws(
+    () =>
+      selectBundledDependencyPatches(destinationDir, ["acpx"], {
+        "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+      }),
+    /Cannot select a patch for bundled dependency acpx: failed to read/,
+  );
+});
+
+test("bundled package patch selection rejects an unpatched installed version", (t) => {
+  const destinationDir = mkdtempSync(join(tmpdir(), "paperclip-unmatched-patch-version-"));
+  const installedPackageDir = join(destinationDir, "node_modules", "acpx");
+  mkdirSync(installedPackageDir, { recursive: true });
+  writeFileSync(
+    join(installedPackageDir, "package.json"),
+    JSON.stringify({ name: "acpx", version: "0.14.0" }),
+  );
+  t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
+
+  assert.throws(
+    () =>
+      selectBundledDependencyPatches(destinationDir, ["acpx"], {
+        "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+        "acpx@0.13.1": "patches/acpx@0.13.1.patch",
+      }),
+    /installed acpx@0\.14\.0, but configured patches are acpx@0\.12\.0, acpx@0\.13\.1/,
+  );
+});
+
+test("server package staging bundles and patches the vendored runner's acpx runtime", (t) => {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-stage-"));
   const sourceDir = join(fixtureDir, "source");
   const destinationDir = join(fixtureDir, "destination");
@@ -108,7 +201,10 @@ test("bundled package staging rebuilds npm dependencies and applies the acpx pat
   writeFileSync(join(sourceDir, "dist", "index.js"), "export {};\n");
   mkdirSync(destinationDir);
   mkdirSync(binDir);
-  writeFileSync(join(sourceDir, "package.json"), JSON.stringify(adapterUtilsPackage));
+  writeFileSync(
+    join(sourceDir, "package.json"),
+    JSON.stringify({ ...serverPackage, files: ["dist"] }),
+  );
   writeFileSync(callLog, "");
   t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
@@ -133,6 +229,7 @@ printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
 mkdir -p node_modules/acpx/dist
 printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
+printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
 `,
   );
   writeExecutable(
@@ -150,8 +247,9 @@ while [ "$#" -gt 0 ]; do
   fi
 done
 patch_input="$(cat)"
-grep -q onAgentStderr <<< "$patch_input"
-printf 'patched onAgentStderr runtime\\n' > "$target/dist/runtime.js"
+grep -q spawnEnvironment <<< "$patch_input"
+! grep -q onAgentStderr <<< "$patch_input"
+printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
 `,
   );
 
@@ -173,10 +271,17 @@ printf 'patched onAgentStderr runtime\\n' > "$target/dist/runtime.js"
   assert.equal(lstatSync(stagedAcpxDir).isDirectory(), true);
   assert.equal(lstatSync(stagedAcpxDir).isSymbolicLink(), false);
   assert.equal(existsSync(join(destinationDir, "node_modules/.pnpm")), false);
-  assert.match(readFileSync(join(stagedAcpxDir, "dist/runtime.js"), "utf8"), /onAgentStderr/);
+  assert.match(
+    readFileSync(join(stagedAcpxDir, "dist/runtime.js"), "utf8"),
+    /spawnEnvironment/,
+  );
   assert.match(
     readFileSync(callLog, "utf8"),
     /patch -p1 --forward -d .*node_modules\/acpx/,
+  );
+  assert.equal(
+    readFileSync(callLog, "utf8").split("\n").filter((line) => line.startsWith("patch ")).length,
+    1,
   );
 });
 

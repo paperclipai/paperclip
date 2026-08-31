@@ -16,7 +16,7 @@ import {
   ensureAdapterExecutionTargetFile,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
-  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -31,15 +31,17 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -126,9 +128,10 @@ async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
+    if (isPaperclipSkillSourceMissing(entry)) continue;
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
   }
   return target;
@@ -259,14 +262,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const piSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredPiSkillNames = resolvePaperclipDesiredSkillNames(config, piSkillEntries);
+  const desiredPiSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, piSkillEntries);
   if (!executionTargetIsRemote) {
     await ensurePiSkillsInjected(onLog, piSkillEntries, desiredPiSkillNames);
   }
 
   // Build environment
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = {
+    ...buildPaperclipEnv(agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
+  };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -472,7 +478,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: runtimeExecutionTarget,
         enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
-        duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(runtimeExecutionTarget),
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
         runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "pi",
         timeoutSec,

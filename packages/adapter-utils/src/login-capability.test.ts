@@ -10,7 +10,6 @@ import {
 function validCapability(): AdapterLoginCapability {
   return {
     panelMode: "displayed_code",
-    sandboxTransport: "streamed_exec",
     timeoutPolicy: "caller_bounded",
     getCommand: () => "vendor login",
     parsePrompt: () => null,
@@ -25,7 +24,6 @@ describe("assertValidAdapterLoginCapability", () => {
   it("accepts a well-formed capability with every optional member set", () => {
     const capability: AdapterLoginCapability = {
       panelMode: "submitted_browser_code",
-      sandboxTransport: "pseudo_terminal",
       timeoutPolicy: "fixed",
       getCommand: () => "vendor setup-token",
       parsePrompt: () => null,
@@ -46,11 +44,6 @@ describe("assertValidAdapterLoginCapability", () => {
   it("rejects an unknown panelMode", () => {
     const bad = { ...validCapability(), panelMode: "hidden_code" };
     expect(() => assertValidAdapterLoginCapability(bad, "vendor")).toThrow(/panelMode/);
-  });
-
-  it("rejects an unknown sandboxTransport", () => {
-    const bad = { ...validCapability(), sandboxTransport: "http" };
-    expect(() => assertValidAdapterLoginCapability(bad, "vendor")).toThrow(/sandboxTransport/);
   });
 
   it("rejects an unknown timeoutPolicy", () => {

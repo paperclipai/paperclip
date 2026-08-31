@@ -25,7 +25,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   isUuidLike,
 } from "@paperclipai/shared";
-import { normalizeContentType } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1276,19 +1276,15 @@ export function caseRoutes(db: Db, storage: StorageService) {
     await assertCasesEnabled(db);
     const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const actor = getActorInfo(req);
-    const [company] = await db
-      .select({ attachmentMaxBytes: companies.attachmentMaxBytes })
-      .from(companies)
-      .where(eq(companies.id, caseRow.companyId))
-      .limit(1);
-    const maxBytes = company?.attachmentMaxBytes ?? 10 * 1024 * 1024;
 
     try {
-      await singleFileUpload(req, res, maxBytes);
+      await singleFileUpload(req, res, MAX_ATTACHMENT_BYTES);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          throw unprocessable(`Attachment exceeds ${maxBytes} bytes`);
+          throw unprocessable(
+            `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          );
         }
         throw badRequest(err.message);
       }

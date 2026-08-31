@@ -1,0 +1,1914 @@
+[
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read the active task, actor, wake context, ancestors, and budget summary.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "get_task_context",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get active task context",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read bounded comments on the active task.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "get_task_history",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get active task history",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List revisioned documents on the active task.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_documents",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List task documents",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read the current revision of one active-task document.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Stable issue-document key.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "operationId": "read_document",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Read task document",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read bounded revision history for one active-task document.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Stable issue-document key.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "operationId": "list_document_revisions",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List document revisions",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Append a durable progress comment to the active task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "Multiline progress update.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "body"
+      ],
+      "type": "object"
+    },
+    "operationId": "report_progress",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Report durable progress",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Append an answer to a status-only wake without changing task disposition.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "Concise status answer.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "body"
+      ],
+      "type": "object"
+    },
+    "operationId": "answer_status_question",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Answer status question",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Create or update an active-task document with optimistic revision safety.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRevisionId": {
+          "description": "Current revision id, or null when creating.",
+          "maxLength": 240,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "description": "Markdown document body.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "changeSummary": {
+          "description": "Optional revision summary.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "description": "Stable issue-document key.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "description": "Document title.",
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "key",
+        "title",
+        "body",
+        "baseRevisionId"
+      ],
+      "type": "object"
+    },
+    "operationId": "write_document",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Write revisioned document",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Create a typed, durable interaction on the active task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "continuationPolicy": {
+          "enum": [
+            "none",
+            "wake_assignee",
+            "wake_assignee_on_accept"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "interactionKind": {
+          "enum": [
+            "confirmation",
+            "checkbox",
+            "questions",
+            "suggest_tasks",
+            "item_verdicts"
+          ]
+        },
+        "payload": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "prompt": {
+          "description": "Question or decision prompt.",
+          "maxLength": 10000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetRevisionId": {
+          "description": "Optional bound document revision.",
+          "maxLength": 240,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Interaction card title.",
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "interactionKind",
+        "title",
+        "prompt",
+        "continuationPolicy"
+      ],
+      "type": "object"
+    },
+    "operationId": "request_human_input",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Request structured human input",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Register attachment metadata and its work product without returning bytes or credentials.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "byteSize": {
+          "maximum": 100000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentRef": {
+          "description": "Opaque content reference.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "contentType": {
+          "description": "Media type.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "filename": {
+          "description": "Display filename.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "type": "string"
+        },
+        "title": {
+          "description": "Work-product title.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "filename",
+        "contentType",
+        "byteSize",
+        "sha256",
+        "contentRef",
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "register_deliverable",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Register inspectable deliverable",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Finish the active task with a durable summary.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "summary": {
+          "description": "Completion summary.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "operationId": "finish_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Finish active task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Block the active task with a durable reason and optional first-class dependencies.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blockedByTaskIds": {
+          "description": "Task identifiers that block this task.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Block reason.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "operationId": "block_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Block active task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Move the active task to review with a durable summary.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "summary": {
+          "description": "Review handoff summary.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "operationId": "request_review",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Request task review",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List redacted actor profiles in the run company.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_agents",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "discovery:agents:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List company agents",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one redacted actor profile in the run company.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "actorId": {
+          "description": "Actor identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_agent",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "discovery:agents:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get company agent",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Search tasks by text and status within the run company.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "statuses": {
+          "items": {
+            "enum": [
+              "backlog",
+              "todo",
+              "in_progress",
+              "in_review",
+              "done",
+              "blocked",
+              "cancelled"
+            ]
+          },
+          "maxItems": 7,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "search_tasks",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "discovery:tasks:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Search company tasks",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List approvals in the run company.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_approvals",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List approvals",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one approval without protected data.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "description": "Approval identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_approval",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get approval",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one approval, its comments, and linked tasks.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "description": "Approval identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_approval_context",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get approval context",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read active-task workspace services.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "get_workspace_runtime",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "workspace:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Get workspace runtime",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Start or stop one active-task workspace service.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "start",
+            "stop"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "serviceId": {
+          "description": "Workspace service identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "serviceId",
+        "action"
+      ],
+      "type": "object"
+    },
+    "operationId": "control_workspace_service",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "workspace:control"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Control workspace service",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Replace the active task's first-class blocker set.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blockedByTaskIds": {
+          "description": "Replacement blocker task identifiers.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "blockedByTaskIds"
+      ],
+      "type": "object"
+    },
+    "operationId": "set_dependencies",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "dependencies:write"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Set task dependencies",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create one child task under the active task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeActorId": {
+          "description": "Optional actor assignee.",
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blockedByTaskIds": {
+          "description": "Initial blocker task identifiers.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "description": {
+          "description": "Child task description.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "title": {
+          "description": "Child task title.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:tasks:create"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create child task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create a governed approval and waiting posture.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalType": {
+          "description": "Stable approval type.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "approvalType",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "operationId": "request_approval",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:request"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Request approval",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "allowedRoles": [
+      "board",
+      "approver",
+      "security"
+    ],
+    "description": "Decide an approval as an explicitly authorized approver.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "description": "Approval identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "rejected",
+            "cancelled"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "description": "Decision note.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "approvalId",
+        "decision",
+        "note"
+      ],
+      "type": "object"
+    },
+    "operationId": "decide_approval",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:decide"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Decide approval",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Add a durable comment to an approval.",
+    "effect": "governance",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "description": "Approval identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "body": {
+          "description": "Approval comment.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "approvalId",
+        "body"
+      ],
+      "type": "object"
+    },
+    "operationId": "comment_on_approval",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "governance:approvals:comment"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Comment on approval",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Schedule a bounded continuation wake.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "delaySeconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "reason": {
+          "enum": [
+            "manual",
+            "issue_commented",
+            "interaction_resolved",
+            "approval_resolved",
+            "blockers_resolved",
+            "scheduled_retry",
+            "resume"
+          ]
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "reason",
+        "delaySeconds"
+      ],
+      "type": "object"
+    },
+    "operationId": "schedule_wake",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "control_plane:wakes"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Schedule bounded wake",
+    "version": 1
+  }
+]

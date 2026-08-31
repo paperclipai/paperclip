@@ -1576,6 +1576,55 @@
       "when": 1787261199301,
       "tag": "0226_tan_colossus",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1787668790923,
+      "tag": "0227_modern_pandemic",
+      "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1787837657366,
+      "tag": "0228_nasty_grim_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 229,
+      "version": "7",
+      "when": 1787854369379,
+      "tag": "0229_drop_company_brand_color_and_attachment_max_bytes",
+      "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "7",
+      "when": 1787880484952,
+      "tag": "0230_better_auth_account_issuer",
+      "breakpoints": true
+    },
+    {
+      "idx": 231,
+      "version": "7",
+      "when": 1787922567272,
+      "tag": "0231_remove_app_connection_wide_includes",
+      "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1787922607497,
+      "tag": "0232_fixed_hannibal_king",
+      "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1787922658738,
+      "tag": "0233_living_dreaming_celestial",
+      "breakpoints": true
     }
   ]
 }

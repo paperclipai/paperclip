@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   acceptedManyRequestCheckboxConfirmationInteraction,
   acceptedRequestCheckboxConfirmationInteraction,
@@ -55,6 +61,13 @@ import {
   rejectedSuggestedTasksInteraction,
   staleTargetRequestCheckboxConfirmationInteraction,
   staleTargetRequestConfirmationInteraction,
+  pendingConnectionIntentInteraction,
+  authorizingConnectionIntentInteraction,
+  retryConnectionIntentInteraction,
+  connectedConnectionIntentInteraction,
+  declinedConnectionIntentInteraction,
+  supersededConnectionIntentInteraction,
+  expiredConnectionIntentInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
 import type {
   AskUserQuestionsAnswer,
@@ -123,7 +136,37 @@ function ScenarioCard({
   );
 }
 
-function AudienceCard({ interaction }: { interaction: RequestConfirmationInteraction }) {
+function OpenConnectionIntentDialogStory() {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const trigger = Array.from(
+        hostRef.current?.querySelectorAll("button") ?? [],
+      ).find((candidate) =>
+        candidate.textContent?.includes("Connect / Use existing"),
+      );
+      trigger?.click();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  return (
+    <div ref={hostRef}>
+      <IssueThreadInteractionCard
+        interaction={pendingConnectionIntentInteraction}
+        agentMap={storybookAgentMap}
+        currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+        userLabelMap={boardUserLabels}
+      />
+    </div>
+  );
+}
+
+function AudienceCard({
+  interaction,
+}: {
+  interaction: RequestConfirmationInteraction;
+}) {
   return (
     <IssueThreadInteractionCard
       interaction={interaction}
@@ -152,13 +195,20 @@ function InteractiveSuggestedTasksCard() {
           ...acceptedSuggestedTasksInteraction,
           result: {
             version: 1,
-            createdTasks: (acceptedSuggestedTasksInteraction.result?.createdTasks ?? []).filter((task) =>
-              selectedClientKeys?.includes(task.clientKey) ?? true),
+            createdTasks: (
+              acceptedSuggestedTasksInteraction.result?.createdTasks ?? []
+            ).filter(
+              (task) => selectedClientKeys?.includes(task.clientKey) ?? true,
+            ),
             skippedClientKeys: pendingSuggestedTasksInteraction.payload.tasks
               .map((task) => task.clientKey)
-              .filter((clientKey) => !(selectedClientKeys?.includes(clientKey) ?? true)),
+              .filter(
+                (clientKey) =>
+                  !(selectedClientKeys?.includes(clientKey) ?? true),
+              ),
           },
-        })}
+        })
+      }
       onRejectInteraction={(_interaction, reason) =>
         setInteraction({
           ...rejectedSuggestedTasksInteraction,
@@ -166,11 +216,12 @@ function InteractiveSuggestedTasksCard() {
             version: 1,
             ...(rejectedSuggestedTasksInteraction.result ?? {}),
             rejectionReason:
-              reason
-              || rejectedSuggestedTasksInteraction.result?.rejectionReason
-              || null,
+              reason ||
+              rejectedSuggestedTasksInteraction.result?.rejectionReason ||
+              null,
           },
-        })}
+        })
+      }
     />
   );
 }
@@ -178,13 +229,15 @@ function InteractiveSuggestedTasksCard() {
 function buildAnsweredInteraction(
   answers: AskUserQuestionsAnswer[],
 ): AskUserQuestionsInteraction {
-  const labels = pendingAskUserQuestionsInteraction.payload.questions.flatMap((question) => {
-    const answer = answers.find((entry) => entry.questionId === question.id);
-    if (!answer) return [];
-    return question.options
-      .filter((option) => answer.optionIds.includes(option.id))
-      .map((option) => option.label);
-  });
+  const labels = pendingAskUserQuestionsInteraction.payload.questions.flatMap(
+    (question) => {
+      const answer = answers.find((entry) => entry.questionId === question.id);
+      if (!answer) return [];
+      return question.options
+        .filter((option) => answer.optionIds.includes(option.id))
+        .map((option) => option.label);
+    },
+  );
 
   return {
     ...answeredAskUserQuestionsInteraction,
@@ -208,15 +261,17 @@ function InteractiveAskUserQuestionsCard() {
       currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
       userLabelMap={boardUserLabels}
       onSubmitInteractionAnswers={(_interaction, answers) =>
-        setInteraction(buildAnsweredInteraction(answers))}
+        setInteraction(buildAnsweredInteraction(answers))
+      }
     />
   );
 }
 
 function InteractiveRequestConfirmationCard() {
-  const [interaction, setInteraction] = useState<RequestConfirmationInteraction>(
-    pendingRequestConfirmationInteraction,
-  );
+  const [interaction, setInteraction] =
+    useState<RequestConfirmationInteraction>(
+      pendingRequestConfirmationInteraction,
+    );
 
   return (
     <IssueThreadInteractionCard
@@ -224,16 +279,22 @@ function InteractiveRequestConfirmationCard() {
       agentMap={storybookAgentMap}
       currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
       userLabelMap={boardUserLabels}
-      onAcceptInteraction={() => setInteraction(acceptedRequestConfirmationInteraction)}
+      onAcceptInteraction={() =>
+        setInteraction(acceptedRequestConfirmationInteraction)
+      }
       onRejectInteraction={(_interaction, reason) =>
         setInteraction({
           ...rejectedRequestConfirmationInteraction,
           result: {
             version: 1,
             outcome: "rejected",
-            reason: reason || rejectedRequestConfirmationInteraction.result?.reason || null,
+            reason:
+              reason ||
+              rejectedRequestConfirmationInteraction.result?.reason ||
+              null,
           },
-        })}
+        })
+      }
     />
   );
 }
@@ -247,7 +308,8 @@ function InteractiveRequestCheckboxConfirmationCard({
   accepted: RequestCheckboxConfirmationInteraction;
   rejected: RequestCheckboxConfirmationInteraction;
 }) {
-  const [interaction, setInteraction] = useState<RequestCheckboxConfirmationInteraction>(pending);
+  const [interaction, setInteraction] =
+    useState<RequestCheckboxConfirmationInteraction>(pending);
 
   return (
     <IssueThreadInteractionCard
@@ -255,7 +317,11 @@ function InteractiveRequestCheckboxConfirmationCard({
       agentMap={storybookAgentMap}
       currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
       userLabelMap={boardUserLabels}
-      onAcceptInteraction={(_interaction, _selectedClientKeys, selectedOptionIds) =>
+      onAcceptInteraction={(
+        _interaction,
+        _selectedClientKeys,
+        selectedOptionIds,
+      ) =>
         setInteraction({
           ...accepted,
           payload: pending.payload,
@@ -264,7 +330,8 @@ function InteractiveRequestCheckboxConfirmationCard({
             outcome: "accepted",
             selectedOptionIds: selectedOptionIds ?? [],
           },
-        })}
+        })
+      }
       onRejectInteraction={(_interaction, reason) =>
         setInteraction({
           ...rejected,
@@ -274,7 +341,8 @@ function InteractiveRequestCheckboxConfirmationCard({
             outcome: "rejected",
             reason: reason || rejected.result?.reason || null,
           },
-        })}
+        })
+      }
     />
   );
 }
@@ -284,7 +352,8 @@ function InteractiveRequestItemVerdictsCard({
 }: {
   initial?: RequestItemVerdictsInteraction;
 }) {
-  const [interaction, setInteraction] = useState<RequestItemVerdictsInteraction>(initial);
+  const [interaction, setInteraction] =
+    useState<RequestItemVerdictsInteraction>(initial);
 
   return (
     <IssueThreadInteractionCard
@@ -304,7 +373,8 @@ function InteractiveRequestItemVerdictsCard({
                 id: verdict.id,
                 verdict: verdict.verdict as RequestItemVerdictValue,
                 reason: verdict.reason ?? null,
-                resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+                resolvedByUserId:
+                  issueThreadInteractionFixtureMeta.currentUserId,
                 resolvedAt: new Date("2026-04-20T15:20:00.000Z"),
               })),
           ];
@@ -313,7 +383,9 @@ function InteractiveRequestItemVerdictsCard({
             ...current,
             status: complete ? "answered" : "pending",
             resolvedAt: complete ? new Date("2026-04-20T15:20:00.000Z") : null,
-            resolvedByUserId: complete ? issueThreadInteractionFixtureMeta.currentUserId : null,
+            resolvedByUserId: complete
+              ? issueThreadInteractionFixtureMeta.currentUserId
+              : null,
             result: {
               version: 1,
               outcome: "resolved",
@@ -321,7 +393,8 @@ function InteractiveRequestItemVerdictsCard({
               items: merged,
             },
           };
-        })}
+        })
+      }
     />
   );
 }
@@ -334,8 +407,13 @@ function AutoOpenDeclineRequestConfirmationCard({
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const declineButton = Array.from(ref.current?.querySelectorAll("button") ?? [])
-      .find((button) => button.textContent?.includes(interaction.payload.rejectLabel ?? "Decline"));
+    const declineButton = Array.from(
+      ref.current?.querySelectorAll("button") ?? [],
+    ).find((button) =>
+      button.textContent?.includes(
+        interaction.payload.rejectLabel ?? "Decline",
+      ),
+    );
     declineButton?.click();
   }, [interaction]);
 
@@ -675,7 +753,128 @@ export const RequestConfirmationFailed: Story = {
 };
 
 export const RequestConfirmationAccepted = RequestConfirmationConfirmed;
-export const RequestConfirmationRejected = RequestConfirmationDeclinedWithReason;
+export const RequestConfirmationRejected =
+  RequestConfirmationDeclinedWithReason;
+
+export const ConnectionIntentStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="Connection intent" title="Inline setup request states">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard
+            title="Addressed user"
+            description="The responsible user can launch the shared connection setup flow or decline in place."
+          >
+            <IssueThreadInteractionCard
+              interaction={pendingConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Other viewer"
+            description="Other viewers see who Paperclip is waiting for and receive no connection controls."
+          >
+            <IssueThreadInteractionCard
+              interaction={pendingConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId="user-product"
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Authorizing"
+            description="The in-flight state prevents duplicate authorization or decline actions."
+          >
+            <IssueThreadInteractionCard
+              interaction={authorizingConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Retry needed"
+            description="A failed popup or provider callback keeps the intent pending with a safe retry path."
+          >
+            <IssueThreadInteractionCard
+              interaction={retryConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Connected"
+            description="The terminal card records that the requesting agent receives the connection on continuation."
+          >
+            <IssueThreadInteractionCard
+              interaction={connectedConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Declined"
+            description="Decline is terminal and wakes the requesting agent without exposing setup controls."
+          >
+            <IssueThreadInteractionCard
+              interaction={declinedConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Superseded"
+            description="A newer run owns the active request, so the stale card points at the latest one."
+          >
+            <IssueThreadInteractionCard
+              interaction={supersededConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Expired"
+            description="Closed tasks and expired requests have a quiet terminal state with no authorization controls."
+          >
+            <IssueThreadInteractionCard
+              interaction={expiredConnectionIntentInteraction}
+              agentMap={storybookAgentMap}
+              currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+              userLabelMap={boardUserLabels}
+            />
+          </ScenarioCard>
+        </div>
+      </Section>
+    </StoryFrame>
+  ),
+};
+
+export const ConnectionIntentSetupDialog: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="Connection intent" title="Shared setup dialog">
+        <OpenConnectionIntentDialogStory />
+      </Section>
+    </StoryFrame>
+  ),
+};
+
+export const ConnectionIntentSetupDialogMobile: Story = {
+  render: () => (
+    <StoryFrame>
+      <OpenConnectionIntentDialogStory />
+    </StoryFrame>
+  ),
+  parameters: {
+    viewport: { defaultViewport: "mobile" },
+  },
+};
 
 // ---------------------------------------------------------------------------
 // MCP tool-approval card (PAP-13745). A `request_confirmation` carrying a
@@ -710,7 +909,10 @@ export const ToolActionPendingWrite: Story = {
         title="Pending · write"
         description="A write tool call awaits approval: identity header, WRITE risk badge, humanized preview, collapsible technical details, expiry countdown, and an Approve & run CTA."
       >
-        <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+        <ToolActionCard
+          interaction={pendingToolActionWriteInteraction}
+          interactive
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -723,7 +925,10 @@ export const ToolActionPendingDestructive: Story = {
         title="Pending · destructive"
         description="A destructive call takes the red risk badge and a destructive primary button; the countdown sits inside the sub-5-minute urgent window."
       >
-        <ToolActionCard interaction={pendingToolActionDestructiveInteraction} interactive />
+        <ToolActionCard
+          interaction={pendingToolActionDestructiveInteraction}
+          interactive
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -801,7 +1006,10 @@ export const ToolActionLegacyGeneric: Story = {
         title="Legacy · no toolAction"
         description="A confirmation without a toolAction payload keeps the existing generic rendering unchanged — the tool-approval surface is strictly additive."
       >
-        <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
+        <ToolActionCard
+          interaction={genericPendingRequestConfirmationInteraction}
+          interactive
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -833,7 +1041,10 @@ export const SecretProposalPending: Story = {
         title="Pending secret binding"
         description="A human reviews safe binding metadata, the agent-authored reason, and expiry before approving the real write."
       >
-        <SecretProposalCard interaction={pendingSecretProposalInteraction} interactive />
+        <SecretProposalCard
+          interaction={pendingSecretProposalInteraction}
+          interactive
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -896,20 +1107,44 @@ export const SecretProposalAllStates: Story = {
     <StoryFrame>
       <Section eyebrow="Secret binding proposal" title="All lifecycle states">
         <div className="grid gap-6 xl:grid-cols-2">
-          <ScenarioCard title="1 · Pending" description="Safe metadata and approval actions.">
-            <SecretProposalCard interaction={pendingSecretProposalInteraction} interactive />
+          <ScenarioCard
+            title="1 · Pending"
+            description="Safe metadata and approval actions."
+          >
+            <SecretProposalCard
+              interaction={pendingSecretProposalInteraction}
+              interactive
+            />
           </ScenarioCard>
-          <ScenarioCard title="2 · Executed" description="The binding was created.">
-            <SecretProposalCard interaction={executedSecretProposalInteraction} />
+          <ScenarioCard
+            title="2 · Executed"
+            description="The binding was created."
+          >
+            <SecretProposalCard
+              interaction={executedSecretProposalInteraction}
+            />
           </ScenarioCard>
-          <ScenarioCard title="3 · FAILED" description="Accepted, then failed closed.">
+          <ScenarioCard
+            title="3 · FAILED"
+            description="Accepted, then failed closed."
+          >
             <SecretProposalCard interaction={failedSecretProposalInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="4 · Rejected" description="The binding was not created.">
-            <SecretProposalCard interaction={rejectedSecretProposalInteraction} />
+          <ScenarioCard
+            title="4 · Rejected"
+            description="The binding was not created."
+          >
+            <SecretProposalCard
+              interaction={rejectedSecretProposalInteraction}
+            />
           </ScenarioCard>
-          <ScenarioCard title="5 · Expired" description="A fresh proposal is required.">
-            <SecretProposalCard interaction={expiredSecretProposalInteraction} />
+          <ScenarioCard
+            title="5 · Expired"
+            description="A fresh proposal is required."
+          >
+            <SecretProposalCard
+              interaction={expiredSecretProposalInteraction}
+            />
           </ScenarioCard>
         </div>
       </Section>
@@ -937,31 +1172,41 @@ export const ResolverAudienceStates: Story = {
             title="Anyone except creator"
             description="Requested on purpose when the answer has to be independent of the agent that asked."
           >
-            <AudienceCard interaction={notCreatorRequestConfirmationInteraction} />
+            <AudienceCard
+              interaction={notCreatorRequestConfirmationInteraction}
+            />
           </ScenarioCard>
           <ScenarioCard
             title="Human only"
             description="Reserved for a person: agents are turned away by the server, and the copy says so."
           >
-            <AudienceCard interaction={humanOnlyRequestConfirmationInteraction} />
+            <AudienceCard
+              interaction={humanOnlyRequestConfirmationInteraction}
+            />
           </ScenarioCard>
           <ScenarioCard
             title="Named addressee"
             description="One agent owns the response; the card stays out of the open attention feed."
           >
-            <AudienceCard interaction={agentAddressedRequestConfirmationInteraction} />
+            <AudienceCard
+              interaction={agentAddressedRequestConfirmationInteraction}
+            />
           </ScenarioCard>
           <ScenarioCard
             title="Narrowed by a company cap"
             description="The request asked for Anyone; company interaction governance capped the kind, and the card explains the narrowing."
           >
-            <AudienceCard interaction={companyCappedRequestConfirmationInteraction} />
+            <AudienceCard
+              interaction={companyCappedRequestConfirmationInteraction}
+            />
           </ScenarioCard>
           <ScenarioCard
             title="Legacy restricted card"
             description="Created before Anyone became the default. Migration keeps it restricted fail-closed and the card says a new card would be open."
           >
-            <AudienceCard interaction={legacyRestrictedRequestConfirmationInteraction} />
+            <AudienceCard
+              interaction={legacyRestrictedRequestConfirmationInteraction}
+            />
           </ScenarioCard>
         </div>
       </Section>
@@ -972,31 +1217,67 @@ export const ResolverAudienceStates: Story = {
 export const ToolActionAllStates: Story = {
   render: () => (
     <StoryFrame>
-      <Section eyebrow="MCP Tool Approval" title="All six lifecycle states (PAP-13745)">
+      <Section
+        eyebrow="MCP Tool Approval"
+        title="All six lifecycle states (PAP-13745)"
+      >
         <div className="grid gap-6 xl:grid-cols-2">
-          <ScenarioCard title="1 · Pending (write)" description="Awaiting approval — Approve & run.">
-            <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+          <ScenarioCard
+            title="1 · Pending (write)"
+            description="Awaiting approval — Approve & run."
+          >
+            <ToolActionCard
+              interaction={pendingToolActionWriteInteraction}
+              interactive
+            />
           </ScenarioCard>
-          <ScenarioCard title="1b · Pending (destructive)" description="Red risk badge, urgent countdown.">
-            <ToolActionCard interaction={pendingToolActionDestructiveInteraction} interactive />
+          <ScenarioCard
+            title="1b · Pending (destructive)"
+            description="Red risk badge, urgent countdown."
+          >
+            <ToolActionCard
+              interaction={pendingToolActionDestructiveInteraction}
+              interactive
+            />
           </ScenarioCard>
-          <ScenarioCard title="2 · Approved — running…" description="Transient, self-resolving spinner.">
+          <ScenarioCard
+            title="2 · Approved — running…"
+            description="Transient, self-resolving spinner."
+          >
             <ToolActionCard interaction={runningToolActionInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="3 · Executed" description="Green, with a result summary.">
+          <ScenarioCard
+            title="3 · Executed"
+            description="Green, with a result summary."
+          >
             <ToolActionCard interaction={executedToolActionInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="4 · Failed" description="Ran, but the connector errored.">
+          <ScenarioCard
+            title="4 · Failed"
+            description="Ran, but the connector errored."
+          >
             <ToolActionCard interaction={failedToolActionInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="5 · Declined" description="Rejected — nothing ran.">
+          <ScenarioCard
+            title="5 · Declined"
+            description="Rejected — nothing ran."
+          >
             <ToolActionCard interaction={declinedToolActionInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="6 · Expired" description="No response in 60 min.">
+          <ScenarioCard
+            title="6 · Expired"
+            description="No response in 60 min."
+          >
             <ToolActionCard interaction={expiredToolActionInteraction} />
           </ScenarioCard>
-          <ScenarioCard title="Legacy · no toolAction" description="Unchanged generic rendering.">
-            <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
+          <ScenarioCard
+            title="Legacy · no toolAction"
+            description="Unchanged generic rendering."
+          >
+            <ToolActionCard
+              interaction={genericPendingRequestConfirmationInteraction}
+              interactive
+            />
           </ScenarioCard>
         </div>
       </Section>
@@ -1012,7 +1293,10 @@ export const ToolActionMobile: Story = {
         description="Single column: risk badge wraps under the tool name, actions stack full-width, the technical drawer stays collapsed."
       >
         <div className="mx-auto max-w-[358px]">
-          <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+          <ToolActionCard
+            interaction={pendingToolActionWriteInteraction}
+            interactive
+          />
         </div>
       </ScenarioCard>
     </StoryFrame>
@@ -1165,7 +1449,9 @@ export const ItemVerdictsPartial: Story = {
         title="S3 / S4 — partial progress"
         description="Two items already applied (one approved, one rejected with its reason echoed); three remain actionable. The card stays alive and shows 2 of 5 decided."
       >
-        <InteractiveRequestItemVerdictsCard initial={partialRequestItemVerdictsInteraction} />
+        <InteractiveRequestItemVerdictsCard
+          initial={partialRequestItemVerdictsInteraction}
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -1214,7 +1500,9 @@ export const ItemVerdictsManyItems: Story = {
         title="S7 — long list"
         description="24 items decided in passes; the expanded list scrolls in a bounded region and reuses the 200-item cap."
       >
-        <InteractiveRequestItemVerdictsCard initial={manyItemsRequestItemVerdictsInteraction} />
+        <InteractiveRequestItemVerdictsCard
+          initial={manyItemsRequestItemVerdictsInteraction}
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -1226,14 +1514,17 @@ export const ReviewSurface: Story = {
       <section className="paperclip-story__frame p-6">
         <div className="paperclip-story__label">Thread interactions</div>
         <div className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-          This review surface pressure-tests the thread interaction kinds directly inside the issue
-          chat surface. The card language leans closer to
-          annotated review sheets than generic admin widgets so the objects feel like first-class work
-          artifacts in the thread.
+          This review surface pressure-tests the thread interaction kinds
+          directly inside the issue chat surface. The card language leans closer
+          to annotated review sheets than generic admin widgets so the objects
+          feel like first-class work artifacts in the thread.
         </div>
       </section>
 
-      <Section eyebrow="Suggested Tasks" title="Pending, accepted, and rejected task-tree cards">
+      <Section
+        eyebrow="Suggested Tasks"
+        title="Pending, accepted, and rejected task-tree cards"
+      >
         <div className="grid gap-6 xl:grid-cols-3">
           <ScenarioCard
             title="Pending"
@@ -1266,7 +1557,10 @@ export const ReviewSurface: Story = {
         </div>
       </Section>
 
-      <Section eyebrow="Ask User Questions" title="Pending multi-question form and answered summary">
+      <Section
+        eyebrow="Ask User Questions"
+        title="Pending multi-question form and answered summary"
+      >
         <div className="grid gap-6 xl:grid-cols-2">
           <ScenarioCard
             title="Pending"
@@ -1288,7 +1582,10 @@ export const ReviewSurface: Story = {
         </div>
       </Section>
 
-      <Section eyebrow="Request Confirmation" title="Plan approval and compact resolution states">
+      <Section
+        eyebrow="Request Confirmation"
+        title="Plan approval and compact resolution states"
+      >
         <div className="grid gap-6 xl:grid-cols-2">
           <ScenarioCard
             title="Plan approval"
@@ -1340,7 +1637,10 @@ export const ReviewSurface: Story = {
         </div>
       </Section>
 
-      <Section eyebrow="Mixed Feed" title="Interaction cards in the real issue thread">
+      <Section
+        eyebrow="Mixed Feed"
+        title="Interaction cards in the real issue thread"
+      >
         <ScenarioCard
           title="IssueChatThread composition"
           description="Comments, timeline events, accepted task suggestions, a pending confirmation, a pending question form, and an active run share the same feed."

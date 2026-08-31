@@ -6,7 +6,7 @@ import {
 } from "../lib/onboarding-route";
 import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -33,6 +33,8 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
@@ -42,6 +44,30 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export type PausedAgentBanner =
+  | { kind: "imported"; pausedImportedAgentIds: string[] }
+  | { kind: "all-paused" }
+  | null;
+
+/**
+ * Which paused-agents banner the dashboard should show. Import-paused agents
+ * get the specific banner with a bulk resume (they were parked by the import
+ * safety default and stay parked until someone acts); otherwise a company
+ * whose agents are ALL paused gets a generic explanation, because from the
+ * outside it is indistinguishable from a broken company.
+ */
+export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgentBanner {
+  if (!agents || agents.length === 0) return null;
+  const importedPaused = agents.filter(
+    (agent) => agent.status === "paused" && agent.pauseReason === "import",
+  );
+  if (importedPaused.length > 0) {
+    return { kind: "imported", pausedImportedAgentIds: importedPaused.map((agent) => agent.id) };
+  }
+  if (agents.every((agent) => agent.status === "paused")) return { kind: "all-paused" };
+  return null;
 }
 
 export function Dashboard() {
@@ -58,6 +84,31 @@ export function Dashboard() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  // Bulk resume for agents parked by a company import. Sequential on purpose
+  // (mirrors the import page's activation checklist); a per-agent failure is
+  // tolerated so one bad agent never blocks the rest, and the refetch below
+  // re-renders the banner with whatever remains paused.
+  const queryClient = useQueryClient();
+  const resumeImportedAgents = useMutation({
+    mutationFn: async () => {
+      const targets = derivePausedAgentBanner(agents);
+      if (!targets || targets.kind !== "imported") return;
+      for (const agentId of targets.pausedImportedAgentIds) {
+        try {
+          await agentsApi.resume(agentId, selectedCompanyId ?? undefined);
+        } catch {
+          // Leave the agent paused; the banner re-renders with the remainder.
+        }
+      }
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) }),
+      ]);
+    },
   });
 
   // A company with no agent cannot do anything — no runs, no tasks, nothing
@@ -242,14 +293,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Welcome to Paperclip. Set up your first organization and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message="Create or select an organization to view the dashboard." />
     );
   }
 
@@ -258,10 +309,46 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const pausedBanner = derivePausedAgentBanner(agents);
+  const pausedImportedCount =
+    pausedBanner?.kind === "imported" ? pausedBanner.pausedImportedAgentIds.length : 0;
 
   return (
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+
+      {pausedBanner?.kind === "imported" ? (
+        <InlineBanner
+          tone="warning"
+          icon={PauseCircle}
+          title={`${pausedImportedCount} imported agent${pausedImportedCount === 1 ? " is" : "s are"} paused and will not run.`}
+          actions={
+            <Button
+              size="sm"
+              onClick={() => resumeImportedAgents.mutate()}
+              disabled={resumeImportedAgents.isPending}
+              data-testid="dashboard-resume-imported-agents"
+            >
+              {resumeImportedAgents.isPending ? "Resuming…" : "Resume all"}
+            </Button>
+          }
+        >
+          Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start.
+        </InlineBanner>
+      ) : pausedBanner?.kind === "all-paused" ? (
+        <InlineBanner
+          tone="warning"
+          icon={PauseCircle}
+          title="All agents in this organization are paused — nothing will run."
+          actions={
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/agents">Review agents</Link>
+            </Button>
+          }
+        >
+          Resume at least one agent to let assigned tasks start.
+        </InlineBanner>
+      ) : null}
 
       {hasNoAgents && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">

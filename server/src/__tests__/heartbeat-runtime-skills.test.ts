@@ -414,7 +414,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       connectionId: installed!.id,
       name: installed!.name,
       token: expect.stringMatching(/^pcgw_/),
-      url: expect.stringContaining("/api/tool-gateway/gateways/"),
+      url: expect.stringMatching(/\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
     });
     expect(captured?.mcpServers.some((server) => server.connectionId === uninstalled!.id)).toBe(false);
     const bearer = captured?.mcpServers[0]?.token;

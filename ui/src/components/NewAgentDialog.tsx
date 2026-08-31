@@ -352,7 +352,7 @@ export function NewAgentDialog() {
               </label>
 
               <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
+                Agent invites create a join request first. An organization admin still approves the request before the agent can claim its API key.
               </div>
 
               <div>
@@ -385,7 +385,7 @@ export function NewAgentDialog() {
                     ) : null}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this company.
+                    Send this prompt to the external agent that should join this organization.
                   </p>
                 </div>
               </div>

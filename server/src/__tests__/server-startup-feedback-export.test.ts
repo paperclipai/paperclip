@@ -40,7 +40,7 @@ const {
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
-  const detectPortMock = vi.fn(async (port: number) => port);
+  const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
     suppressed: false,
@@ -114,6 +114,7 @@ const {
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const fakeServer = {
+    on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
@@ -311,6 +312,25 @@ vi.mock("../services/index.js", () => ({
       failed: 0,
     })),
   })),
+}));
+
+vi.mock("../services/question-response-delivery.js", () => ({
+  questionResponseDeliveryService: vi.fn(() => ({
+    sweepPending: vi.fn(async () => ({
+      scanned: 0,
+      steered: 0,
+      coalesced: 0,
+      wakeFallback: 0,
+      failed: 0,
+    })),
+  })),
+}));
+
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionCancellationIdentity: vi.fn(() => null),
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
 }));
 
 vi.mock("../services/secret-proposals.js", () => ({
@@ -595,6 +615,20 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("checks port availability on the configured bind host", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      host: "127.0.0.1",
+      port: 3210,
+    }));
+
+    await startServer();
+
+    expect(detectPortMock).toHaveBeenCalledWith({
+      port: 3210,
+      hostname: "127.0.0.1",
+    });
   });
 
   it("derives trusted origins from the detected listen port before auth initializes", async () => {

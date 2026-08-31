@@ -40,7 +40,7 @@ const ACTION_DOMAINS: { value: string; label: string }[] = [
   { value: "goal.", label: "Goals" },
   { value: "tool_gateway.", label: "Tools" },
   { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Company" },
+  { value: "company.", label: "Organization" },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
@@ -50,7 +50,7 @@ const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: "agent", label: "Agent" },
   { value: "project", label: "Project" },
   { value: "goal", label: "Goal" },
-  { value: "company", label: "Company" },
+  { value: "company", label: "Organization" },
 ];
 
 /**
@@ -469,7 +469,7 @@ export function AuditFeed({
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               {resolvedMode === "agents"
                 ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
+                : "Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action."}
             </p>
           </div>
         </div>
@@ -607,7 +607,7 @@ export function AuditFeed({
                   ? "Try a wider date range or different filters."
                   : resolvedMode === "agents"
                     ? "As soon as your agents start doing things, their actions show up here."
-                    : "As soon as anyone in your company does something, it shows up here."}
+                    : "As soon as anyone in your organization does something, it shows up here."}
               </p>
             </div>
             {hasActiveFilters ? (

@@ -104,6 +104,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   assert.match(verifyWorkflow, /node \.\/scripts\/release-package-map\.mjs check/);
   assert.match(verifyWorkflow, /pnpm -r typecheck/);
   assert.match(verifyWorkflow, /pnpm build/);
+  assert.match(verifyWorkflow, /pnpm --filter @paperclipai\/paperclip-runner check:all/);
 
   for (const group of ["general-server", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));

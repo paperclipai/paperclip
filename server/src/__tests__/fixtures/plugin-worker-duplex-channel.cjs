@@ -22,7 +22,27 @@
 //     read order — proving the host still bounds these frames on their own terms
 //     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
-//     one data notification for the bound session.
+//     one data notification for the bound session, prefixed with `echo:` at the
+//     byte level (so the echo round-trips a non-UTF-8 payload unchanged).
+//
+// The JSON-RPC hop carries a duplex chunk as a base64 string (see
+// `ChannelBytesWireValue` in packages/plugins/sdk/src/protocol.ts). This fixture
+// is a hand-rolled worker, not the real SDK, so it encodes and decodes base64
+// itself with the two helpers below. A `chunk` directive value in a test is
+// always the plain-text payload; the fixture is the one place that puts it on
+// the wire as base64.
+//   - `writeReplyDelayMs`: when a positive number, the fixture delays each
+//     `duplexChannelWrite` reply by that many milliseconds, so a test proves the
+//     host holds the pending-write reservation until the RPC settles.
+//   - `stopReadingStdinAfterOpen`: when true, the fixture stops reading its stdin
+//     right after it sends the open reply. The host writes then stay in the host
+//     stdin write buffer, so a test proves the host meters the transport buffer and
+//     never releases the transport token on the write-RPC timeout.
+//   - `exitAfterStopMs`: when a positive number, and the fixture stopped reading
+//     stdin, the fixture exits after that many milliseconds. The worker exit
+//     discards the stdin buffer, so a test proves the host releases every held
+//     transport token on the worker exit. It gives a fast exit for a worker that no
+//     longer reads its stdin and never sees the shutdown request.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
@@ -34,6 +54,19 @@ const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+// Encode one plain-text directive chunk to the wire-safe base64 form. The real
+// worker (worker-rpc-host.ts, `encodeChannelBytes`) does the same encoding.
+function toWireChunk(text) {
+  return Buffer.from(text, "utf8").toString("base64");
+}
+
+// Decode the wire-safe base64 form of one host→worker write back to a Buffer,
+// so the echo path works on exact bytes rather than a UTF-8 string. This keeps
+// the echo byte-exact for a payload that is not valid UTF-8.
+function fromWireChunk(wireValue) {
+  return Buffer.from(wireValue, "base64");
 }
 
 // Serialize the scripted data and exit frames as newline-delimited lines. The
@@ -50,7 +83,7 @@ function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
       params: {
         hostRouteId: entry.rid ?? hostRouteId,
         workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
+        chunk: toWireChunk(entry.chunk),
       },
     })}\n`;
   }
@@ -77,7 +110,7 @@ function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
       params: {
         hostRouteId: entry.rid ?? hostRouteId,
         workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
+        chunk: toWireChunk(entry.chunk),
       },
     })}\n`;
   }
@@ -134,6 +167,8 @@ rl.on("line", (line) => {
       closeMode,
       echoInput: directive.echoInput === true,
       noWriteReply: mode === "no-write-reply",
+      writeReplyDelayMs:
+        typeof directive.writeReplyDelayMs === "number" ? directive.writeReplyDelayMs : 0,
       emitAfterCloseChunk:
         typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
@@ -170,6 +205,20 @@ rl.on("line", (line) => {
       reply();
     }
 
+    if (directive.stopReadingStdinAfterOpen === true) {
+      // Stop reading stdin, so every later host write stays in the host stdin
+      // write buffer. The host meters the transport buffer and holds the transport
+      // token until the stream flush, the stream error, or the worker exit.
+      rl.pause();
+      process.stdin.pause();
+      if (typeof directive.exitAfterStopMs === "number" && directive.exitAfterStopMs >= 0) {
+        // Exit after the delay, so a test observes the worker exit release the held
+        // transport tokens without a slow shutdown drain on an unread stdin.
+        setTimeout(() => process.exit(0), directive.exitAfterStopMs);
+      }
+      return;
+    }
+
     // Emit the scripted data and the exit after the open reply, so the host
     // binds the route first. Each frame echoes the exact pair; a test overrides
     // `sid` or `rid` to force a mismatch.
@@ -195,17 +244,27 @@ rl.on("line", (line) => {
     if (entry.echoInput) {
       // Echo the input back as one data notification for the bound pair, so a
       // test proves the input reaches the worker and the output routes back.
+      // Work on the decoded Buffer, not a string, so a non-UTF-8 payload (the
+      // full 256-value byte corpus) echoes byte-exact under the `echo:` prefix.
+      const echoBytes = Buffer.concat([Buffer.from("echo:", "utf8"), fromWireChunk(params.data)]);
       send({
         jsonrpc: "2.0",
         method: "duplexChannel.data",
         params: {
           hostRouteId: entry.hostRouteId,
           workerSessionId: entry.workerSessionId,
-          chunk: `echo:${params.data}`,
+          chunk: echoBytes.toString("base64"),
         },
       });
     }
-    send({ jsonrpc: "2.0", id: message.id, result: null });
+    const replyWrite = () => send({ jsonrpc: "2.0", id: message.id, result: null });
+    if (entry.writeReplyDelayMs > 0) {
+      // Delay the write reply, so the host holds the pending-write reservation for
+      // a measurable time before the RPC settles.
+      setTimeout(replyWrite, entry.writeReplyDelayMs);
+    } else {
+      replyWrite();
+    }
     return;
   }
 
@@ -243,7 +302,7 @@ rl.on("line", (line) => {
           params: {
             hostRouteId: entry.hostRouteId,
             workerSessionId: entry.workerSessionId,
-            chunk: entry.emitAfterCloseChunk,
+            chunk: toWireChunk(entry.emitAfterCloseChunk),
           },
         });
       });

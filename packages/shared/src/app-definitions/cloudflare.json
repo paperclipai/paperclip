@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "slug": "cloudflare",
+  "name": "Cloudflare",
+  "description": "Connect Cloudflare's provider-hosted MCP server.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/cloudflare.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.cloudflare.com/*"
+  ],
+  "docsUrl": "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.cloudflare.com/mcp"
+      },
+      "guidanceMd": "Connect Cloudflare in the browser. A Cloudflare account with access to the resources being connected.",
+      "riskTier": "S3",
+      "label": "Sign in with Cloudflare",
+      "consoleLinks": {
+        "docs": "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/"
+      },
+      "warnings": [
+        "A Cloudflare account with access to the resources being connected."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.cloudflare.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created Cloudflare key. A Cloudflare account with access to the resources being connected.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Cloudflare API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Cloudflare API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/",
+        "docs": "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/"
+      },
+      "warnings": [
+        "A Cloudflare account with access to the resources being connected."
+      ]
+    }
+  ]
+}

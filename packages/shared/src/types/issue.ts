@@ -1109,7 +1109,53 @@ export interface AskUserQuestionsQuestion {
   helpText?: string | null;
   selectionMode: "single" | "multi";
   required?: boolean;
+  /** False suppresses the legacy free-form fallback for closed select sets. */
+  allowOther?: boolean;
   options: AskUserQuestionsQuestionOption[];
+}
+
+/**
+ * Provider-neutral presentation retained when a live harness question has to
+ * fall back to the durable issue interaction lifecycle. This intentionally
+ * mirrors `paperclip.question_set.v1` without making the shared package depend
+ * on a particular runner implementation.
+ */
+export interface PaperclipQuestionSetOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface PaperclipQuestionSetQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  helpText?: string;
+  required: boolean;
+  answerMode: "single_select" | "multi_select" | "text";
+  options?: PaperclipQuestionSetOption[];
+  customAnswer?: {
+    enabled: true;
+    label?: string;
+    placeholder?: string;
+  };
+  textValidation?: {
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    inputType?: "text" | "number" | "integer";
+    minimum?: number;
+    maximum?: number;
+  };
+}
+
+export interface PaperclipQuestionSetPayload {
+  schema: "paperclip.question_set.v1";
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+  questions: PaperclipQuestionSetQuestion[];
 }
 
 export interface AskUserQuestionsPayload {
@@ -1118,6 +1164,10 @@ export interface AskUserQuestionsPayload {
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
+  /** Exact presentation for a recovered harness request. */
+  questionSet?: PaperclipQuestionSetPayload;
+  /** Correlates a recovered interaction with the live runtime request it replaces. */
+  runtimeRequestId?: string | null;
 }
 
 export interface AskUserQuestionsAnswer {
@@ -1220,6 +1270,49 @@ export interface RequestConfirmationSecretProposalResult {
   updatedAt: string;
 }
 
+/**
+ * Presentation metadata for a connection-authorization confirmation
+ * (PAP-17835). The interaction kind and the server-addressed audience are
+ * unchanged; this block only lets the card render "Connect your Gmail to
+ * continue" and name the agent that is waiting, instead of parsing a magic
+ * title string to work out what the card is about.
+ */
+export interface RequestConfirmationConnectionAuthorizationPayload {
+  version: 1;
+  /** Provider label for the copy, e.g. "Gmail". Never a secret name or ref. */
+  providerName: string;
+  /** The connection's display name, when it differs from the provider. */
+  connectionName?: string | null;
+  /** The agent whose work is blocked, for "<Agent> needs your <Provider> identity". */
+  requestingAgentName?: string | null;
+}
+
+export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
+
+/**
+ * Server-authored request for a responsible user to connect a first-party app.
+ * It intentionally contains presentation-safe identifiers only; credentials and
+ * authorization URLs are returned solely from addressed board endpoints.
+ */
+export interface ConnectionIntentPayload {
+  version: 1;
+  serviceSlug: string;
+  serviceName: string;
+  serviceLogoUrl?: string | null;
+  serviceDarkLogoUrl?: string | null;
+  requestingAgentId: string;
+  requestingAgentName: string;
+  phase: ConnectionIntentPhase;
+}
+
+export interface ConnectionIntentResult {
+  version: 1;
+  outcome: "connected" | "declined" | "superseded" | "expired";
+  connectionId?: string | null;
+  reason?: string | null;
+  supersededByInteractionId?: string | null;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1234,6 +1327,7 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
+  connectionAuthorization?: RequestConfirmationConnectionAuthorizationPayload;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1347,6 +1441,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
   addresseeAgentId?: string | null;
+  addresseeUserId?: string | null;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
@@ -1396,26 +1491,35 @@ export interface RequestItemVerdictsInteraction extends IssueThreadInteractionBa
   result?: RequestItemVerdictsResult | null;
 }
 
+export interface ConnectionIntentInteraction extends IssueThreadInteractionBase {
+  kind: "connection_intent";
+  payload: ConnectionIntentPayload;
+  result?: ConnectionIntentResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction
-  | RequestItemVerdictsInteraction;
+  | RequestItemVerdictsInteraction
+  | ConnectionIntentInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
   | RequestCheckboxConfirmationPayload
-  | RequestItemVerdictsPayload;
+  | RequestItemVerdictsPayload
+  | ConnectionIntentPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
   | RequestCheckboxConfirmationResult
-  | RequestItemVerdictsResult;
+  | RequestItemVerdictsResult
+  | ConnectionIntentResult;
 
 export interface IssueAttachment {
   id: string;

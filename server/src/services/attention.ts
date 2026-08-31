@@ -733,6 +733,7 @@ function interactionVerbs(kind: string, payload: Record<string, unknown>) {
 export function interactionResolverAudience(
   row: {
     addresseeAgentId: string | null;
+    addresseeUserId?: string | null;
     createdByAgentId: string | null;
     requestedResolverPolicy: string;
     effectiveResolverPolicy: string;
@@ -752,6 +753,7 @@ export function interactionResolverAudience(
       (row.effectiveResolverPolicySource ?? "requested") as IssueThreadInteractionEffectiveResolverPolicySource,
     resolverPolicyProvenance: provenance,
     addresseeAgentId: row.addresseeAgentId,
+    addresseeUserId: row.addresseeUserId ?? null,
     addresseeName: row.addresseeAgentId ? agentName(row.addresseeAgentId) : null,
     createdByAgentId: row.createdByAgentId,
     createdByAgentName: row.createdByAgentId ? agentName(row.createdByAgentId) : null,
@@ -1172,6 +1174,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           summary: issueThreadInteractions.summary,
           payload: issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+          addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
           requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
           effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
@@ -1207,8 +1210,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         : [];
       const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
       const boardInteractionRows = interactionRows.filter((row) =>
-        row.addresseeAgentId === null ||
-        !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
+        (row.addresseeAgentId === null ||
+          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
+        && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([

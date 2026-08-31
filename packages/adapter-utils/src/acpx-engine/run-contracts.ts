@@ -18,6 +18,7 @@ import type {
   AdapterExecutionTargetProcessSessionBridgeHandle,
   PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 
 // ---------------------------------------------------------------------------
 // Resource identity
@@ -92,8 +93,13 @@ export interface StagedRuntimeResource {
  * `AcpxPreparedRuntime.remoteManagedHomeTeardown` and `remoteStagingEnvDelta`.
  */
 export interface ManagedHomeResource {
-  /** Per-run copy-back hook. Runs the auth copy-back on every exit path. */
-  readonly teardown: () => Promise<void>;
+  /**
+   * Per-run copy-back hook. Runs the auth copy-back and the workspace restore
+   * on every exit path. Resolves to the workspace-restore outcome — never
+   * rejects — so the run coordinator can surface a failed restore on the run
+   * record without changing the run's exit code or status.
+   */
+  readonly teardown: () => Promise<WorkspaceRestoreOutcome>;
   /** The env keys the seam mutated on this run. */
   readonly envDelta: Record<string, string>;
 }

@@ -182,5 +182,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Verify Paperclip Runner
+        run: pnpm --filter @paperclipai/paperclip-runner check:all
+
       - name: Build
         run: pnpm build

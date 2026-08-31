@@ -131,6 +131,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  deleteBlastRadius: vi.fn(),
   setDefault: vi.fn(),
   customImageTemplate: vi.fn(),
   startCustomImageSetupSession: vi.fn(),
@@ -148,6 +149,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
+}));
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  update: vi.fn(),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -177,6 +182,10 @@ vi.mock("@/api/instanceSettings", () => ({
 
 vi.mock("@/api/secrets", () => ({
   secretsApi: mockSecretsApi,
+}));
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: mockAgentsApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -284,6 +293,12 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
 
 function getEnvironmentFormPage(): HTMLElement | null {
@@ -370,6 +385,41 @@ function createTemplate(overrides: Record<string, unknown> = {}) {
     createdAt: "2026-06-25T20:00:00.000Z",
     updatedAt: "2026-06-25T20:00:00.000Z",
     ...overrides,
+  };
+}
+
+function createDeleteBlastRadius(overrides: {
+  canDelete?: boolean;
+  deleteBlockedReasons?: string[];
+  staticReferences?: Record<string, unknown>;
+  activeRuntimeUse?: Record<string, unknown>;
+  pendingCleanupLeaseCount?: number;
+  reusableSandboxLeaseCount?: number;
+  reusableSandboxLeaseHolders?: Array<Record<string, unknown>>;
+} = {}) {
+  return {
+    environmentId: "env-1",
+    canDelete: overrides.canDelete ?? true,
+    deleteBlockedReasons: overrides.deleteBlockedReasons ?? [],
+    reusableSandboxLeaseHolders: overrides.reusableSandboxLeaseHolders ?? [],
+    staticReferences: {
+      isManagedLocal: false,
+      isInstanceDefault: false,
+      agentDefaultCount: 0,
+      executionWorkspaceSelectionCount: 0,
+      issueSelectionCount: 0,
+      projectSelectionCount: 0,
+      secretBindingCount: 0,
+      ...overrides.staticReferences,
+    },
+    activeRuntimeUse: {
+      activeLeaseCount: 0,
+      activeCustomImageSetupSessionCount: 0,
+      hasActiveRuntimeUse: false,
+      ...overrides.activeRuntimeUse,
+    },
+    pendingCleanupLeaseCount: overrides.pendingCleanupLeaseCount ?? 0,
+    reusableSandboxLeaseCount: overrides.reusableSandboxLeaseCount ?? 0,
   };
 }
 
@@ -474,6 +524,16 @@ describe("CompanyEnvironments — test provider button", () => {
       description: null,
       config: { provider: "e2b" },
     }));
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(createDeleteBlastRadius());
+    mockEnvironmentsApi.remove.mockImplementation(async (environmentId: string) => ({
+      id: environmentId,
+      name: environmentId === "env-1" ? "Alpha" : "Beta",
+      driver: "sandbox",
+      description: null,
+      config: { provider: "e2b" },
+    }));
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.update.mockResolvedValue({});
     // Each probe stays pending until its resolver is called, so the testing
     // state remains observable and can be settled per environment.
     mockEnvironmentsApi.probe.mockImplementation(
@@ -1631,5 +1691,240 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(false);
     // Saved non-local environments remain selectable defaults.
     expect(options.some((option) => option.textContent?.includes("Alpha"))).toBe(true);
+  });
+
+  it("reassigns this company's active agents to the chosen environment before deleting", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-1", name: "Iris", status: "active", defaultEnvironmentId: "env-1" },
+      { id: "agent-2", name: "Miles", status: "active", defaultEnvironmentId: "env-2" },
+      { id: "agent-3", name: "Retired", status: "terminated", defaultEnvironmentId: "env-1" },
+    ]);
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(
+      createDeleteBlastRadius({ staticReferences: { agentDefaultCount: 2 } }),
+    );
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    const deleteButton = document.body.querySelector<HTMLButtonElement>("[data-testid='environment-delete-button']");
+    expect(deleteButton).not.toBeNull();
+    await act(async () => click(deleteButton));
+
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector("[data-testid='environment-delete-dialog']")?.textContent,
+      ).toContain("1 agent uses this environment as their default");
+    });
+    const dialog = document.body.querySelector<HTMLElement>("[data-testid='environment-delete-dialog']")!;
+    // Only this company's active agents are reassignable; the terminated one is
+    // left to the FK fallback and surfaces through the impact note instead.
+    expect(dialog.textContent).toContain("Iris");
+    expect(dialog.textContent).not.toContain("Retired");
+    expect(dialog.textContent).toContain("Other references to this environment");
+
+    const reassignSelect = dialog.querySelector<HTMLSelectElement>(
+      "[data-testid='environment-delete-reassign-select']",
+    )!;
+    const optionLabels = Array.from(reassignSelect.querySelectorAll("option")).map((option) =>
+      option.textContent?.trim(),
+    );
+    expect(optionLabels).toEqual(["Default: Local", "Beta · sandbox"]);
+    await act(async () => setSelectValue(reassignSelect, "env-2"));
+
+    await act(async () =>
+      click(document.body.querySelector("[data-testid='environment-delete-confirm']")),
+    );
+    await flushReact();
+
+    expect(mockAgentsApi.update).toHaveBeenCalledExactlyOnceWith(
+      "agent-1",
+      { defaultEnvironmentId: "env-2" },
+      "company-1",
+    );
+    expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockAgentsApi.update.mock.invocationCallOrder[0]).toBeLessThan(
+      mockEnvironmentsApi.remove.mock.invocationCallOrder[0],
+    );
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
+  });
+
+  it("deletes without any reassignment when no agents use the environment", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-2", name: "Miles", status: "active", defaultEnvironmentId: "env-2" },
+    ]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () =>
+      click(document.body.querySelector("[data-testid='environment-delete-button']")),
+    );
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector("[data-testid='environment-delete-dialog']")?.textContent,
+      ).toContain("permanently deleted");
+    });
+    expect(
+      document.body.querySelector("[data-testid='environment-delete-reassign-select']"),
+    ).toBeNull();
+
+    await act(async () =>
+      click(document.body.querySelector("[data-testid='environment-delete-confirm']")),
+    );
+    await flushReact();
+
+    expect(mockAgentsApi.update).not.toHaveBeenCalled();
+    expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1");
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
+  });
+
+  it("disables the delete confirmation while the server would block the delete", async () => {
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(
+      createDeleteBlastRadius({
+        canDelete: false,
+        deleteBlockedReasons: ["instance_default"],
+        staticReferences: { isInstanceDefault: true },
+      }),
+    );
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () =>
+      click(document.body.querySelector("[data-testid='environment-delete-button']")),
+    );
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector("[data-testid='environment-delete-dialog']")?.textContent,
+      ).toContain("Cannot delete the current instance default environment");
+    });
+
+    const confirm = document.body.querySelector<HTMLButtonElement>(
+      "[data-testid='environment-delete-confirm']",
+    )!;
+    expect(confirm.disabled).toBe(true);
+    expect(
+      document.body.querySelector("[data-testid='environment-delete-reassign-select']"),
+    ).toBeNull();
+    expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
+  });
+
+  it("links the workspaces holding blocking sandbox leases in the delete dialog", async () => {
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(
+      createDeleteBlastRadius({
+        canDelete: false,
+        deleteBlockedReasons: ["reusable_sandbox_lease"],
+        reusableSandboxLeaseCount: 3,
+        reusableSandboxLeaseHolders: [
+          {
+            leaseId: "lease-1",
+            executionWorkspaceId: "ws-1",
+            executionWorkspaceName: "ACME-7-fix-the-thing",
+            issueId: "issue-1",
+            issueIdentifier: "ACME-7",
+            issueTitle: "Fix the thing",
+          },
+          {
+            leaseId: "lease-2",
+            executionWorkspaceId: "ws-1",
+            executionWorkspaceName: "ACME-7-fix-the-thing",
+            issueId: "issue-2",
+            issueIdentifier: "ACME-9",
+            issueTitle: "Follow-up",
+          },
+          {
+            leaseId: "lease-3",
+            executionWorkspaceId: null,
+            executionWorkspaceName: null,
+            issueId: null,
+            issueIdentifier: null,
+            issueTitle: null,
+          },
+        ],
+      }),
+    );
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () =>
+      click(document.body.querySelector("[data-testid='environment-delete-button']")),
+    );
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector("[data-testid='environment-delete-lease-holders']"),
+      ).not.toBeNull();
+    });
+
+    const holders = document.body.querySelector<HTMLElement>(
+      "[data-testid='environment-delete-lease-holders']",
+    )!;
+    const workspaceLink = holders.querySelector<HTMLAnchorElement>("a[href='/execution-workspaces/ws-1']");
+    expect(workspaceLink?.textContent).toBe("ACME-7-fix-the-thing");
+    // The two leases on ws-1 collapse into one row naming both issues.
+    expect(holders.querySelectorAll("li")).toHaveLength(2);
+    expect(holders.textContent).toContain("2 sandbox leases");
+    expect(holders.textContent).toContain("ACME-7, ACME-9");
+    expect(holders.textContent).toContain("Workspace no longer on record");
+
+    // Leases as the only blocker are consentable: the confirm stays enabled
+    // and destroys the sandboxes as part of the delete.
+    const confirm = document.body.querySelector<HTMLButtonElement>(
+      "[data-testid='environment-delete-confirm']",
+    )!;
+    expect(confirm.disabled).toBe(false);
+    expect(confirm.textContent?.trim()).toBe("Destroy 3 sandboxes and delete");
+
+    await act(async () => click(confirm));
+    await flushReact();
+
+    expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1", {
+      destroyReusableSandboxLeases: true,
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
+  });
+
+  it("does not offer delete on the add-environment page", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Add environment");
+    });
+
+    expect(document.body.querySelector("[data-testid='environment-delete-button']")).toBeNull();
   });
 });

@@ -78,6 +78,9 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     description: "",
     icon: () => null,
   }),
+  getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,

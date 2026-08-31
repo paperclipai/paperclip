@@ -6,6 +6,12 @@ export type RadioCardOption = {
   value: string;
   title: string;
   description?: string;
+  /**
+   * Disable this one option while its siblings stay live. For a choice the
+   * viewer's capabilities forbid: the option stays legible, with its reason in
+   * `description`, instead of vanishing and making the scope unexplained.
+   */
+  disabled?: boolean;
 };
 
 /**
@@ -72,15 +78,23 @@ export function RadioCardGroup({
     if (disabled) return;
     const idx = options.findIndex((option) => option.value === value);
     if (idx === -1) return;
-    let nextIdx: number | null = null;
+    let step: number | null = null;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-      nextIdx = (idx + 1) % options.length;
+      step = 1;
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-      nextIdx = (idx - 1 + options.length) % options.length;
+      step = -1;
     }
-    if (nextIdx !== null) {
-      event.preventDefault();
-      onValueChange(options[nextIdx].value);
+    if (step === null) return;
+    event.preventDefault();
+    // Step over disabled options rather than landing on one: arrowing onto a
+    // choice the viewer cannot make would select it.
+    const len = options.length;
+    for (let hop = 1; hop <= len; hop++) {
+      const candidate = options[(((idx + step * hop) % len) + len) % len];
+      if (!candidate.disabled) {
+        onValueChange(candidate.value);
+        return;
+      }
     }
   };
 
@@ -97,7 +111,7 @@ export function RadioCardGroup({
           selected={option.value === value}
           title={option.title}
           description={option.description}
-          disabled={disabled}
+          disabled={disabled || option.disabled}
           tabIndex={option.value === value ? 0 : -1}
           onClick={() => onValueChange(option.value)}
         />

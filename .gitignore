@@ -70,3 +70,6 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+.vercel/
+.env.local
+test-results/

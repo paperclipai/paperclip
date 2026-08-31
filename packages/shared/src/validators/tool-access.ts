@@ -30,6 +30,12 @@ import {
   TOOL_RUNTIME_KINDS,
   TOOL_RUNTIME_SLOT_STATUSES,
 } from "../constants.js";
+import {
+  checkMcpRemoteHeaderName,
+  checkMcpRemoteHeaderValue,
+  mcpRemoteHeaderNameFromConfigPath,
+  mcpRemoteHeaderRejectionMessage,
+} from "../mcp-remote-headers.js";
 import { jsonSchemaSchema } from "./plugin.js";
 import { objectWithoutDefaults } from "./partial.js";
 
@@ -38,11 +44,37 @@ export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
-export const connectionGrantKindSchema = z.enum(["workspace", "user"]);
+export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
+export const vercelConnectCredentialSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  connectorId: z.string().trim().min(1).max(255),
+  connectorUid: z.string().trim().min(1).max(255),
+  service: z.string().trim().min(1).max(255),
+  connectorType: z.string().trim().min(1).max(255),
+  principalMode: z.enum(["app", "user"]),
+  headerName: z.string().trim().min(1).max(160),
+  headerPrefix: z.string().max(120).nullable().optional(),
+  scopes: z.array(z.string().trim().min(1).max(500)).max(50),
+}).strict();
+export const vercelConnectGrantSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  subjectType: z.enum(["app", "user"]),
+  installationId: z.string().trim().min(1).max(255).optional(),
+  tenantId: z.string().trim().min(1).max(255).optional(),
+  tokenId: z.string().trim().min(1).max(255).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+  lastVerifiedAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
+export const connectionGrantKindSchema = z.enum(["organization", "user"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
+export const createConnectionGrantDelegationSchema = z.object({
+  agentId: z.string().guid(),
+});
+export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
-export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
+export const toolCredentialPlacementSchema = z.enum(["header", "env", "url"]);
 export const toolConnectionKindSchema = z.enum(TOOL_CONNECTION_KINDS);
 export const toolConnectionHealthStatusSchema = z.enum(TOOL_CONNECTION_HEALTH_STATUSES);
 export const toolCatalogEntryKindSchema = z.enum(TOOL_CATALOG_ENTRY_KINDS);
@@ -149,6 +181,7 @@ export const createToolConnectionSchema = z.object({
   name: z.string().trim().min(1).max(160),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
+  credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
   ownership: toolConnectionOwnershipSchema.default("customer"),
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
@@ -177,8 +210,15 @@ export const connectionGrantSchema = z.object({
   providerTenant: z.object({
     name: z.string().trim().min(1).max(200).optional(),
     externalId: z.string().trim().min(1).max(400).optional(),
+    oauth: z.object({
+      strategy: z.string().trim().min(1).max(100).optional(),
+      accessTokenExpiresAt: z.string().datetime().optional(),
+      scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      tokenType: z.string().trim().min(1).max(100).optional(),
+    }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
+  externalCredential: vercelConnectGrantSummarySchema.nullable().optional(),
   status: connectionGrantStatusSchema,
   isDefault: z.boolean(),
   createdByAgentId: z.string().guid().nullable(),
@@ -191,7 +231,10 @@ export const connectionGrantSchema = z.object({
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
   if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; workspace grants must not have one" });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
+  }
+  if (grant.externalCredential && grant.credentialSecretRefs.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialSecretRefs"], message: "External grants cannot also contain Paperclip secret references" });
   }
 });
 
@@ -203,6 +246,18 @@ export const putToolConnectionInstallsSchema = z.object({
 }).strict();
 
 export type PutToolConnectionInstalls = z.infer<typeof putToolConnectionInstallsSchema>;
+
+/**
+ * Audience replacement for an organization grant (PAP-17835). An empty array is
+ * the canonical encoding of "all organization members" — the UI never exposes
+ * "empty list" as the mental model, so the wire format carries the emptiness and
+ * the copy layer translates it.
+ */
+export const replaceConnectionGrantMembersSchema = z.object({
+  memberUserIds: z.array(z.string().trim().min(1).max(500)).max(1000),
+}).strict();
+
+export type ReplaceConnectionGrantMembersInput = z.infer<typeof replaceConnectionGrantMembersSchema>;
 
 export const connectionTokenIssuancePathSchema = z.enum(CONNECTION_TOKEN_ISSUANCE_PATHS);
 
@@ -259,16 +314,130 @@ export const disableToolStdioCommandTemplateSchema = z.object({
 
 export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCommandTemplateSchema>;
 
+/**
+ * How an operator says a generic remote MCP endpoint authenticates (PAP-17087).
+ *
+ * `auto` is the default and the only value the simple path sends: Paperclip
+ * probes the endpoint and branches on what it finds. The rest are the explicit
+ * choices behind "Advanced authentication", where the operator already knows.
+ */
+export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
+
+export const genericMcpAuthModeSchema = z.enum(GENERIC_MCP_AUTH_MODES);
+
+export type GenericMcpAuthMode = z.infer<typeof genericMcpAuthModeSchema>;
+
+/**
+ * A preregistered OAuth client an operator pasted in because the authorization
+ * server supports neither CIMD nor dynamic registration. The secret is write-only:
+ * it becomes a Paperclip secret ref and is never read back.
+ */
+export const genericMcpOAuthClientSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096),
+  clientSecret: z.string().min(1).max(16384).optional(),
+}).strict();
+
+export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
+
+/**
+ * Reject `headers.*` credential paths whose header name Paperclip refuses to
+ * send, and any value that could split the outbound request. This runs at the
+ * API boundary so both the guided wizard and normalized paste-config go through
+ * exactly one gate; the service re-checks when it projects the headers.
+ */
+function rejectUnsafeHeaderCredentials(
+  credentialValues: Record<string, string>,
+  ctx: z.RefinementCtx,
+  path: (string | number)[],
+) {
+  for (const [configPath, value] of Object.entries(credentialValues)) {
+    const headerName = mcpRemoteHeaderNameFromConfigPath(configPath);
+    if (configPath.startsWith("headers.") && !headerName) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: "Header names cannot be blank.",
+      });
+      continue;
+    }
+    if (!headerName) continue;
+    const nameCheck = checkMcpRemoteHeaderName(headerName);
+    if (!nameCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, nameCheck.reason!),
+      });
+      continue;
+    }
+    const valueCheck = checkMcpRemoteHeaderValue(value);
+    if (!valueCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, valueCheck.reason!),
+      });
+    }
+  }
+}
+
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
+  connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().guid().optional(),
+  /** Pending connection request this setup should resolve after authorization. */
+  interactionId: z.string().uuid().optional(),
+  /** Exact draft to continue after an interrupted setup. */
+  resumeConnectionId: z.string().guid().optional(),
+  authMode: genericMcpAuthModeSchema.optional(),
+  oauthClient: genericMcpOAuthClientSchema.optional(),
+  credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
+  vercelConnect: z.object({ connector: z.string().trim().min(1).max(255) }).strict().optional(),
+  /**
+   * Which identity this credential becomes (PAP-17835). `user` means "Just me":
+   * the credential is committed to the caller's own personal grant and never to
+   * the connection row's shared secret refs or the default organization grant.
+   * Omitted keeps the historical shared-credential behaviour.
+   */
+  grantKind: connectionGrantKindSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
+  if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
+  if (value.authMode && value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["authMode"],
+      message: "Authentication mode selection applies to a pasted URL, not a gallery app",
+    });
+  }
+  if (value.resumeConnectionId && !value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["resumeConnectionId"],
+      message: "Only gallery app setup can resume a draft connection",
+    });
+  }
+  const source = value.credentialSource ?? "paperclip_vault";
+  if (source === "vercel_connect") {
+    if (!value.vercelConnect) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "A Vercel connector UID is required" });
+    }
+    if (value.credentialValues && Object.keys(value.credentialValues).length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialValues"], message: "Vercel-backed connections cannot include provider credentials" });
+    }
+    if (value.oauthClient) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient"], message: "Vercel-backed connections cannot include OAuth client credentials" });
+    }
+  } else if (value.vercelConnect) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "Vercel connector metadata requires the vercel_connect credential source" });
+  }
 }).refine(
-  (value) => Boolean(value.galleryKey) !== Boolean(value.link),
-  { message: "Provide exactly one of galleryKey or link" },
+  (value) => Boolean(value.galleryKey) || Boolean(value.link),
+  { message: "Provide a galleryKey or link" },
 );
 
 export type ConnectToolApp = z.infer<typeof connectToolAppSchema>;
@@ -290,6 +459,24 @@ export const finishToolAppSchema = z.object({
 });
 
 export type FinishToolApp = z.infer<typeof finishToolAppSchema>;
+
+/**
+ * Legacy promotion boundary retained for connection-intent flows. Interactive
+ * app setup chooses identity before OAuth and writes the token directly to that
+ * credential scope.
+ */
+export const finalizeOAuthAccessSchema = z.object({
+  grantKind: connectionGrantKindSchema,
+}).strict();
+
+export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
+
+export const startToolOAuthSchema = z.object({
+  asCurrentUser: z.boolean().optional(),
+  interactionId: z.string().uuid().optional(),
+}).strict().default({});
+
+export type StartToolOAuth = z.infer<typeof startToolOAuthSchema>;
 
 export const upsertToolCatalogEntrySchema = z.object({
   applicationId: z.string().guid(),
@@ -506,7 +693,7 @@ export const createToolMcpGatewayTokenSchema = z.object({
   subjectType: toolMcpGatewayTokenSubjectTypeSchema.default("gateway_client").optional(),
   subjectId: z.string().trim().min(1).max(240).optional().nullable(),
   clientLabel: z.string().trim().min(1).max(160),
-  ownerNote: z.string().trim().min(1).max(1000),
+  ownerNote: z.string().trim().max(1000).default(""),
   allowedActions: z.array(toolMcpGatewayTokenActionSchema).min(1).max(TOOL_MCP_GATEWAY_TOKEN_ACTIONS.length).default(["tools/list", "tools/call"]).optional(),
   expiresAt: z.coerce.date().optional().nullable(),
   expiryOverrideReason: z.string().trim().min(1).max(1000).optional().nullable(),

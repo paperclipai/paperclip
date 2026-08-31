@@ -1912,6 +1912,66 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     );
   });
 
+  it("surfaces a failed runtime materialization as a missing entry instead of dropping the skill", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillKey = `company/${companyId}/broken-coach`;
+    const missingSkillDir = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-broken-skill-")), "gone");
+    cleanupDirs.add(path.dirname(missingSkillDir));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    // The inventory lists no SKILL.md and the on-disk source is gone, so the
+    // runtime materializer has no SKILL.md to write and throws. The entry must
+    // still appear, flagged missing with the real cause, so snapshots and the
+    // UI can show the skill as broken instead of silently dropping it.
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: skillKey,
+      slug: "broken-coach",
+      name: "Broken Coach",
+      description: null,
+      markdown: "# Broken Coach\n",
+      sourceType: "local_path",
+      sourceLocator: missingSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "notes.md", kind: "reference" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    // An agent must reference the skill: inventory reconciliation deletes
+    // unused local-path skills whose source directory is gone, and this test
+    // is about the used-but-unmaterializable path.
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [skillKey],
+        },
+      },
+    });
+
+    const entries = await svc.listRuntimeSkillEntries(companyId);
+    const entry = entries.find((candidate) => candidate.key === skillKey);
+
+    expect(entry).toMatchObject({
+      key: skillKey,
+      sourceStatus: "missing",
+      missingDetail: expect.stringContaining("Failed to materialize skill files"),
+    });
+    expect(entry!.missingDetail).toContain("stored SKILL.md copy is missing");
+  });
+
   it("falls back to stored markdown when reading SKILL.md from a missing local source", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

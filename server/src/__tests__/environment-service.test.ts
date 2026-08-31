@@ -399,6 +399,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       deleteBlockedReasons: ["instance_default"],
       pendingCleanupLeaseCount: 0,
       reusableSandboxLeaseCount: 0,
+      reusableSandboxLeaseHolders: [],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: true,
@@ -559,9 +560,47 @@ describeEmbeddedPostgres("environmentService leases", () => {
       createdAt: now,
       updatedAt: now,
     });
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Project",
+      status: "in_progress",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      identifier: "ACME-7",
+      title: "Reusable lease holder",
+      status: "todo",
+      priority: "medium",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "ACME-7-reusable-lease-holder",
+      status: "active",
+      providerType: "git_worktree",
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    });
     const lease = await svc.acquireLease({
       companyId,
       environmentId,
+      executionWorkspaceId: workspaceId,
+      issueId,
       leasePolicy: "reuse_by_environment",
       provider: "fake",
       providerLeaseId: "sandbox-reusable-1",
@@ -577,6 +616,16 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(activeImpact?.canDelete).toBe(false);
     expect(activeImpact?.deleteBlockedReasons).toContain("reusable_sandbox_lease");
     expect(activeImpact?.reusableSandboxLeaseCount).toBe(1);
+    expect(activeImpact?.reusableSandboxLeaseHolders).toEqual([
+      {
+        leaseId: lease.id,
+        executionWorkspaceId: workspaceId,
+        executionWorkspaceName: "ACME-7-reusable-lease-holder",
+        issueId,
+        issueIdentifier: "ACME-7",
+        issueTitle: "Reusable lease holder",
+      },
+    ]);
     expect(await svc.removeIfDeletable(environmentId)).toBeNull();
 
     // A released reusable lease still owns a provider sandbox that may be

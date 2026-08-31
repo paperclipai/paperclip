@@ -118,12 +118,14 @@ test.describe.serial("not-connected app page", () => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
-    await expect(page.getByText("Connect with a link")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Connect your own MCP server")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(mock.url)).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 
     await page.getByRole("button", { name: "Check link" }).click();
-    await expect(page.getByText(/Connected to .* it offers/)).toBeVisible({ timeout: 30_000 });
+    // Reconnect retains the previous identity and application, so the generic
+    // check can commit the restored connection transactionally.
+    await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 30_000 });
 
     const apps = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
     const appsBody = await apps.json();
@@ -143,9 +145,17 @@ test.describe.serial("not-connected app page", () => {
     expect(appConns[0].status).not.toBe("archived");
   });
 
-  test("draft app connection stays on provider setup until setup finishes", async ({ page }) => {
+  test("archived app connection returns to provider setup", async ({ page, request }) => {
+    const archive = await request.delete(`/api/tool-connections/${connectionId}`);
+    expect(archive.ok(), `archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
+    const revive = await request.patch(`/api/tool-applications/${applicationId}`, { data: { status: "active" } });
+    expect(revive.ok(), `revive failed ${revive.status()}: ${await revive.text()}`).toBe(true);
+
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`),
+      { timeout: 20_000 },
+    );
     await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Connect this app" })).toBeVisible();
 
@@ -172,6 +182,7 @@ test.describe.serial("not-connected app page", () => {
 
     await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
+    await page.getByText("Danger zone", { exact: true }).click();
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();

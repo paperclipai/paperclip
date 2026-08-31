@@ -52,7 +52,11 @@ import {
   trackInstallStarted,
   trackInstallCompleted,
 } from "../telemetry.js";
-import { handleOnboardService } from "../onboard-service.js";
+import {
+  handleOnboardService,
+  handoffToOnboardedService,
+  shouldOfferForegroundStart,
+} from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
 
 type SetupMode = "quickstart" | "advanced";
@@ -457,9 +461,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
     printManagedInstallHint();
     const serviceInstalled = await handleOnboardService(opts);
+    if (serviceInstalled) {
+      await handoffToOnboardedService(existingConfig);
+    }
 
     let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
-    if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+    if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
         initialValue: true,
@@ -470,7 +477,6 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     }
 
     if (shouldRunNow && !opts.invokedByRun) {
-      process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
       const { runCommand } = await import("./run.js");
       await runCommand({ config: configPath, repair: true, yes: true });
       return;
@@ -723,9 +729,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   const serviceInstalled = await handleOnboardService(opts);
+  if (serviceInstalled) {
+    await handoffToOnboardedService(config);
+  }
 
   let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
-  if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+  if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",
       initialValue: true,
@@ -736,7 +745,6 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   if (shouldRunNow && !opts.invokedByRun) {
-    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
     const { runCommand } = await import("./run.js");
     await runCommand({ config: configPath, repair: true, yes: true });
     return;
