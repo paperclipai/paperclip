@@ -149,7 +149,7 @@ const startProvider = () => {
 };
 try {
   // A credential-free peer in this same process group reaps the group through
-  // its live identity if this guardian is killed before it can run `reap`.
+  // its live identity if this guardian is killed before it can run its reap.
   // Its private owner pipe reaches kernel EOF on guardian death even while the
   // provider is stopped and unable to process its own guardian-loss callback.
   watchdog = spawn(process.execPath, ["--eval", WATCHDOG_SOURCE], {
