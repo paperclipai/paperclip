@@ -27,7 +27,9 @@ const mockAgentsApi = vi.hoisted(() => ({
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
-    <a href={to} {...props}>{children}</a>
+    <a href={to} {...props}>
+      {children}
+    </a>
   ),
   useNavigate: () => mockNavigate,
 }));
@@ -103,11 +105,16 @@ describe("AgentActionButtons", () => {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    invalidateQueries = vi.spyOn(queryClient, "invalidateQueries") as unknown as ReturnType<typeof vi.fn>;
+    invalidateQueries = vi.spyOn(
+      queryClient,
+      "invalidateQueries",
+    ) as unknown as ReturnType<typeof vi.fn>;
     mockAgentsApi.clearError.mockResolvedValue(makeAgent({ status: "idle" }));
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({ status: "idle" }));
-    mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated" }));
+    mockAgentsApi.terminate.mockResolvedValue(
+      makeAgent({ status: "terminated" }),
+    );
     mockAgentsApi.invoke.mockResolvedValue({ id: "run-1" });
     mockAgentsApi.resetSession.mockResolvedValue(undefined);
   });
@@ -125,11 +132,19 @@ describe("AgentActionButtons", () => {
     vi.clearAllMocks();
   });
 
-  function render(agent: Agent, props: Partial<ComponentProps<typeof AgentActionButtons>> = {}) {
+  function render(
+    agent: Agent,
+    props: Partial<ComponentProps<typeof AgentActionButtons>> = {},
+  ) {
     root ??= createRoot(container);
     root.render(
       <QueryClientProvider client={queryClient}>
-        <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
+        <AgentActionButtons
+          agent={agent}
+          companyId="company-1"
+          runLabel="Run Heartbeat"
+          {...props}
+        />
       </QueryClientProvider>,
     );
   }
@@ -143,7 +158,11 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).toContain("Run Heartbeat");
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open actions for Alpha Agent"]',
+        )
+        ?.click();
     });
     await flushReact();
 
@@ -155,18 +174,39 @@ describe("AgentActionButtons", () => {
     await flushReact();
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Clear error and return agent to idle"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Clear error and return agent to idle"]',
+        )
+        ?.click();
     });
     await flushReact();
 
-    expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "runtime-state", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "task-sessions", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["live-runs", "company-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["heartbeats", "company-1", "agent-1"] });
+    expect(mockAgentsApi.clearError).toHaveBeenCalledWith(
+      "agent-1",
+      "company-1",
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "detail", "agent-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "detail", "alpha"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "runtime-state", "agent-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "task-sessions", "agent-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "company-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["live-runs", "company-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["heartbeats", "company-1", "agent-1"],
+    });
   });
 
   it("keeps the normal pause action for non-error agents", async () => {
@@ -177,18 +217,43 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
+  it("starts an administrator-selected run with raw provider tracing", async () => {
+    render(makeAgent(), { canRunWithProviderTrace: true });
+    await flushReact();
+
+    const traceButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Run with provider trace"),
+    );
+    expect(traceButton).toBeTruthy();
+
+    await act(async () => {
+      traceButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
+      debug: { providerTrace: "raw" },
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
+  });
+
   it("calls the terminate success handler after terminating an agent", async () => {
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });
     await flushReact();
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open actions for Alpha Agent"]',
+        )
+        ?.click();
     });
     await flushReact();
 
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
+    const terminateButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => button.textContent?.includes("Terminate"));
     expect(terminateButton).toBeTruthy();
 
     await act(async () => {
@@ -196,14 +261,25 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
 
-    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(onTerminateSuccess).toHaveBeenCalledWith(expect.objectContaining({
-      id: "agent-1",
-      status: "terminated",
-    }));
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+    expect(mockAgentsApi.terminate).toHaveBeenCalledWith(
+      "agent-1",
+      "company-1",
+    );
+    expect(onTerminateSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "agent-1",
+        status: "terminated",
+      }),
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "detail", "agent-1"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "detail", "alpha"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "company-1"],
+    });
   });
 
   it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
@@ -212,12 +288,17 @@ describe("AgentActionButtons", () => {
     await flushReact();
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open actions for Alpha Agent"]',
+        )
+        ?.click();
     });
     await flushReact();
 
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
+    const terminateButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => button.textContent?.includes("Terminate"));
     await act(async () => {
       terminateButton?.click();
     });
@@ -229,10 +310,15 @@ describe("AgentActionButtons", () => {
 
   it("rechecks navigation when the form becomes dirty while termination is pending", async () => {
     let resolveTermination!: (agent: Agent) => void;
-    mockAgentsApi.terminate.mockReturnValue(new Promise((resolve) => {
-      resolveTermination = resolve;
-    }));
-    const onBeforeNavigate = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    mockAgentsApi.terminate.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTermination = resolve;
+      }),
+    );
+    const onBeforeNavigate = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
     const onTerminateSuccess = vi.fn();
     const agent = makeAgent();
     render(agent, {
@@ -243,11 +329,16 @@ describe("AgentActionButtons", () => {
     await flushReact();
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open actions for Alpha Agent"]',
+        )
+        ?.click();
     });
     await flushReact();
-    const terminateButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Terminate"));
+    const terminateButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => button.textContent?.includes("Terminate"));
     await act(async () => {
       terminateButton?.click();
     });

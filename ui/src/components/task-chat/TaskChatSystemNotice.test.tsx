@@ -2,7 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -27,7 +27,13 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
     "Latest retry failure: `configuration_incomplete`. Moving it to `blocked` with a source-scoped recovery action.";
 
-  function renderNotice(overrides: Partial<TaskChatMessageItem> = {}) {
+  function renderNotice(
+    overrides: Partial<TaskChatMessageItem> = {},
+    props: {
+      onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
+      tryAgainNoLiveExecutionPathPending?: boolean;
+    } = {},
+  ) {
     const item: TaskChatMessageItem = {
       id: "sys-1",
       kind: "message",
@@ -39,7 +45,7 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     flushSync(() =>
       root!.render(
         <ThemeProvider>
-          <TaskChatSystemNotice item={item} />
+          <TaskChatSystemNotice item={item} {...props} />
         </ThemeProvider>,
       ),
     );
@@ -47,7 +53,7 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
 
   function toggleButton() {
     return container.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-system-notice"] button',
+      '[data-testid="task-chat-system-notice"] button[aria-expanded]',
     )!;
   }
 
@@ -119,5 +125,98 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     expect(
       container.querySelector('[data-testid="task-chat-system-notice-details"]'),
     ).not.toBeNull();
+  });
+
+  it("shows Try again while folded and invokes it without expanding the notice", async () => {
+    const onTryAgain = vi.fn();
+    renderNotice(
+      {
+        text: "Paperclip retried continuation, but it still has no live execution path.",
+        presentation: {
+          kind: "system_notice",
+          tone: "danger",
+          title: "No live execution path",
+          detailsDefaultOpen: false,
+        },
+      },
+      { onTryAgainNoLiveExecutionPath: onTryAgain },
+    );
+
+    const tryAgain = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-no-live-path-try-again"]',
+    );
+    expect(tryAgain?.textContent).toBe("Try again");
+    flushSync(() => tryAgain!.click());
+    await Promise.resolve();
+
+    expect(onTryAgain).toHaveBeenCalledTimes(1);
+    expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("moves Try again into the expanded notice footer", () => {
+    renderNotice(
+      {
+        text: "Paperclip retried continuation, but it still has no live execution path.",
+        presentation: {
+          kind: "system_notice",
+          tone: "danger",
+          title: "No live execution path",
+          detailsDefaultOpen: false,
+        },
+      },
+      { onTryAgainNoLiveExecutionPath: vi.fn() },
+    );
+
+    flushSync(() => toggleButton().click());
+
+    const details = container.querySelector(
+      '[data-testid="task-chat-system-notice-details"]',
+    );
+    expect(
+      details?.querySelector('[data-testid="task-chat-no-live-path-try-again"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelectorAll('[data-testid="task-chat-no-live-path-try-again"]'),
+    ).toHaveLength(1);
+  });
+
+  it("shows the pending state and omits Try again from unrelated notices", () => {
+    renderNotice(
+      {
+        text: "Paperclip retried continuation, but it still has no live execution path.",
+        presentation: {
+          kind: "system_notice",
+          tone: "danger",
+          title: "No live execution path",
+          detailsDefaultOpen: false,
+        },
+      },
+      {
+        onTryAgainNoLiveExecutionPath: vi.fn(),
+        tryAgainNoLiveExecutionPathPending: true,
+      },
+    );
+
+    const pending = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-no-live-path-try-again"]',
+    );
+    expect(pending?.disabled).toBe(true);
+    expect(pending?.textContent).toBe("Trying again...");
+
+    renderNotice(
+      {
+        text: recoveryBody,
+        presentation: {
+          kind: "system_notice",
+          tone: "danger",
+          title: "Configuration incomplete",
+          detailsDefaultOpen: false,
+        },
+      },
+      { onTryAgainNoLiveExecutionPath: vi.fn() },
+    );
+    expect(
+      container.querySelector('[data-testid="task-chat-no-live-path-try-again"]'),
+    ).toBeNull();
   });
 });

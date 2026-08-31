@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Trash2,
   CheckCircle2,
+  Bug,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -82,7 +83,12 @@ export function PauseResumeButton({
 }) {
   if (isPaused) {
     return (
-      <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
+      <Button
+        variant="outline"
+        size={size}
+        onClick={onResume}
+        disabled={disabled}
+      >
         <Play className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">Resume</span>
       </Button>
@@ -139,13 +145,20 @@ export async function loadDuplicateInstructionsBundle(
   for (const summary of bundle.files) {
     const path = duplicateInstructionFilePath(bundle, summary);
     if (!path) continue;
-    const file = await agentsApi.instructionsFile(agentId, summary.path, companyId);
+    const file = await agentsApi.instructionsFile(
+      agentId,
+      summary.path,
+      companyId,
+    );
     files[path] = file.content;
   }
 
-  const entryFile = Object.prototype.hasOwnProperty.call(files, bundle.entryFile)
+  const entryFile = Object.prototype.hasOwnProperty.call(
+    files,
+    bundle.entryFile,
+  )
     ? bundle.entryFile
-    : Object.keys(files)[0] ?? "AGENTS.md";
+    : (Object.keys(files)[0] ?? "AGENTS.md");
   return Object.keys(files).length > 0 ? { entryFile, files } : null;
 }
 
@@ -165,6 +178,7 @@ export function AgentActionButtons({
   workActionsDisabled = false,
   workActionsDisabledReason,
   navigateToRunOnInvoke = true,
+  canRunWithProviderTrace = false,
   hasPendingNavigationChanges = false,
   onBeforeNavigate,
   onActionError,
@@ -184,6 +198,8 @@ export function AgentActionButtons({
   workActionsDisabled?: boolean;
   workActionsDisabledReason?: string;
   navigateToRunOnInvoke?: boolean;
+  /** Instance administrators may opt one manual run into short-lived raw provider capture. */
+  canRunWithProviderTrace?: boolean;
   /** Whether the caller currently has an unsaved draft that navigation would discard. */
   hasPendingNavigationChanges?: boolean;
   /** Return false to stop an action whose success would navigate away. */
@@ -220,12 +236,16 @@ export function AgentActionButtons({
   pendingNavigationChangesRef.current = hasPendingNavigationChanges;
   beforeNavigateRef.current = onBeforeNavigate;
 
-  function confirmNavigationStart(startedDirtyRef: React.MutableRefObject<boolean>) {
+  function confirmNavigationStart(
+    startedDirtyRef: React.MutableRefObject<boolean>,
+  ) {
     startedDirtyRef.current = pendingNavigationChangesRef.current;
     return beforeNavigateRef.current?.() !== false;
   }
 
-  function confirmLateNavigationChanges(startedDirtyRef: React.MutableRefObject<boolean>) {
+  function confirmLateNavigationChanges(
+    startedDirtyRef: React.MutableRefObject<boolean>,
+  ) {
     return (
       !pendingNavigationChangesRef.current ||
       startedDirtyRef.current ||
@@ -250,26 +270,49 @@ export function AgentActionButtons({
   );
 
   const invalidateAgent = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(canonicalAgentRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agent.id) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agent.id) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detail(agent.id),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detail(canonicalAgentRef),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.runtimeState(agent.id),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.taskSessions(agent.id),
+    });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(resolvedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.liveRuns(resolvedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id),
+      });
     }
   }, [agent.id, canonicalAgentRef, queryClient, resolvedCompanyId]);
 
   const agentAction = useMutation({
-    mutationFn: async (action: "invoke" | "pause" | "resume" | "clear_error" | "approve" | "terminate") => {
+    mutationFn: async (
+      action:
+        "invoke" | "pause" | "resume" | "clear_error" | "approve" | "terminate",
+    ) => {
       switch (action) {
-        case "invoke": return agentsApi.invoke(agent.id, resolvedCompanyId ?? undefined);
-        case "pause": return agentsApi.pause(agent.id, resolvedCompanyId ?? undefined);
-        case "resume": return agentsApi.resume(agent.id, resolvedCompanyId ?? undefined);
-        case "clear_error": return agentsApi.clearError(agent.id, resolvedCompanyId ?? undefined);
-        case "approve": return agentsApi.approve(agent.id, resolvedCompanyId ?? undefined);
-        case "terminate": return agentsApi.terminate(agent.id, resolvedCompanyId ?? undefined);
+        case "invoke":
+          return agentsApi.invoke(agent.id, resolvedCompanyId ?? undefined);
+        case "pause":
+          return agentsApi.pause(agent.id, resolvedCompanyId ?? undefined);
+        case "resume":
+          return agentsApi.resume(agent.id, resolvedCompanyId ?? undefined);
+        case "clear_error":
+          return agentsApi.clearError(agent.id, resolvedCompanyId ?? undefined);
+        case "approve":
+          return agentsApi.approve(agent.id, resolvedCompanyId ?? undefined);
+        case "terminate":
+          return agentsApi.terminate(agent.id, resolvedCompanyId ?? undefined);
       }
     },
     onSuccess: (data, action) => {
@@ -279,13 +322,41 @@ export function AgentActionButtons({
         if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         onTerminateSuccess?.(data as Agent);
       }
-      if (action === "invoke" && navigateToRunOnInvoke && data && typeof data === "object" && "id" in data) {
+      if (
+        action === "invoke" &&
+        navigateToRunOnInvoke &&
+        data &&
+        typeof data === "object" &&
+        "id" in data
+      ) {
         if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
-        navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
+        navigate(
+          `/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`,
+        );
       }
     },
     onError: (err) => {
       reportError(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
+  const providerTraceAction = useMutation({
+    mutationFn: () =>
+      agentsApi.invoke(agent.id, resolvedCompanyId ?? undefined, {
+        debug: { providerTrace: "raw" },
+      }),
+    onSuccess: (run) => {
+      onActionError?.(null);
+      invalidateAgent();
+      if (navigateToRunOnInvoke) {
+        if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
+        navigate(`/agents/${canonicalAgentRef}/runs/${run.id}`);
+      }
+    },
+    onError: (err) => {
+      reportError(
+        err instanceof Error ? err.message : "Failed to start traced run",
+      );
     },
   });
 
@@ -294,12 +365,19 @@ export function AgentActionButtons({
       if (!resolvedCompanyId) {
         throw new Error("Agent is not ready to duplicate");
       }
-      const instructionsBundle = await loadDuplicateInstructionsBundle(agent.id, resolvedCompanyId);
+      const instructionsBundle = await loadDuplicateInstructionsBundle(
+        agent.id,
+        resolvedCompanyId,
+      );
       const payload = buildDuplicateAgentPayload(agent, instructionsBundle);
       try {
         return await agentsApi.create(resolvedCompanyId, payload);
       } catch (error) {
-        if (error instanceof ApiError && error.status === 409 && error.message.includes("requires board approval")) {
+        if (
+          error instanceof ApiError &&
+          error.status === 409 &&
+          error.message.includes("requires board approval")
+        ) {
           const hire = await agentsApi.hire(resolvedCompanyId, payload);
           return hire.agent;
         }
@@ -309,16 +387,27 @@ export function AgentActionButtons({
     onSuccess: async (createdAgent) => {
       onActionError?.(null);
       if (resolvedCompanyId) {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(resolvedCompanyId),
+        });
       }
-      pushToast({ title: "Agent duplicated", body: createdAgent.name, tone: "success" });
+      pushToast({
+        title: "Agent duplicated",
+        body: createdAgent.name,
+        tone: "success",
+      });
       if (!confirmLateNavigationChanges(duplicateStartedDirtyRef)) return;
       navigate(`/agents/${agentRouteRef(createdAgent)}/dashboard`);
     },
     onError: (err) => {
-      const message = err instanceof Error ? err.message : "Failed to duplicate agent";
+      const message =
+        err instanceof Error ? err.message : "Failed to duplicate agent";
       onActionError?.(message);
-      pushToast({ title: "Could not duplicate agent", body: message, tone: "error" });
+      pushToast({
+        title: "Could not duplicate agent",
+        body: message,
+        tone: "error",
+      });
     },
   });
 
@@ -332,25 +421,50 @@ export function AgentActionButtons({
   }, [agent.name, duplicateAgent]);
 
   const resetTaskSession = useMutation({
-    mutationFn: () => agentsApi.resetSession(agent.id, null, resolvedCompanyId ?? undefined),
+    mutationFn: () =>
+      agentsApi.resetSession(agent.id, null, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       onActionError?.(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agent.id) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.runtimeState(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.taskSessions(agent.id),
+      });
     },
     onError: (err) => {
-      reportError(err instanceof Error ? err.message : "Failed to reset session");
+      reportError(
+        err instanceof Error ? err.message : "Failed to reset session",
+      );
     },
   });
 
   const isPendingApproval = agent.status === "pending_approval";
-  const disabled = actionsDisabled || agentAction.isPending;
-  const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
-  const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled);
+  const disabled =
+    actionsDisabled || agentAction.isPending || providerTraceAction.isPending;
+  const assignAndRunDisabled =
+    disabled || isPendingApproval || workActionsDisabled;
+  const pauseResumeDisabled =
+    disabled || isPendingApproval || (isPaused && workActionsDisabled);
   const clearErrorDisabled = disabled;
+  const runtimeConfig = agent.runtimeConfig as Record<string, unknown> | null;
+  const runtimeDebug =
+    runtimeConfig && typeof runtimeConfig.debug === "object" && runtimeConfig.debug !== null
+      ? (runtimeConfig.debug as Record<string, unknown>)
+      : null;
+  const persistentProviderTrace = runtimeDebug?.providerTrace === "raw";
 
   return (
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>
+      {persistentProviderTrace ? (
+        <span
+          className="hidden items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-800 dark:text-amber-200 lg:inline-flex"
+          title="Exact provider traffic will be captured for future runs and retained for up to 24 hours."
+        >
+          <Bug className="h-3.5 w-3.5" />
+          Raw tracing on
+        </span>
+      ) : null}
       <Button
         variant="outline"
         size={size}
@@ -363,13 +477,36 @@ export function AgentActionButtons({
       </Button>
       <RunButton
         onClick={() => {
-          if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+          if (
+            navigateToRunOnInvoke &&
+            !confirmNavigationStart(agentActionStartedDirtyRef)
+          )
+            return;
           agentAction.mutate("invoke");
         }}
         disabled={assignAndRunDisabled}
         label={runLabel}
         size={size}
       />
+      {canRunWithProviderTrace && (
+        <Button
+          variant="outline"
+          size={size}
+          onClick={() => {
+            if (
+              navigateToRunOnInvoke &&
+              !confirmNavigationStart(agentActionStartedDirtyRef)
+            )
+              return;
+            providerTraceAction.mutate();
+          }}
+          disabled={assignAndRunDisabled}
+          title="Capture exact provider traffic for this run (expires after 24 hours)"
+        >
+          <Bug className="h-3.5 w-3.5 sm:mr-1" />
+          <span className="hidden sm:inline">Run with provider trace</span>
+        </Button>
+      )}
       {isError ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
@@ -379,7 +516,11 @@ export function AgentActionButtons({
       ) : (
         <PauseResumeButton
           isPaused={isPaused}
-          onPause={() => (pauseConfirm ? setPauseConfirmOpen(true) : agentAction.mutate("pause"))}
+          onPause={() =>
+            pauseConfirm
+              ? setPauseConfirmOpen(true)
+              : agentAction.mutate("pause")
+          }
           onResume={() => agentAction.mutate("resume")}
           disabled={pauseResumeDisabled}
           size={size}
@@ -411,7 +552,11 @@ export function AgentActionButtons({
       {children}
       <Popover open={moreOpen} onOpenChange={setMoreOpen}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon-xs" aria-label={`Open actions for ${agent.name}`}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`Open actions for ${agent.name}`}
+          >
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </PopoverTrigger>
@@ -432,7 +577,11 @@ export function AgentActionButtons({
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
               void copyTextToClipboard(agent.id).catch(() => {
-                pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+                pushToast({
+                  title: "Copy failed",
+                  body: "Clipboard access is unavailable.",
+                  tone: "error",
+                });
               });
               setMoreOpen(false);
             }}
@@ -455,7 +604,11 @@ export function AgentActionButtons({
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
               onClick={() => {
                 setMoreOpen(false);
-                if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+                if (
+                  onTerminateSuccess &&
+                  !confirmNavigationStart(agentActionStartedDirtyRef)
+                )
+                  return;
                 agentAction.mutate("terminate");
               }}
             >

@@ -345,6 +345,13 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
 
   const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
+      && variant === "available"
+      && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const rowDisabled = unsupported || legacyPaperclipBlocked;
+    const rowDisabledReason = legacyPaperclipBlocked
+      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      : unsupportedMessage;
     const showReleasePicker =
       releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const pinnedVersionId = versionPins[row.key] ?? null;
@@ -358,8 +365,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         variant={variant}
         data={row}
         checked={variant === "enabled"}
-        disabled={unsupported}
-        disabledReason={unsupportedMessage}
+        disabled={rowDisabled}
+        disabledReason={rowDisabledReason}
         onCheckedChange={(next) => toggleSkill(row.key, next)}
         badge={
           showReleasePicker && pinnedRelease ? (
@@ -373,7 +380,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             <AgentSkillReleasePicker
               releases={paperclipReleases}
               value={pinnedVersionId}
-              disabled={unsupported || syncSkills.isPending}
+              disabled={rowDisabled || syncSkills.isPending}
               onChange={(versionId) => handleReleaseChange(row.key, versionId)}
             />
           ) : undefined

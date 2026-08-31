@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { PropertiesPanel } from "./PropertiesPanel";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -16,16 +17,19 @@ vi.mock("@/api/instanceSettings", () => ({
 
 const mockPanelState = vi.hoisted(() => ({
   panelContent: null as unknown,
+  panelContentMode: "padded" as const,
   panelVisible: true,
 }));
+const mockSetPanelVisible = vi.hoisted(() => vi.fn());
 
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
     panelContent: mockPanelState.panelContent,
+    panelContentMode: mockPanelState.panelContentMode,
     panelVisible: mockPanelState.panelVisible,
     openPanel: vi.fn(),
     closePanel: vi.fn(),
-    setPanelVisible: vi.fn(),
+    setPanelVisible: mockSetPanelVisible,
     togglePanelVisible: vi.fn(),
   }),
 }));
@@ -50,7 +54,9 @@ describe("PropertiesPanel", () => {
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <PropertiesPanel />
+          <TooltipProvider>
+            <PropertiesPanel />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -61,6 +67,7 @@ describe("PropertiesPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     window.localStorage.clear();
+    mockSetPanelVisible.mockClear();
   });
 
   afterEach(() => {
@@ -85,7 +92,7 @@ describe("PropertiesPanel", () => {
       expect(aside).not.toBeNull();
       expect(aside!.style.width).toBe("320px");
       expect(aside!.querySelector('[role="separator"]')).toBeNull();
-      expect(container.querySelector('[aria-label="Maximize panel"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Maximize side panel"]')).toBeNull();
       // Inner wrapper keeps the hardcoded width classes exactly as today.
       expect(aside!.querySelector(".w-80")).not.toBeNull();
     });
@@ -111,10 +118,22 @@ describe("PropertiesPanel", () => {
       expect(aside).not.toBeNull();
       expect(aside!.style.width).toBe("322px");
       expect(aside!.querySelector('[role="separator"][aria-label="Resize panel"]')).not.toBeNull();
-      expect(container.querySelector('[aria-label="Maximize panel"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Maximize side panel"]')).not.toBeNull();
       const inner = aside!.querySelector<HTMLDivElement>(":scope > div:not([role])");
       expect(inner!.style.width).toBe("322px");
       expect(inner!.style.minWidth).toBe("322px");
+    });
+
+    it("uses the pressed side-panel toggle instead of an X to hide the open pane", async () => {
+      await renderPanel();
+      const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle side panel"]');
+      expect(toggle).not.toBeNull();
+      expect(toggle!.getAttribute("aria-pressed")).toBe("true");
+      expect(toggle!.querySelector(".lucide-panel-right-close")).not.toBeNull();
+      expect(container.querySelector('[aria-label="Hide side panel"]')).toBeNull();
+
+      toggle!.click();
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(false);
     });
 
     it("restores a remembered width from localStorage (clamped to the minimum)", async () => {

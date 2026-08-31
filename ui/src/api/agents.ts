@@ -95,6 +95,7 @@ export interface AgentWakeRequest {
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
+  debug?: { providerTrace: "raw" };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -104,14 +105,20 @@ function withCompanyScope(path: string, companyId?: string) {
 }
 
 function agentPath(id: string, companyId?: string, suffix = "") {
-  return withCompanyScope(`/agents/${encodeURIComponent(id)}${suffix}`, companyId);
+  return withCompanyScope(
+    `/agents/${encodeURIComponent(id)}${suffix}`,
+    companyId,
+  );
 }
 
 export const agentsApi = {
-  list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
+  list: (companyId: string) =>
+    api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
-    api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
+    api.get<Record<string, unknown>[]>(
+      `/companies/${companyId}/agent-configurations`,
+    ),
   get: async (id: string, companyId?: string) => {
     try {
       return await api.get<AgentDetail>(agentPath(id, companyId));
@@ -132,30 +139,50 @@ export const agentsApi = {
 
       const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`);
       const matches = agents.filter(
-        (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.urlKey) === urlKey,
+        (agent) =>
+          agent.status !== "terminated" &&
+          normalizeAgentUrlKey(agent.urlKey) === urlKey,
       );
       if (matches.length !== 1) throw error;
       return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId));
     }
   },
   getConfiguration: (id: string, companyId?: string) =>
-    api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+    api.get<Record<string, unknown>>(
+      agentPath(id, companyId, "/configuration"),
+    ),
   listConfigRevisions: (id: string, companyId?: string) =>
-    api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
+    api.get<AgentConfigRevision[]>(
+      agentPath(id, companyId, "/config-revisions"),
+    ),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>
-    api.get<AgentConfigRevision>(agentPath(id, companyId, `/config-revisions/${revisionId}`)),
-  rollbackConfigRevision: (id: string, revisionId: string, companyId?: string) =>
-    api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
+    api.get<AgentConfigRevision>(
+      agentPath(id, companyId, `/config-revisions/${revisionId}`),
+    ),
+  rollbackConfigRevision: (
+    id: string,
+    revisionId: string,
+    companyId?: string,
+  ) =>
+    api.post<Agent>(
+      agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`),
+      {},
+    ),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
-  updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
-    api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
+  updatePermissions: (
+    id: string,
+    data: AgentPermissionUpdate,
+    companyId?: string,
+  ) => api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
   instructionsBundle: (id: string, companyId?: string) =>
-    api.get<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle")),
+    api.get<AgentInstructionsBundle>(
+      agentPath(id, companyId, "/instructions-bundle"),
+    ),
   updateInstructionsBundle: (
     id: string,
     data: {
@@ -165,28 +192,61 @@ export const agentsApi = {
       clearLegacyPromptTemplate?: boolean;
     },
     companyId?: string,
-  ) => api.patch<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle"), data),
+  ) =>
+    api.patch<AgentInstructionsBundle>(
+      agentPath(id, companyId, "/instructions-bundle"),
+      data,
+    ),
   instructionsFile: (id: string, relativePath: string, companyId?: string) =>
     api.get<AgentInstructionsFileDetail>(
-      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
+      agentPath(
+        id,
+        companyId,
+        `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`,
+      ),
     ),
   saveInstructionsFile: (
     id: string,
-    data: { path: string; content: string; clearLegacyPromptTemplate?: boolean },
+    data: {
+      path: string;
+      content: string;
+      clearLegacyPromptTemplate?: boolean;
+    },
     companyId?: string,
-  ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
-  deleteInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
-    api.delete<AgentInstructionsBundle>(
-      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
+  ) =>
+    api.put<AgentInstructionsFileDetail>(
+      agentPath(id, companyId, "/instructions-bundle/file"),
+      data,
     ),
-  pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
-  resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  deleteInstructionsFile: (
+    id: string,
+    relativePath: string,
+    companyId?: string,
+  ) =>
+    api.delete<AgentInstructionsBundle>(
+      agentPath(
+        id,
+        companyId,
+        `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`,
+      ),
+    ),
+  pause: (id: string, companyId?: string) =>
+    api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
+  resume: (id: string, companyId?: string) =>
+    api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
   clearError: (id: string, companyId?: string) =>
-    api.post<ClearAgentErrorResponse>(agentPath(id, companyId, "/clear-error"), {}),
-  approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
-  terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
-  remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
-  listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
+    api.post<ClearAgentErrorResponse>(
+      agentPath(id, companyId, "/clear-error"),
+      {},
+    ),
+  approve: (id: string, companyId?: string) =>
+    api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
+  terminate: (id: string, companyId?: string) =>
+    api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
+  remove: (id: string, companyId?: string) =>
+    api.delete<{ ok: true }>(agentPath(id, companyId)),
+  listKeys: (id: string, companyId?: string) =>
+    api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   skills: (id: string, companyId?: string) =>
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
   syncSkills: (
@@ -194,17 +254,33 @@ export const agentsApi = {
     desiredSkills: Array<string | AgentDesiredSkillEntry>,
     mode: AgentSkillAssignmentMode,
     companyId?: string,
-  ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode }),
-  createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
-    api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
+  ) =>
+    api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), {
+      desiredSkills,
+      mode,
+    }),
+  createKey: (
+    id: string,
+    name: string,
+    companyId?: string,
+    scope?: AgentApiKeyScope,
+  ) =>
+    api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), {
+      name,
+      ...(scope ? { scope } : {}),
+    }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
-    api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
+    api.delete<{ ok: true }>(
+      agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`),
+    ),
   runtimeState: (id: string, companyId?: string) =>
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
   taskSessions: (id: string, companyId?: string) =>
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
-    api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
+    api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), {
+      taskKey: taskKey ?? null,
+    }),
   adapterModels: (
     companyId: string,
     type: string,
@@ -212,7 +288,8 @@ export const agentsApi = {
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
-    if (options?.environmentId) params.set("environmentId", options.environmentId);
+    if (options?.environmentId)
+      params.set("environmentId", options.environmentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${query}`,
@@ -246,11 +323,8 @@ export const agentsApi = {
   },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
-  wakeup: (
-    id: string,
-    data: AgentWakeRequest,
-    companyId?: string,
-  ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  wakeup: (id: string, data: AgentWakeRequest, companyId?: string) =>
+    api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   startAdapterAuthLogin: (
@@ -262,11 +336,19 @@ export const agentsApi = {
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
       data,
     ),
-  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+  getAdapterAuthLoginStatus: (
+    companyId: string,
+    type: string,
+    sessionId: string,
+  ) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
     ),
-  cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
+  cancelAdapterAuthLogin: (
+    companyId: string,
+    type: string,
+    sessionId: string,
+  ) =>
     api.post<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
       {},
@@ -301,7 +383,11 @@ export const agentsApi = {
     api.get<ClaudeSetupTokenSessionPrompt>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/prompt`,
     ),
-  submitClaudeSetupTokenBrowserCode: (companyId: string, sessionId: string, browserCode: string) =>
+  submitClaudeSetupTokenBrowserCode: (
+    companyId: string,
+    sessionId: string,
+    browserCode: string,
+  ) =>
     api.post<ClaudeSetupTokenSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/code`,
       { browserCode } satisfies SubmitBrowserCodeRequest,

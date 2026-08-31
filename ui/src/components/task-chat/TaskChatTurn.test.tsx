@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskChatTurn, turnSummaryText } from "./TaskChatTurn";
 import { buildTurnSummary } from "./transcript-adapter";
+import { ThemeProvider } from "@/context/ThemeContext";
+import { MemoryRouter } from "@/lib/router";
 import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatStatusItem,
@@ -14,7 +16,10 @@ import type {
   TaskChatTurnItem,
 } from "./task-chat-model";
 
-const tool = (id: string, status: TaskChatToolStatus = "completed"): TaskChatTurnChildItem => ({
+const tool = (
+  id: string,
+  status: TaskChatToolStatus = "completed",
+): TaskChatTurnChildItem => ({
   id,
   kind: "tool",
   name: "Read",
@@ -25,8 +30,16 @@ const SETTLED: TaskChatTurnItem = {
   id: "t1",
   kind: "turn",
   settled: true,
-  summary: { durationLabel: "38s", toolCount: 3, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
-  items: [{ id: "c1", kind: "tool", name: "read auth.ts", status: "completed" }],
+  summary: {
+    durationLabel: "38s",
+    toolCount: 3,
+    added: 34,
+    removed: 3,
+    tokensLabel: "12.3k tokens",
+  },
+  items: [
+    { id: "c1", kind: "tool", name: "read auth.ts", status: "completed" },
+  ],
 };
 
 // Non-generic label so the header shows it verbatim (no whimsy substitution).
@@ -51,27 +64,56 @@ const parentRowTurn = (
 
 describe("turnSummaryText", () => {
   it("joins the known parts with dots", () => {
-    expect(turnSummaryText(SETTLED.summary)).toBe("Worked · 38s · 3 tools · +34 −3 · 12.3k tokens");
+    expect(turnSummaryText(SETTLED.summary)).toBe(
+      "Worked · 38s · 3 tools · +34 −3 · 12.3k tokens",
+    );
   });
 
   it("omits unknown parts and singularizes one tool", () => {
-    expect(turnSummaryText({ toolCount: 1, added: 0, removed: 0 })).toBe("Worked · 1 tool");
+    expect(turnSummaryText({ toolCount: 1, added: 0, removed: 0 })).toBe(
+      "Worked · 1 tool",
+    );
   });
 
   it("labels failed turns Stopped", () => {
-    expect(turnSummaryText({ toolCount: 0, added: 0, removed: 0, failed: true })).toBe("Stopped");
+    expect(
+      turnSummaryText({ toolCount: 0, added: 0, removed: 0, failed: true }),
+    ).toBe("Stopped");
   });
 });
 
 describe("buildTurnSummary", () => {
   it("counts tools, diff lines and result tokens from a transcript", () => {
     const entries: TranscriptEntry[] = [
-      { kind: "tool_call", ts: "2026-07-29T10:00:00Z", name: "edit", input: {} },
-      { kind: "diff", ts: "2026-07-29T10:00:05Z", changeType: "add", text: "+a" },
-      { kind: "diff", ts: "2026-07-29T10:00:05Z", changeType: "remove", text: "-b" },
       {
-        kind: "result", ts: "2026-07-29T10:00:38Z", text: "done", inputTokens: 12000,
-        outputTokens: 300, cachedTokens: 0, costUsd: 0.01, subtype: "success", isError: false, errors: [],
+        kind: "tool_call",
+        ts: "2026-07-29T10:00:00Z",
+        name: "edit",
+        input: {},
+      },
+      {
+        kind: "diff",
+        ts: "2026-07-29T10:00:05Z",
+        changeType: "add",
+        text: "+a",
+      },
+      {
+        kind: "diff",
+        ts: "2026-07-29T10:00:05Z",
+        changeType: "remove",
+        text: "-b",
+      },
+      {
+        kind: "result",
+        ts: "2026-07-29T10:00:38Z",
+        text: "done",
+        inputTokens: 12000,
+        outputTokens: 300,
+        cachedTokens: 0,
+        costUsd: 0.01,
+        subtype: "success",
+        isError: false,
+        errors: [],
       },
     ];
     const summary = buildTurnSummary(entries);
@@ -106,31 +148,207 @@ describe("TaskChatTurn", () => {
 
   const renderTurn = (item: TaskChatTurnItem) => {
     flushSync(() => {
-      root.render(<TaskChatTurn item={item} renderChild={(c) => <span>{c.id}</span>} />);
+      root.render(
+        <MemoryRouter>
+          <ThemeProvider>
+            <TaskChatTurn
+              item={item}
+              renderChild={(c) => <span>{c.id}</span>}
+            />
+          </ThemeProvider>
+        </MemoryRouter>,
+      );
     });
   };
 
   const fold = () => container.querySelector(".tc-turn-fold");
   const summaryBtn = () =>
-    container.querySelector<HTMLButtonElement>('[data-testid="task-chat-turn-summary"]');
+    container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-turn-summary"]',
+    );
   const liveHeaderBtn = () =>
-    container.querySelector<HTMLButtonElement>('[data-testid="task-chat-live-turn"]');
+    container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-live-turn"]',
+    );
 
   it("renders a settled turn folded with its summary line", () => {
     renderTurn(SETTLED);
     // Label and mono metrics are adjacent spans (v7 runsum grammar).
     expect(summaryBtn()?.textContent).toContain("Worked");
-    expect(summaryBtn()?.textContent).toContain("38s · 3 tools · +34 −3 · 12.3k tokens");
+    expect(summaryBtn()?.textContent).toContain(
+      "38s · 3 tools · +34 −3 · 12.3k tokens",
+    );
     expect(fold()?.getAttribute("data-folded")).toBe("true");
-    expect(summaryBtn()?.firstElementChild?.tagName).toBe("svg");
-    expect(summaryBtn()?.querySelector(".tc-turn-metrics")?.getAttribute("data-visible")).toBe("false");
+    expect(summaryBtn()?.lastElementChild?.tagName).toBe("svg");
+    expect(
+      summaryBtn()
+        ?.querySelector(".tc-turn-metrics")
+        ?.getAttribute("data-visible"),
+    ).toBe("false");
+  });
+
+  it("renders the new-runner Worked header above its settled timeline", () => {
+    renderTurn({
+      ...SETTLED,
+      standaloneHeader: true,
+      agentName: "Codex",
+      agentIcon: "code",
+    });
+    expect(summaryBtn()?.textContent).toContain("Worked for 38s");
+    expect(summaryBtn()?.textContent).toContain("Codex");
+    expect(summaryBtn()?.textContent).not.toContain("3 tools");
+    expect(
+      summaryBtn()?.querySelector('[data-testid="task-chat-agent-avatar"]'),
+    ).not.toBeNull();
+    expect(fold()).toBeNull();
+    const timeline = container.querySelector(
+      '[data-testid="task-chat-turn-timeline"]',
+    );
+    expect(timeline?.textContent).toContain("c1");
+    expect(summaryBtn()?.getAttribute("data-turn-position")).toBe("identity");
+    expect(summaryBtn()?.classList.contains("pb-1")).toBe(true);
+    expect(summaryBtn()?.classList.contains("pt-1.5")).toBe(true);
+    expect(summaryBtn()?.classList.contains("border-b")).toBe(false);
+    expect(summaryBtn()?.compareDocumentPosition(timeline!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("keeps a yielded runner summary after the settled timeline", () => {
+    renderTurn({
+      ...SETTLED,
+      standaloneHeader: true,
+      finalResponse: {
+        id: "result-summary",
+        kind: "message",
+        author: "agent",
+        text: "Waiting for Review browser RTS plan.",
+        channel: "final",
+      },
+    });
+
+    const timeline = container.querySelector(
+      '[data-testid="task-chat-turn-timeline"]',
+    );
+    const final = container.querySelector(
+      '[data-testid="task-chat-final-response"]',
+    );
+    expect(final?.textContent).toContain(
+      "Waiting for Review browser RTS plan.",
+    );
+    expect(timeline?.compareDocumentPosition(final!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("keeps standalone commentary phases and question receipts in projected order", () => {
+    renderTurn({
+      ...SETTLED,
+      standaloneHeader: true,
+      items: [
+        {
+          id: "commentary-1:phase",
+          kind: "activity_phase",
+          interstitial: {
+            id: "commentary-1",
+            kind: "message",
+            author: "agent",
+            text: "First commentary",
+            interstitial: true,
+            channel: "progress",
+          },
+          items: [
+            {
+              id: "tool-1",
+              kind: "tool",
+              name: "Read",
+              status: "completed",
+            },
+          ],
+          summary: "Read 1 file",
+          active: false,
+        },
+        {
+          id: "question-1",
+          kind: "protocol",
+          surface: "runtime_request",
+          runId: "run-1",
+          requestId: "question-1",
+          requestKind: "runtime",
+          turnId: "turn-1",
+          requestType: "input",
+          status: "resolved",
+          prompt: "Question one",
+          choices: [],
+          fields: [],
+        },
+        {
+          id: "commentary-2:phase",
+          kind: "activity_phase",
+          interstitial: {
+            id: "commentary-2",
+            kind: "message",
+            author: "agent",
+            text: "Second commentary",
+            interstitial: true,
+            channel: "progress",
+          },
+          items: [],
+          summary: "No tool activity",
+          active: false,
+        },
+      ],
+    });
+
+    expect(
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="task-chat-turn-timeline-row"]',
+        ),
+      ).map((row) => row.getAttribute("data-timeline-row-id")),
+    ).toEqual(["commentary-1:phase", "question-1", "commentary-2:phase"]);
+  });
+
+  it("keeps settled runtime question history outside the Worked fold", () => {
+    renderTurn({
+      ...SETTLED,
+      items: [
+        SETTLED.items[0]!,
+        {
+          id: "question-history",
+          kind: "protocol",
+          surface: "runtime_request",
+          runId: "run-1",
+          requestId: "question-1",
+          requestKind: "runtime",
+          turnId: "turn-1",
+          requestType: "input",
+          status: "resolved",
+          prompt: "Choose an environment",
+          choices: [],
+          fields: [],
+        },
+      ],
+    });
+
+    expect(fold()?.textContent).toContain("c1");
+    expect(fold()?.textContent).not.toContain("question-history");
+    const history = container.querySelector(
+      '[data-testid="task-chat-turn-persistent-history"]',
+    );
+    expect(history?.textContent).toContain("question-history");
+    expect(history?.closest(".tc-turn-fold")).toBeNull();
   });
 
   it("toggles open on summary click", () => {
     renderTurn(SETTLED);
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");
-    expect(summaryBtn()?.querySelector(".tc-turn-metrics")?.getAttribute("data-visible")).toBe("true");
+    expect(
+      summaryBtn()
+        ?.querySelector(".tc-turn-metrics")
+        ?.getAttribute("data-visible"),
+    ).toBe("true");
   });
 
   it("a headerless live turn renders expanded with no summary line", () => {
@@ -162,7 +380,12 @@ describe("TaskChatTurn", () => {
     renderTurn(parentRowTurn([tool("a")]));
     expect(liveHeaderBtn()?.textContent).toContain("Editing files…");
     renderTurn(
-      parentRowTurn([tool("a")], { ...LIVE_STATUS, label: "Reading a file", detail: "Read · auth.ts", toolName: "Read" }),
+      parentRowTurn([tool("a")], {
+        ...LIVE_STATUS,
+        label: "Reading a file",
+        detail: "Read · auth.ts",
+        toolName: "Read",
+      }),
     );
     expect(liveHeaderBtn()?.textContent).toContain("Reading a file…");
     expect(liveHeaderBtn()?.textContent).toContain("Read · auth.ts");
@@ -191,16 +414,23 @@ describe("TaskChatTurn", () => {
     // act() so the held-line effect state (useHeldSelfTalk) flushes.
     act(() => {
       renderTurn(
-        parentRowTurn([tool("a")], { ...LIVE_STATUS, selfTalk: "Streaming an update." }),
+        parentRowTurn([tool("a")], {
+          ...LIVE_STATUS,
+          selfTalk: "Streaming an update.",
+        }),
       );
     });
     const btn = liveHeaderBtn();
     expect(btn).not.toBeNull();
     // The button (hover + click target) wraps ONLY the gerund status line;
     // the interstitial text renders above it, outside the button.
-    expect(btn?.querySelector('[data-testid="task-chat-interstitial-row"]')).toBeNull();
+    expect(
+      btn?.querySelector('[data-testid="task-chat-interstitial-row"]'),
+    ).toBeNull();
     expect(btn?.textContent).not.toContain("Streaming an update.");
-    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    const row = container.querySelector(
+      '[data-testid="task-chat-interstitial-row"]',
+    );
     expect(row?.textContent).toContain("Streaming an update.");
     // Expanding still works from the status line alone.
     flushSync(() => btn!.click());
@@ -255,13 +485,19 @@ describe("TaskChatTurn", () => {
   it("leads the settled summary with the bubble timestamp when attached (round 9)", () => {
     flushSync(() => {
       root.render(
-        <TaskChatTurn item={SETTLED} timestampPrefix="2:34 PM" renderChild={(c) => <span>{c.id}</span>} />,
+        <TaskChatTurn
+          item={SETTLED}
+          timestampPrefix="2:34 PM"
+          renderChild={(c) => <span>{c.id}</span>}
+        />,
       );
     });
     // "2:34 PM · ✓ Worked · …" — timestamp first, always visible, and the
     // expand affordance still works from the same line.
     expect(summaryBtn()?.textContent).toMatch(/^2:34 PM·Worked/);
-    expect(summaryBtn()?.firstElementChild?.tagName).toBe("svg");
+    // The branch task view intentionally keeps the expand affordance at the
+    // end of the timestamp-led summary row.
+    expect(summaryBtn()?.lastElementChild?.tagName).toBe("svg");
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");
   });

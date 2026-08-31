@@ -6,13 +6,17 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
-import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
+import {
+  AgentStatusBadge,
+  AgentStatusCapsule,
+} from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
@@ -25,14 +29,22 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import {
+  AGENT_ROLE_LABELS,
+  type Agent,
+  type Environment,
+  type EnvironmentCapabilities,
+} from "@paperclipai/shared";
 import {
   isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
-import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import {
+  usePublishSharedQueryData,
+  useSharedPollingQuery,
+} from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -46,7 +58,13 @@ const ConfigureBuiltInAgentModal = lazy(() =>
   })),
 );
 
-export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+export const AGENT_FILTER_TABS = [
+  "all",
+  "active",
+  "paused",
+  "error",
+  "builtin",
+] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
 
 const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
@@ -86,13 +104,18 @@ const HIDDEN_AGENT_STATUSES = new Set(["terminated", "pending_approval"]);
 
 function matchesFilter(status: string, tab: FilterTab): boolean {
   if (tab === "all") return true;
-  if (tab === "active") return status === "active" || status === "running" || status === "idle";
+  if (tab === "active")
+    return status === "active" || status === "running" || status === "idle";
   if (tab === "paused") return status === "paused";
   if (tab === "error") return status === "error";
   return true;
 }
 
-function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<string>): Agent[] {
+function filterAgents(
+  agents: Agent[],
+  tab: FilterTab,
+  builtInAgentIds: Set<string>,
+): Agent[] {
   return agents
     .filter((a) => {
       if (HIDDEN_AGENT_STATUSES.has(a.status)) return false;
@@ -119,9 +142,10 @@ function getSandboxProviderLabel(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
 ): string {
-  const provider = typeof environment.config.provider === "string"
-    ? environment.config.provider.trim()
-    : "";
+  const provider =
+    typeof environment.config.provider === "string"
+      ? environment.config.provider.trim()
+      : "";
   if (!provider) return "Sandbox";
   return capabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
 }
@@ -145,7 +169,9 @@ function describeEnvironment(
   };
 }
 
-function describeMissingEnvironment(environmentId: string): EnvironmentDescriptor {
+function describeMissingEnvironment(
+  environmentId: string,
+): EnvironmentDescriptor {
   return {
     label: "Unknown environment",
     detail: environmentId.slice(0, 8),
@@ -159,7 +185,8 @@ function resolveAgentEnvironment(
   instanceDefaultEnvironmentId: string | null,
   capabilities?: EnvironmentCapabilities | null,
 ): EnvironmentDescriptor {
-  const environmentId = agent.defaultEnvironmentId ?? instanceDefaultEnvironmentId;
+  const environmentId =
+    agent.defaultEnvironmentId ?? instanceDefaultEnvironmentId;
   if (!environmentId) return localEnvironmentDescriptor;
   const environment = environmentsById.get(environmentId);
   return environment
@@ -167,7 +194,11 @@ function resolveAgentEnvironment(
     : describeMissingEnvironment(environmentId);
 }
 
-function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>): OrgNode[] {
+function filterOrgTree(
+  nodes: OrgNode[],
+  tab: FilterTab,
+  builtInAgentIds: Set<string>,
+): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
       const filteredReports = filterOrgTree(node.reports, tab, builtInAgentIds);
@@ -177,9 +208,10 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
         acc.push(...filteredReports);
         return acc;
       }
-      const nodeMatches = tab === "builtin"
-        ? builtInAgentIds.has(node.id)
-        : matchesFilter(node.status, tab);
+      const nodeMatches =
+        tab === "builtin"
+          ? builtInAgentIds.has(node.id)
+          : matchesFilter(node.status, tab);
       if (nodeMatches || filteredReports.length > 0) {
         acc.push({ ...node, reports: filteredReports });
       }
@@ -196,20 +228,35 @@ export function Agents() {
   const location = useLocation();
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
-  const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
+  const requestedTab: FilterTab = isFilterTab(pathSegment)
+    ? pathSegment
+    : "all";
   const [view, setView] = useState<"list" | "org">("org");
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
     enabled: !!selectedCompanyId,
   });
-  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
-  const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
+  const builtInAgentsEnabled =
+    instanceSettings?.experimental.enableBuiltInAgents === true;
+  const tab: FilterTab =
+    requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
+    () =>
+      AGENT_FILTER_TAB_ITEMS.filter(
+        (item) => item.value !== "builtin" || builtInAgentsEnabled,
+      ),
     [builtInAgentsEnabled],
   );
 
@@ -226,10 +273,18 @@ export function Agents() {
     }
     return map;
   }, [builtInAgents, builtInAgentsEnabled]);
-  const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
-  const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
+  const builtInAgentIds = useMemo(
+    () => new Set(builtInByAgentId.keys()),
+    [builtInByAgentId],
+  );
+  const [configureState, setConfigureState] =
+    useState<BuiltInAgentState | null>(null);
 
-  const { data: agents, isLoading, error } = useQuery({
+  const {
+    data: agents,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -241,7 +296,8 @@ export function Agents() {
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
+  const environmentsEnabled =
+    instanceSettings?.experimental.enableEnvironments === true;
 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
@@ -255,7 +311,10 @@ export function Agents() {
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
-  const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
+  const runsQueryKey = [
+    ...queryKeys.liveRuns(selectedCompanyId!),
+    "agents-page",
+  ] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs:agents-page",
@@ -297,7 +356,8 @@ export function Agents() {
 
   const environmentsById = useMemo(() => {
     const map = new Map<string, Environment>();
-    for (const environment of environments ?? []) map.set(environment.id, environment);
+    for (const environment of environments ?? [])
+      map.set(environment.id, environment);
     return map;
   }, [environments]);
 
@@ -315,17 +375,33 @@ export function Agents() {
       );
     }
     return map;
-  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
+  }, [
+    agents,
+    environmentsById,
+    environmentCapabilities,
+    instanceSettings?.defaultEnvironmentId,
+  ]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
+    if (
+      selectedCompanyId &&
+      requestedTab === "builtin" &&
+      instanceSettings &&
+      !builtInAgentsEnabled
+    ) {
       navigate("/agents/all", { replace: true });
     }
-  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
+  }, [
+    builtInAgentsEnabled,
+    instanceSettings,
+    navigate,
+    requestedTab,
+    selectedCompanyId,
+  ]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select an organization to view agents." />;
@@ -337,50 +413,58 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
-  const environmentDataLoading = environmentsEnabled && environments === undefined;
-  const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
-  const resolveRenderedEnvironment = (agentId: string) => (
+  const environmentDataLoading =
+    environmentsEnabled && environments === undefined;
+  const showEnvironmentColumn =
+    environmentsEnabled &&
+    (environments === undefined || environments.length > 1);
+  const resolveRenderedEnvironment = (agentId: string) =>
     environmentDataLoading
       ? loadingEnvironmentDescriptor
-      : environmentByAgentId.get(agentId) ?? localEnvironmentDescriptor
-  );
+      : (environmentByAgentId.get(agentId) ?? localEnvironmentDescriptor);
 
   const renderAgentRow = (agent: Agent) => {
-    const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+    const hasInvalidOrgChain =
+      agent.orgChainHealth?.status === "invalid_org_chain";
     const agentPending =
       membershipMutation.isPending &&
       membershipMutation.variables?.resourceType === "agent" &&
       membershipMutation.variables.resourceId === agent.id;
-    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
-    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
+    const agentStarPending =
+      agentPending && membershipMutation.variables?.starred !== undefined;
+    const agentJoinLeavePending =
+      agentPending && membershipMutation.variables?.starred === undefined;
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
-    const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    const showBuiltInLifecycle =
+      builtInState?.status === "needs_setup" ||
+      builtInState?.status === "pending_approval";
     // Lifecycle chip + inline `Set up`. Rendered inline in
     // `meta` at xl (where there's room and the meta columns align) and on a
     // dedicated full-width line beneath the name below xl, so the chips never
     // starve the name — the row's primary identifier — at narrow widths.
-    const builtInCluster = builtInState && showBuiltInLifecycle ? (
-      <>
-        <BuiltInLifecycleChip status={builtInState.status} />
-        {builtInState.status === "needs_setup" && (
-          <span
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-          >
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => setConfigureState(builtInState)}
+    const builtInCluster =
+      builtInState && showBuiltInLifecycle ? (
+        <>
+          <BuiltInLifecycleChip status={builtInState.status} />
+          {builtInState.status === "needs_setup" && (
+            <span
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
             >
-              Set up
-            </Button>
-          </span>
-        )}
-      </>
-    ) : null;
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => setConfigureState(builtInState)}
+              >
+                Set up
+              </Button>
+            </span>
+          )}
+        </>
+      ) : null;
     return (
       <EntityRow
         key={agent.id}
@@ -398,13 +482,21 @@ export function Agents() {
         className={cn(
           "group",
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
+          resourceMembershipState(membershipsQuery.data, "agent", agent.id) ===
+            "left"
+            ? "sm:text-foreground/55"
+            : "",
         )}
-        leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
-        ) : (
-          <AgentStatusCapsule status={agent.status} />
-        )}
+        leading={
+          hasInvalidOrgChain ? (
+            <AlertTriangle
+              className="h-3.5 w-3.5 text-amber-500"
+              aria-label="Invalid reporting chain"
+            />
+          ) : (
+            <AgentStatusCapsule status={agent.status} />
+          )
+        }
         secondaryRow={
           builtInCluster ? (
             <div className="xl:hidden flex flex-wrap items-center gap-1.5">
@@ -455,6 +547,7 @@ export function Agents() {
                   agent={agent}
                   companyId={selectedCompanyId}
                   runLabel="Run Heartbeat"
+                  canRunWithProviderTrace={canUseProviderTrace}
                   showStatus={false}
                 />
               </div>
@@ -463,31 +556,45 @@ export function Agents() {
                 starred={agentStarred}
                 pending={agentStarPending}
                 resourceName={agent.name}
-                onToggle={(next) => membershipMutation.mutate({
-                  resourceType: "agent",
-                  resourceId: agent.id,
-                  resourceName: agent.name,
-                  starred: next,
-                })}
+                onToggle={(next) =>
+                  membershipMutation.mutate({
+                    resourceType: "agent",
+                    resourceId: agent.id,
+                    resourceName: agent.name,
+                    starred: next,
+                  })
+                }
               />
             </div>
             <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
+              state={resourceMembershipState(
+                membershipsQuery.data,
+                "agent",
+                agent.id,
+              )}
               pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
+              pendingState={
+                agentJoinLeavePending
+                  ? (membershipMutation.variables?.state ?? null)
+                  : null
+              }
               resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
+              onJoin={() =>
+                membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: agent.id,
+                  resourceName: agent.name,
+                  state: "joined",
+                })
+              }
+              onLeave={() =>
+                membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: agent.id,
+                  resourceName: agent.name,
+                  state: "left",
+                })
+              }
             />
           </div>
         }
@@ -508,11 +615,17 @@ export function Agents() {
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
-            <div className="flex items-center border border-border" role="group" aria-label="View mode">
+            <div
+              className="flex items-center border border-border"
+              role="group"
+              aria-label="View mode"
+            >
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "list"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/50",
                 )}
                 onClick={() => setView("list")}
                 title="List view"
@@ -524,7 +637,9 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "org"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/50",
                 )}
                 onClick={() => setView("org")}
                 title="Org chart view"
@@ -543,7 +658,9 @@ export function Agents() {
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">
+          {filtered.length} agent{filtered.length !== 1 ? "s" : ""}
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -559,16 +676,17 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div>
-          {filtered.map(renderAgentRow)}
-        </div>
+        <div>{filtered.map(renderAgentRow)}</div>
       )}
 
-      {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
-        </p>
-      )}
+      {effectiveView === "list" &&
+        agents &&
+        agents.length > 0 &&
+        filtered.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            No agents match the selected status.
+          </p>
+        )}
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
@@ -593,11 +711,14 @@ export function Agents() {
         </div>
       )}
 
-      {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
-        </p>
-      )}
+      {effectiveView === "org" &&
+        orgTree &&
+        orgTree.length > 0 &&
+        filteredOrg.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            No agents match the selected status.
+          </p>
+        )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
@@ -649,14 +770,25 @@ function OrgTreeNode({
 }) {
   const agent = agentMap.get(node.id);
   const builtInState = builtInByAgentId.get(node.id);
-  const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
-  const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
-  const membershipState = resourceMembershipState(memberships, "agent", node.id);
-  const pending = membershipMutation.isPending &&
+  const showBuiltInLifecycle =
+    builtInState?.status === "needs_setup" ||
+    builtInState?.status === "pending_approval";
+  const hasInvalidOrgChain = Boolean(
+    agent && agent.orgChainHealth?.status === "invalid_org_chain",
+  );
+  const membershipState = resourceMembershipState(
+    memberships,
+    "agent",
+    node.id,
+  );
+  const pending =
+    membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === node.id;
-  const starPending = pending && membershipMutation.variables?.starred !== undefined;
-  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+  const starPending =
+    pending && membershipMutation.variables?.starred !== undefined;
+  const joinLeavePending =
+    pending && membershipMutation.variables?.starred === undefined;
   const starred = isStarred(memberships, "agent", node.id);
 
   return (
@@ -670,7 +802,10 @@ function OrgTreeNode({
         )}
       >
         {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle
+            className="h-3.5 w-3.5 shrink-0 text-amber-500"
+            aria-label="Invalid reporting chain"
+          />
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
@@ -695,7 +830,11 @@ function OrgTreeNode({
                     e.stopPropagation();
                   }}
                 >
-                  <Button size="xs" variant="outline" onClick={() => onConfigureBuiltIn(builtInState)}>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => onConfigureBuiltIn(builtInState)}
+                  >
                     Set up
                   </Button>
                 </span>
@@ -730,7 +869,8 @@ function OrgTreeNode({
                   environment={
                     environmentDataLoading
                       ? loadingEnvironmentDescriptor
-                      : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
+                      : (environmentByAgentId.get(agent.id) ??
+                        localEnvironmentDescriptor)
                   }
                   showEnvironment={showEnvironment}
                 />
@@ -743,20 +883,26 @@ function OrgTreeNode({
           <MembershipAction
             state={membershipState}
             pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+            pendingState={
+              joinLeavePending ? membershipMutation.variables?.state : null
+            }
             resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
+            onJoin={() =>
+              membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: node.id,
+                resourceName: node.name,
+                state: "joined",
+              })
+            }
+            onLeave={() =>
+              membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: node.id,
+                resourceName: node.name,
+                state: "left",
+              })
+            }
           />
           <div className="hidden sm:flex items-center gap-3">
             <StarToggle
@@ -764,12 +910,14 @@ function OrgTreeNode({
               starred={starred}
               pending={starPending}
               resourceName={node.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: node.id,
-                resourceName: node.name,
-                starred: next,
-              })}
+              onToggle={(next) =>
+                membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  starred: next,
+                })
+              }
             />
           </div>
         </div>
@@ -826,13 +974,19 @@ function AgentMetaColumns({
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>
+        <div
+          className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70"
+          title={adapterLabel}
+        >
           {adapterLabel}
         </div>
       </div>
       {showEnvironment && (
         <div className="w-44 min-w-0 leading-tight">
-          <div className="truncate text-xs text-muted-foreground" title={environment.title}>
+          <div
+            className="truncate text-xs text-muted-foreground"
+            title={environment.title}
+          >
             {environment.label}
           </div>
           <div className="truncate text-(length:--text-micro) text-muted-foreground/70">

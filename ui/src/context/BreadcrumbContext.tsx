@@ -21,6 +21,8 @@ export interface Breadcrumb {
 interface BreadcrumbContextValue {
   breadcrumbs: Breadcrumb[];
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
+  breadcrumbToolbar: ReactNode | null;
+  setBreadcrumbToolbar: (node: ReactNode | null) => void;
   mobileToolbar: ReactNode | null;
   setMobileToolbar: (node: ReactNode | null) => void;
 }
@@ -59,6 +61,7 @@ export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName?: stri
 
 export function BreadcrumbProvider({ children, companyName }: BreadcrumbProviderProps) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
+  const [breadcrumbToolbar, setBreadcrumbToolbarState] = useState<ReactNode | null>(null);
   const [mobileToolbar, setMobileToolbarState] = useState<ReactNode | null>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
@@ -69,12 +72,25 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
     setMobileToolbarState(node);
   }, []);
 
+  const setBreadcrumbToolbar = useCallback((node: ReactNode | null) => {
+    setBreadcrumbToolbarState(node);
+  }, []);
+
   useEffect(() => {
     document.title = buildDocumentTitle(breadcrumbs, companyName);
   }, [breadcrumbs, companyName]);
 
   return (
-    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, mobileToolbar, setMobileToolbar }}>
+    <BreadcrumbContext.Provider
+      value={{
+        breadcrumbs,
+        setBreadcrumbs,
+        breadcrumbToolbar,
+        setBreadcrumbToolbar,
+        mobileToolbar,
+        setMobileToolbar,
+      }}
+    >
       {children}
     </BreadcrumbContext.Provider>
   );

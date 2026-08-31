@@ -13,11 +13,32 @@ import {
   isCodexLocalFastModeSupported,
   isCodexLocalManualModel,
 } from "@paperclipai/adapter-codex-local";
+import {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  type PaperclipRunnerPermissionMode,
+  type PaperclipRunnerProvider,
+} from "@paperclipai/adapter-utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
+
+const acpxModelByAgent = {
+  pi: "openrouter/deepseek/deepseek-v4-flash-0731",
+  claude: "claude-sonnet-5",
+} as const;
+
+type QualifiedRunnerProvider = Extract<
+  PaperclipRunnerProvider,
+  "codex" | "opencode" | "acpx"
+>;
+
+function isQualifiedRunnerProvider(
+  value: unknown,
+): value is QualifiedRunnerProvider {
+  return value === "codex" || value === "opencode" || value === "acpx";
+}
 
 export function CodexLocalConfigFields({
   mode,
@@ -38,6 +59,54 @@ export function CodexLocalConfigFields({
   // both, so the managed-sandbox-only policy hides them the same way
   // `runnerManaged` already does for the Paperclip Runner.
   const hideEngineChoice = runnerManaged || managedSandboxOnly === true;
+  const runnerProvider = runnerManaged
+    ? isCreate
+      ? values!.paperclipRunnerProvider ?? "codex"
+      : eff("adapterConfig", "provider", String(config.provider ?? "codex"))
+    : "codex";
+  const qualifiedRunnerProvider = isQualifiedRunnerProvider(runnerProvider)
+    ? runnerProvider
+    : null;
+  const normalizedRunnerProvider: QualifiedRunnerProvider =
+    qualifiedRunnerProvider ?? "codex";
+  const codexRunner = runnerManaged && qualifiedRunnerProvider === "codex";
+  const openCodeRunner = runnerManaged && runnerProvider === "opencode";
+  const acpxRunner = runnerManaged && runnerProvider === "acpx";
+  const rawAcpxAgent = acpxRunner
+    ? isCreate
+      ? values!.paperclipRunnerAcpxAgent ?? "pi"
+      : eff("adapterConfig", "acpxAgent", String(config.acpxAgent ?? "pi"))
+    : "pi";
+  const acpxAgent = rawAcpxAgent === "pi" || rawAcpxAgent === "claude"
+    ? rawAcpxAgent
+    : null;
+  const permissionCapability =
+    PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[normalizedRunnerProvider];
+  const permissionMode = permissionCapability.configurable
+    ? isCreate
+      ? String(
+          (values as unknown as Record<string, unknown>)[
+            permissionCapability.configKey
+          ] ?? permissionCapability.defaultMode,
+        )
+      : eff(
+          "adapterConfig",
+          permissionCapability.configKey,
+          String(
+            config[permissionCapability.configKey] ??
+              permissionCapability.defaultMode,
+          ),
+        )
+    : permissionCapability.defaultMode;
+  const runnerLifecycleMode = runnerManaged
+    ? isCreate
+      ? values!.paperclipRunnerLifecycleMode ?? "per_turn"
+      : eff(
+          "adapterConfig",
+          "lifecycleMode",
+          String(config.lifecycleMode ?? "per_turn"),
+        )
+    : "per_turn";
   const rawEngine = runnerManaged ? "cli" : isCreate
     ? values!.codexEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -79,10 +148,156 @@ export function CodexLocalConfigFields({
         </select>
       </Field>}
       {runnerManaged && (
-        <Field label="Provider" hint="Paperclip Runner currently supports Codex through app-server.">
-          <select className={inputClass} value="codex" disabled>
+        <Field label="Provider" hint="The runner persists this provider with each run so recovery cannot drift after configuration changes.">
+          <select
+            className={inputClass}
+            value={qualifiedRunnerProvider ?? "unavailable"}
+            onChange={(event) => {
+              const provider = isQualifiedRunnerProvider(event.target.value)
+                ? event.target.value
+                : "codex";
+              if (isCreate) {
+                set!({
+                  paperclipRunnerProvider: provider,
+                  ...(provider === "opencode" && !values!.model
+                    ? { model: "openrouter/deepseek/deepseek-v4-flash-0731" }
+                    : {}),
+                  ...(provider === "acpx" && !values!.model
+                    ? { paperclipRunnerAcpxAgent: "pi", model: acpxModelByAgent.pi }
+                    : {}),
+                });
+              } else {
+                mark("adapterConfig", "provider", provider);
+                if (provider === "opencode" && !String(config.model ?? "")) {
+                  mark("adapterConfig", "model", "openrouter/deepseek/deepseek-v4-flash-0731");
+                }
+                if (provider === "acpx" && !String(config.model ?? "")) {
+                  mark("adapterConfig", "acpxAgent", "pi");
+                  mark("adapterConfig", "model", acpxModelByAgent.pi);
+                }
+              }
+            }}
+          >
+            {!qualifiedRunnerProvider && (
+              <option value="unavailable" disabled>
+                Saved provider unavailable in this release
+              </option>
+            )}
             <option value="codex">Codex</option>
+            <option value="opencode">OpenCode 1.18.17</option>
+            <option value="acpx">ACPX</option>
           </select>
+        </Field>
+      )}
+      {acpxRunner && (
+        <Field label="ACP agent" hint="Qualified ACP server profile. Changing the profile starts a fresh provider session.">
+          <select
+            className={inputClass}
+            value={acpxAgent ?? "unavailable"}
+            onChange={(event) => {
+              const agent = event.target.value === "claude"
+                ? "claude"
+                : "pi";
+              if (isCreate) {
+                set!({ paperclipRunnerAcpxAgent: agent, model: acpxModelByAgent[agent] });
+              } else {
+                mark("adapterConfig", "acpxAgent", agent);
+                mark("adapterConfig", "model", acpxModelByAgent[agent]);
+              }
+            }}
+          >
+            {!acpxAgent && (
+              <option value="unavailable" disabled>
+                Saved ACP agent unavailable in this release
+              </option>
+            )}
+            <option value="pi">Pi via ACPX</option>
+            <option value="claude">Claude via ACPX</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && qualifiedRunnerProvider && permissionCapability.configurable && (
+        <Field
+          label="Permission mode"
+          hint={`${permissionCapability.description} Full auto does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
+        >
+          <select
+            className={inputClass}
+            value={permissionMode}
+            onChange={(event) => {
+              const value = permissionCapability.options.some((option) => option.value === event.target.value)
+                ? event.target.value as PaperclipRunnerPermissionMode
+                : permissionCapability.defaultMode;
+              isCreate
+                ? set!({ [permissionCapability.configKey]: value })
+                : mark("adapterConfig", permissionCapability.configKey, value);
+            }}
+          >
+            {permissionCapability.options.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {runnerManaged && qualifiedRunnerProvider && !permissionCapability.configurable && (
+        <Field label="Permission mode" hint={permissionCapability.description}>
+          <div className="text-sm text-muted-foreground">Provider-managed full auto</div>
+        </Field>
+      )}
+      {runnerManaged && (
+        <Field label="Runner lifecycle" hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs.">
+          <select
+            className={inputClass}
+            value={runnerLifecycleMode}
+            onChange={(event) => {
+              const value = event.target.value === "warm" ? "warm" : "per_turn";
+              isCreate
+                ? set!({ paperclipRunnerLifecycleMode: value })
+                : mark("adapterConfig", "lifecycleMode", value);
+            }}
+          >
+            <option value="per_turn">Turn by turn</option>
+            <option value="warm">Warm session</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && runnerLifecycleMode === "warm" && (
+        <Field label="Warm idle timeout (ms)" hint="After this much inactivity, runnerd checkpoints and suspends the provider session.">
+          {isCreate ? (
+            <input
+              type="number"
+              min={1}
+              className={inputClass}
+              value={values!.paperclipRunnerIdleTimeoutMs ?? 300_000}
+              onChange={(event) => set!({ paperclipRunnerIdleTimeoutMs: Math.max(1, Number(event.target.value)) })}
+            />
+          ) : (
+            <DraftNumberInput
+              value={eff("adapterConfig", "idleTimeoutMs", Number(config.idleTimeoutMs ?? 300_000))}
+              onCommit={(value) => mark("adapterConfig", "idleTimeoutMs", Math.max(1, value || 300_000))}
+              immediate
+              className={inputClass}
+            />
+          )}
+        </Field>
+      )}
+      {openCodeRunner && (
+        <Field label="OpenCode command" hint="The OpenCode executable. Version 1.18.17 is qualified for this runner.">
+          <DraftInput
+            value={
+              isCreate
+                ? values!.command ?? ""
+                : eff("adapterConfig", "command", String(config.command ?? ""))
+            }
+            onCommit={(value) =>
+              isCreate
+                ? set!({ command: value })
+                : mark("adapterConfig", "command", value || undefined)
+            }
+            immediate
+            className={inputClass}
+            placeholder="opencode"
+          />
         </Field>
       )}
       {acpSelected && (
@@ -227,56 +442,52 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      {!runnerManaged && (
-        <>
-          <ToggleField
-            label="Bypass sandbox"
-            hint={help.dangerouslyBypassSandbox}
-            checked={
-              isCreate
-                ? values!.dangerouslyBypassSandbox
-                : eff(
-                    "adapterConfig",
-                    "dangerouslyBypassApprovalsAndSandbox",
-                    bypassEnabled,
-                  )
-            }
-            onChange={(v) =>
-              isCreate
-                ? set!({ dangerouslyBypassSandbox: v })
-                : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-            }
-          />
-          <ToggleField
-            label="Enable search"
-            hint={help.search}
-            checked={
-              isCreate
-                ? values!.search
-                : eff("adapterConfig", "search", !!config.search)
-            }
-            onChange={(v) =>
-              isCreate
-                ? set!({ search: v })
-                : mark("adapterConfig", "search", v)
-            }
-          />
-          <ToggleField
-            label="Fast mode"
-            hint={help.fastMode}
-            checked={fastModeEnabled}
-            onChange={(v) =>
-              isCreate
-                ? set!({ fastMode: v })
-                : mark("adapterConfig", "fastMode", v)
-            }
-          />
-          {fastModeEnabled && (
-            <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-              {fastModeMessage}
-            </div>
-          )}
-        </>
+      {!runnerManaged && !openCodeRunner && <ToggleField
+          label="Bypass sandbox"
+          hint={help.dangerouslyBypassSandbox}
+          checked={
+            isCreate
+              ? values!.dangerouslyBypassSandbox
+              : eff(
+                  "adapterConfig",
+                  "dangerouslyBypassApprovalsAndSandbox",
+                  bypassEnabled,
+                )
+          }
+          onChange={(v) =>
+            isCreate
+              ? set!({ dangerouslyBypassSandbox: v })
+              : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
+          }
+        />}
+      {(!runnerManaged || codexRunner) && <ToggleField
+          label="Enable search"
+          hint={help.search}
+          checked={
+            isCreate
+              ? values!.search
+              : eff("adapterConfig", "search", !!config.search)
+          }
+          onChange={(v) =>
+            isCreate
+              ? set!({ search: v })
+              : mark("adapterConfig", "search", v)
+          }
+        />}
+      {(!runnerManaged || codexRunner) && <ToggleField
+          label="Fast mode"
+          hint={help.fastMode}
+          checked={fastModeEnabled}
+          onChange={(v) =>
+            isCreate
+              ? set!({ fastMode: v })
+              : mark("adapterConfig", "fastMode", v)
+          }
+        />}
+      {(!runnerManaged || codexRunner) && fastModeEnabled && (
+        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {fastModeMessage}
+        </div>
       )}
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}

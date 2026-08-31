@@ -1,19 +1,40 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  useParams,
+  useNavigate,
+  Link,
+  Navigate,
+  useBeforeUnload,
+  type NavigateFunction,
+} from "@/lib/router";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
-import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
+import {
+  builtInAgentsApi,
+  type BuiltInManagedResourceKind,
+} from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
+import {
+  ChartCard,
+  RunActivityChart,
+  PriorityChart,
+  IssueStatusChart,
+  SuccessRateChart,
+} from "../components/ActivityCharts";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -29,7 +50,11 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
-import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import {
+  adapterLabels,
+  roleLabels,
+  help,
+} from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
@@ -59,13 +84,23 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import {
+  formatCents,
+  formatDate,
+  relativeTime,
+  formatTokens,
+  visibleRunCostUsd,
+} from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   CheckCircle2,
   XCircle,
@@ -86,11 +121,18 @@ import {
   FolderOpen,
   AlertTriangle,
 } from "lucide-react";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import {
+  RunTranscriptView,
+  type TranscriptMode,
+} from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
 import {
   appendCapped,
@@ -113,8 +155,20 @@ import {
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
-import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
-import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
+import { RunnerInspector } from "../components/RunnerInspector";
+import { HoneycombRunLink } from "../components/HoneycombRunLink";
+import {
+  ProviderTraceStatusBadge,
+  runRequestedProviderTrace,
+} from "../components/ProviderTraceStatusBadge";
+import {
+  buildPermissionsForTrustPreset,
+  getTrustPreset,
+} from "../lib/trust-policy-ui";
+import {
+  redactHomePathUserSegments,
+  redactHomePathUserSegmentsInValue,
+} from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
   isStarred,
@@ -124,8 +178,14 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
 
-const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
-  succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
+const runStatusIcons: Record<
+  string,
+  { icon: typeof CheckCircle2; color: string }
+> = {
+  succeeded: {
+    icon: CheckCircle2,
+    color: "text-green-600 dark:text-green-400",
+  },
   failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
   running: { icon: Loader2, color: "text-blue-600 dark:text-blue-400" }, // Gallery feedback r1: running = status blue, not cyan.
   queued: { icon: Clock, color: "text-yellow-600 dark:text-yellow-400" },
@@ -139,13 +199,20 @@ const RUN_LOG_PAGE_BYTES = 256_000;
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
-const COMMAND_ENV_KEY_RE = /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
-const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+const COMMAND_ENV_KEY_RE =
+  /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
+const JWT_VALUE_RE =
+  /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 
 function formatOrgChainHealthPath(agent: AgentDetailRecord) {
-  return agent.orgChainHealth?.fullChain
-    .map((entry) => `${entry.name}${entry.status !== "active" && entry.status !== "idle" ? ` (${entry.status})` : ""}`)
-    .join(" -> ") ?? agent.name;
+  return (
+    agent.orgChainHealth?.fullChain
+      .map(
+        (entry) =>
+          `${entry.name}${entry.status !== "active" && entry.status !== "idle" ? ` (${entry.status})` : ""}`,
+      )
+      .join(" -> ") ?? agent.name
+  );
 }
 
 function redactPathText(value: string, censorUsernameInLogs: boolean) {
@@ -153,11 +220,19 @@ function redactPathText(value: string, censorUsernameInLogs: boolean) {
 }
 
 function redactPathValue<T>(value: T, censorUsernameInLogs: boolean): T {
-  return redactHomePathUserSegmentsInValue(value, { enabled: censorUsernameInLogs });
+  return redactHomePathUserSegmentsInValue(value, {
+    enabled: censorUsernameInLogs,
+  });
 }
 
-function redactCommandText(value: string, censorUsernameInLogs: boolean): string {
-  return redactPathText(redactCommandSecretText(value, REDACTED_ENV_VALUE), censorUsernameInLogs);
+function redactCommandText(
+  value: string,
+  censorUsernameInLogs: boolean,
+): string {
+  return redactPathText(
+    redactCommandSecretText(value, REDACTED_ENV_VALUE),
+    censorUsernameInLogs,
+  );
 }
 
 function shouldRedactSecretValue(key: string, value: unknown): boolean {
@@ -166,7 +241,11 @@ function shouldRedactSecretValue(key: string, value: unknown): boolean {
   return JWT_VALUE_RE.test(value);
 }
 
-function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boolean): string {
+function redactEnvValue(
+  key: string,
+  value: unknown,
+  censorUsernameInLogs: boolean,
+): string {
   if (
     typeof value === "object" &&
     value !== null &&
@@ -177,8 +256,10 @@ function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boole
   }
   if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
   if (value === null || value === undefined) return "";
-  if (typeof value === "string" && COMMAND_ENV_KEY_RE.test(key)) return redactCommandText(value, censorUsernameInLogs);
-  if (typeof value === "string") return redactPathText(value, censorUsernameInLogs);
+  if (typeof value === "string" && COMMAND_ENV_KEY_RE.test(key))
+    return redactCommandText(value, censorUsernameInLogs);
+  if (typeof value === "string")
+    return redactPathText(value, censorUsernameInLogs);
   try {
     return JSON.stringify(redactPathValue(value, censorUsernameInLogs));
   } catch {
@@ -201,7 +282,10 @@ function shouldUseMarkdownInstructionsEditor(input: {
   return isMarkdown(input.selectedPath);
 }
 
-function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
+function formatEnvForDisplay(
+  envValue: unknown,
+  censorUsernameInLogs: boolean,
+): string {
   const env = asRecord(envValue);
   if (!env) return "<unable-to-parse>";
 
@@ -210,7 +294,9 @@ function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): 
 
   return keys
     .sort()
-    .map((key) => `${key}=${redactEnvValue(key, env[key], censorUsernameInLogs)}`)
+    .map(
+      (key) => `${key}=${redactEnvValue(key, env[key], censorUsernameInLogs)}`,
+    )
     .join("\n");
 }
 
@@ -230,7 +316,9 @@ function isWindowContainer(container: ScrollContainer): container is Window {
 
 function isElementScrollContainer(element: HTMLElement): boolean {
   const overflowY = window.getComputedStyle(element).overflowY;
-  return overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
+  return (
+    overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay"
+  );
 }
 
 function findScrollContainer(anchor: HTMLElement | null): ScrollContainer {
@@ -242,7 +330,10 @@ function findScrollContainer(anchor: HTMLElement | null): ScrollContainer {
   return window;
 }
 
-function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; distanceFromBottom: number } {
+function readScrollMetrics(container: ScrollContainer): {
+  scrollHeight: number;
+  distanceFromBottom: number;
+} {
   if (isWindowContainer(container)) {
     const pageHeight = Math.max(
       document.documentElement.scrollHeight,
@@ -262,7 +353,10 @@ function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; 
   };
 }
 
-function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBehavior = "auto") {
+function scrollToContainerBottom(
+  container: ScrollContainer,
+  behavior: ScrollBehavior = "auto",
+) {
   if (isWindowContainer(container)) {
     const pageHeight = Math.max(
       document.documentElement.scrollHeight,
@@ -275,9 +369,21 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "runs" | "audit" | "budget";
+type AgentDetailView =
+  | "dashboard"
+  | "instructions"
+  | "configuration"
+  | "secrets"
+  | "skills"
+  | "tools"
+  | "runs"
+  | "audit"
+  | "budget";
 
-export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
+export const AGENT_DETAIL_TABS: ReadonlyArray<{
+  value: AgentDetailView;
+  label: string;
+}> = [
   { value: "dashboard", label: "Dashboard" },
   { value: "instructions", label: "Instructions" },
   { value: "skills", label: "Skills" },
@@ -289,7 +395,8 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: s
   { value: "budget", label: "Budget" },
 ];
 
-export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
+export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE =
+  "Discard unsaved agent configuration changes?";
 
 export function confirmAgentConfigNavigation(
   dirty: boolean,
@@ -299,8 +406,12 @@ export function confirmAgentConfigNavigation(
   return !dirty || confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
 }
 
-export function agentConfigHistoryRestoreDelta(currentIndex: unknown, nextIndex: unknown): number | null {
-  if (typeof currentIndex !== "number" || typeof nextIndex !== "number") return null;
+export function agentConfigHistoryRestoreDelta(
+  currentIndex: unknown,
+  nextIndex: unknown,
+): number | null {
+  if (typeof currentIndex !== "number" || typeof nextIndex !== "number")
+    return null;
   const delta = currentIndex - nextIndex;
   return delta === 0 ? null : delta;
 }
@@ -310,7 +421,10 @@ export function restoreAgentConfigHistoryEntry(
   currentEntry: { index: unknown; state: unknown; url: string },
   nextIndex: unknown,
 ): boolean {
-  const restoreDelta = agentConfigHistoryRestoreDelta(currentEntry.index, nextIndex);
+  const restoreDelta = agentConfigHistoryRestoreDelta(
+    currentEntry.index,
+    nextIndex,
+  );
   if (restoreDelta === null) {
     // Some legacy URL-cleanup paths erased React Router's history index. A
     // fresh copy of the guarded entry is the only safe way to return without
@@ -325,7 +439,8 @@ export function restoreAgentConfigHistoryEntry(
 
 export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
-  if (value === "configure" || value === "configuration") return "configuration";
+  if (value === "configure" || value === "configuration")
+    return "configuration";
   if (value === "secrets") return "secrets";
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
@@ -363,8 +478,7 @@ function runMetrics(run: HeartbeatRun) {
     "cached_input_tokens",
     "cache_read_input_tokens",
   );
-  const cost =
-    visibleRunCostUsd(usage, result);
+  const cost = visibleRunCostUsd(usage, result);
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
   return {
@@ -385,7 +499,8 @@ export type RunLogChunk = {
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   return value as Record<string, unknown>;
 }
 
@@ -415,7 +530,9 @@ export function shouldPollRunShellLog(status: HeartbeatRun["status"]): boolean {
   return status === "running";
 }
 
-export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | 15000 | false {
+export function runDetailRefetchIntervalMs(
+  status: HeartbeatRun["status"],
+): 5000 | 15000 | false {
   if (status === "queued") return 5000;
   if (status === "running") return 15000;
   return false;
@@ -431,28 +548,40 @@ export function RunInvocationCard({
   const rawCommandLine = [
     typeof payload.command === "string" ? payload.command : null,
     ...(Array.isArray(payload.commandArgs)
-      ? payload.commandArgs.filter((value): value is string => typeof value === "string")
+      ? payload.commandArgs.filter(
+          (value): value is string => typeof value === "string",
+        )
       : []),
   ]
     .filter((value): value is string => Boolean(value))
     .join(" ");
-  const commandLine = rawCommandLine ? redactCommandText(rawCommandLine, censorUsernameInLogs) : "";
+  const commandLine = rawCommandLine
+    ? redactCommandText(rawCommandLine, censorUsernameInLogs)
+    : "";
 
   const hasAdvancedDetails =
-    commandLine.length > 0
-    || (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0)
-    || payload.prompt !== undefined
-    || payload.context !== undefined
-    || payload.env !== undefined;
+    commandLine.length > 0 ||
+    (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0) ||
+    payload.prompt !== undefined ||
+    payload.context !== undefined ||
+    payload.env !== undefined;
 
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      <div className="text-xs font-medium text-muted-foreground">
+        Invocation
+      </div>
       {typeof payload.adapterType === "string" && (
-        <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{payload.adapterType}</div>
+        <div className="text-xs">
+          <span className="text-muted-foreground">Adapter: </span>
+          {payload.adapterType}
+        </div>
       )}
       {typeof payload.cwd === "string" && (
-        <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
+        <div className="text-xs break-all">
+          <span className="text-muted-foreground">Working dir: </span>
+          <span className="font-mono">{payload.cwd}</span>
+        </div>
       )}
       {hasAdvancedDetails && (
         <Collapsible>
@@ -467,41 +596,62 @@ export function RunInvocationCard({
                 <span className="font-mono">{commandLine}</span>
               </div>
             )}
-            {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-                <ul className="list-disc pl-5 space-y-1">
-                  {payload.commandNotes
-                    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                    .map((note, idx) => (
-                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                        {note}
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            )}
+            {Array.isArray(payload.commandNotes) &&
+              payload.commandNotes.length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">
+                    Command notes
+                  </div>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {payload.commandNotes
+                      .filter(
+                        (value): value is string =>
+                          typeof value === "string" && value.trim().length > 0,
+                      )
+                      .map((note, idx) => (
+                        <li
+                          key={`${idx}-${note}`}
+                          className="text-xs break-all font-mono"
+                        >
+                          {note}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
             {payload.prompt !== undefined && (
               <div>
                 <div className="text-xs text-muted-foreground mb-1">Prompt</div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
                   {typeof payload.prompt === "string"
                     ? redactPathText(payload.prompt, censorUsernameInLogs)
-                    : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
+                    : JSON.stringify(
+                        redactPathValue(payload.prompt, censorUsernameInLogs),
+                        null,
+                        2,
+                      )}
                 </pre>
               </div>
             )}
             {payload.context !== undefined && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Context</div>
+                <div className="text-xs text-muted-foreground mb-1">
+                  Context
+                </div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                  {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
+                  {JSON.stringify(
+                    redactPathValue(payload.context, censorUsernameInLogs),
+                    null,
+                    2,
+                  )}
                 </pre>
               </div>
             )}
             {payload.env !== undefined && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                <div className="text-xs text-muted-foreground mb-1">
+                  Environment
+                </div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
                   {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
                 </pre>
@@ -520,9 +670,15 @@ function parseStoredLogContent(content: string): RunLogChunk[] {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+      const raw = JSON.parse(trimmed) as {
+        ts?: unknown;
+        stream?: unknown;
+        chunk?: unknown;
+      };
       const stream =
-        raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
+        raw.stream === "stderr" || raw.stream === "system"
+          ? raw.stream
+          : "stdout";
       const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
       const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
       if (!chunk) continue;
@@ -566,9 +722,14 @@ function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
   }
 }
 
-function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation["status"] }) {
+function WorkspaceOperationStatusBadge({
+  status,
+}: {
+  status: WorkspaceOperation["status"];
+}) {
   return (
-    <Badge variant="outline"
+    <Badge
+      variant="outline"
       className={cn(
         "text-(length:--text-micro) capitalize",
         workspaceOperationStatusTone(status),
@@ -587,7 +748,11 @@ function WorkspaceOperationLogViewer({
   censorUsernameInLogs: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { data: logData, isLoading, error } = useQuery({
+  const {
+    data: logData,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ["workspace-operation-log", operation.id],
     queryFn: () => heartbeatsApi.workspaceOperationLog(operation.id),
     enabled: open && Boolean(operation.logRef),
@@ -610,21 +775,29 @@ function WorkspaceOperationLogViewer({
       </button>
       {open && (
         <div className="rounded-md border border-border bg-background/70 p-2">
-          {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
+          {isLoading && (
+            <div className="text-xs text-muted-foreground">Loading log...</div>
+          )}
           {error && (
             <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
+              {error instanceof Error
+                ? error.message
+                : "Failed to load workspace operation log"}
             </div>
           )}
           {!isLoading && !error && chunks.length === 0 && (
-            <div className="text-xs text-muted-foreground">No persisted log lines.</div>
+            <div className="text-xs text-muted-foreground">
+              No persisted log lines.
+            </div>
           )}
           {chunks.length > 0 && (
             <div className="max-h-64 overflow-y-auto rounded bg-neutral-100 p-2 font-mono text-xs dark:bg-neutral-950">
               {chunks.map((chunk, index) => (
                 <div key={`${chunk.ts}-${index}`} className="flex gap-2">
                   <span className="shrink-0 text-neutral-500">
-                    {new Date(chunk.ts).toLocaleTimeString("en-US", { hour12: false })}
+                    {new Date(chunk.ts).toLocaleTimeString("en-US", {
+                      hour12: false,
+                    })}
                   </span>
                   <span
                     className={cn(
@@ -638,7 +811,9 @@ function WorkspaceOperationLogViewer({
                   >
                     [{chunk.stream}]
                   </span>
-                  <span className="whitespace-pre-wrap break-all">{redactPathText(chunk.chunk, censorUsernameInLogs)}</span>
+                  <span className="whitespace-pre-wrap break-all">
+                    {redactPathText(chunk.chunk, censorUsernameInLogs)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -667,13 +842,19 @@ function WorkspaceOperationsSection({
         {operations.map((operation) => {
           const metadata = asRecord(operation.metadata);
           return (
-            <div key={operation.id} className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2">
+            <div
+              key={operation.id}
+              className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2"
+            >
               <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
+                <div className="text-sm font-medium">
+                  {workspaceOperationPhaseLabel(operation.phase)}
+                </div>
                 <WorkspaceOperationStatusBadge status={operation.status} />
                 <div className="text-(length:--text-micro) text-muted-foreground">
                   {relativeTime(operation.startedAt)}
-                  {operation.finishedAt && ` to ${relativeTime(operation.finishedAt)}`}
+                  {operation.finishedAt &&
+                    ` to ${relativeTime(operation.finishedAt)}`}
                 </div>
               </div>
               {operation.command && (
@@ -688,47 +869,84 @@ function WorkspaceOperationsSection({
                   <span className="font-mono">{operation.cwd}</span>
                 </div>
               )}
-              {(asNonEmptyString(metadata?.branchName)
-                || asNonEmptyString(metadata?.baseRef)
-                || asNonEmptyString(metadata?.worktreePath)
-                || asNonEmptyString(metadata?.repoRoot)
-                || asNonEmptyString(metadata?.cleanupAction)) && (
+              {(asNonEmptyString(metadata?.branchName) ||
+                asNonEmptyString(metadata?.baseRef) ||
+                asNonEmptyString(metadata?.worktreePath) ||
+                asNonEmptyString(metadata?.repoRoot) ||
+                asNonEmptyString(metadata?.cleanupAction)) && (
                 <div className="grid gap-1 text-xs sm:grid-cols-2">
                   {asNonEmptyString(metadata?.branchName) && (
-                    <div><span className="text-muted-foreground">Branch: </span><span className="font-mono">{metadata?.branchName as string}</span></div>
+                    <div>
+                      <span className="text-muted-foreground">Branch: </span>
+                      <span className="font-mono">
+                        {metadata?.branchName as string}
+                      </span>
+                    </div>
                   )}
                   {asNonEmptyString(metadata?.baseRef) && (
-                    <div><span className="text-muted-foreground">Base ref: </span><span className="font-mono">{metadata?.baseRef as string}</span></div>
+                    <div>
+                      <span className="text-muted-foreground">Base ref: </span>
+                      <span className="font-mono">
+                        {metadata?.baseRef as string}
+                      </span>
+                    </div>
                   )}
                   {asNonEmptyString(metadata?.worktreePath) && (
-                    <div className="break-all"><span className="text-muted-foreground">Worktree: </span><span className="font-mono">{metadata?.worktreePath as string}</span></div>
+                    <div className="break-all">
+                      <span className="text-muted-foreground">Worktree: </span>
+                      <span className="font-mono">
+                        {metadata?.worktreePath as string}
+                      </span>
+                    </div>
                   )}
                   {asNonEmptyString(metadata?.repoRoot) && (
-                    <div className="break-all"><span className="text-muted-foreground">Repo root: </span><span className="font-mono">{metadata?.repoRoot as string}</span></div>
+                    <div className="break-all">
+                      <span className="text-muted-foreground">Repo root: </span>
+                      <span className="font-mono">
+                        {metadata?.repoRoot as string}
+                      </span>
+                    </div>
                   )}
                   {asNonEmptyString(metadata?.cleanupAction) && (
-                    <div><span className="text-muted-foreground">Cleanup: </span><span className="font-mono">{metadata?.cleanupAction as string}</span></div>
+                    <div>
+                      <span className="text-muted-foreground">Cleanup: </span>
+                      <span className="font-mono">
+                        {metadata?.cleanupAction as string}
+                      </span>
+                    </div>
                   )}
                 </div>
               )}
               {typeof metadata?.created === "boolean" && (
                 <div className="text-xs text-muted-foreground">
-                  {metadata.created ? "Created by this run" : "Reused existing workspace"}
+                  {metadata.created
+                    ? "Created by this run"
+                    : "Reused existing workspace"}
                 </div>
               )}
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">stderr excerpt</div>
+                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">
+                    stderr excerpt
+                  </div>
                   <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
-                    {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
+                    {redactPathText(
+                      operation.stderrExcerpt,
+                      censorUsernameInLogs,
+                    )}
                   </pre>
                 </div>
               )}
               {operation.stdoutExcerpt && operation.stdoutExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-muted-foreground">stdout excerpt</div>
+                  <div className="mb-1 text-xs text-muted-foreground">
+                    stdout excerpt
+                  </div>
                   <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
-                    {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
+                    {redactPathText(
+                      operation.stdoutExcerpt,
+                      censorUsernameInLogs,
+                    )}
                   </pre>
                 </div>
               )}
@@ -747,7 +965,12 @@ function WorkspaceOperationsSection({
 }
 
 export function AgentDetail() {
-  const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
+  const {
+    companyPrefix,
+    agentId,
+    tab: urlTab,
+    runId: urlRunId,
+  } = useParams<{
     companyPrefix?: string;
     agentId: string;
     tab?: string;
@@ -759,8 +982,12 @@ export function AgentDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
-  const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const activeView = urlRunId
+    ? ("runs" as AgentDetailView)
+    : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
@@ -773,18 +1000,35 @@ export function AgentDetail() {
   const routeCompanyId = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
+    return (
+      companies.find(
+        (company) => company.issuePrefix.toUpperCase() === requestedPrefix,
+      )?.id ?? null
+    );
   }, [companies, companyPrefix]);
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
-  const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
-  const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
-  const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const canFetchAgent =
+    routeAgentRef.length > 0 &&
+    (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
+  const setSaveConfigAction = useCallback((fn: (() => void) | null) => {
+    saveConfigActionRef.current = fn;
+  }, []);
+  const setCancelConfigAction = useCallback((fn: (() => void) | null) => {
+    cancelConfigActionRef.current = fn;
+  }, []);
   const prepareAgentNavigation = useCallback(() => {
     return confirmAgentConfigNavigation(configDirty);
   }, [configDirty]);
 
-  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
-    queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
+  const {
+    data: agent,
+    isLoading,
+    error,
+  } = useQuery<AgentDetailRecord>({
+    queryKey: [
+      ...queryKeys.agents.detail(routeAgentRef),
+      lookupCompanyId ?? null,
+    ],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
@@ -792,6 +1036,14 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -803,14 +1055,16 @@ export function AgentDetail() {
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: !!resolvedCompanyId,
   });
-  const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
+  const builtInAgentsEnabled =
+    experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
     queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
     enabled: !!resolvedCompanyId && builtInAgentsEnabled,
   });
   const builtInState = builtInAgentsEnabled
-    ? builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null
+    ? (builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ??
+      null)
     : null;
   const builtInFeatureLabel = builtInState
     ? builtInState.definition.featureKeys
@@ -818,75 +1072,120 @@ export function AgentDetail() {
         .join(", ")
     : "";
   const invalidateBuiltIn = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
+    });
     if (resolvedAgentId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(resolvedAgentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(resolvedAgentId),
+      });
     }
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detail(routeAgentRef),
+    });
   }, [queryClient, resolvedCompanyId, resolvedAgentId, routeAgentRef]);
 
   const resetBuiltIn = useMutation({
-    mutationFn: () => builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key),
+    mutationFn: () =>
+      builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key),
     onSuccess: invalidateBuiltIn,
   });
 
   const [showBuiltInConfigure, setShowBuiltInConfigure] = useState(false);
   const resetBuiltInResource = useMutation({
     mutationFn: (kind: BuiltInManagedResourceKind) =>
-      builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key, [kind]),
+      builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key, [
+        kind,
+      ]),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update bundle resource");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to update bundle resource",
+      );
     },
   });
   const runBuiltInRoutine = useMutation({
     mutationFn: (routineKey: string) =>
-      builtInAgentsApi.runRoutine(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+      builtInAgentsApi.runRoutine(
+        resolvedCompanyId!,
+        builtInState!.definition.key,
+        routineKey,
+      ),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to run built-in routine");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to run built-in routine",
+      );
     },
   });
   const enableBuiltInSchedule = useMutation({
     mutationFn: (routineKey: string) =>
-      builtInAgentsApi.enableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+      builtInAgentsApi.enableRoutineSchedule(
+        resolvedCompanyId!,
+        builtInState!.definition.key,
+        routineKey,
+      ),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to enable routine schedule");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to enable routine schedule",
+      );
     },
   });
   const disableBuiltInSchedule = useMutation({
     mutationFn: (routineKey: string) =>
-      builtInAgentsApi.disableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
+      builtInAgentsApi.disableRoutineSchedule(
+        resolvedCompanyId!,
+        builtInState!.definition.key,
+        routineKey,
+      ),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to disable routine schedule");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to disable routine schedule",
+      );
     },
   });
-  const builtInRoutineActionPending =
-    runBuiltInRoutine.isPending
-      ? "run"
-      : enableBuiltInSchedule.isPending
-        ? "enable"
-        : disableBuiltInSchedule.isPending
-          ? "disable"
-          : null;
+  const builtInRoutineActionPending = runBuiltInRoutine.isPending
+    ? "run"
+    : enableBuiltInSchedule.isPending
+      ? "enable"
+      : disableBuiltInSchedule.isPending
+        ? "disable"
+        : null;
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
-    queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    queryFn: () =>
+      agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
     enabled: Boolean(resolvedAgentId) && needsDashboardData,
   });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+    queryFn: () =>
+      heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
-    queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
+    queryKey: [
+      ...queryKeys.issues.list(resolvedCompanyId!),
+      "participant-agent",
+      resolvedAgentId ?? "__none__",
+    ],
+    queryFn: () =>
+      issuesApi.list(resolvedCompanyId!, {
+        participantAgentId: resolvedAgentId!,
+      }),
     enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
   });
 
@@ -904,13 +1203,20 @@ export function AgentDetail() {
     staleTime: 5_000,
   });
 
-  const assignedIssues = (allIssues ?? [])
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
-  const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const assignedIssues = (allIssues ?? []).sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  );
+  const reportsToAgent = (allAgents ?? []).find(
+    (a) => a.id === agent?.reportsTo,
+  );
+  const directReports = (allAgents ?? []).filter(
+    (a) => a.reportsTo === agent?.id && a.status !== "terminated",
+  );
   const agentBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
+      (policy) =>
+        policy.scopeType === "agent" &&
+        policy.scopeId === (agent?.id ?? routeAgentRef),
     );
     if (matched) return matched;
     const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
@@ -927,12 +1233,17 @@ export function AgentDetail() {
       observedAmount: spentMonthlyCents,
       remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
       utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+        budgetMonthlyCents > 0
+          ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2))
+          : 0,
       warnPercent: 80,
       hardStopEnabled: true,
       notifyEnabled: true,
       isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+      status:
+        budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents
+          ? "hard_stop"
+          : "ok",
       paused: agent?.status === "paused",
       pauseReason: agent?.pauseReason ?? null,
       windowStart: new Date(),
@@ -940,7 +1251,10 @@ export function AgentDetail() {
     } satisfies BudgetPolicySummary;
   }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
   const mobileLiveRun = useMemo(
-    () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
+    () =>
+      (heartbeats ?? []).find(
+        (r) => r.status === "running" || r.status === "queued",
+      ) ?? null,
     [heartbeats],
   );
 
@@ -948,7 +1262,9 @@ export function AgentDetail() {
     if (!agent) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
+        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, {
+          replace: true,
+        });
       }
       return;
     }
@@ -971,10 +1287,20 @@ export function AgentDetail() {
                       ? "budget"
                       : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, {
+        replace: true,
+      });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+  }, [
+    agent,
+    routeAgentRef,
+    canonicalAgentRef,
+    urlRunId,
+    urlTab,
+    activeView,
+    navigate,
+  ]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -986,21 +1312,37 @@ export function AgentDetail() {
   // which is surfaced via the pending-approval banner below.
   const agentAction = useMutation({
     mutationFn: async (action: "approve") => {
-      if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
+      if (!agentLookupRef)
+        return Promise.reject(new Error("No agent reference"));
       if (action === "approve") {
-        return agentsApi.approve(agentLookupRef, resolvedCompanyId ?? undefined);
+        return agentsApi.approve(
+          agentLookupRef,
+          resolvedCompanyId ?? undefined,
+        );
       }
     },
     onSuccess: () => {
       setActionError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(routeAgentRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agentLookupRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.runtimeState(agentLookupRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.taskSessions(agentLookupRef),
+      });
       if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(resolvedCompanyId),
+        });
         if (agent?.id) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id) });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id),
+          });
         }
       }
     },
@@ -1019,38 +1361,71 @@ export function AgentDetail() {
       }),
     onSuccess: () => {
       if (!resolvedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.budgets.overview(resolvedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(routeAgentRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agentLookupRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(resolvedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.dashboard(resolvedCompanyId),
+      });
     },
   });
 
   const updateIcon = useMutation({
-    mutationFn: (icon: string) => agentsApi.update(agentLookupRef, { icon }, resolvedCompanyId ?? undefined),
+    mutationFn: (icon: string) =>
+      agentsApi.update(
+        agentLookupRef,
+        { icon },
+        resolvedCompanyId ?? undefined,
+      ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(routeAgentRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agentLookupRef),
+      });
       if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(resolvedCompanyId),
+        });
       }
     },
   });
 
   const updatePermissions = useMutation({
     mutationFn: (permissions: AgentPermissionUpdate) =>
-      agentsApi.updatePermissions(agentLookupRef, permissions, resolvedCompanyId ?? undefined),
+      agentsApi.updatePermissions(
+        agentLookupRef,
+        permissions,
+        resolvedCompanyId ?? undefined,
+      ),
     onSuccess: () => {
       setActionError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(routeAgentRef),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agentLookupRef),
+      });
       if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(resolvedCompanyId),
+        });
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
+      setActionError(
+        err instanceof Error ? err.message : "Failed to update permissions",
+      );
     },
   });
 
@@ -1062,9 +1437,15 @@ export function AgentDetail() {
     if (activeView === "dashboard" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({
+        label: agentName,
+        href: `/agents/${canonicalAgentRef}/dashboard`,
+      });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({
+          label: "Runs",
+          href: `/agents/${canonicalAgentRef}/runs`,
+        });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "instructions") {
         crumbs.push({ label: "Instructions" });
@@ -1072,8 +1453,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Configuration" });
       } else if (activeView === "secrets") {
         crumbs.push({ label: "Secrets" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+        // } else if (activeView === "skills") { // TODO: bring back later
+        //   crumbs.push({ label: "Skills" });
       } else if (activeView === "tools") {
         crumbs.push({ label: "Tools" });
       } else if (activeView === "runs") {
@@ -1085,7 +1466,14 @@ export function AgentDetail() {
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [
+    setBreadcrumbs,
+    agent,
+    routeAgentRef,
+    canonicalAgentRef,
+    activeView,
+    urlRunId,
+  ]);
 
   useEffect(() => {
     closePanel();
@@ -1103,11 +1491,14 @@ export function AgentDetail() {
   }, [resolvedAgentId, agentMembershipState]);
 
   useBeforeUnload(
-    useCallback((event) => {
-      if (!configDirty) return;
-      event.preventDefault();
-      event.returnValue = "";
-    }, [configDirty]),
+    useCallback(
+      (event) => {
+        if (!configDirty) return;
+        event.preventDefault();
+        event.returnValue = "";
+      },
+      [configDirty],
+    ),
   );
 
   useEffect(() => {
@@ -1146,7 +1537,8 @@ export function AgentDetail() {
     }
 
     document.addEventListener("click", handleDocumentClick, true);
-    return () => document.removeEventListener("click", handleDocumentClick, true);
+    return () =>
+      document.removeEventListener("click", handleDocumentClick, true);
   }, [configDirty, prepareAgentNavigation]);
 
   useEffect(() => {
@@ -1171,7 +1563,11 @@ export function AgentDetail() {
       if (prepareAgentNavigation()) return;
 
       event.stopImmediatePropagation();
-      restoring = restoreAgentConfigHistoryEntry(window.history, currentEntry, event.state?.idx);
+      restoring = restoreAgentConfigHistoryEntry(
+        window.history,
+        currentEntry,
+        event.state?.idx,
+      );
     }
 
     window.addEventListener("popstate", handlePopState, true);
@@ -1185,19 +1581,29 @@ export function AgentDetail() {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
-  const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-  const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
-  const showConfigActionBar = (
-    activeView === "configuration" || activeView === "instructions" || activeView === "secrets"
-  ) && (configDirty || configSaving);
-  const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
+  const hasInvalidOrgChain =
+    agent.orgChainHealth?.status === "invalid_org_chain";
+  const pausedEscalationWarning = !hasInvalidOrgChain
+    ? (agent.orgChainHealth?.escalationWarning ?? null)
+    : null;
+  const showConfigActionBar =
+    (activeView === "configuration" ||
+      activeView === "instructions" ||
+      activeView === "secrets") &&
+    (configDirty || configSaving);
+  const showLeftAgentNotice =
+    agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === agent.id;
   const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
-  const agentStarPending = agentMembershipPending && membershipMutation.variables?.starred !== undefined;
-  const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
+  const agentStarPending =
+    agentMembershipPending &&
+    membershipMutation.variables?.starred !== undefined;
+  const agentJoinLeavePending =
+    agentMembershipPending &&
+    membershipMutation.variables?.starred === undefined;
 
   function handleAgentTabChange(value: string) {
     if (value === activeView || !prepareAgentNavigation()) return;
@@ -1205,7 +1611,9 @@ export function AgentDetail() {
   }
 
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div
+      className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}
+    >
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -1215,26 +1623,36 @@ export function AgentDetail() {
             compact
             state="left"
             pending={agentJoinLeavePending}
-            pendingState={agentJoinLeavePending ? membershipMutation.variables?.state : null}
+            pendingState={
+              agentJoinLeavePending ? membershipMutation.variables?.state : null
+            }
             resourceName={agent.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              state: "left",
-            })}
+            onJoin={() =>
+              membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                state: "joined",
+              })
+            }
+            onLeave={() =>
+              membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                state: "left",
+              })
+            }
           />
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
             aria-label="Dismiss agent membership notice"
-            onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
+            onClick={() =>
+              setDismissedLeftAgentIds((current) =>
+                new Set(current).add(agent.id),
+              )
+            }
           >
             ×
           </button>
@@ -1245,7 +1663,9 @@ export function AgentDetail() {
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 space-y-1">
             <p className="font-medium">Escalation path is paused</p>
-            <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
+            <p className="text-amber-900/90 dark:text-amber-100/90">
+              {pausedEscalationWarning}
+            </p>
           </div>
         </div>
       ) : null}
@@ -1255,16 +1675,20 @@ export function AgentDetail() {
           <div className="min-w-0 space-y-1">
             <p className="font-medium">Invalid reporting chain</p>
             <p className="text-amber-900/90 dark:text-amber-100/90">
-              {agent.name} cannot accept tasks or start runs until its reporting chain is repaired.
+              {agent.name} cannot accept tasks or start runs until its reporting
+              chain is repaired.
             </p>
             <p className="break-words font-mono text-xs text-amber-900/80 dark:text-amber-100/80">
               {formatOrgChainHealthPath(agent)}
             </p>
             {agent.orgChainHealth?.repairGuidance ? (
-              <p className="text-amber-900/85 dark:text-amber-100/85">{agent.orgChainHealth.repairGuidance}</p>
+              <p className="text-amber-900/85 dark:text-amber-100/85">
+                {agent.orgChainHealth.repairGuidance}
+              </p>
             ) : (
               <p className="text-amber-900/85 dark:text-amber-100/85">
-                Assign this agent to an active manager/root, or explicitly pause or terminate the affected agent/subtree.
+                Assign this agent to an active manager/root, or explicitly pause
+                or terminate the affected agent/subtree.
               </p>
             )}
           </div>
@@ -1297,25 +1721,30 @@ export function AgentDetail() {
             starred={agentStarred}
             pending={agentStarPending}
             resourceName={agent.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              starred: next,
-            })}
+            onToggle={(next) =>
+              membershipMutation.mutate({
+                resourceType: "agent",
+                resourceId: agent.id,
+                resourceName: agent.name,
+                starred: next,
+              })
+            }
           />
           <AgentActionButtons
             agent={agent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             runLabel="Run Heartbeat"
+            canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
             hasPendingNavigationChanges={configDirty}
             onBeforeNavigate={prepareAgentNavigation}
             onActionError={setActionError}
-            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
+            onTerminateSuccess={() =>
+              navigate("/agents/all", { replace: true })
+            }
             hideTerminate={Boolean(builtInState)}
             pauseConfirm={
               builtInState
@@ -1323,9 +1752,10 @@ export function AgentDetail() {
                     title: `Pause the ${builtInState.definition.displayName}?`,
                     description: (
                       <>
-                        {builtInFeatureLabel} depends on this agent. While paused,{" "}
-                        {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
-                        {builtInFeatureLabel} page shows a warning.
+                        {builtInFeatureLabel} depends on this agent. While
+                        paused, {builtInFeatureLabel.toLowerCase()} generation
+                        is skipped and the {builtInFeatureLabel} page shows a
+                        warning.
                       </>
                     ),
                   }
@@ -1341,7 +1771,9 @@ export function AgentDetail() {
                   <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
                 </span>
-                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
+                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">
+                  Live
+                </span>
               </Link>
             )}
           </AgentActionButtons>
@@ -1363,9 +1795,9 @@ export function AgentDetail() {
             </Button>
           }
         >
-          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
-          any agent — model, instructions, budget. It can be paused but not deleted; pausing it
-          pauses {builtInFeatureLabel}.
+          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>
+          . Configure it like any agent — model, instructions, budget. It can be
+          paused but not deleted; pausing it pauses {builtInFeatureLabel}.
         </InlineBanner>
       )}
 
@@ -1376,9 +1808,17 @@ export function AgentDetail() {
           onConfigure={() => setShowBuiltInConfigure(true)}
           onResetResource={(kind) => resetBuiltInResource.mutate(kind)}
           onRunRoutine={(routineKey) => runBuiltInRoutine.mutate(routineKey)}
-          onEnableSchedule={(routineKey) => enableBuiltInSchedule.mutate(routineKey)}
-          onDisableSchedule={(routineKey) => disableBuiltInSchedule.mutate(routineKey)}
-          resettingResource={resetBuiltInResource.isPending ? resetBuiltInResource.variables ?? null : null}
+          onEnableSchedule={(routineKey) =>
+            enableBuiltInSchedule.mutate(routineKey)
+          }
+          onDisableSchedule={(routineKey) =>
+            disableBuiltInSchedule.mutate(routineKey)
+          }
+          resettingResource={
+            resetBuiltInResource.isPending
+              ? (resetBuiltInResource.variables ?? null)
+              : null
+          }
           routineActionPending={builtInRoutineActionPending}
         />
       )}
@@ -1397,10 +1837,7 @@ export function AgentDetail() {
       )}
 
       {!urlRunId && (
-        <Tabs
-          value={activeView}
-          onValueChange={handleAgentTabChange}
-        >
+        <Tabs value={activeView} onValueChange={handleAgentTabChange}>
           <PageTabBar
             items={AGENT_DETAIL_TABS}
             value={activeView}
@@ -1412,7 +1849,9 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
-          <span>This agent is pending board approval and cannot be invoked yet.</span>
+          <span>
+            This agent is pending board approval and cannot be invoked yet.
+          </span>
           <Button
             variant="outline"
             size="sm"
@@ -1453,7 +1892,9 @@ export function AgentDetail() {
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
           <div
             className="flex items-center justify-end gap-2 px-3 py-2"
-            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
+            style={{
+              paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)",
+            }}
           >
             <Button
               variant="ghost"
@@ -1549,7 +1990,11 @@ export function AgentDetail() {
       )}
 
       {activeView === "audit" && resolvedCompanyId ? (
-        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} hideHeader />
+        <AuditFeed
+          companyId={resolvedCompanyId}
+          lockedAgentId={agent.id}
+          hideHeader
+        />
       ) : null}
 
       {activeView === "budget" && resolvedCompanyId ? (
@@ -1568,7 +2013,13 @@ export function AgentDetail() {
 
 /* ---- Helper components ---- */
 
-function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
+function SummaryRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-muted-foreground text-xs">{label}</span>
@@ -1577,7 +2028,12 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-export type LatestRunIssue = { id: string; title: string; status: string; identifier?: string | null };
+export type LatestRunIssue = {
+  id: string;
+  title: string;
+  status: string;
+  identifier?: string | null;
+};
 
 /**
  * The id of the issue a run works on, read from its context snapshot. Newer
@@ -1625,12 +2081,15 @@ function LatestRunCard({
   const sorted = useMemo(
     () =>
       [...runs].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       ),
-    [runs]
+    [runs],
   );
 
-  const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
+  const liveRun = sorted.find(
+    (r) => r.status === "running" || r.status === "queued",
+  );
   const run = liveRun ?? sorted[0];
 
   // The assigned-issues list this card resolves against is bounded (server page
@@ -1639,7 +2098,8 @@ function LatestRunCard({
   // directly so the running row always links to the task rather than falling
   // back to run metadata. `enabled` keeps this a no-op for the common case.
   const snapshotIssueId = run ? getRunSnapshotIssueId(run) : undefined;
-  const needsFallbackFetch = !!snapshotIssueId && !issuesById.has(snapshotIssueId);
+  const needsFallbackFetch =
+    !!snapshotIssueId && !issuesById.has(snapshotIssueId);
   const { data: fallbackIssue } = useQuery({
     queryKey: queryKeys.issues.detail(snapshotIssueId ?? "__none__"),
     queryFn: () => issuesApi.get(snapshotIssueId as string),
@@ -1649,8 +2109,12 @@ function LatestRunCard({
 
   const summaryRaw = run
     ? run.resultJson
-      ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-      : run.error ?? ""
+      ? String(
+          (run.resultJson as Record<string, unknown>).summary ??
+            (run.resultJson as Record<string, unknown>).result ??
+            "",
+        )
+      : (run.error ?? "")
     : "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
@@ -1660,7 +2124,15 @@ function LatestRunCard({
       .replace(/^#{1,6}\s+/gm, "")
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+      .filter(
+        (l) =>
+          l.length > 0 &&
+          !l.startsWith("---") &&
+          !l.startsWith("|") &&
+          !l.startsWith("```") &&
+          !/^[-*>]/.test(l) &&
+          !/^\d+\./.test(l),
+      );
     const excerpt: string[] = [];
     let chars = 0;
     for (const line of lines) {
@@ -1685,17 +2157,21 @@ function LatestRunCard({
           identifier: fallbackIssue.identifier,
         })
       : issuesById;
-  const { task, runHref, rowHref } = resolveLatestRunNavigation(run, agentId, effectiveIssuesById);
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+  const { task, runHref, rowHref } = resolveLatestRunNavigation(
+    run,
+    agentId,
+    effectiveIssuesById,
+  );
+  const statusInfo = runStatusIcons[run.status] ?? {
+    icon: Clock,
+    color: "text-neutral-400",
+  };
   const StatusIcon = statusInfo.icon;
 
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
-        <Link
-          to={runHref}
-          className="no-underline"
-        >
+        <Link to={runHref} className="no-underline">
           <h3 className="flex items-center gap-2 text-sm font-medium transition-colors hover:text-foreground">
             {isLive && (
               <span className="relative flex h-2 w-2">
@@ -1715,11 +2191,19 @@ function LatestRunCard({
         to={rowHref}
         className={cn(
           "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
-          isLive ? "border-blue-500/30 shadow-(--shadow-extract-14)" : "border-border"
+          isLive
+            ? "border-blue-500/30 shadow-(--shadow-extract-14)"
+            : "border-border",
         )}
       >
         <div className="flex items-center gap-2">
-          <StatusIcon className={cn("h-3.5 w-3.5", statusInfo.color, run.status === "running" && "animate-spin")} />
+          <StatusIcon
+            className={cn(
+              "h-3.5 w-3.5",
+              statusInfo.color,
+              run.status === "running" && "animate-spin",
+            )}
+          />
           <StatusBadge status={run.status} />
           {task ? (
             <>
@@ -1731,24 +2215,36 @@ function LatestRunCard({
             </>
           ) : (
             <>
-              <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
-              <Badge variant="ghost" className={cn(
-                "px-1.5 text-(length:--text-nano)",
-                run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-                  : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-                  : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
-                  : "bg-muted text-muted-foreground"
-              )}>
+              <span className="font-mono text-xs text-muted-foreground">
+                {run.id.slice(0, 8)}
+              </span>
+              <Badge
+                variant="ghost"
+                className={cn(
+                  "px-1.5 text-(length:--text-nano)",
+                  run.invocationSource === "timer"
+                    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                    : run.invocationSource === "assignment"
+                      ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                      : run.invocationSource === "on_demand"
+                        ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+                        : "bg-muted text-muted-foreground",
+                )}
+              >
                 {sourceLabels[run.invocationSource] ?? run.invocationSource}
               </Badge>
             </>
           )}
-          <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt)}</span>
+          <span className="ml-auto text-xs text-muted-foreground">
+            {relativeTime(run.createdAt)}
+          </span>
         </div>
 
         {summary && (
           <div className="overflow-hidden max-h-16">
-            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{summary}</MarkdownBody>
+            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              {summary}
+            </MarkdownBody>
           </div>
         )}
       </Link>
@@ -1768,7 +2264,14 @@ function AgentOverview({
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
-  assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
+  assignedIssues: {
+    id: string;
+    title: string;
+    status: string;
+    priority: string;
+    identifier?: string | null;
+    createdAt: Date;
+  }[];
   runtimeState?: AgentRuntimeState;
   agentId: string;
   agentRouteId: string;
@@ -1782,7 +2285,11 @@ function AgentOverview({
   return (
     <div className="space-y-8">
       {/* Latest Run */}
-      <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
+      <LatestRunCard
+        runs={runs}
+        agentId={agentRouteId}
+        issuesById={issuesById}
+      />
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1857,9 +2364,17 @@ function CostsSection({
   const runsWithCost = runs
     .filter((r) => {
       const metrics = runMetrics(r);
-      return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
+      return (
+        metrics.cost > 0 ||
+        metrics.input > 0 ||
+        metrics.output > 0 ||
+        metrics.cached > 0
+      );
     })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
 
   return (
     <div className="space-y-4">
@@ -1867,20 +2382,36 @@ function CostsSection({
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
+              <span className="text-xs text-muted-foreground block">
+                Input tokens
+              </span>
+              <span className="text-lg font-semibold">
+                {formatTokens(runtimeState.totalInputTokens)}
+              </span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
+              <span className="text-xs text-muted-foreground block">
+                Output tokens
+              </span>
+              <span className="text-lg font-semibold">
+                {formatTokens(runtimeState.totalOutputTokens)}
+              </span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
+              <span className="text-xs text-muted-foreground block">
+                Cached tokens
+              </span>
+              <span className="text-lg font-semibold">
+                {formatTokens(runtimeState.totalCachedInputTokens)}
+              </span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
-              <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
+              <span className="text-xs text-muted-foreground block">
+                Total cost
+              </span>
+              <span className="text-lg font-semibold">
+                {formatCents(runtimeState.totalCostCents)}
+              </span>
             </div>
           </div>
         </div>
@@ -1890,27 +2421,58 @@ function CostsSection({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-accent/20">
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th
+                  scope="col"
+                  className="text-left px-3 py-2 font-medium text-muted-foreground"
+                >
+                  Date
+                </th>
+                <th
+                  scope="col"
+                  className="text-left px-3 py-2 font-medium text-muted-foreground"
+                >
+                  Run
+                </th>
+                <th
+                  scope="col"
+                  className="text-right px-3 py-2 font-medium text-muted-foreground"
+                >
+                  Input
+                </th>
+                <th
+                  scope="col"
+                  className="text-right px-3 py-2 font-medium text-muted-foreground"
+                >
+                  Output
+                </th>
+                <th
+                  scope="col"
+                  className="text-right px-3 py-2 font-medium text-muted-foreground"
+                >
+                  Cost
+                </th>
               </tr>
             </thead>
             <tbody>
               {runsWithCost.slice(0, 10).map((run) => {
                 const metrics = runMetrics(run);
                 return (
-                  <tr key={run.id} className="border-b border-border last:border-b-0">
+                  <tr
+                    key={run.id}
+                    className="border-b border-border last:border-b-0"
+                  >
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
-                    <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
+                    <td className="px-3 py-2 font-mono">
+                      {run.id.slice(0, 8)}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {metrics.cost > 0
-                        ? `$${metrics.cost.toFixed(4)}`
-                        : "-"
-                      }
+                      {formatTokens(metrics.input)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatTokens(metrics.output)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}
                     </td>
                   </tr>
                 );
@@ -1965,7 +2527,10 @@ function AgentConfigurePage({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
+  updatePermissions: {
+    mutate: (permissions: AgentPermissionUpdate) => void;
+    isPending: boolean;
+  };
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1978,12 +2543,27 @@ function AgentConfigurePage({
   });
 
   const rollbackConfig = useMutation({
-    mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
+    mutationFn: (revisionId: string) =>
+      agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
     onSuccess: (updated) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.configRevisions(agent.id),
+      });
+      if (
+        !syncAgentRouteAfterRename(
+          queryClient,
+          navigate,
+          agent,
+          updated,
+          urlTab ?? "configuration",
+        )
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.detail(agent.urlKey),
+        });
       }
     },
   });
@@ -2012,24 +2592,34 @@ function AgentConfigurePage({
           className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
           onClick={() => setRevisionsOpen((v) => !v)}
         >
-          {revisionsOpen
-            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
+          {revisionsOpen ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
           Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          <span className="text-xs font-normal text-muted-foreground">
+            {configRevisions?.length ?? 0}
+          </span>
         </button>
         {revisionsOpen && (
           <div className="mt-3">
             {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+              <p className="text-sm text-muted-foreground">
+                No configuration revisions yet.
+              </p>
             ) : (
               <div className="space-y-2">
                 {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
+                  <div
+                    key={revision.id}
+                    className="border border-border/70 rounded-md p-3 space-y-2"
+                  >
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-xs text-muted-foreground">
-                        <span className="font-mono">{revision.id.slice(0, 8)}</span>
+                        <span className="font-mono">
+                          {revision.id.slice(0, 8)}
+                        </span>
                         <span className="mx-1">·</span>
                         <span>{formatDate(revision.createdAt)}</span>
                         <span className="mx-1">·</span>
@@ -2047,7 +2637,9 @@ function AgentConfigurePage({
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+                      {revision.changedKeys.length > 0
+                        ? revision.changedKeys.join(", ")
+                        : "no tracked changes"}
                     </p>
                   </div>
                 ))}
@@ -2080,7 +2672,10 @@ function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
+  updatePermissions: {
+    mutate: (permissions: AgentPermissionUpdate) => void;
+    isPending: boolean;
+  };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
   content?: "configuration" | "secrets";
@@ -2089,45 +2684,73 @@ function ConfigurationTab({
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
   const { pushToast } = useToastActions();
-  const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
+  const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] =
+    useState(false);
   const lastAgentRef = useRef(agent);
 
   const { data: adapterModels } = useQuery({
-    queryKey:
-      companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
-        : ["agents", "none", "adapter-models", agent.adapterType],
+    queryKey: companyId
+      ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
+      : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
     enabled: Boolean(companyId) && content === "configuration",
   });
 
-  const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
+  const lowTrustSelected =
+    getTrustPreset(agent.permissions) === "low_trust_review";
 
-  const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
-    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
-    queryFn: () => projectsApi.list(companyId!),
-    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
-  });
+  const { data: boundaryProjects, isLoading: boundaryProjectsLoading } =
+    useQuery({
+      queryKey: companyId
+        ? queryKeys.projects.list(companyId)
+        : ["projects", "__low-trust-disabled"],
+      queryFn: () => projectsApi.list(companyId!),
+      enabled:
+        Boolean(companyId && lowTrustSelected) && content === "configuration",
+    });
 
   const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
     queryKey: companyId
       ? [...queryKeys.issues.list(companyId), "low-trust-boundary-candidates"]
       : ["issues", "__low-trust-disabled"],
-    queryFn: () => issuesApi.list(companyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
-    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
+    queryFn: () =>
+      issuesApi.list(companyId!, {
+        limit: 100,
+        sortField: "updated",
+        sortDir: "desc",
+      }),
+    enabled:
+      Boolean(companyId && lowTrustSelected) && content === "configuration",
   });
 
   const updateAgent = useMutation({
-    mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
+    mutationFn: (data: Record<string, unknown>) =>
+      agentsApi.update(agent.id, data, companyId),
     onMutate: () => {
       setAwaitingRefreshAfterSave(true);
     },
     onSuccess: (updated) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.configRevisions(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(agent.companyId),
+      });
+      if (
+        !syncAgentRouteAfterRename(
+          queryClient,
+          navigate,
+          agent,
+          updated,
+          urlTab ?? content,
+        )
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.detail(agent.urlKey),
+        });
       }
       pushToast({ title: "Agent saved", tone: "success" });
     },
@@ -2190,42 +2813,65 @@ function ConfigurationTab({
       />
       {content === "configuration" ? (
         <p className="text-xs text-muted-foreground">
-          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
+          Saved adapter config affects the next run. Active runs keep the config
+          they started with, and config changes may start a fresh adapter
+          session.
         </p>
       ) : null}
 
-      {content === "configuration" ? <TrustPresetSection
-        permissions={agent.permissions}
-        disabled={updatePermissions.isPending}
-        companyId={companyId}
-        projectCandidates={(boundaryProjects ?? []).map((project) => ({
-          id: project.id,
-          label: project.name,
-        }))}
-        issueCandidates={(boundaryIssues ?? []).map((issue) => ({
-          id: issue.id,
-          label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
-        }))}
-        candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
-        onChange={(nextPermissions) =>
-          updatePermissions.mutate({
-            canCreateAgents,
-            canCreateSkills,
-            canAssignTasks,
-            ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
-          })
-        }
-      /> : null}
+      {content === "configuration" ? (
+        <TrustPresetSection
+          permissions={agent.permissions}
+          disabled={updatePermissions.isPending}
+          companyId={companyId}
+          projectCandidates={(boundaryProjects ?? []).map((project) => ({
+            id: project.id,
+            label: project.name,
+          }))}
+          issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+            id: issue.id,
+            label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+          }))}
+          candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
+          onChange={(nextPermissions) =>
+            updatePermissions.mutate({
+              canCreateAgents,
+              canCreateSkills,
+              canAssignTasks,
+              ...buildPermissionsForTrustPreset(
+                nextPermissions,
+                nextPermissions.trustPreset === "low_trust_review"
+                  ? "low_trust_review"
+                  : "standard",
+              ),
+            })
+          }
+        />
+      ) : null}
 
-      {content === "configuration" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can create new agents</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
-              </p>
+      {content === "configuration" ? (
+        <div>
+          <h3 className="text-sm font-medium mb-3">Permissions</h3>
+          <div className="border border-border rounded-lg p-4 space-y-4">
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <div className="space-y-1">
+                <div>Can create new agents</div>
+                <p className="text-xs text-muted-foreground">
+                  Lets this agent create or hire agents. This also grants task
+                  assignment authority.
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={canCreateAgents}
+                onCheckedChange={() =>
+                  updatePermissions.mutate({
+                    canCreateAgents: !canCreateAgents,
+                    canCreateSkills,
+                    canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                  })
+                }
+                disabled={updatePermissions.isPending}
+              />
             </div>
             <ToggleSwitch
               checked={canCreateAgents}
@@ -2246,39 +2892,28 @@ function ConfigurationTab({
                 Lets this agent install, import, create, and scan organization skills without creating agents.
               </p>
             </div>
-            <ToggleSwitch
-              checked={canCreateSkills}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills: !canCreateSkills,
-                  canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can assign tasks</div>
-              <p className="text-xs text-muted-foreground">
-                {taskAssignHint}
-              </p>
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <div className="space-y-1">
+                <div>Can assign tasks</div>
+                <p className="text-xs text-muted-foreground">
+                  {taskAssignHint}
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={canAssignTasks}
+                onCheckedChange={() =>
+                  updatePermissions.mutate({
+                    canCreateAgents,
+                    canCreateSkills,
+                    canAssignTasks: !canAssignTasks,
+                  })
+                }
+                disabled={updatePermissions.isPending || taskAssignLocked}
+              />
             </div>
-            <ToggleSwitch
-              checked={canAssignTasks}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills,
-                  canAssignTasks: !canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending || taskAssignLocked}
-            />
           </div>
         </div>
-      </div> : null}
+      ) : null}
     </div>
   );
 }
@@ -2316,7 +2951,9 @@ export function PromptsTab({
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(260);
-  const [instructionPaneWidth, setInstructionPaneWidth] = useState<number | null>(null);
+  const [instructionPaneWidth, setInstructionPaneWidth] = useState<
+    number | null
+  >(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
@@ -2362,11 +2999,13 @@ export function PromptsTab({
   });
 
   const persistedMode = bundle?.mode ?? "managed";
-  const persistedRootPath = persistedMode === "managed"
-    ? (bundle?.managedRootPath ?? bundle?.rootPath ?? "")
-    : (bundle?.rootPath ?? "");
+  const persistedRootPath =
+    persistedMode === "managed"
+      ? (bundle?.managedRootPath ?? bundle?.rootPath ?? "")
+      : (bundle?.rootPath ?? "");
   const currentMode = bundleDraft?.mode ?? persistedMode;
-  const currentEntryFile = bundleDraft?.entryFile ?? bundle?.entryFile ?? "AGENTS.md";
+  const currentEntryFile =
+    bundleDraft?.entryFile ?? bundle?.entryFile ?? "AGENTS.md";
   const currentRootPath = bundleDraft?.rootPath ?? persistedRootPath;
   const fileOptions = useMemo(
     () => bundle?.files.map((file) => file.path) ?? [],
@@ -2379,22 +3018,29 @@ export function PromptsTab({
     currentRootPath === persistedRootPath,
   );
   const visibleFilePaths = useMemo(
-    () => bundleMatchesDraft
-      ? [...new Set([currentEntryFile, ...fileOptions, ...pendingFiles])]
-      : [currentEntryFile, ...pendingFiles],
+    () =>
+      bundleMatchesDraft
+        ? [...new Set([currentEntryFile, ...fileOptions, ...pendingFiles])]
+        : [currentEntryFile, ...pendingFiles],
     [bundleMatchesDraft, currentEntryFile, fileOptions, pendingFiles],
   );
   const fileTree = useMemo(
-    () => buildFileTree(Object.fromEntries(visibleFilePaths.map((filePath) => [filePath, ""]))),
+    () =>
+      buildFileTree(
+        Object.fromEntries(visibleFilePaths.map((filePath) => [filePath, ""])),
+      ),
     [visibleFilePaths],
   );
   const selectedOrEntryFile = selectedFile || currentEntryFile;
-  const selectedFileExists = bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
-  const selectedFileSummary = bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
+  const selectedFileExists =
+    bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
+  const selectedFileSummary =
+    bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
 
   const { data: selectedFileDetail, isLoading: fileLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsFile(agent.id, selectedOrEntryFile),
-    queryFn: () => agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
+    queryFn: () =>
+      agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
     enabled: Boolean(companyId && isLocal && selectedFileExists),
   });
 
@@ -2410,9 +3056,15 @@ export function PromptsTab({
       setAwaitingRefresh(true);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.instructionsBundle(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.urlKey),
+      });
     },
     onError: () => setAwaitingRefresh(false),
   });
@@ -2426,10 +3078,18 @@ export function PromptsTab({
     },
     onSuccess: (_, variables) => {
       setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, variables.path) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.instructionsBundle(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.instructionsFile(agent.id, variables.path),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.urlKey),
+      });
     },
     onError: () => setAwaitingRefresh(false),
   });
@@ -2441,10 +3101,18 @@ export function PromptsTab({
       setAwaitingRefresh(true);
     },
     onSuccess: (_, relativePath) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
-      queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.instructionsBundle(agent.id),
+      });
+      queryClient.removeQueries({
+        queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agent.urlKey),
+      });
     },
     onError: () => setAwaitingRefresh(false),
   });
@@ -2467,10 +3135,24 @@ export function PromptsTab({
       if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
       return;
     }
-    if (!availablePaths.includes(selectedFile) && selectedFile !== currentEntryFile && !pendingFiles.includes(selectedFile)) {
-      setSelectedFile(availablePaths.includes(bundle.entryFile) ? bundle.entryFile : availablePaths[0]!);
+    if (
+      !availablePaths.includes(selectedFile) &&
+      selectedFile !== currentEntryFile &&
+      !pendingFiles.includes(selectedFile)
+    ) {
+      setSelectedFile(
+        availablePaths.includes(bundle.entryFile)
+          ? bundle.entryFile
+          : availablePaths[0]!,
+      );
     }
-  }, [bundle, bundleMatchesDraft, currentEntryFile, pendingFiles, selectedFile]);
+  }, [
+    bundle,
+    bundleMatchesDraft,
+    currentEntryFile,
+    pendingFiles,
+    selectedFile,
+  ]);
 
   useEffect(() => {
     const nextExpanded = new Set<string>();
@@ -2482,7 +3164,9 @@ export function PromptsTab({
         nextExpanded.add(currentPath);
       }
     }
-    setExpandedDirs((current) => (setsEqual(current, nextExpanded) ? current : nextExpanded));
+    setExpandedDirs((current) =>
+      setsEqual(current, nextExpanded) ? current : nextExpanded,
+    );
   }, [visibleFilePaths]);
 
   useEffect(() => {
@@ -2493,7 +3177,8 @@ export function PromptsTab({
     const element = containerRef.current;
     if (!element) return;
 
-    const updateWidth = () => setInstructionPaneWidth(element.getBoundingClientRect().width);
+    const updateWidth = () =>
+      setInstructionPaneWidth(element.getBoundingClientRect().width);
     updateWidth();
 
     if (typeof ResizeObserver === "undefined") return;
@@ -2506,9 +3191,10 @@ export function PromptsTab({
   }, [bundleLoading, isMobile, visibleFilePaths.length]);
 
   useEffect(() => {
-    const versionKey = selectedFileExists && selectedFileDetail
-      ? `${selectedFileDetail.path}:${selectedFileDetail.content}`
-      : `draft:${currentMode}:${currentRootPath}:${selectedOrEntryFile}`;
+    const versionKey =
+      selectedFileExists && selectedFileDetail
+        ? `${selectedFileDetail.path}:${selectedFileDetail.content}`
+        : `draft:${currentMode}:${currentRootPath}:${selectedOrEntryFile}`;
     if (awaitingRefresh) {
       setAwaitingRefresh(false);
       setBundleDraft(null);
@@ -2520,7 +3206,14 @@ export function PromptsTab({
       setDraft(null);
       lastFileVersionRef.current = versionKey;
     }
-  }, [awaitingRefresh, currentMode, currentRootPath, selectedFileDetail, selectedFileExists, selectedOrEntryFile]);
+  }, [
+    awaitingRefresh,
+    currentMode,
+    currentRootPath,
+    selectedFileDetail,
+    selectedFileExists,
+    selectedOrEntryFile,
+  ]);
 
   useEffect(() => {
     if (!bundle) return;
@@ -2541,9 +3234,17 @@ export function PromptsTab({
       entryFile: currentEntryFile,
       selectedFile: selectedOrEntryFile,
     };
-  }, [bundle, currentEntryFile, currentMode, currentRootPath, selectedOrEntryFile]);
+  }, [
+    bundle,
+    currentEntryFile,
+    currentMode,
+    currentRootPath,
+    selectedOrEntryFile,
+  ]);
 
-  const currentContent = selectedFileExists ? (selectedFileDetail?.content ?? "") : "";
+  const currentContent = selectedFileExists
+    ? (selectedFileDetail?.content ?? "")
+    : "";
   const displayValue = draft ?? currentContent;
   const useMarkdownEditor = shouldUseMarkdownInstructionsEditor({
     selectedFileExists,
@@ -2553,18 +3254,17 @@ export function PromptsTab({
   });
   const bundleDirty = Boolean(
     bundleDraft &&
-      (
-        bundleDraft.mode !== persistedMode ||
-        bundleDraft.rootPath !== persistedRootPath ||
-        bundleDraft.entryFile !== (bundle?.entryFile ?? "AGENTS.md")
-      ),
+    (bundleDraft.mode !== persistedMode ||
+      bundleDraft.rootPath !== persistedRootPath ||
+      bundleDraft.entryFile !== (bundle?.entryFile ?? "AGENTS.md")),
   );
   const fileDirty = draft !== null && draft !== currentContent;
   const isDirty = bundleDirty || fileDirty;
-  const isSaving = updateBundle.isPending || saveFile.isPending || deleteFile.isPending || awaitingRefresh;
-
-  useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
-  useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
+  const isSaving =
+    updateBundle.isPending ||
+    saveFile.isPending ||
+    deleteFile.isPending ||
+    awaitingRefresh;
 
   useEffect(() => () => {
     onSaveActionChange(null);
@@ -2574,27 +3274,42 @@ export function PromptsTab({
   }, [onCancelActionChange, onDirtyChange, onSaveActionChange, onSavingChange]);
 
   useEffect(() => {
-    onSaveActionChange(isDirty ? () => {
-      const save = async () => {
-        const shouldClearLegacy =
-          Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
-        if (bundleDirty && bundleDraft) {
-          await updateBundle.mutateAsync({
-            mode: bundleDraft.mode,
-            rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
-            entryFile: bundleDraft.entryFile,
-          });
-        }
-        if (fileDirty) {
-          await saveFile.mutateAsync({
-            path: selectedOrEntryFile,
-            content: displayValue,
-            clearLegacyPromptTemplate: shouldClearLegacy,
-          });
-        }
-      };
-      void save().catch(() => undefined);
-    } : null);
+    onSavingChange(isSaving);
+  }, [onSavingChange, isSaving]);
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [onDirtyChange, isDirty]);
+
+  useEffect(() => {
+    onSaveActionChange(
+      isDirty
+        ? () => {
+            const save = async () => {
+              const shouldClearLegacy =
+                Boolean(bundle?.legacyPromptTemplateActive) ||
+                Boolean(bundle?.legacyBootstrapPromptTemplateActive);
+              if (bundleDirty && bundleDraft) {
+                await updateBundle.mutateAsync({
+                  mode: bundleDraft.mode,
+                  rootPath:
+                    bundleDraft.mode === "external"
+                      ? bundleDraft.rootPath
+                      : null,
+                  entryFile: bundleDraft.entryFile,
+                });
+              }
+              if (fileDirty) {
+                await saveFile.mutateAsync({
+                  path: selectedOrEntryFile,
+                  content: displayValue,
+                  clearLegacyPromptTemplate: shouldClearLegacy,
+                });
+              }
+            };
+            void save().catch(() => undefined);
+          }
+        : null,
+    );
   }, [
     bundle,
     bundleDirty,
@@ -2609,41 +3324,50 @@ export function PromptsTab({
   ]);
 
   useEffect(() => {
-    onCancelActionChange(isDirty ? () => {
-      setDraft(null);
-      if (bundle) {
-        setBundleDraft({
-          mode: persistedMode,
-          rootPath: persistedRootPath,
-          entryFile: bundle.entryFile,
-        });
-      }
-    } : null);
+    onCancelActionChange(
+      isDirty
+        ? () => {
+            setDraft(null);
+            if (bundle) {
+              setBundleDraft({
+                mode: persistedMode,
+                rootPath: persistedRootPath,
+                entryFile: bundle.entryFile,
+              });
+            }
+          }
+        : null,
+    );
   }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath]);
 
-  const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = filePanelWidth;
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const delta = moveEvent.clientX - startX;
-      const next = Math.max(180, Math.min(500, startWidth + delta));
-      setFilePanelWidth(next);
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [filePanelWidth]);
+  const handleSeparatorDrag = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = filePanelWidth;
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const delta = moveEvent.clientX - startX;
+        const next = Math.max(180, Math.min(500, startWidth + delta));
+        setFilePanelWidth(next);
+      };
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [filePanelWidth],
+  );
 
   const instructionsSideBySide =
-    !isMobile && instructionPaneWidth !== null && instructionPaneWidth >= filePanelWidth + 520;
+    !isMobile &&
+    instructionPaneWidth !== null &&
+    instructionPaneWidth >= filePanelWidth + 520;
 
   if (!isLocal) {
     return (
@@ -2664,14 +3388,19 @@ export function PromptsTab({
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
-            <div key={warning} className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-900 dark:text-sky-100">
+            <div
+              key={warning}
+              className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-900 dark:text-sky-100"
+            >
               {warning}
             </div>
           ))}
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
+        Saved instructions affect the next run. Active runs keep the
+        instructions they started with, and instruction changes may start a
+        fresh adapter session.
       </p>
 
       <Collapsible defaultOpen={currentMode === "external"}>
@@ -2690,7 +3419,9 @@ export function PromptsTab({
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      Managed: Paperclip stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.
+                      Managed: Paperclip stores and serves the instructions
+                      bundle. External: you provide a path on disk where the
+                      instructions live.
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -2724,13 +3455,22 @@ export function PromptsTab({
                     variant={currentMode === "external" ? "default" : "outline"}
                     onClick={() => {
                       const externalBundle = externalBundleRef.current;
-                      const nextEntryFile = externalBundle?.entryFile ?? currentEntryFile ?? "AGENTS.md";
+                      const nextEntryFile =
+                        externalBundle?.entryFile ??
+                        currentEntryFile ??
+                        "AGENTS.md";
                       setBundleDraft({
                         mode: "external",
-                        rootPath: externalBundle?.rootPath ?? (bundle?.mode === "external" ? (bundle.rootPath ?? "") : ""),
+                        rootPath:
+                          externalBundle?.rootPath ??
+                          (bundle?.mode === "external"
+                            ? (bundle.rootPath ?? "")
+                            : ""),
                         entryFile: nextEntryFile,
                       });
-                      setSelectedFile(externalBundle?.selectedFile ?? nextEntryFile);
+                      setSelectedFile(
+                        externalBundle?.selectedFile ?? nextEntryFile,
+                      );
                     }}
                   >
                     External
@@ -2745,13 +3485,20 @@ export function PromptsTab({
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip automatically.
+                      The absolute directory on disk where the instructions
+                      bundle lives. In managed mode this is set by Paperclip
+                      automatically.
                     </TooltipContent>
                   </Tooltip>
                 </span>
                 {currentMode === "managed" ? (
                   <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground pt-1.5">
-                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || "(managed)"}</span>
+                    <span
+                      className="min-w-0 truncate"
+                      title={currentRootPath || undefined}
+                    >
+                      {currentRootPath || "(managed)"}
+                    </span>
                     {currentRootPath && (
                       <CopyText text={currentRootPath} className="shrink-0">
                         <Copy className="h-3.5 w-3.5" />
@@ -2794,7 +3541,8 @@ export function PromptsTab({
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      The main file the agent reads first when loading instructions. Defaults to AGENTS.md.
+                      The main file the agent reads first when loading
+                      instructions. Defaults to AGENTS.md.
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -2802,9 +3550,10 @@ export function PromptsTab({
                   value={currentEntryFile}
                   onChange={(event) => {
                     const nextEntryFile = event.target.value || "AGENTS.md";
-                    const nextSelectedFile = selectedOrEntryFile === currentEntryFile
-                      ? nextEntryFile
-                      : selectedOrEntryFile;
+                    const nextSelectedFile =
+                      selectedOrEntryFile === currentEntryFile
+                        ? nextEntryFile
+                        : selectedOrEntryFile;
                     if (currentMode === "external") {
                       externalBundleRef.current = {
                         rootPath: currentRootPath,
@@ -2812,7 +3561,8 @@ export function PromptsTab({
                         selectedFile: nextSelectedFile,
                       };
                     }
-                    if (selectedOrEntryFile === currentEntryFile) setSelectedFile(nextEntryFile);
+                    if (selectedOrEntryFile === currentEntryFile)
+                      setSelectedFile(nextEntryFile);
                     setBundleDraft({
                       mode: currentMode,
                       rootPath: currentRootPath,
@@ -2832,15 +3582,19 @@ export function PromptsTab({
         className="grid min-w-0 gap-3"
         style={
           instructionsSideBySide
-            ? { gridTemplateColumns: `${filePanelWidth}px 0.5rem minmax(0, 1fr)` }
+            ? {
+                gridTemplateColumns: `${filePanelWidth}px 0.5rem minmax(0, 1fr)`,
+              }
             : undefined
         }
       >
-        <div className={cn(
-          "min-w-0 w-full border border-border rounded-lg p-3 space-y-3",
-          isMobile && showFilePanel && "block",
-          isMobile && !showFilePanel && "hidden",
-        )}>
+        <div
+          className={cn(
+            "min-w-0 w-full border border-border rounded-lg p-3 space-y-3",
+            isMobile && showFilePanel && "block",
+            isMobile && !showFilePanel && "hidden",
+          )}
+        >
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Files</h4>
             <div className="flex items-center gap-1">
@@ -2893,7 +3647,9 @@ export function PromptsTab({
                   onClick={() => {
                     const candidate = newFilePath.trim();
                     if (!candidate || candidate.includes("..")) return;
-                    setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
+                    setPendingFiles((prev) =>
+                      prev.includes(candidate) ? prev : [...prev, candidate],
+                    );
                     setSelectedFile(candidate);
                     setDraft("");
                     setNewFilePath("");
@@ -2922,12 +3678,14 @@ export function PromptsTab({
             selectedFile={selectedOrEntryFile}
             expandedDirs={expandedDirs}
             checkedFiles={new Set()}
-            onToggleDir={(dirPath) => setExpandedDirs((current) => {
-              const next = new Set(current);
-              if (next.has(dirPath)) next.delete(dirPath);
-              else next.add(dirPath);
-              return next;
-            })}
+            onToggleDir={(dirPath) =>
+              setExpandedDirs((current) => {
+                const next = new Set(current);
+                if (next.has(dirPath)) next.delete(dirPath);
+                else next.add(dirPath);
+                return next;
+              })
+            }
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
               if (!fileOptions.includes(filePath)) setDraft("");
@@ -2937,7 +3695,9 @@ export function PromptsTab({
             showCheckboxes={false}
             wrapLabels
             renderFileExtra={(node) => {
-              const file = bundle?.files.find((entry) => entry.path === node.path);
+              const file = bundle?.files.find(
+                (entry) => entry.path === node.path,
+              );
               if (!file) return null;
               if (file.deprecated) {
                 return (
@@ -2948,7 +3708,8 @@ export function PromptsTab({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
+                      Legacy inline prompt — this deprecated virtual file
+                      preserves the old promptTemplate content
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -2970,7 +3731,12 @@ export function PromptsTab({
           />
         )}
 
-        <div className={cn("min-w-0 w-full overflow-hidden border border-border rounded-lg p-4 space-y-3", isMobile && showFilePanel && "hidden")}>
+        <div
+          className={cn(
+            "min-w-0 w-full overflow-hidden border border-border rounded-lg p-4 space-y-3",
+            isMobile && showFilePanel && "hidden",
+          )}
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
@@ -2985,7 +3751,9 @@ export function PromptsTab({
                 </Button>
               )}
               <div className="min-w-0">
-                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+                <h4 className="text-sm font-medium font-mono truncate">
+                  {selectedOrEntryFile}
+                </h4>
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
@@ -3007,26 +3775,28 @@ export function PromptsTab({
                   <Copy className="h-3.5 w-3.5" />
                 </CopyText>
               )}
-              {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    if (confirm(`Delete ${selectedOrEntryFile}?`)) {
-                      deleteFile.mutate(selectedOrEntryFile, {
-                        onSuccess: () => {
-                          setSelectedFile(currentEntryFile);
-                          setDraft(null);
-                        },
-                      });
-                    }
-                  }}
-                  disabled={deleteFile.isPending}
-                >
-                  Delete
-                </Button>
-              )}
+              {selectedFileExists &&
+                !selectedFileSummary?.deprecated &&
+                selectedOrEntryFile !== currentEntryFile && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                        deleteFile.mutate(selectedOrEntryFile, {
+                          onSuccess: () => {
+                            setSelectedFile(currentEntryFile);
+                            setDraft(null);
+                          },
+                        });
+                      }
+                    }}
+                    disabled={deleteFile.isPending}
+                  >
+                    Delete
+                  </Button>
+                )}
             </div>
           </div>
 
@@ -3068,7 +3838,6 @@ export function PromptsTab({
           )}
         </div>
       </div>
-
     </div>
   );
 }
@@ -3129,38 +3898,74 @@ function PromptEditorSkeleton() {
 
 /* ---- Runs Tab ---- */
 
-function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelected: boolean; agentId: string }) {
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+function RunListItem({
+  run,
+  isSelected,
+  agentId,
+}: {
+  run: HeartbeatRun;
+  isSelected: boolean;
+  agentId: string;
+}) {
+  const statusInfo = runStatusIcons[run.status] ?? {
+    icon: Clock,
+    color: "text-neutral-400",
+  };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
   const summary = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+    ? String(
+        (run.resultJson as Record<string, unknown>).summary ??
+          (run.resultJson as Record<string, unknown>).result ??
+          "",
+      )
+    : (run.error ?? "");
   const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
 
   return (
     <Link
-      to={isSelected ? `/agents/${agentId}/runs` : `/agents/${agentId}/runs/${run.id}`}
+      to={
+        isSelected
+          ? `/agents/${agentId}/runs`
+          : `/agents/${agentId}/runs/${run.id}`
+      }
       className={cn(
         "flex flex-col gap-1 w-full px-3 py-2.5 text-left border-b border-border last:border-b-0 transition-colors no-underline text-inherit",
         isSelected ? "bg-accent/40" : "hover:bg-accent/20",
       )}
     >
       <div className="flex items-center gap-2">
-        <StatusIcon className={cn("h-3.5 w-3.5 shrink-0", statusInfo.color, run.status === "running" && "animate-spin")} />
+        <StatusIcon
+          className={cn(
+            "h-3.5 w-3.5 shrink-0",
+            statusInfo.color,
+            run.status === "running" && "animate-spin",
+          )}
+        />
         <span className="font-mono text-xs text-muted-foreground">
           {run.id.slice(0, 8)}
         </span>
-        <Badge variant="ghost" className={cn(
-          "px-1.5 text-(length:--text-nano)",
-          run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-            : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-            : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
-            : "bg-muted text-muted-foreground"
-        )}>
+        <Badge
+          variant="ghost"
+          className={cn(
+            "px-1.5 text-(length:--text-nano)",
+            run.invocationSource === "timer"
+              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+              : run.invocationSource === "assignment"
+                ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                : run.invocationSource === "on_demand"
+                  ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+                  : "bg-muted text-muted-foreground",
+          )}
+        >
           {sourceLabels[run.invocationSource] ?? run.invocationSource}
         </Badge>
-        {sourceResolvedFold ? <SourceResolvedFoldBadge showIcon={false} className="shrink-0 text-(length:--text-nano) py-0" /> : null}
+        {sourceResolvedFold ? (
+          <SourceResolvedFoldBadge
+            showIcon={false}
+            className="shrink-0 text-(length:--text-nano) py-0"
+          />
+        ) : null}
         <span className="ml-auto text-(length:--text-micro) text-muted-foreground shrink-0">
           {relativeTime(run.createdAt)}
         </span>
@@ -3172,7 +3977,9 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.totalTokens > 0 && (
+            <span>{formatTokens(metrics.totalTokens)} tok</span>
+          )}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
@@ -3205,11 +4012,13 @@ function RunsTab({
 
   // Sort by created descending
   const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
-  const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
+  const effectiveRunId = isMobile
+    ? selectedRunId
+    : (selectedRunId ?? sorted[0]?.id ?? null);
   const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
 
   // Mobile: show either run list OR run detail with back button
@@ -3224,14 +4033,25 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to runs
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+            adapterConfig={adapterConfig}
+          />
         </div>
       );
     }
     return (
       <div className="border border-border rounded-lg overflow-x-hidden">
         {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
+          <RunListItem
+            key={run.id}
+            run={run}
+            isSelected={false}
+            agentId={agentRouteId}
+          />
         ))}
       </div>
     );
@@ -3241,21 +4061,37 @@ function RunsTab({
   return (
     <div className="flex gap-0">
       {/* Left: run list — border stretches full height, content sticks */}
-      <div className={cn(
-        "shrink-0 border border-border rounded-lg",
-        selectedRun ? "w-72" : "w-full",
-      )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
+      <div
+        className={cn(
+          "shrink-0 border border-border rounded-lg",
+          selectedRun ? "w-72" : "w-full",
+        )}
+      >
+        <div
+          className="sticky top-4 overflow-y-auto"
+          style={{ maxHeight: "calc(100vh - 2rem)" }}
+        >
+          {sorted.map((run) => (
+            <RunListItem
+              key={run.id}
+              run={run}
+              isSelected={run.id === effectiveRunId}
+              agentId={agentRouteId}
+            />
+          ))}
         </div>
       </div>
 
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+            adapterConfig={adapterConfig}
+          />
         </div>
       )}
     </div>
@@ -3264,18 +4100,50 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+function RunDetail({
+  run: initialRun,
+  agentRouteId,
+  adapterType,
+  adapterConfig,
+}: {
+  run: HeartbeatRun;
+  agentRouteId: string;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
     queryKey: queryKeys.runDetail(initialRun.id),
     queryFn: () => heartbeatsApi.get(initialRun.id),
     enabled: Boolean(initialRun.id),
-    refetchInterval: (query) => runDetailRefetchIntervalMs(
-      (query.state.data ?? initialRun).status,
-    ),
+    refetchInterval: (query) =>
+      runDetailRefetchIntervalMs((query.state.data ?? initialRun).status),
   });
   const run = hydratedRun ?? initialRun;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const paperclipDeveloperMode =
+    experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const { data: providerTraceRows } = useQuery({
+    queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
+    queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
+    enabled: canUseProviderTrace,
+    retry: false,
+    refetchInterval:
+      run.status === "running" || run.status === "queued" ? 3000 : false,
+  });
+  const providerTraceMetadata = providerTraceRows?.[0] ?? null;
   const metrics = runMetrics(run);
   const { data: userDirectory } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
@@ -3290,9 +4158,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     );
     return entry?.user?.name ?? entry?.user?.email ?? null;
   }, [run.responsibleUserId, userDirectory]);
-  const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
+  const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode)
+    ? run.errorCode
+    : null;
   const [sessionOpen, setSessionOpen] = useState(false);
-  const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("inspectRun") === initialRun.id,
+  );
+  const [claudeLoginResult, setClaudeLoginResult] =
+    useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
     setClaudeLoginResult(null);
@@ -3301,10 +4177,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const cancelRun = useMutation({
     mutationFn: () => heartbeatsApi.cancel(run.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(run.companyId, run.agentId),
+      });
     },
   });
-  const canResumeLostRun = run.errorCode === "process_lost" && run.status === "failed";
+  const canResumeLostRun =
+    run.errorCode === "process_lost" && run.status === "failed";
   const resumePayload = useMemo(() => {
     const payload: Record<string, unknown> = {
       resumeFromRunId: run.id,
@@ -3314,7 +4193,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     const issueId = asNonEmptyString(context.issueId);
     const taskId = asNonEmptyString(context.taskId);
     const taskKey = asNonEmptyString(context.taskKey);
-    const commentId = asNonEmptyString(context.wakeCommentId) ?? asNonEmptyString(context.commentId);
+    const commentId =
+      asNonEmptyString(context.wakeCommentId) ??
+      asNonEmptyString(context.commentId);
     if (issueId) payload.issueId = issueId;
     if (taskId) payload.taskId = taskId;
     if (taskKey) payload.taskKey = taskKey;
@@ -3323,19 +4204,25 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.contextSnapshot, run.id]);
   const resumeRun = useMutation({
     mutationFn: async () => {
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "resume_process_lost_run",
-        payload: resumePayload,
-      }, run.companyId);
+      const result = await agentsApi.wakeup(
+        run.agentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "resume_process_lost_run",
+          payload: resumePayload,
+        },
+        run.companyId,
+      );
       if (!("id" in result)) {
         throw new Error(result.message ?? "Resume request was skipped.");
       }
       return result;
     },
     onSuccess: (resumedRun) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(run.companyId, run.agentId),
+      });
       navigate(`/agents/${agentRouteId}/runs/${resumedRun.id}`);
     },
   });
@@ -3355,19 +4242,50 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.contextSnapshot]);
   const retryRun = useMutation({
     mutationFn: async () => {
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload: retryPayload,
-      }, run.companyId);
+      const result = await agentsApi.wakeup(
+        run.agentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "retry_failed_run",
+          payload: retryPayload,
+        },
+        run.companyId,
+      );
       if (!("id" in result)) {
         throw new Error(result.message ?? "Retry was skipped.");
       }
       return result;
     },
     onSuccess: (newRun) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(run.companyId, run.agentId),
+      });
+      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+    },
+  });
+  const rerunWithTrace = useMutation({
+    mutationFn: async () => {
+      const result = await agentsApi.wakeup(
+        run.agentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "rerun_with_provider_trace",
+          payload: retryPayload,
+          debug: { providerTrace: "raw" },
+        },
+        run.companyId,
+      );
+      if (!("id" in result))
+        throw new Error(result.message ?? "Trace re-run was skipped.");
+      return result;
+    },
+    onSuccess: (newRun) => {
+      setInspectorOpen(false);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(run.companyId, run.agentId),
+      });
       navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
     },
   });
@@ -3377,19 +4295,28 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryFn: () => activityApi.issuesForRun(run.id),
   });
   const touchedIssueIds = useMemo(
-    () => Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
+    () =>
+      Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
     [touchedIssues],
   );
 
   const clearSessionsForTouchedIssues = useMutation({
     mutationFn: async () => {
       if (touchedIssueIds.length === 0) return 0;
-      await Promise.all(touchedIssueIds.map((issueId) => agentsApi.resetSession(run.agentId, issueId, run.companyId)));
+      await Promise.all(
+        touchedIssueIds.map((issueId) =>
+          agentsApi.resetSession(run.agentId, issueId, run.companyId),
+        ),
+      );
       return touchedIssueIds.length;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(run.agentId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(run.agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.runtimeState(run.agentId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.taskSessions(run.agentId),
+      });
       queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(run.id) });
     },
   });
@@ -3401,10 +4328,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
   });
 
-  const isRunning = run.status === "running" && !!run.startedAt && !run.finishedAt;
+  const isRunning =
+    run.status === "running" && !!run.startedAt && !run.finishedAt;
   const [elapsedSec, setElapsedSec] = useState<number>(() => {
     if (!run.startedAt) return 0;
-    return Math.max(0, Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000));
+    return Math.max(
+      0,
+      Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000),
+    );
   });
 
   useEffect(() => {
@@ -3417,16 +4348,37 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     return () => clearInterval(id);
   }, [isRunning, run.startedAt]);
 
-  const timeFormat: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
-  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const durationSec = run.startedAt && run.finishedAt
-    ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
+  const timeFormat: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  };
+  const startTime = run.startedAt
+    ? new Date(run.startedAt).toLocaleTimeString("en-US", timeFormat)
     : null;
+  const endTime = run.finishedAt
+    ? new Date(run.finishedAt).toLocaleTimeString("en-US", timeFormat)
+    : null;
+  const durationSec =
+    run.startedAt && run.finishedAt
+      ? Math.round(
+          (new Date(run.finishedAt).getTime() -
+            new Date(run.startedAt).getTime()) /
+            1000,
+        )
+      : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
-  const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
+  const hasMetrics =
+    metrics.input > 0 ||
+    metrics.output > 0 ||
+    metrics.cached > 0 ||
+    metrics.cost > 0;
   const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
-  const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
+  const sessionChanged =
+    run.sessionIdBefore &&
+    run.sessionIdAfter &&
+    run.sessionIdBefore !== run.sessionIdAfter;
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
   const retryState = describeRunRetryState(run);
@@ -3442,8 +4394,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         <div className="flex flex-col sm:flex-row">
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={run.status} />
+              <ProviderTraceStatusBadge
+                trace={providerTraceMetadata}
+                requested={runRequestedProviderTrace(run.contextSnapshot)}
+                showOff
+              />
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"
@@ -3479,21 +4436,51 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {retryRun.isPending ? "Retrying…" : "Retry"}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-6 px-2"
+                onClick={() => setInspectorOpen(true)}
+              >
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                Inspect run
+              </Button>
+              <HoneycombRunLink runId={run.id} enabled={paperclipDeveloperMode} />
+              {canUseProviderTrace &&
+              !["queued", "running"].includes(run.status) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-6 px-2"
+                  onClick={() => rerunWithTrace.mutate()}
+                  disabled={rerunWithTrace.isPending}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {rerunWithTrace.isPending
+                    ? "Starting…"
+                    : "Re-run with provider trace"}
+                </Button>
+              ) : null}
             </div>
             {/* Adapter type · provider · model */}
             {(() => {
-              const displayProvider = metrics.provider
-                ?? asNonEmptyString(adapterConfig?.provider);
-              const displayModel = metrics.model
-                ?? asNonEmptyString(adapterConfig?.model);
-              if (!adapterType && !displayProvider && !displayModel) return null;
+              const displayProvider =
+                metrics.provider ?? asNonEmptyString(adapterConfig?.provider);
+              const displayModel =
+                metrics.model ?? asNonEmptyString(adapterConfig?.model);
+              if (!adapterType && !displayProvider && !displayModel)
+                return null;
               return (
                 <div className="text-(length:--text-micro) text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
                   {adapterType && (
-                    <span className="bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide">
+                      {adapterType.replace(/_/g, " ")}
+                    </span>
                   )}
                   {displayProvider && displayModel && (
-                    <span>{displayProvider}/{displayModel}</span>
+                    <span>
+                      {displayProvider}/{displayModel}
+                    </span>
                   )}
                   {!displayProvider && displayModel && (
                     <span>{displayModel}</span>
@@ -3514,85 +4501,105 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error
+                  ? resumeRun.error.message
+                  : "Failed to resume run"}
               </div>
             )}
             {retryRun.isError && (
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error
+                  ? retryRun.error.message
+                  : "Failed to retry run"}
               </div>
             )}
             {startTime && (
               <div className="space-y-0.5">
                 <div className="text-sm font-mono">
                   {startTime}
-                  {endTime && <span className="text-muted-foreground"> &rarr; </span>}
+                  {endTime && (
+                    <span className="text-muted-foreground"> &rarr; </span>
+                  )}
                   {endTime}
                 </div>
                 <div className="text-(length:--text-micro) text-muted-foreground">
                   {relativeTime(run.startedAt!)}
-                  {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
+                  {run.finishedAt && (
+                    <> &rarr; {relativeTime(run.finishedAt)}</>
+                  )}
                 </div>
                 {displayDurationSec !== null && (
                   <div className="text-xs text-muted-foreground">
-                    Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
+                    Duration:{" "}
+                    {displayDurationSec >= 60
+                      ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s`
+                      : `${displayDurationSec}s`}
                   </div>
                 )}
               </div>
             )}
             {run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
-              </div>
-            )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
-              <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => runClaudeLogin.mutate()}
-                  disabled={runClaudeLogin.isPending}
-                >
-                  {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
-                </Button>
-                {runClaudeLogin.isError && (
-                  <p className="text-xs text-destructive">
-                    {runClaudeLogin.error instanceof Error
-                      ? runClaudeLogin.error.message
-                      : "Failed to run Claude login"}
-                  </p>
-                )}
-                {claudeLoginResult?.loginUrl && (
-                  <p className="text-xs">
-                    Login URL:
-                    <a
-                      href={claudeLoginResult.loginUrl}
-                      className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {claudeLoginResult.loginUrl}
-                    </a>
-                  </p>
-                )}
-                {claudeLoginResult && (
-                  <>
-                    {!!claudeLoginResult.stdout && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stdout}
-                      </pre>
-                    )}
-                    {!!claudeLoginResult.stderr && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stderr}
-                      </pre>
-                    )}
-                  </>
+                <span className="text-red-600 dark:text-red-400">
+                  {run.error}
+                </span>
+                {run.errorCode && (
+                  <span className="text-muted-foreground ml-1">
+                    ({run.errorCode})
+                  </span>
                 )}
               </div>
             )}
+            {run.errorCode === "claude_auth_required" &&
+              adapterType === "claude_local" && (
+                <div className="space-y-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => runClaudeLogin.mutate()}
+                    disabled={runClaudeLogin.isPending}
+                  >
+                    {runClaudeLogin.isPending
+                      ? "Running claude login..."
+                      : "Login to Claude Code"}
+                  </Button>
+                  {runClaudeLogin.isError && (
+                    <p className="text-xs text-destructive">
+                      {runClaudeLogin.error instanceof Error
+                        ? runClaudeLogin.error.message
+                        : "Failed to run Claude login"}
+                    </p>
+                  )}
+                  {claudeLoginResult?.loginUrl && (
+                    <p className="text-xs">
+                      Login URL:
+                      <a
+                        href={claudeLoginResult.loginUrl}
+                        className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {claudeLoginResult.loginUrl}
+                      </a>
+                    </p>
+                  )}
+                  {claudeLoginResult && (
+                    <>
+                      {!!claudeLoginResult.stdout && (
+                        <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                          {claudeLoginResult.stdout}
+                        </pre>
+                      )}
+                      {!!claudeLoginResult.stderr && (
+                        <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                          {claudeLoginResult.stderr}
+                        </pre>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             {responsibleDenialCode && (
               <ResponsibleUserDenialNotice
                 code={responsibleDenialCode}
@@ -3602,7 +4609,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
                 Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+                {run.signal && (
+                  <span className="text-muted-foreground ml-1">
+                    (signal: {run.signal})
+                  </span>
+                )}
               </div>
             )}
             {retryState && (
@@ -3625,8 +4636,16 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                     </Link>
                   ) : null}
                 </div>
-                {retryState.detail ? <p className="mt-2 text-muted-foreground">{retryState.detail}</p> : null}
-                {retryState.secondary ? <p className="text-muted-foreground">{retryState.secondary}</p> : null}
+                {retryState.detail ? (
+                  <p className="mt-2 text-muted-foreground">
+                    {retryState.detail}
+                  </p>
+                ) : null}
+                {retryState.secondary ? (
+                  <p className="text-muted-foreground">
+                    {retryState.secondary}
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
@@ -3636,19 +4655,27 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
                 <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokens(metrics.input)}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokens(metrics.output)}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokens(metrics.cached)}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
+                <div className="text-sm font-medium font-mono">
+                  {metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}
+                </div>
               </div>
             </div>
           )}
@@ -3661,16 +4688,28 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setSessionOpen((v) => !v)}
             >
-              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 transition-transform",
+                  sessionOpen && "rotate-90",
+                )}
+              />
               Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
+              {sessionChanged && (
+                <span className="text-yellow-400 ml-1">(changed)</span>
+              )}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
                 {run.sessionIdBefore && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
-                    <CopyText text={run.sessionIdBefore} className="font-mono" />
+                    <span className="text-muted-foreground w-12">
+                      {sessionChanged ? "Before" : "ID"}
+                    </span>
+                    <CopyText
+                      text={run.sessionIdBefore}
+                      className="font-mono"
+                    />
                   </div>
                 )}
                 {sessionChanged && run.sessionIdAfter && (
@@ -3716,7 +4755,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Tasks Touched ({touchedIssues.length})</span>
+          <span className="text-xs font-medium text-muted-foreground">
+            Tasks Touched ({touchedIssues.length})
+          </span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
@@ -3728,7 +4769,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   <StatusBadge status={issue.status} />
                   <span className="truncate">{issue.title}</span>
                 </div>
-                <span className="font-mono text-muted-foreground shrink-0 ml-2">{issue.identifier ?? issue.issueId.slice(0, 8)}</span>
+                <span className="font-mono text-muted-foreground shrink-0 ml-2">
+                  {issue.identifier ?? issue.issueId.slice(0, 8)}
+                </span>
               </Link>
             ))}
           </div>
@@ -3738,16 +4781,24 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <span className="text-xs font-medium text-red-600 dark:text-red-400">
+            stderr
+          </span>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+            {run.stderrExcerpt}
+          </pre>
         </div>
       )}
 
       {/* stdout excerpt when no log is available */}
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <span className="text-xs font-medium text-muted-foreground">
+            stdout
+          </span>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+            {run.stdoutExcerpt}
+          </pre>
         </div>
       )}
 
@@ -3755,21 +4806,38 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         const fold = readSourceResolvedWatchdogFold(run.resultJson);
         if (!fold) return null;
         if (run.status === "failed" || run.status === "timed_out") return null;
-        return <SourceResolvedFoldCallout fold={fold} finalizedAt={run.finishedAt} />;
+        return (
+          <SourceResolvedFoldCallout fold={fold} finalizedAt={run.finishedAt} />
+        );
       })()}
 
       {/* Log viewer */}
       <LogViewer run={run} adapterType={adapterType} />
       <ScrollToBottom />
+      <RunnerInspector
+        runId={run.id}
+        run={run}
+        open={inspectorOpen}
+        onOpenChange={setInspectorOpen}
+        onRerunWithTrace={() => rerunWithTrace.mutate()}
+      />
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+function LogViewer({
+  run,
+  adapterType,
+}: {
+  run: HeartbeatRun;
+  adapterType: string;
+}) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
+  const [logLines, setLogLines] = useState<
+    Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>
+  >([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
@@ -3784,7 +4852,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const seenProgressLogLineKeysRef = useRef<Set<string>>(new Set());
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
   const isFollowingRef = useRef(false);
-  const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
+  const lastMetricsRef = useRef<{
+    scrollHeight: number;
+    distanceFromBottom: number;
+  }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
   });
@@ -3810,16 +4881,27 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       pendingLogLineRef.current = "";
     }
 
-    const parsed: Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }> = [];
+    const parsed: Array<{
+      ts: string;
+      stream: "stdout" | "stderr" | "system";
+      chunk: string;
+    }> = [];
     for (const line of split) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+        const raw = JSON.parse(trimmed) as {
+          ts?: unknown;
+          stream?: unknown;
+          chunk?: unknown;
+        };
         const stream =
-          raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
+          raw.stream === "stderr" || raw.stream === "system"
+            ? raw.stream
+            : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
-        const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
+        const ts =
+          typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
         parsed.push({ ts, stream, chunk });
       } catch {
@@ -3831,7 +4913,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       // Live runs stream forever, so cap the retained tail. Terminated runs are
       // paginated by the user via "Load more log" and keep their full history.
       setLogLines((prev) =>
-        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
+        isLive
+          ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES)
+          : [...prev, ...parsed],
       );
     }
   }
@@ -3860,7 +4944,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     const container = getScrollContainer();
     const metrics = readScrollMetrics(container);
     lastMetricsRef.current = metrics;
-    const nearBottom = metrics.distanceFromBottom <= LIVE_SCROLL_BOTTOM_TOLERANCE_PX;
+    const nearBottom =
+      metrics.distanceFromBottom <= LIVE_SCROLL_BOTTOM_TOLERANCE_PX;
     isFollowingRef.current = nearBottom;
     setIsFollowing((prev) => (prev === nearBottom ? prev : nearBottom));
   }, [getScrollContainer]);
@@ -3887,9 +4972,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     updateFollowingState();
 
     if (container === window) {
-      window.addEventListener("scroll", updateFollowingState, { passive: true });
+      window.addEventListener("scroll", updateFollowingState, {
+        passive: true,
+      });
     } else {
-      container.addEventListener("scroll", updateFollowingState, { passive: true });
+      container.addEventListener("scroll", updateFollowingState, {
+        passive: true,
+      });
     }
     window.addEventListener("resize", updateFollowingState);
     return () => {
@@ -3963,7 +5052,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             setLogLoading(false);
             return;
           }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+          setLogError(
+            err instanceof Error ? err.message : "Failed to load run log",
+          );
         }
       } finally {
         if (!cancelled) setLogLoading(false);
@@ -3981,13 +5072,19 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLoadingMoreLog(true);
     setLogError(null);
     try {
-      const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
+      const result = await heartbeatsApi.log(
+        run.id,
+        logOffset,
+        RUN_LOG_PAGE_BYTES,
+      );
       appendLogContent(result.content, result.nextOffset === undefined);
       const next = result.nextOffset ?? logOffset + result.content.length;
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+      setLogError(
+        err instanceof Error ? err.message : "Failed to load more run log",
+      );
     } finally {
       setLoadingMoreLog(false);
     }
@@ -3997,7 +5094,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   useEffect(() => {
     if (!isLive || isStreamingConnected) return;
     const interval = setInterval(async () => {
-      const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
+      const maxSeq =
+        events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
         if (newEvents.length > 0) {
@@ -4076,9 +5174,16 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
           if (!chunk) return;
           const streamRaw = asNonEmptyString(payload.stream);
-          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
-          const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
+          const stream =
+            streamRaw === "stderr" || streamRaw === "system"
+              ? streamRaw
+              : "stdout";
+          const ts =
+            asNonEmptyString((payload as Record<string, unknown>).ts) ??
+            event.createdAt;
+          setLogLines((prev) =>
+            appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES),
+          );
           return;
         }
 
@@ -4099,7 +5204,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
         const streamRaw = asNonEmptyString(payload.stream);
         const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" || streamRaw === "system"
+          streamRaw === "stdout" ||
+          streamRaw === "stderr" ||
+          streamRaw === "system"
             ? streamRaw
             : null;
         const levelRaw = asNonEmptyString(payload.level);
@@ -4155,14 +5262,18 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     };
   }, [isLive, run.companyId, run.id, run.agentId]);
 
-  const censorUsernameInLogs = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.censorUsernameInLogs === true;
+  const censorUsernameInLogs =
+    useQuery({
+      queryKey: queryKeys.instance.generalSettings,
+      queryFn: () => instanceSettingsApi.getGeneral(),
+    }).data?.censorUsernameInLogs === true;
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
-    return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
+    return redactPathValue(
+      asRecord(evt?.payload ?? null),
+      censorUsernameInLogs,
+    );
   }, [censorUsernameInLogs, events]);
 
   // NOTE: adapter is NOT memoized because external adapters replace their
@@ -4219,7 +5330,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
+        <RunInvocationCard
+          payload={adapterInvokePayload}
+          censorUsernameInLogs={censorUsernameInLogs}
+        />
       )}
 
       <div className="flex items-center justify-between">
@@ -4277,7 +5391,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           mode={transcriptMode}
           streaming={isLive}
           limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
-          emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          emptyMessage={
+            run.logRef
+              ? "Waiting for transcript..."
+              : "No persisted transcript for this run."
+          }
         />
         {hasMoreLog && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
@@ -4291,7 +5409,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               {loadingMoreLog ? "Loading..." : "Load more log"}
             </Button>
             <span className="text-xs text-muted-foreground">
-              Showing the first {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
+              Showing the first{" "}
+              {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
               {typeof run.logBytes === "number" && run.logBytes > 0
                 ? ` of ${Math.round(run.logBytes / 1024).toLocaleString("en-US")} KB`
                 : ""}
@@ -4308,7 +5427,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {(run.status === "failed" || run.status === "timed_out") && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
+          <div className="text-xs font-medium text-red-700 dark:text-red-300">
+            Failure details
+          </div>
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
               <span className="text-red-700 dark:text-red-300">Error: </span>
@@ -4317,7 +5438,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+                stderr excerpt
+              </div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
@@ -4325,15 +5448,23 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
           {run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+                adapter result JSON
+              </div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
+                {JSON.stringify(
+                  redactPathValue(run.resultJson, censorUsernameInLogs),
+                  null,
+                  2,
+                )}
               </pre>
             </div>
           )}
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+                stdout excerpt
+              </div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
@@ -4344,27 +5475,41 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {events.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          <div className="mb-2 text-xs font-medium text-muted-foreground">
+            Events ({events.length})
+          </div>
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
-              const color = evt.color
-                ?? (evt.level ? levelColors[evt.level] : null)
-                ?? (evt.stream ? streamColors[evt.stream] : null)
-                ?? "text-foreground";
+              const color =
+                evt.color ??
+                (evt.level ? levelColors[evt.level] : null) ??
+                (evt.stream ? streamColors[evt.stream] : null) ??
+                "text-foreground";
 
               return (
                 <div key={evt.id} className="flex gap-2">
                   <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
+                    {new Date(evt.createdAt).toLocaleTimeString("en-US", {
+                      hour12: false,
+                    })}
                   </span>
-                  <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
+                  <span
+                    className={cn(
+                      "shrink-0 w-14",
+                      evt.stream
+                        ? (streamColors[evt.stream] ?? "text-neutral-500")
+                        : "text-neutral-500",
+                    )}
+                  >
                     {evt.stream ? `[${evt.stream}]` : ""}
                   </span>
                   <span className={cn("break-all", color)}>
                     {evt.message
                       ? redactPathText(evt.message, censorUsernameInLogs)
                       : evt.payload
-                        ? JSON.stringify(redactPathValue(evt.payload, censorUsernameInLogs))
+                        ? JSON.stringify(
+                            redactPathValue(evt.payload, censorUsernameInLogs),
+                          )
                         : ""}
                   </span>
                 </div>
@@ -4379,7 +5524,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 /* ---- Keys Tab ---- */
 
-function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+function KeysTab({
+  agentId,
+  companyId,
+}: {
+  agentId: string;
+  companyId?: string;
+}) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");
@@ -4393,19 +5544,25 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
   });
 
   const createKey = useMutation({
-    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || "Default", companyId),
+    mutationFn: () =>
+      agentsApi.createKey(agentId, newKeyName.trim() || "Default", companyId),
     onSuccess: (data) => {
       setNewToken(data.token);
       setTokenVisible(true);
       setNewKeyName("");
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.keys(agentId),
+      });
     },
   });
 
   const revokeKey = useMutation({
-    mutationFn: (keyId: string) => agentsApi.revokeKey(agentId, keyId, companyId),
+    mutationFn: (keyId: string) =>
+      agentsApi.revokeKey(agentId, keyId, companyId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.keys(agentId),
+      });
     },
   });
 
@@ -4417,7 +5574,11 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
         setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {
-        pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+        pushToast({
+          title: "Copy failed",
+          body: "Clipboard access is unavailable.",
+          tone: "error",
+        });
       });
   }
 
@@ -4442,7 +5603,11 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               onClick={() => setTokenVisible((v) => !v)}
               title={tokenVisible ? "Hide" : "Show"}
             >
-              {tokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              {tokenVisible ? (
+                <EyeOff className="h-3.5 w-3.5" />
+              ) : (
+                <Eye className="h-3.5 w-3.5" />
+              )}
             </Button>
             <Button
               variant="ghost"
@@ -4472,7 +5637,8 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           Create API Key
         </h3>
         <p className="text-xs text-muted-foreground">
-          API keys allow this agent to authenticate calls to the Paperclip server.
+          API keys allow this agent to authenticate calls to the Paperclip
+          server.
         </p>
         <div className="flex items-center gap-2">
           <Input
@@ -4496,7 +5662,9 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       </div>
 
       {/* Active keys */}
-      {isLoading && <p className="text-sm text-muted-foreground">Loading keys...</p>}
+      {isLoading && (
+        <p className="text-sm text-muted-foreground">Loading keys...</p>
+      )}
 
       {!isLoading && activeKeys.length === 0 && !newToken && (
         <p className="text-sm text-muted-foreground">No active API keys.</p>
@@ -4509,7 +5677,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           </h3>
           <div className="border border-border rounded-lg divide-y divide-border">
             {activeKeys.map((key: AgentKey) => (
-              <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
+              <div
+                key={key.id}
+                className="flex items-center justify-between px-4 py-2.5"
+              >
                 <div>
                   <span className="text-sm font-medium">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
@@ -4539,7 +5710,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           </h3>
           <div className="border border-border rounded-lg divide-y divide-border opacity-50">
             {revokedKeys.map((key: AgentKey) => (
-              <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
+              <div
+                key={key.id}
+                className="flex items-center justify-between px-4 py-2.5"
+              >
                 <div>
                   <span className="text-sm line-through">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">

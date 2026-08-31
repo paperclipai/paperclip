@@ -36,3 +36,20 @@ export function clearDraft(draftKey: string) {
     // Ignore localStorage failures.
   }
 }
+
+export function loadStructuredDraft<T>(draftKey: string, fallback: T): T {
+  try {
+    const value = localStorage.getItem(draftKey);
+    return value ? JSON.parse(value) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveStructuredDraft(draftKey: string, value: unknown) {
+  try {
+    localStorage.setItem(draftKey, JSON.stringify(value));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
