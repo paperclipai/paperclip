@@ -156,6 +156,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
+    const reviewerId = randomUUID();
     const sourceIssueId = randomUUID();
     const prefix = `RA${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -188,6 +189,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         runtimeConfig: {},
         permissions: {},
       },
+      {
+        id: reviewerId,
+        companyId,
+        name: "Independent reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
     ]);
     await db.insert(issues).values({
       id: sourceIssueId,
@@ -200,7 +212,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       identifier: `${prefix}-1`,
     });
     const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
-    return { companyId, managerId, coderId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
+    return { companyId, managerId, coderId, reviewerId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
   }
 
   async function seedHeartbeatRun(input: {
@@ -220,6 +232,353 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       contextSnapshot: input.issueId ? { issueId: input.issueId } : undefined,
     });
   }
+
+  it("repairs the live review participant once and preserves protected history", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const decisionId = randomUUID();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId, userId: null },
+        returnAssignee: { type: "agent", agentId: managerId, userId: null },
+        reviewRequest: null,
+        completedStageIds: ["protected-stage"],
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+        comments: [{ id: "protected-comment", body: "review evidence" }],
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issueComments).values({
+      companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, sourceIssueId)))[0].companyId,
+      issueId: sourceIssueId,
+      authorType: "agent",
+      authorAgentId: coderId,
+      body: "protected review evidence",
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const first = await recovery.reconcileStrandedAssignedIssues();
+    const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const repairs = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+
+    expect(first.changesRequestedRepaired).toBe(1);
+    expect(afterFirst?.executionState).toMatchObject({
+      status: "changes_requested",
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
+      completedStageIds: ["protected-stage"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
+    });
+    expect(repairs.filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
+    // Repairing the return participant does not authorize a review wake while
+    // the execution gate is still changes_requested; the executor must
+    // resubmit first.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const second = await recovery.reconcileStrandedAssignedIssues();
+    expect(second.changesRequestedRepaired).toBe(0);
+    expect((await db.select().from(activityLog)).filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("uses the winning live state when concurrent reconciliation races repair", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        completedStageIds: ["history"],
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [first, second] = await Promise.all([
+      recovery.reconcileStrandedAssignedIssues(),
+      recovery.reconcileStrandedAssignedIssues(),
+    ]);
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+
+    expect(first.changesRequestedRepaired + second.changesRequestedRepaired).toBe(1);
+    expect(after?.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
+      completedStageIds: ["history"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+    });
+    // A changes-requested gate is repaired for the next executor submission;
+    // reconciliation must not wake a reviewer before the gate is pending.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a restored pending reviewer on a later reconciliation", async () => {
+    const { companyId, managerId, coderId, reviewerId, sourceIssueId, prefix } = await seedCompany();
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: unrelatedIssueId,
+      companyId,
+      title: "Unrelated subject",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    const protectedHistory = {
+      completedStageIds: ["protected-stage"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
+    };
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: randomUUID() } as never);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(2);
+
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(0);
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(after?.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      ...protectedHistory,
+    });
+    const [unrelated] = await db.select().from(issues).where(eq(issues.id, unrelatedIssueId));
+    expect(unrelated?.executionState).toMatchObject({
+      status: "changes_requested",
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "review process exited unexpectedly",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const firstPostRestore = await recovery.reconcileStrandedAssignedIssues();
+    expect(firstPostRestore.changesRequestedRepaired).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(managerId, expect.anything());
+    const wakeCount = enqueueWakeup.mock.calls.length;
+
+    const secondPostRestore = await recovery.reconcileStrandedAssignedIssues();
+    // A null enqueue result is deferred, not a durable wake. The next scan
+    // must remain eligible to retry recovery and count only the durable wake.
+    expect(secondPostRestore.reviewParticipantRequeued).toBe(1);
+    expect(secondPostRestore.changesRequestedRepaired).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(wakeCount + 1);
+  });
+
+  it("rejects a stale repair candidate restored to a pending reviewer before CAS", async () => {
+    const { managerId, coderId, reviewerId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    const protectedHistory = {
+      completedStageIds: ["protected-stage"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
+    };
+    await db.update(issues).set({
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId, userId: null }] }],
+      },
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    await db.insert(issueComments).values({
+      companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, sourceIssueId)))[0].companyId,
+      issueId: sourceIssueId,
+      authorType: "agent",
+      authorAgentId: coderId,
+      body: "protected review evidence",
+    });
+
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStrandedAssignedIssues({
+      beforeRepair: async (candidate) => {
+        if (candidate.id !== sourceIssueId) return;
+        await db.update(issues).set({
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: reviewerId },
+            returnAssignee: { type: "agent", agentId: managerId },
+            ...protectedHistory,
+          },
+        }).where(eq(issues.id, sourceIssueId));
+      },
+    });
+
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(result.changesRequestedRepaired).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(after?.id).toBe(sourceIssueId);
+    expect(after?.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      ...protectedHistory,
+    });
+    // The stale candidate must not wake the old executor. If this pending
+    // reviewer later qualifies for recovery, the only valid wake target is
+    // the exact restored reviewer participant, never returnAssignee.
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(managerId, expect.anything());
+    expect(after?.executionState && typeof after.executionState === "object"
+      ? (after.executionState as { currentParticipant?: { agentId?: string } }).currentParticipant?.agentId
+      : undefined).toBe(reviewerId);
+    expect((await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, sourceIssueId)))
+      .map((comment) => comment.body))
+      .toEqual(["protected review evidence"]);
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId: after!.companyId, agentId: reviewerId,
+      invocationSource: "automation", status: "failed",
+      error: "review process exited unexpectedly", errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const beforeWakeState = after!.executionState;
+    const wakePass = await recovery.reconcileStrandedAssignedIssues();
+    expect(wakePass.changesRequestedRepaired).toBe(0);
+    expect(wakePass.reviewParticipantRequeued).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(reviewerId, expect.anything());
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(managerId, expect.anything());
+    const [afterWake] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(afterWake?.executionState).toEqual(beforeWakeState);
+    const repeat = await recovery.reconcileStrandedAssignedIssues();
+    expect(repeat.reviewParticipantRequeued).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    const [afterRepeat] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(afterRepeat?.executionState).toEqual(afterWake?.executionState);
+  });
+
+  it("does not repair a same-shaped issue in another company", async () => {
+    const first = await seedCompany();
+    await db.update(issues).set({
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: first.coderId },
+        returnAssignee: { type: "agent", agentId: first.managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, first.sourceIssueId));
+    const foreignCompanyId = randomUUID();
+    const foreignAgentId = randomUUID();
+    const foreignIssueId = randomUUID();
+    const foreignPrefix = `RA${foreignCompanyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Other Recovery Co",
+      issuePrefix: foreignPrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: foreignCompanyId,
+      name: "Other manager",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId: foreignCompanyId,
+      title: "Other subject",
+      status: "in_review",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: `${foreignPrefix}-1`,
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: first.coderId },
+        // A foreign-company return principal must fail closed.
+        returnAssignee: { type: "agent", agentId: first.managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(1);
+    const [foreign] = await db.select().from(issues).where(eq(issues.id, foreignIssueId));
+    expect(foreign?.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: first.coderId },
+    });
+  });
 
   function createApp(
     actor: any = { type: "board", source: "local_implicit" },
@@ -1674,6 +2033,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "resolved",
       outcome: "handed_back",
     });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(
       coderId,
       expect.objectContaining({
