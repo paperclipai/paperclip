@@ -767,12 +767,19 @@ export class WorkspaceBusyDeferral extends Error {
   projectWorkspaceId: string;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
+  // The priority of the ISSUE BEING DEFERRED (not the holder's). Threaded
+  // through to computeWorkspaceBusyRetryDelayMs so the retry ladder can favor
+  // higher-priority work when the mutex next frees. Optional/nullable so a
+  // caller that cannot resolve issue priority (e.g. a loose task context with
+  // no persisted issue row) still gets the pre-existing "medium" schedule.
+  deferredIssuePriority: string | null;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
     projectWorkspaceId: string;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
+    deferredIssuePriority?: string | null;
   }) {
     super(
       `Shared project workspace is busy: run ${input.holder.runId} (issue ${
@@ -784,6 +791,7 @@ export class WorkspaceBusyDeferral extends Error {
     this.projectWorkspaceId = input.projectWorkspaceId;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
+    this.deferredIssuePriority = input.deferredIssuePriority ?? null;
   }
 }
 
@@ -793,14 +801,54 @@ function isWorkspaceBusyDeferral(
   return error instanceof WorkspaceBusyDeferral;
 }
 
+// Per-priority workspace_busy retry windows. Evidence trail from a managed
+// install running a multi-agent company workload: the retry ladder previously
+// used one fixed window
+// (WORKSPACE_BUSY_RETRY_BASE_DELAY_MS +/- WORKSPACE_BUSY_RETRY_JITTER_MS) for
+// every issue regardless of priority, so whichever deferred retry's random
+// jitter happened to land first when the mutex freed won the shared
+// workspace -- a high-priority QA sign-off had no better odds than routine
+// drafting work sharing the same project. These bands are disjoint and
+// ordered so a higher-priority issue's retry always becomes due before a
+// lower-priority issue's retry deferred at the same moment, without changing
+// anything about how the mutex itself is acquired or how ties are broken at
+// dispatch time. `medium` is byte-for-byte the pre-existing window, so a
+// caller that cannot resolve a priority (or resolves "medium") sees exactly
+// the same schedule as before this change.
+const WORKSPACE_BUSY_RETRY_BANDS: Record<string, { baseDelayMs: number; jitterMs: number }> = {
+  critical: { baseDelayMs: 15_000, jitterMs: 15_000 }, // 15s-30s
+  high: { baseDelayMs: 30_000, jitterMs: 30_000 }, // 30s-60s
+  medium: { baseDelayMs: WORKSPACE_BUSY_RETRY_BASE_DELAY_MS, jitterMs: WORKSPACE_BUSY_RETRY_JITTER_MS }, // 60s-120s, unchanged
+  low: { baseDelayMs: 120_000, jitterMs: 60_000 }, // 120s-180s
+};
+// Anti-starvation aging: each additional attempt while an issue has been
+// waiting shrinks its jitter window toward the band floor, so a same-priority
+// issue that has been deferred more times (has been waiting longer) checks
+// sooner than one on an earlier attempt. This is an age tiebreak within a
+// priority band, not a substitute for the band ordering above -- a lower
+// priority issue on its 50th attempt still cannot out-age a higher priority
+// issue on its 1st, because the bands themselves never overlap.
+const WORKSPACE_BUSY_RETRY_AGING_STEP_MS = 5_000;
+
+function normalizeWorkspaceBusyPriority(priority: string | null | undefined): keyof typeof WORKSPACE_BUSY_RETRY_BANDS {
+  return priority === "critical" || priority === "high" || priority === "medium" || priority === "low"
+    ? priority
+    : "medium";
+}
+
 export function computeWorkspaceBusyRetryDelayMs(
   random: () => number = Math.random,
+  priority?: string | null,
+  deferralAttempt = 0,
 ) {
+  const band = WORKSPACE_BUSY_RETRY_BANDS[normalizeWorkspaceBusyPriority(priority)];
   const jitter = Math.min(Math.max(random(), 0), 1);
-  return (
-    WORKSPACE_BUSY_RETRY_BASE_DELAY_MS +
-    Math.floor(jitter * WORKSPACE_BUSY_RETRY_JITTER_MS)
+  const agingDiscountMs = Math.min(
+    Math.max(deferralAttempt, 0) * WORKSPACE_BUSY_RETRY_AGING_STEP_MS,
+    band.jitterMs,
   );
+  const effectiveJitterMs = Math.max(0, band.jitterMs - agingDiscountMs);
+  return band.baseDelayMs + Math.floor(jitter * effectiveJitterMs);
 }
 
 // True for the retry of a workspace-busy deferral whose original run did NOT
@@ -14353,7 +14401,15 @@ export function heartbeatService(
           // Always admit the next attempt: workspace-busy deferral is bounded by
           // holder liveness, not by an attempt counter.
           maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
-          delayMs: computeWorkspaceBusyRetryDelayMs(),
+          // Priority- and age-aware: see WORKSPACE_BUSY_RETRY_BANDS. A high
+          // priority issue's retry becomes due sooner than a lower-priority
+          // issue's, and an issue that has been deferred more times checks
+          // sooner than a same-priority issue earlier in its own retry chain.
+          delayMs: computeWorkspaceBusyRetryDelayMs(
+            Math.random,
+            deferral.deferredIssuePriority,
+            deferral.deferralAttempt,
+          ),
         },
       ).catch((scheduleErr) => {
         logger.error(
@@ -14437,6 +14493,15 @@ export function heartbeatService(
 
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
+    // Ordering by scheduledRetryAt is where workspace_busy fairness actually
+    // takes effect: computeWorkspaceBusyRetryDelayMs assigns a
+    // shorter, disjoint window to higher-priority issues, so when several
+    // issues are deferred waiting on the same shared-workspace mutex, the
+    // higher-priority one's scheduledRetryAt sorts earlier here and is
+    // promoted (and therefore reaches the dispatch gate) first once the
+    // mutex frees, instead of whichever retry's fixed-window jitter happened
+    // to land first. This query is intentionally unchanged otherwise -- it
+    // still governs every scheduled-retry reason, not only workspace_busy.
     const dueRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -18220,6 +18285,7 @@ export function heartbeatService(
                   ? (run.scheduledRetryAttempt ?? 0)
                   : 0,
               wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+              deferredIssuePriority: issueRef.priority ?? null,
             });
           }
 
