@@ -26,7 +26,7 @@ export interface AgentPermissions extends Record<string, unknown> {
 export interface AgentModelProfileConfig {
   enabled?: boolean;
   label?: string;
-  adapterConfig: Record<string, unknown>;
+  adapterConfig?: Record<string, unknown>;
 }
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
