@@ -20,6 +20,7 @@ import type {
 } from "./runtime-host.js";
 import {
   assertVerifiedAcpxProviderPlatform,
+  awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
 } from "./installation-integrity.js";
 import { decideAcpxPermission } from "./permission-policy.js";
@@ -83,6 +84,8 @@ export interface CodexAcpxRuntimeDependencies {
   sessionHandshakeTimeoutMs?: number;
   /** Internal test seam for verified guardian ownership transfer. */
   awaitProviderOwnership?: (child: ChildProcess) => Promise<void>;
+  /** Internal test seam for independent provider-exit proof. */
+  awaitProviderExit?: (child: ChildProcess) => Promise<void>;
   /** Retains autonomous cleanup ownership across the sidecar lifecycle. */
   retainCleanup?: (cleanup: Promise<void>) => void;
   /** Internal test seam for the fail-closed platform admission boundary. */
@@ -151,6 +154,7 @@ export async function openCodexAcpxRuntime(
   const children = new SpawnedChildSet(
     retainCleanup,
     dependencies.awaitProviderOwnership,
+    dependencies.awaitProviderExit,
   );
   const baseStore = createStore({ stateDir: options.stateDirectory });
   let failedHandshakeHandle: AcpRuntimeHandle | null = null;
@@ -1117,9 +1121,55 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
+type ProviderExitOutcome =
+  | { exited: true }
+  | { exited: false; error: unknown };
+
+class ProviderExitObservation {
+  #outcome: ProviderExitOutcome | null = null;
+  readonly #observers = new Set<(outcome: ProviderExitOutcome) => void>();
+
+  constructor(providerExit: Promise<void>) {
+    void providerExit.then(
+      () => this.#settle({ exited: true }),
+      (error: unknown) => this.#settle({ exited: false, error }),
+    );
+  }
+
+  observe(observer: (outcome: ProviderExitOutcome) => void): void {
+    if (this.#outcome) observer(this.#outcome);
+    else this.#observers.add(observer);
+  }
+
+  async waitWithin(
+    timeoutMs: number,
+  ): Promise<{ exited: boolean; error?: unknown }> {
+    if (this.#outcome) return this.#outcome;
+    return await new Promise((resolve) => {
+      const finish = (outcome: ProviderExitOutcome | { exited: false }) => {
+        clearTimeout(timer);
+        this.#observers.delete(finish);
+        resolve(outcome);
+      };
+      const timer = setTimeout(() => finish({ exited: false }), timeoutMs);
+      timer.unref();
+      this.#observers.add(finish);
+      if (this.#outcome) finish(this.#outcome);
+    });
+  }
+
+  #settle(outcome: ProviderExitOutcome): void {
+    if (this.#outcome) return;
+    this.#outcome = outcome;
+    for (const observer of this.#observers) observer(outcome);
+    this.#observers.clear();
+  }
+}
+
 class SpawnedChildSet {
   readonly #children = new Set<ChildProcess>();
   readonly #errors = new Set<unknown>();
+  readonly #providerExits = new Map<ChildProcess, ProviderExitObservation>();
   readonly #terminations = new Map<ChildProcess, Promise<unknown[]>>();
   readonly #lifetimeOwnership: Promise<void>[] = [];
   #lifetimeOwnershipSealed = false;
@@ -1130,10 +1180,17 @@ class SpawnedChildSet {
     private readonly awaitProviderOwnership: (
       child: ChildProcess,
     ) => Promise<void> = awaitVerifiedAcpxProviderOwnership,
+    private readonly awaitProviderExit: (
+      child: ChildProcess,
+    ) => Promise<void> = awaitVerifiedAcpxProviderExit,
   ) {}
 
   add(child: ChildProcess): ChildProcess {
-    this.#track(child);
+    const providerExit = new ProviderExitObservation(
+      Promise.resolve().then(() => this.awaitProviderExit(child)),
+    );
+    this.#providerExits.set(child, providerExit);
+    this.#track(child, providerExit);
     const ownership = this.awaitProviderOwnership(child);
     void ownership.catch(() => undefined);
     this.#lifetimeOwnership.push(ownership);
@@ -1175,20 +1232,37 @@ class SpawnedChildSet {
     }
   }
 
-  #track(child: ChildProcess): void {
+  #track(child: ChildProcess, providerExit: ProviderExitObservation): void {
     this.#children.add(child);
     const onError = (error: unknown) => this.#errors.add(error);
-    const forget = () => this.#children.delete(child);
-    const forgetAndDetach = () => {
-      forget();
+    let guardianExited = !running(child);
+    let providerExited = false;
+    const forgetIfReleased = () => {
+      if (!guardianExited || !providerExited) return;
+      this.#children.delete(child);
+      this.#providerExits.delete(child);
       child.off("error", onError);
+      child.off("exit", onGuardianExit);
+      child.off("close", onGuardianExit);
+    };
+    const onGuardianExit = () => {
+      guardianExited = true;
+      forgetIfReleased();
     };
     // ChildProcess reports some spawn and signal-delivery failures through an
     // asynchronous `error` event. Observe those for the child's whole tracked
     // lifetime so cleanup can report them instead of crashing runnerd.
     child.on("error", onError);
-    child.once("exit", forget);
-    child.once("close", forgetAndDetach);
+    child.once("exit", onGuardianExit);
+    child.once("close", onGuardianExit);
+    providerExit.observe((outcome) => {
+      if (outcome.exited) {
+        providerExited = true;
+        forgetIfReleased();
+      } else {
+        this.#errors.add(outcome.error);
+      }
+    });
   }
 
   async terminate(): Promise<unknown[]> {
@@ -1214,8 +1288,15 @@ class SpawnedChildSet {
   ): Promise<unknown[]> {
     const existing = this.#terminations.get(child);
     if (existing) return existing;
+    const providerExit =
+      this.#providerExits.get(child) ??
+      new ProviderExitObservation(
+        Promise.reject(new Error("ACPX provider exit proof is unavailable")),
+      );
     const termination = (
-      immediateKill ? terminatePostSealChild(child) : terminateChild(child)
+      immediateKill
+        ? terminatePostSealChild(child, providerExit)
+        : terminateChild(child, providerExit)
     ).catch((error: unknown) => [error]);
     this.#terminations.set(child, termination);
     termination.then(() => {
@@ -1227,22 +1308,23 @@ class SpawnedChildSet {
   }
 }
 
-async function terminatePostSealChild(child: ChildProcess): Promise<unknown[]> {
+async function terminatePostSealChild(
+  child: ChildProcess,
+  providerExit: ProviderExitObservation,
+): Promise<unknown[]> {
   const errors: unknown[] = [];
-  if (!running(child)) return errors;
   // Verified production children override ChildProcess.kill so this SIGKILL
   // request revokes the owner pipe and wakes the live guardian, which retains
   // authority to reap the whole group. Never copy the numeric PGID into a
   // later signal owner.
-  const killOutcome = await signalAndWaitForExit(
+  const killOutcome = await signalAndWaitForVerifiedProviderExit(
     child,
     "SIGKILL",
     PROVIDER_KILL_EXIT_TIMEOUT_MS,
+    providerExit,
   );
-  if (killOutcome.error !== undefined) {
-    pushUnique(errors, killOutcome.error);
-  }
-  if (!killOutcome.exited && running(child)) {
+  for (const error of killOutcome.errors) pushUnique(errors, error);
+  if (!killOutcome.exited) {
     errors.push(
       new Error("ACPX post-seal provider did not exit after SIGKILL"),
     );
@@ -1250,41 +1332,62 @@ async function terminatePostSealChild(child: ChildProcess): Promise<unknown[]> {
   return errors;
 }
 
-async function terminateChild(child: ChildProcess): Promise<unknown[]> {
+async function terminateChild(
+  child: ChildProcess,
+  providerExit: ProviderExitObservation,
+): Promise<unknown[]> {
   const errors: unknown[] = [];
-  if (!running(child)) return errors;
-  const terminateOutcome = await signalAndWaitForExit(
+  const terminateOutcome = await signalAndWaitForVerifiedProviderExit(
     child,
     "SIGTERM",
     PROVIDER_TERM_EXIT_TIMEOUT_MS,
+    providerExit,
   );
-  if (terminateOutcome.error !== undefined) {
-    pushUnique(errors, terminateOutcome.error);
-  }
-  if (!terminateOutcome.exited && running(child)) {
+  for (const error of terminateOutcome.errors) pushUnique(errors, error);
+  if (!terminateOutcome.exited) {
     errors.push(new Error("ACPX provider did not exit after SIGTERM"));
-    // The verified guardian is still live and pins the PGID. Its protected
-    // `kill` override revokes the owner pipe and wakes the guardian so it can
-    // reap the whole group without transferring numeric process identity.
-    const killOutcome = await signalAndWaitForExit(
+    // A live verified guardian still pins the PGID. Its protected `kill`
+    // override revokes the owner pipe and wakes it to reap the group. If the
+    // guardian already exited, do not signal a saved identifier; retain local
+    // cleanup while waiting for the provider-only descriptor to reach EOF.
+    const killOutcome = await signalAndWaitForVerifiedProviderExit(
       child,
       "SIGKILL",
       PROVIDER_KILL_EXIT_TIMEOUT_MS,
+      providerExit,
     );
-    if (killOutcome.error !== undefined) {
-      pushUnique(errors, killOutcome.error);
-    }
-    if (!killOutcome.exited && running(child)) {
+    for (const error of killOutcome.errors) pushUnique(errors, error);
+    if (!killOutcome.exited) {
       errors.push(new Error("ACPX provider did not exit after SIGKILL"));
     }
   }
-  // Never unref a child whose exit was not observed. Its live ChildProcess
-  // remains the local cleanup owner instead of transferring a reusable PGID.
+  // Never unref a child whose guardian exit and provider-only EOF were not
+  // both observed. Local cleanup retains it instead of transferring a reusable
+  // PGID or releasing credential ownership early.
   return errors;
 }
 
 function running(child: ChildProcess): boolean {
   return child.exitCode === null && child.signalCode === null;
+}
+
+async function signalAndWaitForVerifiedProviderExit(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  timeoutMs: number,
+  providerExit: ProviderExitObservation,
+): Promise<{ exited: boolean; errors: unknown[] }> {
+  const [guardian, provider] = await Promise.all([
+    signalAndWaitForExit(child, signal, timeoutMs),
+    providerExit.waitWithin(timeoutMs),
+  ]);
+  const errors: unknown[] = [];
+  if (guardian.error !== undefined) pushUnique(errors, guardian.error);
+  if (provider.error !== undefined) pushUnique(errors, provider.error);
+  return {
+    exited: guardian.exited && provider.exited,
+    errors,
+  };
 }
 
 async function signalAndWaitForExit(

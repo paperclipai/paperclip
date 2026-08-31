@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
+  awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
   guardSnapshotModuleLookup,
   guardSnapshotModuleResolution,
@@ -47,6 +48,12 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it("rejects an unregistered provider exit proof", async () => {
+    await expect(
+      awaitVerifiedAcpxProviderExit({} as ChildProcess),
+    ).rejects.toThrow("provider exit proof is unavailable");
+  });
+
   it("never signals a dead guardian's saved process-group identity", () => {
     const signalCurrentGroup = vi.fn(
       (_pid: number, _signal: NodeJS.Signals) => true,
@@ -1392,6 +1399,73 @@ describe("ACPX installation integrity", () => {
   );
 
   it.runIf(process.platform === "linux")(
+    "keeps provider exit proof pending after an external guardian kill",
+    async () => {
+      const fixture = await persistentInstallationFixture();
+      const pidFile = join(fixture.root, "provider-exit-proof.pid");
+      const fences = await Promise.all([
+        listenOnLoopback(),
+        listenOnLoopback(),
+      ]);
+      const fenceFds = fences.map(
+        (fence) =>
+          (fence as Server & { _handle?: { fd?: number } })._handle?.fd,
+      );
+      expect(fenceFds.every(Number.isSafeInteger)).toBe(true);
+      const installation = await verifyQualifiedAcpxInstallation(
+        fixture.profile,
+        fixture.resolve,
+      );
+      const guardian = (await installation.openCommand()).spawn(
+        [],
+        { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: pidFile } },
+        {
+          credentialFenceFds: [fenceFds[0]!, fenceFds[1]!],
+          activateCredentialFenceOwner: async () => undefined,
+        },
+      );
+      await awaitVerifiedAcpxProviderOwnership(guardian);
+      const providerExit = awaitVerifiedAcpxProviderExit(guardian);
+      const providerPid = Number.parseInt(await waitForFile(pidFile), 10);
+      const guardianExit = once(guardian, "exit");
+      process.kill(providerPid, "SIGSTOP");
+      await waitUntilAsync(() => processStopped(providerPid));
+      let exitProven = false;
+      void providerExit.then(
+        () => {
+          exitProven = true;
+        },
+        () => undefined,
+      );
+
+      try {
+        // Bypass the protected cleanup method to model SIGKILL/OOM of the
+        // guardian itself while the credential-bearing provider is stopped.
+        process.kill(guardian.pid!, "SIGKILL");
+        await guardianExit;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(processAlive(providerPid)).toBe(true);
+        expect(exitProven).toBe(false);
+
+        process.kill(providerPid, "SIGCONT");
+        await providerExit;
+        await waitUntil(() => !processAlive(providerPid));
+        expect(exitProven).toBe(true);
+      } finally {
+        if (processAlive(providerPid)) {
+          process.kill(providerPid, "SIGCONT");
+          await waitUntil(() => !processAlive(providerPid));
+        }
+        if (guardian.exitCode === null && guardian.signalCode === null) {
+          guardian.kill("SIGKILL");
+          await guardianExit.catch(() => undefined);
+        }
+        await Promise.all(fences.map(closeServer));
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
     "dismisses the lifetime sentinel only after normal provider-group cleanup",
     async () => {
       const fixture = await persistentInstallationFixture();
@@ -1600,6 +1674,15 @@ function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function processStopped(pid: number): Promise<boolean> {
+  try {
+    const status = await readFile(`/proc/${pid}/status`, "utf8");
+    return /^State:\s+T/m.test(status);
   } catch {
     return false;
   }

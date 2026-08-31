@@ -110,6 +110,7 @@ describe("Codex ACPX runtime adapter", () => {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
       createRuntime: (options) => {
         vi.mocked(runtime.ensureSession).mockImplementation(async () => {
           expect(
@@ -209,6 +210,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -255,6 +257,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -306,6 +309,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -364,6 +368,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -711,6 +716,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -788,6 +794,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -968,6 +975,46 @@ describe("Codex ACPX runtime adapter", () => {
     }
   });
 
+  it("retains cleanup after guardian exit until provider exit is proven", async () => {
+    const runtime = fakeRuntime();
+    const child = fakeChild();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(child);
+    let proveProviderExit!: () => void;
+    const providerExit = new Promise<void>((resolve) => {
+      proveProviderExit = resolve;
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: async () => await providerExit,
+      createRuntime: (options) => runtimeWithProvider(runtime, options),
+    });
+
+    let settled = false;
+    const closing = port.close({ reason: "guardian exited first" });
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() =>
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM"),
+    );
+    await Promise.resolve();
+
+    expect(child.signalCode).toBe("SIGTERM");
+    expect(settled).toBe(false);
+
+    proveProviderExit();
+    await expect(closing).resolves.toBeUndefined();
+    expect(settled).toBe(true);
+  });
+
   it("kills a TERM-resistant provider through its live guardian", async () => {
     vi.useFakeTimers();
     try {
@@ -979,6 +1026,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -1019,6 +1067,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           return runtimeWithProvider(runtime, options);
         },
@@ -1121,6 +1170,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
         retainCleanup: (cleanup) => retainedCleanups.push(cleanup),
         createRuntime: (options) => {
           runtimeOptions = options;
@@ -1311,6 +1361,7 @@ describe("Codex ACPX runtime adapter", () => {
       const opening = openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => ({
           ...runtime,
           ensureSession: vi.fn(async () => {
@@ -1346,6 +1397,7 @@ describe("Codex ACPX runtime adapter", () => {
       openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           vi.mocked(runtime.ensureSession).mockImplementation(async () => {
             options.spawnAgent?.({
@@ -1380,6 +1432,7 @@ describe("Codex ACPX runtime adapter", () => {
       {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (runtimeOptions) => {
           vi.mocked(runtime.ensureSession).mockImplementation(async () => {
             runtimeOptions.spawnAgent?.({
@@ -1833,6 +1886,7 @@ describe("Codex ACPX runtime adapter", () => {
     const result = openCodexAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
+      awaitProviderExit: providerOwnershipEstablished,
       retainCleanup: (cleanup) => retainedCleanups.push(cleanup),
       createRuntime: (options) => {
         vi.mocked(runtime.ensureSession).mockImplementation(async () => {
@@ -1880,6 +1934,7 @@ describe("Codex ACPX runtime adapter", () => {
       openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderExit: providerOwnershipEstablished,
         retainCleanup: (cleanup) => retainedCleanups.push(cleanup),
         createRuntime: (options) => {
           vi.mocked(runtime.ensureSession).mockImplementation(async () => {
@@ -2011,6 +2066,7 @@ describe("Codex ACPX runtime adapter", () => {
       openCodexAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (runtimeOptions) => {
           vi.mocked(runtime.ensureSession).mockImplementation(async () => {
             await runtimeOptions.sessionStore.save({
@@ -2117,6 +2173,7 @@ describe("Codex ACPX runtime adapter", () => {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
       createRuntime: (options) => {
         return runtimeWithProvider(runtime, options);
       },
@@ -2153,6 +2210,7 @@ describe("Codex ACPX runtime adapter", () => {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
       createRuntime: (options) => {
         return runtimeWithProvider(runtime, options);
       },
@@ -2214,6 +2272,7 @@ describe("Codex ACPX runtime adapter", () => {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership,
+      awaitProviderExit: providerOwnershipEstablished,
       createRuntime: (options) => {
         runtimeOptions = options;
         return runtime;
@@ -2241,6 +2300,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         sessionHandshakeTimeoutMs: 1,
+        awaitProviderExit: providerOwnershipEstablished,
         createRuntime: (options) => {
           vi.mocked(runtime.ensureSession).mockImplementation(() => {
             options.spawnAgent?.({
@@ -2281,6 +2341,7 @@ describe("Codex ACPX runtime adapter", () => {
         createRegistry: () => registry(),
         createStore: () => store(),
         sessionHandshakeTimeoutMs: 1,
+        awaitProviderExit: providerOwnershipEstablished,
         retainCleanup,
         createRuntime: (options) => {
           runtimeOptions = options;
