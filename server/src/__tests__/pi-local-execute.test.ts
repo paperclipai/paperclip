@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-pi-local/server";
+import { resolveHeartbeatManagedInstructionsPatch } from "../services/agent-instructions.js";
 
 async function writeFakePiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -204,6 +205,139 @@ describe("pi_local execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("consumes a heartbeat-corrected config.instructionsFilePath end-to-end (AGE-168/AGE-484)", async () => {
+    // This proves resolveHeartbeatManagedInstructionsPatch's corrected instructionsFilePath
+    // actually reaches the injected system prompt in a real pi-local execute() run, not just
+    // that the resolver function returns the right value in isolation.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-instructions-patch-"));
+    const paperclipHome = path.join(root, "paperclip-home");
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    const systemPromptDumpPath = path.join(root, "captured-system-prompt.txt");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(paperclipHome, { recursive: true });
+
+    const captureSystemPromptScript = `#!/usr/bin/env node
+const fs = require("node:fs");
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("google    gemini-3-flash-preview");
+  process.exit(0);
+}
+const flagIndex = process.argv.indexOf("--append-system-prompt");
+const systemPrompt = flagIndex >= 0 ? process.argv[flagIndex + 1] : "";
+fs.writeFileSync(${JSON.stringify(systemPromptDumpPath)}, systemPrompt);
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "turn_start" }));
+console.log(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "" }, toolResults: [] }));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+process.exit(0);
+`;
+    await fs.writeFile(commandPath, captureSystemPromptScript, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+
+    try {
+      const agent = {
+        id: "agent-instructions-patch",
+        companyId: "company-instructions-patch",
+        name: "Pi Agent",
+        adapterConfig: {} as Record<string, unknown>,
+      };
+
+      // Step 1: agent is configured in managed mode under instance root A.
+      process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+      const managedRootA = path.join(
+        paperclipHome,
+        "instances",
+        "instance-a",
+        "companies",
+        agent.companyId,
+        "agents",
+        agent.id,
+        "instructions",
+      );
+      await fs.mkdir(managedRootA, { recursive: true });
+      await fs.writeFile(path.join(managedRootA, "AGENTS.md"), "OLD STALE INSTRUCTIONS FROM ROOT A", "utf8");
+      agent.adapterConfig = {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: managedRootA,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: path.join(managedRootA, "AGENTS.md"),
+      };
+
+      // Step 2: instance root is re-pointed to B; the real instructions file lives under the
+      // *current* managed root, not the stale root A recorded in adapterConfig.
+      process.env.PAPERCLIP_INSTANCE_ID = "instance-b";
+      const managedRootB = path.join(
+        paperclipHome,
+        "instances",
+        "instance-b",
+        "companies",
+        agent.companyId,
+        "agents",
+        agent.id,
+        "instructions",
+      );
+      await fs.mkdir(managedRootB, { recursive: true });
+      await fs.writeFile(path.join(managedRootB, "AGENTS.md"), "NEW MANAGED INSTRUCTIONS FROM ROOT B", "utf8");
+
+      const patch = await resolveHeartbeatManagedInstructionsPatch(agent);
+      expect(patch).toMatchObject({
+        instructionsRootPath: managedRootB,
+        instructionsFilePath: path.join(managedRootB, "AGENTS.md"),
+      });
+      if (!("instructionsFilePath" in patch)) throw new Error("expected a correction patch");
+
+      const result = await execute({
+        runId: "run-pi-instructions-patch",
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: "pi_local",
+          adapterConfig: agent.adapterConfig,
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          // Mirrors what heartbeat.ts applies to `config` before it reaches the adapter.
+          instructionsFilePath: patch.instructionsFilePath,
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capturedSystemPrompt = await fs.readFile(systemPromptDumpPath, "utf8");
+      expect(capturedSystemPrompt).toContain("NEW MANAGED INSTRUCTIONS FROM ROOT B");
+      expect(capturedSystemPrompt).not.toContain("OLD STALE INSTRUCTIONS FROM ROOT A");
+      expect(capturedSystemPrompt).toContain(`loaded from ${path.join(managedRootB, "AGENTS.md")}`);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
