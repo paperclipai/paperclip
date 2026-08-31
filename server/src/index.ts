@@ -442,11 +442,58 @@ export async function startServer(): Promise<StartedServer> {
       }
     };
   
+    // A `runningPid` match just means the OS reports that PID as alive right now -
+    // it doesn't mean postgres has finished starting yet. Observed in practice
+    // right after a container recreation (new image, `docker compose up`
+    // recreate): the pidfile names a real, freshly-spawned postgres (this app's
+    // own previous start of it) that is still replaying WAL / not yet listening,
+    // so the very first connection probe gets ECONNREFUSED and the process used
+    // to exit hard here - only surviving via Docker's restart-policy crash-loop
+    // retrying a few seconds later. Retry the same live-connection proof the
+    // no-pidfile branch already uses below a few times with backoff before
+    // giving up; only after it never becomes reachable do we treat the pidfile
+    // as a genuinely stale lock (e.g. from a data dir carried over some other
+    // way) and clear it so the normal initialise/start path below can run.
     const runningPid = getRunningPid();
+    const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
+    let reusingExistingServer = false;
     if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      const verifyReachable = async () => {
+        const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
+        if (typeof actualDataDir !== "string" || resolve(actualDataDir) !== resolve(dataDir)) {
+          throw new Error("reachable postgres does not use the expected embedded data directory");
+        }
+        await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
+      };
+      const maxAttempts = 5;
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          await verifyReachable();
+          reusingExistingServer = true;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      if (reusingExistingServer) {
+        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      } else {
+        logger.warn(
+          { err: lastErr, pid: runningPid, attempts: maxAttempts },
+          "postmaster.pid names a live PID but postgres never became reachable there - treating as a stale lock and starting fresh",
+        );
+        try {
+          rmSync(postmasterPidFile, { force: true });
+        } catch (rmErr) {
+          logger.warn({ err: rmErr }, "failed to remove stale postmaster.pid; embedded-postgres start may still fail");
+        }
+      }
+    }
+    if (reusingExistingServer) {
+      // already logged and verified above; fall through with the configured port
     } else {
-      const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
