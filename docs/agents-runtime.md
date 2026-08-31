@@ -95,6 +95,18 @@ Use session reset when:
 - the agent is stuck in a bad loop
 - you want a clean restart
 
+Sessions are task-scoped: a new assignment starts fresh, while later wakes for the same task normally resume its saved session. Operators can opt additional wake reasons into a fresh session with `runtimeConfig.heartbeat.freshSessionWakeReasons`:
+
+```json
+{
+  "heartbeat": {
+    "freshSessionWakeReasons": ["issue_continuation_needed"]
+  }
+}
+```
+
+Use this override sparingly. For ordinary same-task continuations, resuming preserves working context and avoids repeated re-orientation. Configure a fresh wake reason only when that event represents a deliberate context boundary or stale-session recovery.
+
 ## 5. Logs, status, and run history
 
 For each heartbeat run you get:
