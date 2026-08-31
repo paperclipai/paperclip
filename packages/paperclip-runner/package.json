@@ -56,6 +56,7 @@
     "trace:conformance:rust": "cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin conformance-tracer"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.70.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "acpx": "0.13.1",
     "ajv": "^8.20.0",

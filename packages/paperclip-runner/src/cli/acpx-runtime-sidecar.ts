@@ -22,7 +22,10 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
-import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+import {
+  resolveQualifiedAcpxProfile,
+  type QualifiedAcpxAgent,
+} from "../drivers/acpx/qualified-profiles.js";
 import {
   AcpxRuntimeHost,
   type AcpxRetainedCleanupFailure,
@@ -114,6 +117,7 @@ let closing = false;
 let shutdownRequested = false;
 let pendingInput = Promise.resolve();
 let bootstrapFailure: Error | null = null;
+let initializedAgent: QualifiedAcpxAgent | null = null;
 let initializedModel: string | null = null;
 const tools = new Map<string, PendingTool>();
 const inputs = new Map<string, PendingInput>();
@@ -194,9 +198,10 @@ async function dispatch(
   if (request.command === "initialize") {
     if (initializedModel)
       throw new Error("ACPX sidecar is already initialized");
-    requireCodexAgent(request.params.agent);
+    const agent = requireQualifiedAgent(request.params.agent);
     const model = requiredText(request.params.model, "model");
-    const profile = resolveQualifiedAcpxProfile("codex", model);
+    const profile = resolveQualifiedAcpxProfile(agent, model);
+    initializedAgent = agent;
     initializedModel = model;
     return {
       protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -223,15 +228,15 @@ async function dispatch(
     }
     if (!initializedModel) throw new Error("initialize the ACPX sidecar first");
     const params = parseOpenParams(request.params);
-    if (params.model !== initializedModel) {
-      throw new Error("ACPX session model differs from its initialization");
+    if (params.agent !== initializedAgent || params.model !== initializedModel) {
+      throw new Error("ACPX session profile differs from its initialization");
     }
     const openedHost = await AcpxRuntimeHost.open(
       {
         runtimeDirectory: params.runtimeDirectory,
         normalizedSessionId: params.normalizedSessionId,
         workingDirectory: params.workingDirectory,
-        agent: "codex",
+        agent: params.agent,
         model: params.model,
         permissionMode: params.permissionMode,
         systemInstructions: params.systemInstructions,
@@ -322,7 +327,7 @@ async function dispatch(
   }
   if (request.command === "permission.resolve") {
     throw new Error(
-      "Codex ACPX permissions are resolved by the admitted runner policy",
+      "ACPX permissions are resolved by the admitted runner policy",
     );
   }
   if (request.command === "input.resolve") {
@@ -424,7 +429,7 @@ async function dispatch(
   if (request.command === "session.close") {
     if (request.params.discardPersistentState === true) {
       throw new Error(
-        "Codex ACPX persistent state cannot be discarded by this sidecar",
+        "ACPX persistent state cannot be discarded by this sidecar",
       );
     }
     const closingTurnId = turnId;
@@ -577,7 +582,7 @@ async function waitForInput(
   if (!normalized) {
     diagnostic(
       "runtime_input_unsupported",
-      "The Codex ACPX provider requested an unsupported input mode.",
+      "The ACPX provider requested an unsupported input mode.",
     );
     return { action: "cancel" };
   }
@@ -604,7 +609,7 @@ async function waitForInput(
       questionSet: normalized.questionSet,
       origin: {
         adapter: "acpx-runtime-sidecar",
-        provider: "codex",
+        provider: openParams?.agent ?? initializedAgent ?? "unknown",
         method: "elicitation/create",
       },
     },
@@ -848,12 +853,12 @@ function safeOutput(value: unknown): Record<string, unknown> {
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  requireCodexAgent(value.agent);
+  const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
-  resolveQualifiedAcpxProfile("codex", model);
+  resolveQualifiedAcpxProfile(agent, model);
   if (value.runtimeContext !== undefined && value.runtimeContext !== null) {
     throw new Error(
-      "Codex ACPX sidecar runtime context must be pre-materialized",
+      "ACPX sidecar runtime context must be pre-materialized",
     );
   }
   if (
@@ -861,7 +866,7 @@ function parseOpenParams(
     value.providerSessionKey !== null
   ) {
     throw new Error(
-      "Codex ACPX replacement provider sessions are not available in this release",
+      "ACPX replacement provider sessions are not available in this release",
     );
   }
   return {
@@ -871,7 +876,7 @@ function parseOpenParams(
       "normalizedSessionId",
     ),
     workingDirectory: requiredText(value.workingDirectory, "workingDirectory"),
-    agent: "codex",
+    agent,
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
     permissionModePinned: value.permissionModePinned === true,
@@ -1004,10 +1009,11 @@ function requireHost(
   return requireSidecarCommandHost(host, activeHostCleanup, options);
 }
 
-function requireCodexAgent(value: unknown): void {
-  if (value !== "codex") {
-    throw new Error("This production ACPX sidecar supports Codex only");
+function requireQualifiedAgent(value: unknown): QualifiedAcpxAgent {
+  if (value !== "codex" && value !== "claude") {
+    throw new Error("ACPX agent must be claude or codex");
   }
+  return value;
 }
 
 function requiredText(value: unknown, field: string): string {

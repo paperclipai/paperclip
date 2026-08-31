@@ -275,6 +275,29 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects Pi before installation or runtime launch", async () => {
+    const fixture = await hostFixture();
+    const verifyInstallation = vi.fn();
+    const openRuntime = vi.fn();
+    await expect(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "pi" as never,
+          model: "openrouter/deepseek/deepseek-v4-flash-0731",
+          permissionMode: "approve-reads",
+        },
+        {
+          verifyInstallation,
+          openRuntime,
+          reportRetainedCleanupFailure: vi.fn(),
+        },
+      ),
+    ).rejects.toThrow("descriptor-confined verified launch");
+    expect(verifyInstallation).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+
   it("selects and verifies Claude's qualified reported model", async () => {
     const fixture = await hostFixture();
     let selected = false;

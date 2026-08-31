@@ -46,7 +46,6 @@ describe("ACPX driver profile", () => {
   });
 
   it.each([
-    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
     ["claude", "claude-sonnet-5"],
     ["codex", "gpt-5.6-sol"],
   ] as const)("accepts the exact qualified %s model", (agent, model) => {
@@ -77,6 +76,15 @@ describe("ACPX driver profile", () => {
     ).toMatchObject({
       ok: false,
       issues: [{ path: "model", code: "invalid_model" }],
+    });
+    expect(
+      validateAcpxDriverConfig({
+        agent: "pi",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      }),
+    ).toMatchObject({
+      ok: false,
+      issues: [{ path: "agent", code: "invalid_agent" }],
     });
     expect(
       validateAcpxDriverConfig({

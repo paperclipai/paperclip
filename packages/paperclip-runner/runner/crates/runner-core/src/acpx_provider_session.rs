@@ -69,10 +69,20 @@ pub struct AcpxProviderSessionConfig {
 impl AcpxProviderSessionConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         self.transport.validate()?;
-        if self.agent != "codex" {
-            return Err(LocalRunnerError::invalid(
-                "the initial ACPX provider session supports Codex only",
-            ));
+        let qualified_model = match self.agent.as_str() {
+            "claude" => "claude-sonnet-5",
+            "codex" => "gpt-5.6-sol",
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX agent must be claude or codex",
+                ))
+            }
+        };
+        if self.model != qualified_model {
+            return Err(LocalRunnerError::invalid(format!(
+                "ACPX {} profile requires exact model {qualified_model}",
+                self.agent
+            )));
         }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
         validate_stable_id(&self.run_id, SHORT_STABLE_ID_CHARS, "ACPX run id")?;
@@ -513,7 +523,7 @@ impl AcpxProviderSession {
                 }
                 AcpxProviderStateEvent::PermissionRequest { .. } => {
                     return Err(self.fail_closed(LocalRunnerError::invalid(
-                        "ACPX Codex permission request violated the pinned runner policy",
+                        "ACPX permission request violated the pinned runner policy",
                     )));
                 }
                 _ => {}
