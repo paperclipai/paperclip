@@ -157,6 +157,10 @@ describe("Paperclip Cloud self-host enrollment", () => {
       ...values,
       initiatedBy: "user:another-admin",
     })).rejects.toThrow(/another administrator/);
+    await expect(startPaperclipCloudConnectorEnrollment({
+      ...values,
+      companyId: "another-company",
+    })).rejects.toThrow(/another company/);
     expect(request).toHaveBeenCalledOnce();
   });
 

@@ -138,6 +138,9 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
     if (identity.pending.origin !== origin) {
       throw new Error("Paperclip Cloud enrollment is already pending for another origin");
     }
+    if (identity.pending.companyId !== input.companyId) {
+      throw new Error("Paperclip Cloud enrollment is already pending for another company");
+    }
     if (input.initiatedBy && identity.pending.initiatedBy && identity.pending.initiatedBy !== input.initiatedBy) {
       throw new Error("Paperclip Cloud enrollment is already pending for another administrator");
     }
