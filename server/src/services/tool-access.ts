@@ -2712,7 +2712,33 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return headers;
   }
 
+  // 1mcp aggregates many unrelated downstream MCP servers behind one connection
+  // (discord, discord-tmc, browser, scrape, email, github, google-qm, hindsight,
+  // homeassistant), and its own Streamable HTTP transport has a documented history
+  // of momentary flakiness (session churn, "already started" transport errors,
+  // brief disconnects during a downstream server's own reconnect). A single failed
+  // tools/list here flips connectedMcpToolsForCompany's health gate to exclude
+  // EVERY tool behind this connection for every agent, for up to staleAfterMs
+  // (15 minutes) until the next health-sweep retry. Retrying a few times with a
+  // short backoff before surfacing failure absorbs that class of transient blip
+  // without ever touching the paperclip/1mcp/discord topology itself.
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await remoteToolsOnce(connection);
+      } catch (error) {
+        lastError = error;
+        const code = (error as { details?: { code?: unknown } } | null)?.details?.code;
+        if (code === "oauth_challenge") throw error; // not transient, retrying won't help
+        if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 750));
+      }
+    }
+    throw lastError;
+  }
+
+  async function remoteToolsOnce(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
     // MCP requires an `initialize` handshake before any other request. Stateful
@@ -2725,56 +2751,75 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     try {
       const requestHeaders = mcpHttpRequestHeaders(headers);
       if (sessionId) requestHeaders["mcp-session-id"] = sessionId;
-      const response = await fetch(endpoint, {
-        method: "POST",
-        // MCP Streamable HTTP requires advertising that we accept both a JSON body
-        // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
-        headers: requestHeaders,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          method: "tools/list",
-          params: {},
-        }),
-      });
-      if (!response.ok) {
-        const authenticate = response.headers.get("www-authenticate") ?? "";
-        if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
-          const endpoints = await discoverOAuthEndpoints(connection, authenticate);
-          if (endpoints) {
-            const nextConfig = {
-              ...connection.config,
-              oauth: {
-                ...oauthConfig(connection),
-                provider: endpoints.provider,
-                authorizationUrl: endpoints.authorizationUrl,
-                tokenUrl: endpoints.tokenUrl,
-                metadataUrl: endpoints.metadataUrl ?? null,
-                scopes: endpoints.scopes,
-                grantType: endpoints.grantType ?? "authorization_code",
-                discoveredAt: new Date().toISOString(),
-              },
-            };
-            await db
-              .update(toolConnections)
-              .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
-              .where(eq(toolConnections.id, connection.id));
+      // A single tools/list call only returns one page. An aggregator fronting many
+      // downstream servers (e.g. 1mcp fanning out to 9+ MCP servers) can exceed one
+      // page, so a fixed-size connection would silently lose every tool past page 1
+      // on each refresh — including newly-added tools on late-listed servers. Follow
+      // MCP's cursor/nextCursor pagination contract until the server stops issuing a
+      // cursor. maxPages is a safety cap, not an expected ceiling.
+      const maxPages = 50;
+      const allTools: unknown[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < maxPages; page += 1) {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          // MCP Streamable HTTP requires advertising that we accept both a JSON body
+          // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
+          headers: requestHeaders,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: `paperclip-catalog-refresh-${page}`,
+            method: "tools/list",
+            params: cursor ? { cursor } : {},
+          }),
+        });
+        if (!response.ok) {
+          const authenticate = response.headers.get("www-authenticate") ?? "";
+          if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
+            const endpoints = await discoverOAuthEndpoints(connection, authenticate);
+            if (endpoints) {
+              const nextConfig = {
+                ...connection.config,
+                oauth: {
+                  ...oauthConfig(connection),
+                  provider: endpoints.provider,
+                  authorizationUrl: endpoints.authorizationUrl,
+                  tokenUrl: endpoints.tokenUrl,
+                  metadataUrl: endpoints.metadataUrl ?? null,
+                  scopes: endpoints.scopes,
+                  grantType: endpoints.grantType ?? "authorization_code",
+                  discoveredAt: new Date().toISOString(),
+                },
+              };
+              await db
+                .update(toolConnections)
+                .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
+                .where(eq(toolConnections.id, connection.id));
+            }
+            throw new HttpError(502, "This app needs you to sign in.", {
+              code: "oauth_challenge",
+              status: response.status,
+              setupUrl: connectionSetupUrl(connection),
+              reconnectUrl: connectionReconnectUrl(connection),
+              oauthSupported: Boolean(endpoints),
+            });
           }
-          throw new HttpError(502, "This app needs you to sign in.", {
-            code: "oauth_challenge",
-            status: response.status,
-            setupUrl: connectionSetupUrl(connection),
-            reconnectUrl: connectionReconnectUrl(connection),
-            oauthSupported: Boolean(endpoints),
-          });
+          throw new HttpError(502, "Remote app returned an error", { status: response.status });
         }
-        throw new HttpError(502, "Remote app returned an error", { status: response.status });
+        const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
+        const result = asRecord(asRecord(payload).result);
+        const payloadTools = asRecord(payload).tools;
+        const pageTools: unknown[] = Array.isArray(result.tools)
+          ? result.tools
+          : Array.isArray(payloadTools)
+            ? payloadTools
+            : [];
+        allTools.push(...pageTools);
+        const nextCursor = typeof result.nextCursor === "string" ? result.nextCursor : undefined;
+        if (!nextCursor) break;
+        cursor = nextCursor;
       }
-      const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
-      const result = asRecord(asRecord(payload).result);
-      const payloadTools = asRecord(payload).tools;
-      const tools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
-      return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
+      return allTools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
     } finally {
       // Tear the session down so stateful servers don't accumulate dead sessions
       // across catalog refreshes / connection checks (no-op when sessionId is null).
@@ -3117,18 +3162,31 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
-  async function sweepConnectionHealth(input: { staleAfterMs?: number; limit?: number } = {}) {
+  async function sweepConnectionHealth(input: { staleAfterMs?: number; unhealthyStaleAfterMs?: number; limit?: number } = {}) {
     const generatedAt = now();
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
+    // A connection stuck in a non-ok status hides every tool behind it (see
+    // remoteTools' retry comment above) for every agent until it's re-checked and
+    // recovers. Re-probe those on a much shorter cadence than healthy connections
+    // so a transient outage that outlasts remoteTools' own retries still
+    // self-heals in ~2 minutes instead of waiting out the full stale window.
+    const unhealthyStaleAfterMs = input.unhealthyStaleAfterMs ?? 2 * 60 * 1000;
     const limit = input.limit ?? 25;
     const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
+    const unhealthyCutoff = new Date(generatedAt.getTime() - unhealthyStaleAfterMs);
     const connections = await db
       .select()
       .from(toolConnections)
       .where(and(eq(toolConnections.enabled, true), eq(toolConnections.status, "active")))
       .orderBy(asc(toolConnections.healthCheckedAt), asc(toolConnections.createdAt));
     const due = connections
-      .filter((connection) => !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff)
+      .filter((connection) => {
+        if (!connection.healthCheckedAt) return true;
+        const effectiveCutoff = connection.healthStatus === "ok" || connection.healthStatus === "healthy"
+          ? cutoff
+          : unhealthyCutoff;
+        return connection.healthCheckedAt <= effectiveCutoff;
+      })
       .slice(0, limit);
     let healthy = 0;
     let failed = 0;
