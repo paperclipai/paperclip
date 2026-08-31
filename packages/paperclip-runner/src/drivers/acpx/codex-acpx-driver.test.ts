@@ -1389,6 +1389,42 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "question verified" });
   });
 
+  it("rejects provider input when queue pressure omits its creation event", async () => {
+    const fixture = driverFixture(
+      {},
+      { maxBufferedEvents: 6, runtimeEvents: [] },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-question-created-pressure",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({
+      message: { role: "user", text: "Fill the event queue." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+
+    await expect(
+      onElicitation(
+        {
+          mode: "form",
+          requestedSchema: {
+            type: "object",
+            properties: { value: { type: "string" } },
+          },
+        },
+        {
+          requestId: "rpc-question-created-pressure",
+          signal: new AbortController().signal,
+        },
+      ),
+    ).resolves.toEqual({ action: "cancel" });
+    expect(session.pendingRuntimeRequests!()).toEqual([]);
+
+    await session.close({ reason: "creation pressure verified" });
+  });
+
   it("cancels a pending ACP form when its owning provider request aborts", async () => {
     const fixture = driverFixture();
     const session = await fixture.driver.openSession({
@@ -1550,6 +1586,54 @@ describe("Codex ACPX harness driver", () => {
     fixture.finishTurn({ status: "cancelled", stopReason: "durable_wait" });
     await collectUntil(session.events(), "turn.interrupted");
     await session.close({ reason: "handoff verified" });
+  });
+
+  it("preserves a pending ACP form when queue pressure blocks durable handoff", async () => {
+    const fixture = driverFixture(
+      {},
+      { maxBufferedEvents: 7, runtimeEvents: [] },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-question-handoff-pressure",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Fill the handoff lane." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+        },
+      },
+      {
+        requestId: "rpc-question-handoff-pressure",
+        signal: new AbortController().signal,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    });
+    const [request] = session.pendingRuntimeRequests!();
+
+    expect(() =>
+      session.handoffRuntimeRequest!({
+        requestId: request!.requestId,
+        turnId,
+        reason: "durable_handoff",
+        signal: new AbortController().signal,
+      }),
+    ).toThrow("event consumer must drain provider events");
+    expect(session.pendingRuntimeRequests!()).toEqual([request]);
+    expect(fixture.host.interruptActiveTurn).not.toHaveBeenCalled();
+
+    await session.close({ reason: "handoff pressure verified" });
+    await expect(providerResponse).resolves.toEqual({ action: "cancel" });
   });
 
   it("recovers a settled session with the exact persisted identity", async () => {

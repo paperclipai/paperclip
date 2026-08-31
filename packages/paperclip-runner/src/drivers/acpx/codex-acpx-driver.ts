@@ -897,15 +897,24 @@ class CodexAcpxSession implements HarnessSession {
     ) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
+    if (
+      !this.#emit(
+        "runtime_request.expired",
+        harnessRuntimeInputExpiredOutcome(pending.request, input.reason),
+        { turnId: input.turnId, itemId: pending.request.itemId },
+      )
+    ) {
+      throw new HarnessCapabilityUnavailableError(
+        "runtime request handoff",
+        "the event consumer must drain provider events before the durable handoff can be retained",
+      );
+    }
     if (!this.#pendingRuntimeRequests.delete(input.requestId)) {
-      return { result: "already_settled", cleanup: Promise.resolve() };
+      throw new Error(
+        `ACPX runtime request ${input.requestId} changed during its synchronous handoff`,
+      );
     }
     pending.cleanup();
-    this.#emit(
-      "runtime_request.expired",
-      harnessRuntimeInputExpiredOutcome(pending.request, input.reason),
-      { turnId: input.turnId, itemId: pending.request.itemId },
-    );
     pending.settle({ action: "cancel" });
     const cleanup = Promise.resolve()
       .then(() => this.#host.interruptActiveTurn(
@@ -1541,11 +1550,15 @@ class CodexAcpxSession implements HarnessSession {
         method: "elicitation/create",
       },
     };
-    this.#emit(
-      "runtime_request.created",
-      { request: runtimeInputProtocolPayload(runtimeRequest) },
-      { turnId, itemId: requestId },
-    );
+    if (
+      !this.#emit(
+        "runtime_request.created",
+        { request: runtimeInputProtocolPayload(runtimeRequest) },
+        { turnId, itemId: requestId },
+      )
+    ) {
+      return { action: "cancel" };
+    }
     return await new Promise<AcpElicitationResponse>((settle) => {
       const cancel = () => {
         const pending = this.#pendingRuntimeRequests.get(requestId);
