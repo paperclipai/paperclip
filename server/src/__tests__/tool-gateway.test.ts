@@ -638,6 +638,18 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(token.tokenPrefix).toMatch(/^pcgw_[a-f0-9]{8}$/);
 
       const app = createGatewayRouteApp(db, gateway);
+      const publicGet = await request(app)
+        .get(`/mcp/gateways/${created.gatewayPublicId}`)
+        .expect(405);
+      expect(publicGet.headers.allow).toBe("POST");
+      expect(publicGet.text).toBe("");
+
+      const internalGet = await request(app)
+        .get(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .expect(405);
+      expect(internalGet.headers.allow).toBe("POST");
+      expect(internalGet.text).toBe("");
+
       const listed = await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
         .set("authorization", `Bearer ${token.token}`)

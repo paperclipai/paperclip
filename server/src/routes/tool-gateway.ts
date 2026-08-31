@@ -158,15 +158,14 @@ async function handleMcpGatewayProtocol(
   }
 }
 
+function rejectUnsupportedMcpGet(_req: Request, res: Response) {
+  res.setHeader("Allow", "POST");
+  res.status(405).end();
+}
+
 export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
   const router = Router();
-  router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
-      authentication: "bearer",
-    });
-  });
+  router.get("/mcp/gateways/:gatewayPublicId", rejectUnsupportedMcpGet);
   router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
     await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
   });
@@ -383,13 +382,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
-      authentication: "bearer",
-    });
-  });
+  router.get("/tool-gateway/gateways/:gatewayId/mcp", rejectUnsupportedMcpGet);
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
     await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: req.params.gatewayId });
