@@ -41,7 +41,7 @@ export {
   type PromoteDeviceLoginCredentialInput,
   type PromoteDeviceLoginCredentialOutcome,
 } from "./adapter-auth-promotion.js";
-export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
+export { parseCodexJsonl, classifyCodexUnsupportedModelError, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

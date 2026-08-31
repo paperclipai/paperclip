@@ -136,6 +136,32 @@ describe("codex_local stderr fallback error derivation", () => {
     expect(result.errorMessage).not.toContain("YOLO mode");
   });
 
+  it("tags a rejected model as a permanent configuration failure so the server stops retrying", async () => {
+    // Verbatim provider message from a real failure. It repeated on 12 identical
+    // runs and burned 59.7M tokens, because no errorCode marked it permanent.
+    mockFailedProcess(
+      "The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT plan (HTTP 400)",
+    );
+
+    const result = await execute(buildContext({ model: "gpt-5.3-codex-spark" }) as never);
+
+    expect(result.errorCode).toBe("model_not_found");
+    expect(result.errorFamily).toBe("configuration_incomplete");
+    expect((result.resultJson as Record<string, unknown>).unsupportedModel).toEqual({
+      configuredModel: expect.any(String),
+      rejectedModel: "gpt-5.3-codex-spark",
+    });
+  });
+
+  it("keeps a model-capacity failure on the transient provider_quota path", async () => {
+    mockFailedProcess("Error: The requested model is at capacity. Please try again later.");
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("provider_quota");
+    expect((result.resultJson as Record<string, unknown>).unsupportedModel).toBeUndefined();
+  });
+
   it("skips adapter-injected [paperclip] diagnostic lines when picking the fallback error", async () => {
     mockFailedProcess(
       [

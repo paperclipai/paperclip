@@ -35,6 +35,38 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
   execution_review_participant_recovery: "Review recovery stalled",
 };
 
+function readObject(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      return readObject(JSON.parse(value));
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * The model id the provider rejected, when the failure was an unsupported
+ * `adapterConfig.model`. Lives here rather than in heartbeat.ts so the recovery
+ * sweep can use it too without importing heartbeat (that direction is a cycle).
+ * Null for every other configuration failure (missing secrets), which keeps the
+ * generic notice body.
+ */
+export function readRejectedAdapterModelFromRun(
+  run: { errorCode?: string | null; resultJson?: unknown } | null | undefined,
+): string | null {
+  if (!run || run.errorCode !== "model_not_found") return null;
+  const unsupportedModel = readObject(readObject(run.resultJson).unsupportedModel);
+  for (const key of ["rejectedModel", "configuredModel"]) {
+    const value = unsupportedModel[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -60,7 +92,27 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
   };
 }
 
-export function buildConfigurationIncompleteRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+export function buildConfigurationIncompleteRecoveryNoticeSeed(
+  input?: { rejectedModel?: string | null } | null,
+): StrandedRecoveryNoticeSeed {
+  // A rejected model id is a different repair than a missing secret, so it gets
+  // its own body: an operator reading "bind the missing secret(s)" would look in
+  // the wrong place entirely. Name the setting (`adapterConfig.model`) and the
+  // exact rejected value so the fix needs no log archaeology.
+  const rejectedModel = input?.rejectedModel?.trim();
+  if (rejectedModel) {
+    return {
+      body:
+        `The model provider rejected the agent's configured model \`${rejectedModel}\`. ` +
+        "This is a permanent configuration error: every retry would send the same rejected model and burn " +
+        "another run's tokens, so Paperclip failed once and stopped rescheduling. " +
+        "Moving the issue to `blocked` so the recovery owner below can set a supported value for " +
+        "`adapterConfig.model` on the agent (see `GET /api/companies/{companyId}/adapters/{type}/models`) " +
+        "before resuming.",
+      title: "Configuration incomplete",
+      tone: "danger",
+    };
+  }
   return {
     body:
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +

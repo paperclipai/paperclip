@@ -68,6 +68,13 @@ export interface AdapterRuntimeServiceReport {
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
   | "provider_quota"
+  /**
+   * Permanent: the run cannot succeed until an operator changes the agent's
+   * configuration (e.g. the provider rejected `adapterConfig.model`). The
+   * server must not schedule a retry for this family — the same request would
+   * be rejected identically and burn another run's tokens.
+   */
+  | "configuration_incomplete"
   | "model_refusal"
   | "refresh_token_reused"
   | "refresh_token_expired"

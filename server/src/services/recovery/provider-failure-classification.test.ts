@@ -77,6 +77,48 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toEqual({ kind: "configuration_incomplete" });
   });
 
+  // One task burned 59.7M tokens on 12 identical runs of this exact 400. The
+  // classifier returned null, so the failure fell through to the generic
+  // re-wake path and the agent retried a configuration error forever.
+  it.each([
+    "The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT plan (HTTP 400)",
+    "stream error: unexpected status 400 Bad Request: the model `bogus-model` is not supported",
+    "Unknown model: gpt-9-imaginary",
+    "unsupported model requested by the client",
+    "the model gpt-4-legacy is not available on this account",
+  ])("classifies an unsupported-model 400 as permanent: %s", (error) => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error,
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it("classifies an adapter-tagged model_not_found run as permanent", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "model_not_found",
+      error: "Adapter failed",
+      resultJson: JSON.stringify({
+        unsupportedModel: { configuredModel: "gpt-5.3-codex-spark", rejectedModel: "gpt-5.3-codex-spark" },
+      }),
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  // Capacity text also names a model but clears on its own, so it must keep the
+  // retrying quota path rather than blocking the issue for a human.
+  it("keeps a model-at-capacity failure on the transient provider_quota path", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "The model is at capacity right now; please try again shortly.",
+      resultJson: null,
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("ignores quota-like text from non-adapter failures", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "timeout",

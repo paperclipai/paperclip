@@ -8,6 +8,7 @@ import {
   buildImmediateExecutionPathRecoveryNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   buildWorkspaceValidationRecoveryNoticeSeed,
+  readRejectedAdapterModelFromRun,
 } from "./stranded-notice.js";
 
 function allRows(metadata: { sections: Array<{ rows: unknown[] }> }) {
@@ -29,6 +30,40 @@ describe("stranded recovery notice seeds", () => {
     // Failure details now live in metadata rows, never inline in the body.
     expect(seed.body).not.toContain("Latest retry failure");
     expect(seed.body).not.toContain("Recovery action:");
+  });
+
+  it("names adapterConfig.model and the rejected id when the provider rejected the model", () => {
+    const body = buildConfigurationIncompleteRecoveryNoticeSeed({
+      rejectedModel: "gpt-5.3-codex-spark",
+    }).body;
+
+    expect(body).toContain("gpt-5.3-codex-spark");
+    expect(body).toContain("adapterConfig.model");
+    // An operator must not be sent looking for a missing secret.
+    expect(body).not.toContain("secret");
+  });
+
+  it("keeps the missing-secret copy when no model was rejected", () => {
+    for (const seed of [
+      buildConfigurationIncompleteRecoveryNoticeSeed(),
+      buildConfigurationIncompleteRecoveryNoticeSeed({ rejectedModel: null }),
+      buildConfigurationIncompleteRecoveryNoticeSeed({ rejectedModel: "   " }),
+    ]) {
+      expect(seed.body).toContain("secret/env bindings are missing");
+    }
+  });
+
+  it("reads the rejected model only from a model_not_found run", () => {
+    const resultJson = JSON.stringify({
+      unsupportedModel: { configuredModel: "gpt-5.3-codex-spark", rejectedModel: "gpt-5.3-codex-spark" },
+    });
+
+    expect(readRejectedAdapterModelFromRun({ errorCode: "model_not_found", resultJson })).toBe(
+      "gpt-5.3-codex-spark",
+    );
+    expect(readRejectedAdapterModelFromRun({ errorCode: "configuration_incomplete", resultJson })).toBeNull();
+    expect(readRejectedAdapterModelFromRun({ errorCode: "model_not_found", resultJson: null })).toBeNull();
+    expect(readRejectedAdapterModelFromRun(null)).toBeNull();
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {

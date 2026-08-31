@@ -68,6 +68,7 @@ import {
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   type StrandedRecoveryNoticeSeed,
+  readRejectedAdapterModelFromRun,
 } from "./stranded-notice.js";
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -369,6 +370,12 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
+  // Permanent configuration failures: the provider rejected the agent's own
+  // configuration (e.g. an unsupported `adapterConfig.model`). A continuation
+  // run would send the identical rejected request, so retrying only multiplies
+  // the token cost of a failure that cannot resolve without an operator.
+  "configuration_incomplete",
+  "model_not_found",
 ]);
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
@@ -387,6 +394,14 @@ const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+// A model id the provider refuses to serve is permanent in exactly the same way
+// a missing credential is: the next run sends the identical rejected
+// `adapterConfig.model`. Kept as a server-side text fallback so adapters that
+// do not tag an errorCode — and runs recorded before adapters learned to — are
+// still classified instead of looping. Quota/capacity text is matched first by
+// the caller and stays transient.
+const UNSUPPORTED_MODEL_ERROR_RE =
+  /(?:\bmodel\b[^\n]{0,120}?\bis not supported\b|\bis not supported\b[^\n]{0,120}?\bmodel\b|(?:requested |the )?model\s+[^\n]{0,120}?(?:does not exist|is invalid|is unknown)|unknown model|invalid model|unsupported model|model\s+[^\n]{0,80}?\bis not available\b)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -468,16 +483,25 @@ export function classifyAdapterFailureForRecovery(
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    latestRun.errorCode !== "model_not_found"
   ) {
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
   const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
-  if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
+  const providerQuota = latestRun.errorCode === "provider_quota" || PROVIDER_QUOTA_ERROR_RE.test(error);
+  if (
+    latestRun.errorCode === "configuration_incomplete" ||
+    latestRun.errorCode === "model_not_found" ||
+    CONFIGURATION_INCOMPLETE_ERROR_RE.test(error) ||
+    // Quota text wins: "model is at capacity" also names a model but clears on
+    // its own, so it must keep its retrying provider_quota path.
+    (!providerQuota && UNSUPPORTED_MODEL_ERROR_RE.test(error))
+  ) {
     return { kind: "configuration_incomplete" };
   }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
+  if (!providerQuota) return null;
 
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
     readNonEmptyString(resultJson.transientRetryNotBefore) ??
@@ -3731,14 +3755,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         } else {
+          // Name the offending setting and value when the provider rejected the
+          // model: "configuration_incomplete" alone sends an operator hunting
+          // through secrets when the fix is a single field on the agent.
+          const rejectedModel = readRejectedAdapterModelFromRun(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
             recoveryCause: "configuration_incomplete",
-            comment:
-              "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
-              "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
+            comment: rejectedModel
+              ? "Paperclip classified the latest adapter failure as `configuration_incomplete`: the provider " +
+                `rejected the configured model \`${rejectedModel}\`. Retrying would resend the same rejected ` +
+                "model, so the run is not rescheduled. Moving the issue to `blocked` so the recovery owner can " +
+                "set a supported `adapterConfig.model` on the agent instead of creating a recovery takeover."
+              : "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
+                "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);

@@ -249,6 +249,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
   buildWorkspaceValidationRecoveryNoticeSeed,
+  readRejectedAdapterModelFromRun,
 } from "./recovery/stranded-notice.js";
 import {
   recoveryAssigneeAdapterOverrides,
@@ -689,6 +690,9 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "provider_quota") {
     return "provider_quota";
   }
+  if (run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found") {
+    return "configuration_incomplete";
+  }
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
@@ -697,6 +701,20 @@ function readHeartbeatRunErrorFamily(
     return "transient_upstream";
   }
   return null;
+}
+
+/**
+ * Permanent adapter failures are ones where re-running the agent unchanged
+ * cannot succeed — the provider rejected the configuration itself (e.g. an
+ * unsupported `adapterConfig.model`). These must fail once and route to a human
+ * owner. Retrying them silently multiplies a full run's token cost by the retry
+ * count with zero chance of progress; a single misconfigured model previously
+ * consumed 12 identical failed runs this way.
+ */
+function isPermanentAdapterConfigurationFailure(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  return readHeartbeatRunErrorFamily(run) === "configuration_incomplete";
 }
 
 function isMaxTurnExhaustionRun(
@@ -17144,7 +17162,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+        if (outcome === "failed" && isPermanentAdapterConfigurationFailure(livenessRun)) {
+          // No retry of any flavour: the provider rejected the agent's own
+          // configuration, so the next run would send the identical rejected
+          // request and burn another run's tokens for no possible progress.
+          // Recovery escalates the issue to `blocked` with the cause named.
+          await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: "Retry suppressed: permanent adapter configuration failure",
+            payload: {
+              errorCode: livenessRun.errorCode,
+              errorFamily: readHeartbeatRunErrorFamily(livenessRun),
+            },
+          });
+        } else if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
             await scheduleBoundedRetryForRun(livenessRun, agent, {
@@ -17735,7 +17768,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issue,
           previousStatus: issue.status,
           notice: configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed({
+                rejectedModel: readRejectedAdapterModelFromRun(run),
+              })
             : buildWorkspaceValidationRecoveryNoticeSeed(),
           recoveryCause: configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
@@ -18210,7 +18245,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const notice = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed({
+                rejectedModel: readRejectedAdapterModelFromRun(run),
+              })
             : buildImmediateExecutionPathRecoveryNoticeSeed({
                 status: issue.status as "todo" | "in_progress",
               });
