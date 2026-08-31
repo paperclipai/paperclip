@@ -90,6 +90,30 @@ describePg("decision retention", () => {
     responsibleUserId: "board-user",
   };
 
+  it("syncs more rows than one PostgreSQL parameter window", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Large retention history",
+      issuePrefix: `L${companyId.slice(0, 6)}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    // Four bound values per row makes one unbatched insert exceed 65,534.
+    const itemCount = 16_384;
+    const activityAt = "2026-08-02T00:00:00.000Z";
+    const items = Array.from({ length: itemCount }, (_, index) => ({
+      sourceKind: "review" as const,
+      subject: { id: `retention-source-${index}` },
+      activityAt,
+    }));
+
+    const states = await decisionRetentionService(db).syncItems(companyId, items);
+
+    expect(states.size).toBe(itemCount);
+    expect(states.get("review:retention-source-0")?.sourceActivityAt.toISOString()).toBe(activityAt);
+    expect(states.get(`review:retention-source-${itemCount - 1}`)?.sourceActivityAt.toISOString()).toBe(activityAt);
+  }, 30_000);
+
   it("auto-archives, excludes by default, returns archived rows, and revives", async () => {
     const { companyId, issueIds } = await seedReviewItems(1);
     const now = new Date("2026-08-02T00:00:00.000Z");
