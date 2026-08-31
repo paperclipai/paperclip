@@ -164,6 +164,13 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import {
+  FALLBACK_SOURCE_CONTEXT_KEY,
+  applyFallbackSourceToConfig,
+  readFallbackChain,
+  readFallbackSourceOverride,
+  selectNextFallbackSource,
+} from "./intelligence-fallback.js";
 import { projectService } from "./projects.js";
 import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
@@ -11640,6 +11647,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : baseSchedule;
 
+    // Intelligence fallback: on a provider-quota reschedule, if the agent has an
+    // untried same-provider fallback source (a second subscription's token), retry
+    // against it immediately instead of waiting out the reset window. The token
+    // swap itself happens in executeRun, driven by the source stamped on the
+    // retry's context. Cross-provider sources are stored but not switched here yet.
+    const fallbackSource =
+      transientRecovery?.errorFamily === "provider_quota"
+        ? selectNextFallbackSource(
+            readFallbackChain(agent.runtimeConfig),
+            readFallbackSourceOverride(contextSnapshot)?.index ?? 0,
+            agent.adapterType,
+          )
+        : null;
+    const effectiveDueAt = fallbackSource ? now : schedule.dueAt;
+    const fallbackSourceContext: Record<string, unknown> = fallbackSource
+      ? { [FALLBACK_SOURCE_CONTEXT_KEY]: fallbackSource }
+      : {};
+
     const requiresIssueGate =
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
@@ -11708,12 +11733,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : {}),
       ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
       scheduledRetryAttempt: schedule.attempt,
-      scheduledRetryAt: schedule.dueAt.toISOString(),
+      scheduledRetryAt: effectiveDueAt.toISOString(),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRecovery?.errorFamily === "provider_quota" && transientRetryNotBefore
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      ...fallbackSourceContext,
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
@@ -11940,12 +11966,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             retryReason,
             ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
             scheduledRetryAttempt: schedule.attempt,
-            scheduledRetryAt: schedule.dueAt.toISOString(),
+            scheduledRetryAt: effectiveDueAt.toISOString(),
             ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
             ...(transientRecovery?.errorFamily === "provider_quota" && transientRetryNotBefore
               ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
               : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+            ...fallbackSourceContext,
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -11969,7 +11996,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          scheduledRetryAt: schedule.dueAt,
+          scheduledRetryAt: effectiveDueAt,
           scheduledRetryAttempt: schedule.attempt,
           scheduledRetryReason: retryReason,
           continuationAttempt: readContinuationAttempt(retryContextSnapshot.livenessContinuationAttempt),
@@ -15127,7 +15154,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
-    const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    // Intelligence fallback: if this run was rescheduled onto a same-provider
+    // fallback source (a second subscription's token), overlay that source's
+    // model/effort/env before secret resolution so the run authenticates against
+    // the fallback account. No-op for normal runs.
+    const fallbackSourceOverride = readFallbackSourceOverride(parseObject(run.contextSnapshot));
+    const executionRunConfig = applyFallbackSourceToConfig(
+      stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig),
+      fallbackSourceOverride,
+      agent.adapterType,
+    );
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,

@@ -24,6 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import { FALLBACK_SOURCE_CONTEXT_KEY } from "../services/intelligence-fallback.ts";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
@@ -293,6 +294,81 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("switches a provider-quota run onto a same-provider fallback source immediately", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Fallback Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+        // A same-provider fallback: a second subscription's token on the same adapter.
+        fallbackChain: [
+          {
+            adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
+            env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: "second-subscription" } },
+            label: "Claude sub #2",
+          },
+        ],
+      },
+      permissions: {},
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("provider_quota");
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+
+    const retryRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    // The fallback switches the retry to run now instead of waiting out the
+    // adapter's far-future quota reset window (2030 in the fake adapter).
+    expect(retryRun?.scheduledRetryAt?.getTime()).toBeLessThan(Date.now() + 60_000);
+    // The fallback source is stamped on the retry so executeRun applies its token.
+    const context = (retryRun?.contextSnapshot as Record<string, unknown> | null) ?? {};
+    expect(context[FALLBACK_SOURCE_CONTEXT_KEY]).toMatchObject({
+      index: 1,
+      adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
+      label: "Claude sub #2",
+    });
   });
 
   async function seedMaxTurnFixture(input?: {

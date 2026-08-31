@@ -63,10 +63,29 @@ const agentModelProfileConfigSchema = z.object({
   adapterConfig: adapterConfigSchema,
 }).strict();
 
+// One entry in an agent's intelligence fallback chain: an alternate source the
+// executor retries a run against when the current source is exhausted by a
+// provider quota / rate limit. A second Claude subscription is just a different
+// `env` (e.g. a `secret_ref` for CLAUDE_CODE_OAUTH_TOKEN); a different provider
+// (e.g. Codex) additionally sets `adapterType`.
+export const agentFallbackSourceSchema = z.object({
+  adapterType: agentAdapterTypeSchema,
+  model: z.string().trim().min(1).optional(),
+  effort: z.string().trim().min(1).optional(),
+  env: envConfigSchema.optional(),
+  label: z.string().trim().min(1).optional(),
+}).strict();
+
+export type AgentFallbackSource = z.infer<typeof agentFallbackSourceSchema>;
+
 export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
+  // Ordered fallback sources tried, in order, when a run fails on provider
+  // quota/rate-limit exhaustion. Capped so a misconfiguration cannot fan a
+  // single stranded run into an unbounded retry storm.
+  fallbackChain: z.array(agentFallbackSourceSchema).max(4).optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({

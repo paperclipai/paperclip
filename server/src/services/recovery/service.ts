@@ -37,6 +37,12 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { logActivity } from "../activity-log.js";
+import {
+  FALLBACK_SOURCE_CONTEXT_KEY,
+  readFallbackChain,
+  readFallbackSourceOverride,
+  selectNextFallbackSource,
+} from "../intelligence-fallback.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -2228,7 +2234,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (existing) return existing;
 
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    // If the agent has an untried same-provider fallback source, switch the retry
+    // to it immediately (a second subscription's token) instead of waiting out the
+    // quota window. Cross-provider fallbacks (a different adapterType) are stored
+    // but not executed here yet — they fall through to the normal quota wait.
+    const quotaAgent = await getAgent(input.agentId);
+    const currentSourceIndex =
+      readFallbackSourceOverride(parseObject(input.latestRun?.contextSnapshot))?.index ?? 0;
+    // No agent (or no adapterType) → pass "" so nothing in the chain matches and
+    // selection returns null, leaving the normal quota wait in place.
+    const fallbackSource = selectNextFallbackSource(
+      readFallbackChain(quotaAgent?.runtimeConfig),
+      currentSourceIndex,
+      quotaAgent?.adapterType ?? "",
+    );
+    const retryAt = fallbackSource ? now : readProviderQuotaRetryAt(input.latestRun, now);
+    const fallbackContext = fallbackSource
+      ? { [FALLBACK_SOURCE_CONTEXT_KEY]: fallbackSource, retryReason: "provider_quota_fallback" }
+      : {};
+    const idempotencySuffix = fallbackSource ? `:src${fallbackSource.index}` : "";
     return db.transaction(async (tx) => {
       const wakeup = await tx
         .insert(agentWakeupRequests)
@@ -2243,11 +2267,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             retryOfRunId: input.latestRun?.id ?? null,
             retryReason: "provider_quota_recovery",
             providerQuotaRetryNotBefore: retryAt.toISOString(),
+            ...fallbackContext,
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
-          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}${idempotencySuffix}`,
           updatedAt: now,
         })
         .returning()
@@ -2271,6 +2296,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             wakeReason: "provider_quota_recovery",
             retryReason: "provider_quota_recovery",
             providerQuotaRetryNotBefore: retryAt.toISOString(),
+            ...fallbackContext,
           }, "normal_model"),
           updatedAt: now,
         })

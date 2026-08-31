@@ -353,6 +353,7 @@ export {
   createAgentHireSchema,
   updateAgentSchema,
   agentRuntimeConfigSchema,
+  agentFallbackSourceSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
@@ -386,6 +387,7 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  type AgentFallbackSource,
 } from "./agent.js";
 
 export {
