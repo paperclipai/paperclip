@@ -17,7 +17,9 @@ import {
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
+  evaluateIssuelessWakeReuseBindingDiagnostic,
   extractWakeCommentIds,
+  ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES,
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
@@ -46,6 +48,7 @@ import {
   shouldResetTaskSessionForWake,
   scrubGitCredentialText,
   buildAnchorFallbackWorkspaceNotes,
+  type IssuelessWakeReuseBindingCandidate,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
@@ -3067,5 +3070,101 @@ describe("reconcileReusedExecutionWorkspaceProjectWorkspaceId", () => {
     expect(
       reconcileReusedExecutionWorkspaceProjectWorkspaceId(undefined, "resolved-workspace"),
     ).toBe("resolved-workspace");
+  });
+});
+
+describe("evaluateIssuelessWakeReuseBindingDiagnostic", () => {
+  function buildBoundIssue(index: number): IssuelessWakeReuseBindingCandidate {
+    return {
+      issueId: `issue-${index}`,
+      issueIdentifier: `PAP-${index}`,
+      executionWorkspaceId: `execution-workspace-${index}`,
+    };
+  }
+
+  function buildDiagnosticInput(
+    overrides: Partial<Parameters<typeof evaluateIssuelessWakeReuseBindingDiagnostic>[0]> = {},
+  ): Parameters<typeof evaluateIssuelessWakeReuseBindingDiagnostic>[0] {
+    return {
+      issueId: null,
+      wakeSource: "on_demand",
+      resolvedWorkspaceSource: "agent_home",
+      workspaceStrategyType: "adapter_managed",
+      boundIssues: [buildBoundIssue(1)],
+      ...overrides,
+    };
+  }
+
+  it("emits a row naming the bound issue for a bare non-timer issueless wake without touching the resolved workspace", () => {
+    const resolvedWorkspace = buildResolvedWorkspace({ source: "agent_home", projectId: null, workspaceId: null });
+    const resolvedWorkspaceBefore = structuredClone(resolvedWorkspace);
+    const input = buildDiagnosticInput({ resolvedWorkspaceSource: resolvedWorkspace.source });
+    Object.freeze(input);
+    Object.freeze(input.boundIssues);
+    Object.freeze(input.boundIssues[0]);
+
+    expect(evaluateIssuelessWakeReuseBindingDiagnostic(input)).toEqual([
+      {
+        issueId: "issue-1",
+        issueIdentifier: "PAP-1",
+        executionWorkspaceId: "execution-workspace-1",
+      },
+    ]);
+    expect(resolvedWorkspace).toEqual(resolvedWorkspaceBefore);
+  });
+
+  it("emits one row per bound issue when the agent holds several live bindings", () => {
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(
+        buildDiagnosticInput({ boundIssues: [buildBoundIssue(1), buildBoundIssue(2)] }),
+      ).map((row) => row.issueId),
+    ).toEqual(["issue-1", "issue-2"]);
+  });
+
+  it("caps the emitted rows at the diagnostic maximum", () => {
+    const boundIssues = Array.from(
+      { length: ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES + 2 },
+      (_, index) => buildBoundIssue(index + 1),
+    );
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(buildDiagnosticInput({ boundIssues })),
+    ).toHaveLength(ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES);
+  });
+
+  it("emits nothing for a timer wake with the same live bindings", () => {
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(
+        buildDiagnosticInput({
+          wakeSource: "timer",
+          boundIssues: [buildBoundIssue(1), buildBoundIssue(2)],
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("emits nothing when the agent has no live bound issues", () => {
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(buildDiagnosticInput({ boundIssues: [] })),
+    ).toEqual([]);
+  });
+
+  it("emits nothing for an issue-bound wake even when other live bindings exist", () => {
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(
+        buildDiagnosticInput({
+          issueId: "issue-9",
+          resolvedWorkspaceSource: "project_primary",
+          boundIssues: [buildBoundIssue(1)],
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("emits nothing when the run resolved to an isolated git worktree strategy", () => {
+    expect(
+      evaluateIssuelessWakeReuseBindingDiagnostic(
+        buildDiagnosticInput({ workspaceStrategyType: "git_worktree" }),
+      ),
+    ).toEqual([]);
   });
 });

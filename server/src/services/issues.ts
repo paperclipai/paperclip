@@ -162,7 +162,13 @@ export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
-const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = [
+  "issue.tree_hold_wakeup_deferred",
+  // Emitted by heartbeat executeRun when a non-timer wake with no issue id resolves to a
+  // non-isolated workspace while the agent still holds issues with live reuse_existing
+  // bindings. Observability only; resolution is unchanged.
+  "heartbeat.issueless_wake_reuse_binding_skipped",
+] as const;
 
 export type IssuePostCommitAction = {
   type: "cancel_native_question_run";

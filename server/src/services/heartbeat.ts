@@ -4714,6 +4714,94 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   };
 }
 
+/**
+ * Action string for the issueless-wake reuse-binding diagnostic. Must stay in sync with
+ * ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS in issues.ts so the rows surface in the
+ * GET /api/issues/{id}/diagnostics/wakes endpoint.
+ */
+export const ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_ACTION =
+  "heartbeat.issueless_wake_reuse_binding_skipped";
+/** Bounds the activity writes per wake so a large backlog cannot fan out unbounded rows. */
+export const ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES = 5;
+
+export type IssuelessWakeReuseBindingCandidate = {
+  issueId: string;
+  issueIdentifier: string | null;
+  executionWorkspaceId: string;
+};
+
+/**
+ * Observability-only gate for issue #11455. A wake with no issue id resolves to a shared or
+ * agent-home workspace by design and never consults the persisted reuse_existing bindings of
+ * the agent's in-flight issues; that resolution behaviour is intentional and unchanged. This
+ * decides whether the skip is worth surfacing: only a non-timer issueless wake that resolved
+ * to a non-isolated workspace while live bound candidates exist produces rows, capped at
+ * ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES. Pure decision, no side effects.
+ */
+export function evaluateIssuelessWakeReuseBindingDiagnostic(input: {
+  issueId: string | null;
+  wakeSource: string | null;
+  resolvedWorkspaceSource: ResolvedWorkspaceForRun["source"];
+  workspaceStrategyType: string | null;
+  boundIssues: IssuelessWakeReuseBindingCandidate[];
+}): IssuelessWakeReuseBindingCandidate[] {
+  if (input.issueId) return [];
+  if (input.wakeSource === "timer") return [];
+  if (input.workspaceStrategyType === "git_worktree") return [];
+  if (
+    input.resolvedWorkspaceSource !== "project_primary" &&
+    input.resolvedWorkspaceSource !== "task_session" &&
+    input.resolvedWorkspaceSource !== "agent_home"
+  ) {
+    return [];
+  }
+  return input.boundIssues.slice(0, ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES);
+}
+
+/**
+ * The agent's in-flight (non-terminal, non-hidden) issues that carry a live reuse_existing
+ * binding: executionWorkspacePreference is reuse_existing and the bound execution workspace
+ * row exists and is not archived. Candidate source for the issueless-wake diagnostic above.
+ */
+export async function listAgentIssuesWithLiveReuseBindings(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  limit: number,
+): Promise<IssuelessWakeReuseBindingCandidate[]> {
+  const rows = await db
+    .select({
+      issueId: issues.id,
+      issueIdentifier: issues.identifier,
+      executionWorkspaceId: issues.executionWorkspaceId,
+    })
+    .from(issues)
+    .innerJoin(
+      executionWorkspaces,
+      and(
+        eq(executionWorkspaces.id, issues.executionWorkspaceId),
+        eq(executionWorkspaces.companyId, issues.companyId),
+        ne(executionWorkspaces.status, "archived"),
+      ),
+    )
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.assigneeAgentId, agentId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        isNull(issues.hiddenAt),
+        eq(issues.executionWorkspacePreference, "reuse_existing"),
+      ),
+    )
+    .orderBy(asc(issues.createdAt))
+    .limit(limit);
+  return rows.flatMap((row) =>
+    row.executionWorkspaceId
+      ? [{ issueId: row.issueId, issueIdentifier: row.issueIdentifier, executionWorkspaceId: row.executionWorkspaceId }]
+      : [],
+  );
+}
+
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   requestedShouldReuseExisting: boolean;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
@@ -15339,6 +15427,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedExecutionWorkspaceMode,
       hostExecutionWorkspaceConfig,
     );
+    // Observability only (issue #11455): a non-timer wake with no issue id resolves through
+    // the shared or agent-home path by design and never reads the persisted reuse_existing
+    // bindings of the agent's in-flight issues. Surface that skip as wake-diagnostics
+    // activity rows. Resolution itself is intentionally unchanged, and a diagnostic failure
+    // never fails the run.
+    if (!issueId) {
+      try {
+        const issuelessWakeSource = readNonEmptyString(context.wakeSource);
+        if (issuelessWakeSource !== "timer") {
+          const issuelessWakeBoundIssues = await listAgentIssuesWithLiveReuseBindings(
+            db,
+            agent.companyId,
+            agent.id,
+            ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_MAX_ISSUES,
+          );
+          const issuelessWakeDiagnosticCandidates = evaluateIssuelessWakeReuseBindingDiagnostic({
+            issueId,
+            wakeSource: issuelessWakeSource,
+            resolvedWorkspaceSource: resolvedWorkspace.source,
+            workspaceStrategyType: latestWorkspaceStrategyType,
+            boundIssues: issuelessWakeBoundIssues,
+          });
+          for (const candidate of issuelessWakeDiagnosticCandidates) {
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: run.id,
+              action: ISSUELESS_WAKE_REUSE_BINDING_DIAGNOSTIC_ACTION,
+              entityType: "issue",
+              entityId: candidate.issueId,
+              details: {
+                issueId: candidate.issueId,
+                issueIdentifier: candidate.issueIdentifier,
+                executionWorkspaceId: candidate.executionWorkspaceId,
+                resolvedWorkspaceSource: resolvedWorkspace.source,
+                resolvedWorkspaceStrategyType: latestWorkspaceStrategyType,
+                requestedExecutionWorkspaceMode,
+                wakeSource: issuelessWakeSource,
+              },
+            });
+          }
+        }
+      } catch (error) {
+        logger.warn(
+          { err: error, runId: run.id, agentId: agent.id },
+          "Failed to emit issueless-wake reuse-binding diagnostic activity; run continues",
+        );
+      }
+    }
     const selectedEnvironmentConfigForFingerprint = parseObject(selectedEnvironmentForConfig?.config);
     const workspaceEnvironmentFingerprint = selectedEnvironmentForConfig
       ? {
