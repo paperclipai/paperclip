@@ -24,11 +24,41 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { HttpError } from "../errors.js";
-import { formalQaCheckoutService } from "../services/formal-qa-checkouts.js";
+import { formalQaCheckoutService, formalQaCheckoutTestOnly } from "../services/formal-qa-checkouts.js";
 import { formalQaPreparationService } from "../services/formal-qa-preparations.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describe("formal-QA checkout Git transport boundary", () => {
+  it("enables HTTPS only for the exact production fetch while retaining deny-by-default protocols", () => {
+    const headSha = "a".repeat(40);
+    const baseSha = "b".repeat(40);
+
+    expect(formalQaCheckoutTestOnly.exactFetchInvocation({
+      authConfigArgs: ["-c", "http.https://github.com/.extraHeader=Authorization: Basic REDACTED"],
+      exactCommits: [headSha, baseSha],
+    })).toEqual([
+      "/usr/bin/git",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "core.fsmonitor=false",
+      "-c", "protocol.file.allow=never",
+      "-c", "protocol.allow=never",
+      "-c", "core.attributesfile=/dev/null",
+      "-c", "http.https://github.com/.extraHeader=Authorization: Basic REDACTED",
+      "-c", "protocol.https.allow=always",
+      "fetch", "--no-tags", "--no-write-fetch-head", "origin", headSha, baseSha,
+    ]);
+  });
+
+  it("does not widen unsafe transports in the production fetch invocation", () => {
+    const invocation = formalQaCheckoutTestOnly.exactFetchInvocation({ exactCommits: ["a".repeat(40)] });
+    expect(invocation).toContain("protocol.allow=never");
+    expect(invocation).toContain("protocol.file.allow=never");
+    expect(invocation).not.toContain("protocol.file.allow=always");
+    expect(invocation.some((arg) => /^protocol\.(?:ext|ssh|git)\.allow=always$/.test(arg))).toBe(false);
+  });
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {

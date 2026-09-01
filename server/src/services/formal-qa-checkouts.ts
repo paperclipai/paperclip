@@ -28,6 +28,48 @@ type PolicyRow = typeof formalQaPolicies.$inferSelect;
 
 type GitResult = { stdout: string; stderr: string; code: number };
 
+const GIT_BASE_ARGS = [
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.fsmonitor=false",
+  "-c", "protocol.file.allow=never",
+  "-c", "protocol.allow=never",
+  "-c", "core.attributesfile=/dev/null",
+] as const;
+
+function gitInvocationArgs(args: string[]): string[] {
+  return [...GIT_BASE_ARGS, ...args];
+}
+
+function exactFetchArgs(input: {
+  authConfigArgs?: string[];
+  allowFileProtocolForTest: boolean;
+  exactCommits: string[];
+}): string[] {
+  return [
+    ...(input.authConfigArgs ?? []),
+    // The base invocation denies every transport. Re-enable only HTTPS, and
+    // only for this exact remote fetch; all local verification and worktree
+    // operations retain protocol.allow=never without an exception.
+    "-c", "protocol.https.allow=always",
+    ...(input.allowFileProtocolForTest ? ["-c", "protocol.file.allow=always"] : []),
+    "fetch", "--no-tags", "--no-write-fetch-head", "origin", ...input.exactCommits,
+  ];
+}
+
+export const formalQaCheckoutTestOnly = {
+  exactFetchInvocation(input: {
+    authConfigArgs?: string[];
+    allowFileProtocolForTest?: boolean;
+    exactCommits: string[];
+  }): string[] {
+    return [TRUSTED_GIT_BINARY, ...gitInvocationArgs(exactFetchArgs({
+      authConfigArgs: input.authConfigArgs,
+      allowFileProtocolForTest: input.allowFileProtocolForTest ?? false,
+      exactCommits: input.exactCommits,
+    }))];
+  },
+};
+
 function isolatedGitEnvironment(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return {
     PATH: "/usr/bin:/bin",
@@ -46,14 +88,7 @@ function isolatedGitEnvironment(extra?: Record<string, string>): NodeJS.ProcessE
 
 async function runGit(args: string[], cwd: string, extraEnv?: Record<string, string>): Promise<GitResult> {
   try {
-    const result = await execFileAsync(TRUSTED_GIT_BINARY, [
-      "-c", "core.hooksPath=/dev/null",
-      "-c", "core.fsmonitor=false",
-      "-c", "protocol.file.allow=never",
-      "-c", "protocol.allow=never",
-      "-c", "core.attributesfile=/dev/null",
-      ...args,
-    ], {
+    const result = await execFileAsync(TRUSTED_GIT_BINARY, gitInvocationArgs(args), {
       cwd,
       env: isolatedGitEnvironment(extraEnv),
       timeout: GIT_TIMEOUT_MS,
@@ -273,11 +308,11 @@ export function formalQaCheckoutService(db: Db, options?: {
       });
     }
     const exactCommits = [...new Set([preparation.headSha, preparation.baseSha])];
-    await gitOrThrow([
-      ...(auth?.configArgs ?? []),
-      ...(options?.testOnlyAllowFileProtocol ? ["-c", "protocol.file.allow=always"] : []),
-      "fetch", "--no-tags", "--no-write-fetch-head", "origin", ...exactCommits,
-    ], plan.repoRoot, "Formal-QA exact head could not be fetched from the clean mirror", auth?.env);
+    await gitOrThrow(exactFetchArgs({
+      authConfigArgs: auth?.configArgs,
+      allowFileProtocolForTest: options?.testOnlyAllowFileProtocol ?? false,
+      exactCommits,
+    }), plan.repoRoot, "Formal-QA exact head could not be fetched from the clean mirror", auth?.env);
     const head = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{commit}`], plan.repoRoot, "Formal-QA exact head is unavailable from the clean mirror");
     const base = await gitOrThrow(["rev-parse", "--verify", `${preparation.baseSha}^{commit}`], plan.repoRoot, "Formal-QA exact base is unavailable from the clean mirror");
     const tree = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{tree}`], plan.repoRoot, "Formal-QA exact tree is unavailable from the clean mirror");
