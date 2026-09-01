@@ -222,6 +222,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
             Err(error) => {
                 state.record_diagnostic(format!("transport reconnect scheduled: {error}"));
                 store.save(&state)?;
+                if Instant::now() >= connect_deadline {
+                    // Re-enter the lifecycle checks immediately so an auth
+                    // timeout cannot be misreported as a reusable-bootstrap
+                    // failure or delayed by reconnect backoff.
+                    continue;
+                }
                 if using_bootstrap && error.bootstrap_maybe_consumed {
                     return Err(DurableRunnerError::invalid(
                         "bootstrap connection failed closed; provide a fresh one-use ticket",
@@ -235,6 +241,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 continue;
             }
         };
+        if Instant::now() >= connect_deadline {
+            // A transport that authenticated after its lifecycle deadline is
+            // never allowed to clear reconnect state or process commands.
+            continue;
+        }
         authenticated_once = true;
         disconnected_since = None;
         reconnect_attempt = 0;
