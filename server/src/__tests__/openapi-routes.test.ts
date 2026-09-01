@@ -298,6 +298,13 @@ function maskLiterals(source: string) {
 // three separate passes over this table each missed a different wrapper. So the set
 // is computed transitively instead — see `resolveBoardAssertNames`.
 const BOARD_ASSERT_ROOT = "assertBoard";
+// `assertInstanceAdmin` opens with `assertBoard` and then requires the admin flag,
+// so the board closure absorbs it — a route guarded by it looks identical to an
+// ordinary board route. That collapse is a drift class of its own: an operation
+// moved from `INSTANCE_ADMIN_OPERATIONS` into `BOARD_ONLY_OPERATIONS` keeps
+// `actor: "board"` and silently drops the admin restriction from the published
+// contract. A second closure seeded here tracks the stricter tier separately.
+const INSTANCE_ADMIN_ASSERT_ROOT = "assertInstanceAdmin";
 const AUTHZ_FILE = "authz.ts";
 
 // Guards that reject a non-board actor by inlining `req.actor.type !== "board"`
@@ -307,7 +314,14 @@ const AUTHZ_FILE = "authz.ts";
 // trusted by association. Every listed name must still exist as a declaration in
 // its file — the scan collects the misses and the suite asserts none — so a
 // rename cannot quietly turn an entry into a no-op.
-const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {
+const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {};
+
+// Same contract, stricter tier: each listed name additionally throws for every
+// board actor that is not an instance admin (mirroring `assertInstanceAdmin`,
+// which the environments helper inlines rather than calls). An entry here seeds
+// the instance-admin closure and — since the stricter check implies the board
+// one — the board closure too.
+const INLINE_INSTANCE_ADMIN_ASSERTIONS: Record<string, readonly string[]> = {
   "environments.ts": ["assertCanAccessInstanceEnvironments"],
 };
 
@@ -675,6 +689,7 @@ function loadActualRoutes() {
 function computeActualRoutes() {
   const routes = new Set<string>();
   const boardGuardedRoutes = new Set<string>();
+  const instanceAdminGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
   const unbalancedRouteFiles: string[] = [];
   const missingInlineAssertions: string[] = [];
@@ -688,6 +703,7 @@ function computeActualRoutes() {
   const maskedAuthz = maskLiterals(fs.readFileSync(path.join(ROUTES_DIR, AUTHZ_FILE), "utf8"));
   if (braceBalanceOf(maskedAuthz) !== 0) unbalancedRouteFiles.push(AUTHZ_FILE);
   const sharedAssertNames = resolveBoardAssertNames(maskedAuthz, new Set([BOARD_ASSERT_ROOT]));
+  const sharedInstanceAdminNames = resolveBoardAssertNames(maskedAuthz, new Set([INSTANCE_ADMIN_ASSERT_ROOT]));
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
@@ -706,7 +722,8 @@ function computeActualRoutes() {
     const masked = maskLiterals(source);
     if (braceBalanceOf(masked) !== 0) unbalancedRouteFiles.push(file);
 
-    const inlineAssertions = INLINE_BOARD_ASSERTIONS[file] ?? [];
+    const inlineInstanceAdminAssertions = INLINE_INSTANCE_ADMIN_ASSERTIONS[file] ?? [];
+    const inlineAssertions = [...(INLINE_BOARD_ASSERTIONS[file] ?? []), ...inlineInstanceAdminAssertions];
     if (inlineAssertions.length > 0) {
       const declared = new Set(declarationsIn(masked).map((declaration) => declaration.name));
       for (const name of inlineAssertions) {
@@ -714,15 +731,22 @@ function computeActualRoutes() {
       }
     }
     const assertNames = resolveBoardAssertNames(masked, new Set([...sharedAssertNames, ...inlineAssertions]));
+    const instanceAdminAssertNames = resolveBoardAssertNames(
+      masked,
+      new Set([...sharedInstanceAdminNames, ...inlineInstanceAdminAssertions]),
+    );
+
+    const classify = (route: string, at: number) => {
+      routes.add(route);
+      if (routeIsBoardGuarded(masked, at, assertNames)) boardGuardedRoutes.add(route);
+      if (routeIsBoardGuarded(masked, at, instanceAdminAssertNames)) instanceAdminGuardedRoutes.add(route);
+    };
 
     const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
     registrations.forEach((match) => {
       const method = match[1].toUpperCase();
       const routePath = match[2];
-      const route = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
-      routes.add(route);
-
-      if (routeIsBoardGuarded(masked, match.index, assertNames)) boardGuardedRoutes.add(route);
+      classify(`${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`, match.index);
     });
 
     for (const { file: constantFile, marker, route } of constantPathRoutes) {
@@ -731,14 +755,14 @@ function computeActualRoutes() {
       // there, so the offset can only anchor on the real registration.
       const at = masked.indexOf(marker);
       if (at < 0) continue;
-      routes.add(route);
-      if (routeIsBoardGuarded(masked, at, assertNames)) boardGuardedRoutes.add(route);
+      classify(route, at);
     }
   }
 
   return {
     routes,
     boardGuardedRoutes,
+    instanceAdminGuardedRoutes,
     unknownRouteFiles: unknownRouteFiles.sort(),
     unbalancedRouteFiles: unbalancedRouteFiles.sort(),
     missingInlineAssertions: missingInlineAssertions.sort(),
@@ -1088,6 +1112,50 @@ describe("openapi routes", () => {
       .sort();
 
     expect(mislabeled).toEqual([]);
+  });
+
+  // The stricter tier of the same drift class: `assertInstanceAdmin` opens with
+  // `assertBoard`, so to the check above an instance-admin route is just a board
+  // route — `actor: "board"` satisfies it whether or not `instanceAdmin: true`
+  // survived. An operation moved from `INSTANCE_ADMIN_OPERATIONS` into
+  // `BOARD_ONLY_OPERATIONS` would drop the admin restriction from the published
+  // contract without failing anything. This test tracks the instance-admin
+  // closure separately and pins the annotation itself.
+  it("annotates every unconditionally instance-admin-guarded route as instance-admin", () => {
+    const { boardGuardedRoutes, instanceAdminGuardedRoutes } = loadActualRoutes();
+    const { spec } = loadSpecRoutes();
+
+    // The stricter closure can only see a subset of the board closure — every
+    // instance-admin assertion is also a board assertion. A route in one set but
+    // not the other is a scan defect, not a finding about the route.
+    expect([...instanceAdminGuardedRoutes].filter((route) => !boardGuardedRoutes.has(route))).toEqual([]);
+
+    // Direct `assertInstanceAdmin` callers, and the environments family reached
+    // only through the inline `assertCanAccessInstanceEnvironments` seed.
+    expect([...instanceAdminGuardedRoutes]).toContain("PATCH /api/adapters/{type}");
+    expect([...instanceAdminGuardedRoutes]).toContain("PATCH /api/environments/{id}");
+    // Negative controls: an ordinary board route stays out of the stricter set,
+    // and a conditional instance-admin check (bootstrap-CEO invites only) does
+    // not promote a `board_or_agent` route into it.
+    expect([...instanceAdminGuardedRoutes]).not.toContain("POST /api/execution-workspaces/{id}/reconcile-branch");
+    expect([...instanceAdminGuardedRoutes]).not.toContain("POST /api/invites/{inviteId}/revoke");
+
+    const mislabeled = [...instanceAdminGuardedRoutes]
+      .filter((route) => {
+        const separator = route.indexOf(" ");
+        const operation = spec.paths?.[route.slice(separator + 1)]?.[route.slice(0, separator).toLowerCase()];
+        // A guarded route missing from the spec entirely is the coverage test's
+        // failure to report, not this one's.
+        if (!operation) return false;
+        return operation["x-paperclip-authorization"]?.instanceAdmin !== true;
+      })
+      .sort();
+
+    expect(mislabeled).toEqual([]);
+
+    // The same floor rationale as the board set: the mislabel check is a subset
+    // check, so a scan regression that emptied this set would pass it trivially.
+    expect(instanceAdminGuardedRoutes.size).toBeGreaterThanOrEqual(40);
   });
 
   // The other direction of table rot: the guard above fires when a guarded
