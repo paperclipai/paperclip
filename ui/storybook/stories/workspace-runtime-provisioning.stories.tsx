@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { RuntimeProvisionStatusValue, type RuntimeProvisionStatus } from "@/pages/ExecutionWorkspaceDetail";
+import { RuntimeProvisionStatusValue, type RuntimeProvisionStatus } from "@/pages/ExecutionWorktreeDetail";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 const noop = () => {};
@@ -20,7 +20,7 @@ function ContextCard({ status }: { status: RuntimeProvisionStatus }) {
   return (
     <Card className="max-w-xl rounded-none">
       <CardHeader>
-        <CardTitle>Workspace context</CardTitle>
+        <CardTitle>Worktree context</CardTitle>
         <CardDescription>Linked objects and relationships</CardDescription>
       </CardHeader>
       <CardContent>
@@ -28,7 +28,7 @@ function ContextCard({ status }: { status: RuntimeProvisionStatus }) {
         <DetailRow label="Runtime provisioning">
           <RuntimeProvisionStatusValue status={status} onViewLogs={noop} />
         </DetailRow>
-        <DetailRow label="Workspace ID">
+        <DetailRow label="Worktree ID">
           <span className="font-mono text-xs">ews-7f21c9a3</span>
         </DetailRow>
       </CardContent>
@@ -37,7 +37,7 @@ function ContextCard({ status }: { status: RuntimeProvisionStatus }) {
 }
 
 const meta: Meta<typeof RuntimeProvisionStatusValue> = {
-  title: "Workspaces/Runtime provisioning status",
+  title: "Worktrees/Runtime provisioning status",
   component: RuntimeProvisionStatusValue,
   parameters: { layout: "padded" },
 };

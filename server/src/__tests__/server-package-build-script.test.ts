@@ -11,8 +11,8 @@ const runnerShimPath = fileURLToPath(
 const evidenceClassifierPath = fileURLToPath(
   new URL("../services/native-runtime/evidence-classifier.ts", import.meta.url),
 );
-const workspaceDiffReprojectionPath = fileURLToPath(
-  new URL("../services/provider-trace-workspace-diff-reprojection.ts", import.meta.url),
+const worktreeDiffReprojectionPath = fileURLToPath(
+  new URL("../services/provider-trace-worktree-diff-reprojection.ts", import.meta.url),
 );
 
 describe("server package build script", () => {
@@ -76,7 +76,7 @@ describe("server package build script", () => {
   it("routes source-mode runtime imports through the runner shim", () => {
     for (const consumerPath of [
       evidenceClassifierPath,
-      workspaceDiffReprojectionPath,
+      worktreeDiffReprojectionPath,
     ]) {
       const consumer = readFileSync(consumerPath, "utf8");
 

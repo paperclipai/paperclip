@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureManagedProjectWorkspace } from "../services/heartbeat.ts";
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
-import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
+import { sanitizeRuntimeServiceBaseEnv } from "../services/worktree-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 const execFile = promisify(execFileCallback);

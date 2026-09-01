@@ -23,4 +23,13 @@ describe("workspace diff plugin contracts", () => {
       stats: { fileCount: 1 },
     });
   });
+
+  it("round-trips the legacy workspace-diff fixture byte-for-byte", () => {
+    const serialized = JSON.stringify(diffResponse());
+    const parsed = workspaceDiffResponseSchema.parse(JSON.parse(serialized));
+
+    expect(JSON.stringify(parsed)).toBe(serialized);
+    expect(serialized).toContain('"workspaceId"');
+    expect(serialized).not.toContain('"worktreeId"');
+  });
 });

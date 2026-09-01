@@ -52,7 +52,7 @@ const storyGroups = [
   {
     title: "Issue Management",
     icon: ListTodo,
-    stories: "Issue lists, filters, properties, documents, run ledger, workspace cards",
+    stories: "Issue lists, filters, properties, documents, run ledger, worktree cards",
     why: "Issues are the core work unit — every view state matters for scan speed.",
   },
   {
@@ -76,7 +76,7 @@ const storyGroups = [
   {
     title: "Projects & Goals",
     icon: FolderKanban,
-    stories: "Project properties, workspace cards, goal trees, runtime controls",
+    stories: "Project properties, worktree cards, goal trees, runtime controls",
     why: "Hierarchical views (goals, projects, workspaces) need expand/collapse coverage.",
   },
   {
@@ -97,11 +97,11 @@ const coverageRows = [
   ["Invite UX", "Covered", "Fixture-backed access roles, invite landing, pending, accepted, expired, and error states"],
   ["Navigation & layout", "Planned", "Sidebar, breadcrumbs, command palette, company rail, mobile nav"],
   ["Agent management", "Planned", "Agent properties, config forms, icon picker, action buttons, active panel"],
-  ["Issue management", "Planned", "Issue lists, filters, properties, documents, run ledger, workspace cards"],
+  ["Issue management", "Planned", "Issue lists, filters, properties, documents, run ledger, worktree cards"],
   ["Forms & editors", "Planned", "Markdown editor, JSON schema, env vars, schedule editor, pickers"],
   ["Budget & finance", "Planned", "Incident cards, provider quotas, biller spend, subscription panels"],
   ["Dialogs & modals", "Planned", "New issue/agent/goal/project dialogs, diff modal, image gallery"],
-  ["Projects & goals", "Planned", "Project properties, workspace cards, goal trees, runtime controls"],
+  ["Projects & goals", "Planned", "Project properties, worktree cards, goal trees, runtime controls"],
   ["Chat & comments", "Covered", "Comment threads, run chat, issue chat with timeline events"],
   ["Data viz & misc", "Planned", "Activity charts, kanban, filter bar, live widget, onboarding, skeletons"],
   ["Full app pages", "Deferred", "API-driven route stories after page data loaders can be fixture-injected"],

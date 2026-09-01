@@ -294,7 +294,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const applicationLabel = useMemo(() => {
     switch (skillSnapshot?.mode) {
       case "persistent":
-        return "Kept in workspace";
+        return "Kept in worktree";
       case "ephemeral":
         return "Applied on next run";
       case "unsupported":

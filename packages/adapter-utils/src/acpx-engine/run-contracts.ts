@@ -18,7 +18,7 @@ import type {
   AdapterExecutionTargetProcessSessionBridgeHandle,
   PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreOutcome } from "../worktree-restore-merge.js";
 
 // ---------------------------------------------------------------------------
 // Resource identity

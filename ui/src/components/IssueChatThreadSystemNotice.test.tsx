@@ -158,11 +158,11 @@ describe("IssueChatThread system notice routing", () => {
       authorType: "system",
       authorAgentId: null,
       authorUserId: null,
-      body: "Workspace ready.",
+      body: "Worktree ready.",
       presentation: {
         kind: "system_notice",
         tone: "info",
-        title: "Workspace ready",
+        title: "Worktree ready",
         detailsDefaultOpen: false,
       },
       metadata: { version: 1, sections: [] },
@@ -175,7 +175,7 @@ describe("IssueChatThread system notice routing", () => {
     renderThread([comment]);
 
     expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
-    expect(container.textContent).toContain("Workspace ready");
+    expect(container.textContent).toContain("Worktree ready");
   });
 
   it("expands metadata when detailsDefaultOpen is true", () => {

@@ -9,7 +9,7 @@ import type {
   CompanySecretBinding,
   CompanySecretProviderConfig,
   DashboardSummary,
-  ExecutionWorkspace,
+  ExecutionWorktree,
   Goal,
   Issue,
   IssueDocument,
@@ -19,7 +19,7 @@ import type {
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
   SidebarBadges,
-  WorkspaceRuntimeService,
+  WorktreeRuntimeService,
 } from "@paperclipai/shared";
 import type { RunForIssue } from "@/api/activity";
 import type { LiveRunForIssue } from "@/api/heartbeats";
@@ -284,7 +284,7 @@ export const storybookGoals: Goal[] = [
     id: "goal-board-ux",
     companyId: "company-storybook",
     title: "Tighten board operator visibility",
-    description: "Every project, goal, and workspace surface should reveal ownership, progress, and runtime state at a glance.",
+    description: "Every project, goal, and worktree surface should reveal ownership, progress, and runtime state at a glance.",
     level: "team",
     status: "active",
     parentId: "goal-company",
@@ -296,7 +296,7 @@ export const storybookGoals: Goal[] = [
     id: "goal-agent-runtime",
     companyId: "company-storybook",
     title: "Stabilize agent runtime loops",
-    description: "Keep local and isolated workspaces predictable while preserving operator control.",
+    description: "Keep local and isolated worktrees predictable while preserving operator control.",
     level: "team",
     status: "planned",
     parentId: "goal-company",
@@ -343,8 +343,8 @@ export const storybookGoals: Goal[] = [
 ];
 
 function createRuntimeService(
-  overrides: Partial<WorkspaceRuntimeService> = {},
-): WorkspaceRuntimeService {
+  overrides: Partial<WorktreeRuntimeService> = {},
+): WorktreeRuntimeService {
   return {
     id: overrides.id ?? "service-storybook",
     companyId: overrides.companyId ?? "company-storybook",
@@ -525,7 +525,7 @@ export const storybookProjectWorkspaces: Project["workspaces"] = [
   },
 ];
 
-export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
+export const storybookExecutionWorkspaces: ExecutionWorktree[] = [
   {
     id: "execution-workspace-storybook",
     companyId: "company-storybook",
@@ -923,7 +923,7 @@ export const storybookIssues: Issue[] = [
   createIssue({
     id: "issue-storybook-8",
     title: "Clean up release smoke worktree",
-    description: "Close the isolated release smoke workspace after static preview review.",
+    description: "Close the isolated release smoke worktree after static preview review.",
     status: "blocked",
     priority: "medium",
     assigneeAgentId: "agent-codex",
@@ -954,7 +954,7 @@ export const storybookIssueDocuments: IssueDocument[] = [
     body: [
       "# Plan",
       "",
-      "- Add issue-management stories for list, filters, detail, documents, runs, and workspace cards.",
+      "- Add issue-management stories for list, filters, detail, documents, runs, and worktree cards.",
       "- Use existing product components instead of mock-only approximations.",
       "- Verify the Storybook build after the fixture expansion.",
     ].join("\n"),
@@ -982,7 +982,7 @@ export const storybookIssueDocuments: IssueDocument[] = [
       "",
       "- The issue list needs group headers and dense trailing columns.",
       "- The filters popover should show selected status, priority, and assignee filters.",
-      "- Workspace copy must expose branch, path, and runtime status.",
+      "- Worktree copy must expose branch, path, and runtime status.",
     ].join("\n"),
     latestRevisionId: "revision-notes-1",
     latestRevisionNumber: 1,

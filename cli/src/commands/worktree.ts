@@ -4472,8 +4472,8 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   }
 }
 
-export function registerWorktreeCommands(program: Command): void {
-  const worktree = program.command("worktree").description("Worktree-local Paperclip instance helpers");
+export function registerDevWorktreeCommands(program: Command): void {
+  const worktree = program.command("dev-worktree").alias("worktree").description("Dev-worktree Paperclip instance helpers");
 
   program
     .command("worktree:make")

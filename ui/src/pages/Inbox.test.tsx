@@ -63,8 +63,8 @@ vi.mock("../api/dashboard", () => ({
   dashboardApi: { summary: apiMocks.dashboardSummary },
 }));
 
-vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: { listSummaries: apiMocks.executionWorkspaceSummaries },
+vi.mock("../api/execution-worktrees", () => ({
+  executionWorktreesApi: { listSummaries: apiMocks.executionWorkspaceSummaries },
 }));
 
 vi.mock("../api/issues", () => ({
@@ -558,7 +558,7 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("hides workspace grouping when isolated workspaces are disabled", async () => {
+  it("hides worktree grouping when isolated worktrees are disabled", async () => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
 
@@ -583,7 +583,7 @@ describe("Inbox toolbar", () => {
     });
 
     const groupOptions = Array.from(document.body.querySelectorAll("button")).map((button) => button.textContent);
-    expect(groupOptions).not.toContain("Workspace");
+    expect(groupOptions).not.toContain("Worktree");
 
     act(() => {
       root.unmount();
@@ -1214,7 +1214,7 @@ describe("InboxIssueTrailingColumns", () => {
     });
   });
 
-  it("leaves the workspace cell blank when no explicit workspace label should be shown", () => {
+  it("leaves the worktree cell blank when no explicit worktree label should be shown", () => {
     const root = createRoot(container);
 
     act(() => {
@@ -1277,13 +1277,13 @@ describe("InboxGroupHeader", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(<InboxGroupHeader label="Primary workspace (default)" collapsible collapsed={false} />);
+      root.render(<InboxGroupHeader label="Primary worktree (default)" collapsible collapsed={false} />);
     });
 
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
     expect(button?.getAttribute("aria-expanded")).toBe("true");
-    expect(button?.textContent).toContain("Primary workspace (default)");
+    expect(button?.textContent).toContain("Primary worktree (default)");
     const caret = container.querySelector("svg");
     expect(caret?.className.baseVal).toContain("rotate-90");
 

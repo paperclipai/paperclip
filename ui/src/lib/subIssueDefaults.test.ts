@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorktree, Issue } from "@paperclipai/shared";
 import { buildSubIssueDefaults, buildSubIssueDefaultsForViewer } from "./subIssueDefaults";
 
-function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorkspace {
+function makeExecutionWorktree(overrides: Partial<ExecutionWorktree> = {}): ExecutionWorktree {
   return {
     id: "workspace-1",
     companyId: "company-1",
@@ -82,7 +82,7 @@ describe("buildSubIssueDefaults", () => {
       makeIssue({
         assigneeAgentId: "agent-1",
         executionWorkspaceId: "workspace-1",
-        currentExecutionWorkspace: makeExecutionWorkspace(),
+        currentExecutionWorkspace: makeExecutionWorktree(),
       }),
     );
 
@@ -95,7 +95,7 @@ describe("buildSubIssueDefaults", () => {
       goalId: "goal-1",
       executionWorkspaceId: "workspace-1",
       executionWorkspaceMode: "reuse_existing",
-      parentExecutionWorkspaceLabel: "Parent workspace",
+      parentExecutionWorktreeLabel: "Parent workspace",
       assigneeAgentId: "agent-1",
     });
   });

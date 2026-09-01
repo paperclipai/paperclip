@@ -20,7 +20,7 @@
     { "id": "STRESS-001", "classification": "workflow_eval", "workflowIds": ["governed-interaction"], "regressionTests": ["src/contracts/native-execution.test.ts"] },
     { "id": "STRESS-002", "classification": "workflow_eval", "workflowIds": ["restart-recovery"], "regressionTests": ["src/backends/harness-driver-backend.test.ts"] },
     { "id": "STRESS-003", "classification": "workflow_eval", "workflowIds": ["governed-interaction"], "regressionTests": ["src/contracts/native-execution.test.ts"] },
-    { "id": "STRESS-004", "classification": "workflow_eval", "workflowIds": ["restart-recovery"], "regressionTests": ["../../server/src/__tests__/heartbeat-workspace-session.test.ts"] },
+    { "id": "STRESS-004", "classification": "workflow_eval", "workflowIds": ["restart-recovery"], "regressionTests": ["../../server/src/__tests__/heartbeat-worktree-session.test.ts"] },
     { "id": "STRESS-005", "classification": "workflow_eval", "workflowIds": ["cancellation-permissions"], "regressionTests": ["src/drivers/acpx/codex-acpx-driver.test.ts"] },
     { "id": "STRESS-006", "classification": "workflow_eval", "workflowIds": ["final-response", "verification-policy"], "regressionTests": ["src/drivers/opencode/opencode-server-driver.test.ts"] },
     { "id": "STRESS-007", "classification": "workflow_eval", "workflowIds": ["completion-robustness"], "regressionTests": ["src/protocol/result-normalization.test.ts"] },

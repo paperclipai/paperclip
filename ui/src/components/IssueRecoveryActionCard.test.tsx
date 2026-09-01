@@ -192,7 +192,7 @@ describe("IssueRecoveryActionCard", () => {
           kind: "workspace_validation",
           cause: "workspace_validation_failed",
           nextAction:
-            "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+            "Repair the source issue worktree link, project worktree cwd, or git checkout before resuming adapter execution.",
           wakePolicy: { type: "manual_repair_required" },
           evidence: {
             recoveryCause: "workspace_validation_failed",
@@ -203,11 +203,11 @@ describe("IssueRecoveryActionCard", () => {
     );
     const section = node.querySelector("section[aria-label]");
     expect(section?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
-    expect(node.textContent).toContain("Workspace Validation");
+    expect(node.textContent).toContain("Worktree Validation");
     expect(node.textContent).toContain(
-      "Paperclip stopped this run because the task's git workspace could not be validated.",
+      "Paperclip stopped this run because the task's git worktree could not be validated.",
     );
-    expect(node.textContent).toContain("Repair the source issue workspace link");
+    expect(node.textContent).toContain("Repair the source issue worktree link");
   });
 
   it("renders a human evidence summary as prose, not a mono log line", () => {
@@ -320,7 +320,7 @@ describe("IssueRecoveryActionCard", () => {
   });
 });
 
-function buildWorkspaceValidationAction(
+function buildWorktreeValidationAction(
   overrides: {
     action?: Partial<IssueRecoveryAction>;
     provenance?: Record<string, unknown>;
@@ -354,7 +354,7 @@ function buildWorkspaceValidationAction(
 
 describe("IssueRecoveryActionCard workspace_validation divergence", () => {
   it("renders the divergence diagnosis with branches, shas, verdict and plain-language reason", () => {
-    const node = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} />);
+    const node = render(<IssueRecoveryActionCard action={buildWorktreeValidationAction()} />);
     const diagnosis = node.querySelector("[data-testid='recovery-divergence-diagnosis']");
     expect(diagnosis).not.toBeNull();
     const text = diagnosis?.textContent ?? "";
@@ -371,28 +371,28 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
   });
 
   it("labels each ancestry verdict", () => {
-    const diverged = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} />);
+    const diverged = render(<IssueRecoveryActionCard action={buildWorktreeValidationAction()} />);
     expect(diverged.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Diverged");
 
     const ancestor = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
+        action={buildWorktreeValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
       />,
     );
     expect(ancestor.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Forward-only");
 
     const unknown = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "unknown" } })}
+        action={buildWorktreeValidationAction({ provenance: { ancestryVerdict: "unknown" } })}
       />,
     );
     expect(unknown.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Ancestry unknown");
   });
 
-  it("does not render a divergence diagnosis for non-incoherence workspace failures", () => {
+  it("does not render a divergence diagnosis for non-incoherence worktree failures", () => {
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({
+        action={buildWorktreeValidationAction({
           workspaceValidation: { reason: "workspace_link_missing", provenance: undefined },
         })}
       />,
@@ -404,7 +404,7 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
     const onReissueIsolated = vi.fn();
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction()}
+        action={buildWorktreeValidationAction()}
         onReissueIsolated={onReissueIsolated}
       />,
     );
@@ -422,7 +422,7 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
     const onReissueIsolated = vi.fn();
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ workspaceValidation: { actualBranch: null } })}
+        action={buildWorktreeValidationAction({ workspaceValidation: { actualBranch: null } })}
         onReissueIsolated={onReissueIsolated}
       />,
     );
@@ -443,7 +443,7 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
   it("disables the re-issue action while a re-issue is pending", () => {
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction()}
+        action={buildWorktreeValidationAction()}
         onReissueIsolated={() => {}}
         reissuePending
       />,
@@ -470,7 +470,7 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
     const onReconcileForward = vi.fn();
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
+        action={buildWorktreeValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
         onReconcileForward={onReconcileForward}
       />,
     );
@@ -483,7 +483,7 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
   it("hides 'Reconcile forward & continue' when the verdict is not an ancestor", () => {
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "diverged" } })}
+        action={buildWorktreeValidationAction({ provenance: { ancestryVerdict: "diverged" } })}
         onReconcileForward={() => {}}
       />,
     );
@@ -493,7 +493,7 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
   it("disables reconcile-forward while a reconcile is pending", () => {
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
+        action={buildWorktreeValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
         onReconcileForward={() => {}}
         reconcilePending
       />,
@@ -505,7 +505,7 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
   it("never renders the break-glass action for a non-permitted operator", () => {
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction()}
+        action={buildWorktreeValidationAction()}
         onBreakGlassOverride={() => {}}
         canBreakGlass={false}
       />,
@@ -517,7 +517,7 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
     const onBreakGlassOverride = vi.fn();
     const node = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction()}
+        action={buildWorktreeValidationAction()}
         onBreakGlassOverride={onBreakGlassOverride}
         canBreakGlass
       />,
@@ -583,7 +583,7 @@ function buildDirtyDivergenceAction(
     workspaceValidation?: Record<string, unknown>;
   } = {},
 ): IssueRecoveryAction {
-  return buildWorkspaceValidationAction({
+  return buildWorktreeValidationAction({
     ...overrides,
     workspaceValidation: {
       cleanliness: "dirty",
@@ -595,11 +595,11 @@ function buildDirtyDivergenceAction(
   });
 }
 
-describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => {
+describe("IssueRecoveryActionCard repair worktree (quarantine_restore)", () => {
   it("offers the repair action only for a dirty divergence", () => {
     const cleanNode = render(
       <IssueRecoveryActionCard
-        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        action={buildWorktreeValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
         onQuarantineRestore={() => {}}
       />,
     );
@@ -615,10 +615,10 @@ describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => 
     const noHandler = render(<IssueRecoveryActionCard action={buildDirtyDivergenceAction()} />);
     expect(noHandler.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
 
-    const nonWorkspace = render(
+    const nonWorktree = render(
       <IssueRecoveryActionCard action={buildAction()} onQuarantineRestore={() => {}} />,
     );
-    expect(nonWorkspace.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+    expect(nonWorktree.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
   });
 
   it("confirm popover restates the dirty count, live branch, rescue branch and recorded branch, then fires the handler", () => {
@@ -710,7 +710,7 @@ describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => 
     );
     expect(trigger?.disabled).toBe(true);
     expect(disabled?.textContent).toContain(
-      "Held by PAP-9001 — re-issue on an isolated workspace instead.",
+      "Held by PAP-9001 — re-issue on an isolated worktree instead.",
     );
     // Clicking the disabled control never fires the repair.
     click(trigger ?? null);

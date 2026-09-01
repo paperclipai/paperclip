@@ -85,8 +85,8 @@ const governanceEvents = [
 
 export const TASK_PROTOCOL_EVENT_SURFACE_REGISTRY: Readonly<Record<string, TaskProtocolSurfaceRegistration>> = Object.freeze({
   ...Object.fromEntries(providerEvents.map((eventType) => [eventType, inline("provider_activity", "Task Page/Runner Protocol/Provider semantics", "Provider-neutral semantic activity is readable in the task turn.")])),
-  "workspace.change.updated": inline("workspace_change", "Task Page/Runner Protocol/Workspace changes", "In-progress workspace changes update one diff card."),
-  "workspace.diff.recorded": inline("workspace_change", "Task Page/Runner Protocol/Workspace changes", "The runner-verified final diff replaces the in-progress revision."),
+  "workspace.change.updated": inline("workspace_change", "Task Page/Runner Protocol/Worktree changes", "In-progress worktree changes update one diff card."),
+  "workspace.diff.recorded": inline("workspace_change", "Task Page/Runner Protocol/Worktree changes", "The runner-verified final diff replaces the in-progress revision."),
   "workspace.file.referenced": inline("workspace_file", "Task Page/Runner Protocol/File references", "Verified references open a bounded preview and the production file viewer."),
   "semantic_tool.input": folded("tool", "Semantic operations reuse the production tool row."),
   "semantic_tool.result": folded("tool", "Semantic operation outcomes update the matching tool row."),

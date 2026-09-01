@@ -16,7 +16,7 @@ import {
   WORKSPACE_GIT_SCAN_ERROR_CODES,
   WorkspaceGitScanError,
   type WorkspaceGitRunner,
-} from "../services/workspace-git-operation-scheduler.js";
+} from "../services/worktree-git-operation-scheduler.js";
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(async () => undefined),
 }));

@@ -81,7 +81,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => ({}),
+  worktreeOperationService: () => ({}),
 }));
 
 vi.mock("../services/environments.js", () => ({

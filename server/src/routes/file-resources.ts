@@ -20,7 +20,7 @@ import { logActivity } from "../services/activity-log.js";
 import {
   isWorkspaceGitScanError,
   WORKSPACE_GIT_SCAN_ERROR_CODES,
-} from "../services/workspace-git-operation-scheduler.js";
+} from "../services/worktree-git-operation-scheduler.js";
 
 export type WorkspaceFileResourceService = {
   getIssue(issueId: string): Promise<{ companyId: string }>;

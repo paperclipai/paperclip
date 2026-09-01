@@ -9,11 +9,11 @@ import {
 } from "drizzle-orm/pg-core";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
-import { executionWorkspaces } from "./execution_workspaces.js";
+import { executionWorktrees } from "./execution_worktrees.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
-import { workspaceRuntimeServices } from "./workspace_runtime_services.js";
+import { worktreeRuntimeServices } from "./worktree_runtime_services.js";
 
 export const issueWorkProducts = pgTable(
   "issue_work_products",
@@ -23,9 +23,9 @@ export const issueWorkProducts = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     executionWorkspaceId: uuid("execution_workspace_id")
-      .references(() => executionWorkspaces.id, { onDelete: "set null" }),
+      .references(() => executionWorktrees.id, { onDelete: "set null" }),
     runtimeServiceId: uuid("runtime_service_id")
-      .references(() => workspaceRuntimeServices.id, { onDelete: "set null" }),
+      .references(() => worktreeRuntimeServices.id, { onDelete: "set null" }),
     type: text("type").notNull(),
     provider: text("provider").notNull(),
     externalId: text("external_id"),

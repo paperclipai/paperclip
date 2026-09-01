@@ -93,11 +93,11 @@ export interface CompanyPortabilityProjectManifestEntry {
   status: string | null;
   env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
-  workspaces: CompanyPortabilityProjectWorkspaceManifestEntry[];
+  workspaces: CompanyPortabilityProjectWorktreeManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
 
-export interface CompanyPortabilityProjectWorkspaceManifestEntry {
+export interface CompanyPortabilityProjectWorktreeManifestEntry {
   key: string;
   name: string;
   sourceType: string | null;

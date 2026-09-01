@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   type Agent,
-  type ExecutionWorkspace,
-  type ExecutionWorkspaceMode,
-  type IssueExecutionWorkspaceSettings,
+  type ExecutionWorktree,
+  type ExecutionWorktreeMode,
+  type IssueExecutionWorktreeSettings,
   type Project,
   type RoutineVariable,
 } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
-import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+import { IssueWorktreeCard } from "./IssueWorktreeCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
@@ -50,15 +50,15 @@ function buildInitialRunSelection(input: {
   };
 }
 
-function defaultProjectWorkspaceIdForProject(project: Project | null | undefined) {
+function defaultProjectWorktreeIdForProject(project: Project | null | undefined) {
   if (!project) return null;
   return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.find((worktree) => worktree.isPrimary)?.id
     ?? project.workspaces?.[0]?.id
     ?? null;
 }
 
-function defaultExecutionWorkspaceModeForProject(project: Project | null | undefined): ExecutionWorkspaceMode {
+function defaultExecutionWorktreeModeForProject(project: Project | null | undefined): ExecutionWorktreeMode {
   const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
   if (
     defaultMode === "isolated_workspace" ||
@@ -70,13 +70,13 @@ function defaultExecutionWorkspaceModeForProject(project: Project | null | undef
   return "shared_workspace";
 }
 
-function issueModeForExistingWorkspace(mode: string | null | undefined): ExecutionWorkspaceMode {
+function issueModeForExistingWorktree(mode: string | null | undefined): ExecutionWorktreeMode {
   if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") return mode;
   if (mode === "adapter_managed" || mode === "cloud_sandbox") return "agent_default";
   return "shared_workspace";
 }
 
-function issueWorkspacePreferenceFromDraft(value: unknown, fallback: ExecutionWorkspaceMode): ExecutionWorkspaceMode {
+function issueWorktreePreferenceFromDraft(value: unknown, fallback: ExecutionWorktreeMode): ExecutionWorktreeMode {
   if (
     value === "inherit" ||
     value === "shared_workspace" ||
@@ -90,40 +90,40 @@ function issueWorkspacePreferenceFromDraft(value: unknown, fallback: ExecutionWo
   return fallback;
 }
 
-type RoutineRunWorkspaceConfig = {
+type RoutineRunWorktreeConfig = {
   executionWorkspaceId: string | null;
-  executionWorkspacePreference: ExecutionWorkspaceMode;
-  executionWorkspaceSettings: IssueExecutionWorkspaceSettings;
+  executionWorkspacePreference: ExecutionWorktreeMode;
+  executionWorkspaceSettings: IssueExecutionWorktreeSettings;
   projectWorkspaceId: string | null;
 };
 
-function buildInitialWorkspaceConfig(
+function buildInitialWorktreeConfig(
   project: Project | null | undefined,
-  defaultExecutionWorkspace?: ExecutionWorkspace | null,
-): RoutineRunWorkspaceConfig {
+  defaultExecutionWorkspace?: ExecutionWorktree | null,
+): RoutineRunWorktreeConfig {
   if (defaultExecutionWorkspace && defaultExecutionWorkspace.projectId === project?.id) {
     return {
       executionWorkspaceId: defaultExecutionWorkspace.id,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: {
-        mode: issueModeForExistingWorkspace(defaultExecutionWorkspace.mode),
+        mode: issueModeForExistingWorktree(defaultExecutionWorkspace.mode),
       },
-      projectWorkspaceId: defaultExecutionWorkspace.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(project),
+      projectWorkspaceId: defaultExecutionWorkspace.projectWorkspaceId ?? defaultProjectWorktreeIdForProject(project),
     };
   }
 
-  const defaultMode = defaultExecutionWorkspaceModeForProject(project);
+  const defaultMode = defaultExecutionWorktreeModeForProject(project);
   return {
     executionWorkspaceId: null as string | null,
     executionWorkspacePreference: defaultMode,
     executionWorkspaceSettings: { mode: defaultMode },
-    projectWorkspaceId: defaultProjectWorkspaceIdForProject(project),
+    projectWorkspaceId: defaultProjectWorktreeIdForProject(project),
   };
 }
 
-function workspaceConfigEquals(
-  a: RoutineRunWorkspaceConfig,
-  b: RoutineRunWorkspaceConfig,
+function worktreeConfigEquals(
+  a: RoutineRunWorktreeConfig,
+  b: RoutineRunWorktreeConfig,
 ) {
   return a.executionWorkspaceId === b.executionWorkspaceId
     && a.executionWorkspacePreference === b.executionWorkspacePreference
@@ -131,22 +131,22 @@ function workspaceConfigEquals(
     && JSON.stringify(a.executionWorkspaceSettings ?? null) === JSON.stringify(b.executionWorkspaceSettings ?? null);
 }
 
-function applyWorkspaceDraft(
-  current: RoutineRunWorkspaceConfig,
+function applyWorktreeDraft(
+  current: RoutineRunWorktreeConfig,
   data: Record<string, unknown>,
 ) {
   const next = {
     ...current,
     executionWorkspaceId: (data.executionWorkspaceId as string | null | undefined) ?? null,
-    executionWorkspacePreference: issueWorkspacePreferenceFromDraft(
+    executionWorkspacePreference: issueWorktreePreferenceFromDraft(
       data.executionWorkspacePreference,
       current.executionWorkspacePreference,
     ),
     executionWorkspaceSettings:
-      (data.executionWorkspaceSettings as IssueExecutionWorkspaceSettings | null | undefined)
+      (data.executionWorkspaceSettings as IssueExecutionWorktreeSettings | null | undefined)
       ?? current.executionWorkspaceSettings,
   };
-  return workspaceConfigEquals(current, next) ? current : next;
+  return worktreeConfigEquals(current, next) ? current : next;
 }
 
 function isMissingRequiredValue(value: unknown) {
@@ -157,7 +157,7 @@ function shouldUseDateInput(variable: RoutineVariable) {
   return variable.type === "date";
 }
 
-function supportsRoutineRunWorkspaceSelection(
+function supportsRoutineRunWorktreeSelection(
   project: Project | null | undefined,
   isolatedWorkspacesEnabled: boolean,
 ) {
@@ -170,7 +170,7 @@ export function routineRunNeedsConfiguration(input: {
   isolatedWorkspacesEnabled: boolean;
 }) {
   return input.variables.length > 0
-    || supportsRoutineRunWorkspaceSelection(input.project, input.isolatedWorkspacesEnabled);
+    || supportsRoutineRunWorktreeSelection(input.project, input.isolatedWorkspacesEnabled);
 }
 
 export interface RoutineRunDialogSubmitData {
@@ -179,7 +179,7 @@ export interface RoutineRunDialogSubmitData {
   projectId?: string | null;
   executionWorkspaceId?: string | null;
   executionWorkspacePreference?: string | null;
-  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+  executionWorkspaceSettings?: IssueExecutionWorktreeSettings | null;
 }
 
 export function RoutineRunVariablesDialog({
@@ -204,7 +204,7 @@ export function RoutineRunVariablesDialog({
   agents: Agent[];
   defaultProjectId?: string | null;
   defaultAssigneeAgentId?: string | null;
-  defaultExecutionWorkspace?: ExecutionWorkspace | null;
+  defaultExecutionWorkspace?: ExecutionWorktree | null;
   variables: RoutineVariable[];
   isPending: boolean;
   onSubmit: (data: RoutineRunDialogSubmitData) => void;
@@ -243,10 +243,10 @@ export function RoutineRunVariablesDialog({
   const currentAssignee = selection.assigneeAgentId
     ? agents.find((agent) => agent.id === selection.assigneeAgentId) ?? null
     : null;
-  const [workspaceConfig, setWorkspaceConfig] = useState(() =>
-    buildInitialWorkspaceConfig(selectedProject, defaultExecutionWorkspace));
-  const [workspaceConfigValid, setWorkspaceConfigValid] = useState(true);
-  const [workspaceBranchName, setWorkspaceBranchName] = useState<string | null>(null);
+  const [worktreeConfig, setWorktreeConfig] = useState(() =>
+    buildInitialWorktreeConfig(selectedProject, defaultExecutionWorkspace));
+  const [worktreeConfigValid, setWorktreeConfigValid] = useState(true);
+  const [worktreeBranchName, setWorktreeBranchName] = useState<string | null>(null);
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -254,7 +254,7 @@ export function RoutineRunVariablesDialog({
     retry: false,
   });
 
-  const workspaceSelectionEnabled = supportsRoutineRunWorkspaceSelection(
+  const worktreeSelectionEnabled = supportsRoutineRunWorktreeSelection(
     selectedProject,
     experimentalSettings?.enableIsolatedWorkspaces === true,
   );
@@ -264,74 +264,74 @@ export function RoutineRunVariablesDialog({
     setValues(buildInitialValues(variables));
     const nextSelection = buildInitialRunSelection({ defaultAssigneeAgentId, defaultProjectId });
     setSelection(nextSelection);
-    setWorkspaceConfig(buildInitialWorkspaceConfig(
+    setWorktreeConfig(buildInitialWorktreeConfig(
       projects.find((project) => project.id === nextSelection.projectId) ?? null,
       defaultExecutionWorkspace,
     ));
-    setWorkspaceConfigValid(true);
-    setWorkspaceBranchName(defaultExecutionWorkspace?.branchName ?? null);
+    setWorktreeConfigValid(true);
+    setWorktreeBranchName(defaultExecutionWorkspace?.branchName ?? null);
   }, [defaultAssigneeAgentId, defaultExecutionWorkspace, defaultProjectId, open, projects, variables]);
 
-  const workspaceBranchAutoValue = workspaceSelectionEnabled && workspaceBranchName
-    ? workspaceBranchName
+  const worktreeBranchAutoValue = worktreeSelectionEnabled && worktreeBranchName
+    ? worktreeBranchName
     : null;
 
-  const isAutoWorkspaceBranchVariable = useCallback(
+  const isAutoWorktreeBranchVariable = useCallback(
     (variable: RoutineVariable) =>
-      variable.name === WORKSPACE_BRANCH_ROUTINE_VARIABLE && Boolean(workspaceBranchAutoValue),
-    [workspaceBranchAutoValue],
+      variable.name === WORKSPACE_BRANCH_ROUTINE_VARIABLE && Boolean(worktreeBranchAutoValue),
+    [worktreeBranchAutoValue],
   );
 
   const missingRequired = useMemo(
     () =>
       variables
         .filter((variable) => variable.required)
-        .filter((variable) => !isAutoWorkspaceBranchVariable(variable))
+        .filter((variable) => !isAutoWorktreeBranchVariable(variable))
         .filter((variable) => isMissingRequiredValue(values[variable.name]))
         .map((variable) => variable.label || variable.name),
-    [isAutoWorkspaceBranchVariable, values, variables],
+    [isAutoWorktreeBranchVariable, values, variables],
   );
 
-  const workspaceIssue = useMemo(() => ({
+  const worktreeIssue = useMemo(() => ({
     companyId: companyId ?? null,
     projectId: selectedProject?.id ?? null,
-    projectWorkspaceId: workspaceConfig.projectWorkspaceId,
-    executionWorkspaceId: workspaceConfig.executionWorkspaceId,
-    executionWorkspacePreference: workspaceConfig.executionWorkspacePreference,
-    executionWorkspaceSettings: workspaceConfig.executionWorkspaceSettings,
+    projectWorkspaceId: worktreeConfig.projectWorkspaceId,
+    executionWorkspaceId: worktreeConfig.executionWorkspaceId,
+    executionWorkspacePreference: worktreeConfig.executionWorkspacePreference,
+    executionWorkspaceSettings: worktreeConfig.executionWorkspaceSettings,
     currentExecutionWorkspace:
-      workspaceConfig.executionWorkspaceId && workspaceConfig.executionWorkspaceId === defaultExecutionWorkspace?.id
+      worktreeConfig.executionWorkspaceId && worktreeConfig.executionWorkspaceId === defaultExecutionWorkspace?.id
         ? defaultExecutionWorkspace
         : null,
   }), [
     companyId,
     defaultExecutionWorkspace,
     selectedProject?.id,
-    workspaceConfig.executionWorkspaceId,
-    workspaceConfig.executionWorkspacePreference,
-    workspaceConfig.executionWorkspaceSettings,
-    workspaceConfig.projectWorkspaceId,
+    worktreeConfig.executionWorkspaceId,
+    worktreeConfig.executionWorkspacePreference,
+    worktreeConfig.executionWorkspaceSettings,
+    worktreeConfig.projectWorkspaceId,
   ]);
 
   const canSubmit =
     selection.assigneeAgentId.trim().length > 0 &&
     missingRequired.length === 0 &&
-    (!workspaceSelectionEnabled || workspaceConfigValid);
+    (!worktreeSelectionEnabled || worktreeConfigValid);
 
-  const handleWorkspaceUpdate = useCallback((data: Record<string, unknown>) => {
-    setWorkspaceConfig((current) => applyWorkspaceDraft(current, data));
+  const handleWorktreeUpdate = useCallback((data: Record<string, unknown>) => {
+    setWorktreeConfig((current) => applyWorktreeDraft(current, data));
   }, []);
 
-  const handleWorkspaceDraftChange = useCallback((
+  const handleWorktreeDraftChange = useCallback((
     data: Record<string, unknown>,
     meta: { canSave: boolean; workspaceBranchName?: string | null },
   ) => {
-    setWorkspaceConfig((current) => applyWorkspaceDraft(current, data));
-    setWorkspaceConfigValid((current) => (current === meta.canSave ? current : meta.canSave));
-    setWorkspaceBranchName((current) => {
-      const defaultWorkspaceBranchName = defaultExecutionWorkspace?.branchName ?? null;
+    setWorktreeConfig((current) => applyWorktreeDraft(current, data));
+    setWorktreeConfigValid((current) => (current === meta.canSave ? current : meta.canSave));
+    setWorktreeBranchName((current) => {
+      const defaultWorktreeBranchName = defaultExecutionWorkspace?.branchName ?? null;
       const next = meta.workspaceBranchName
-        ?? (data.executionWorkspaceId === defaultExecutionWorkspace?.id ? defaultWorkspaceBranchName : null)
+        ?? (data.executionWorkspaceId === defaultExecutionWorkspace?.id ? defaultWorktreeBranchName : null)
         ?? null;
       return current === next ? current : next;
     });
@@ -410,9 +410,9 @@ export function RoutineRunVariablesDialog({
                   const project = projects.find((entry) => entry.id === projectId) ?? null;
                   if (projectId) trackRecentProject(projectId);
                   setSelection((current) => ({ ...current, projectId }));
-                  setWorkspaceConfig(buildInitialWorkspaceConfig(project, defaultExecutionWorkspace));
-                  setWorkspaceConfigValid(true);
-                  setWorkspaceBranchName(
+                  setWorktreeConfig(buildInitialWorktreeConfig(project, defaultExecutionWorkspace));
+                  setWorktreeConfigValid(true);
+                  setWorktreeBranchName(
                     defaultExecutionWorkspace && defaultExecutionWorkspace.projectId === project?.id
                       ? defaultExecutionWorkspace.branchName
                       : null,
@@ -454,11 +454,11 @@ export function RoutineRunVariablesDialog({
                 {variable.label || variable.name}
                 {variable.required ? " *" : ""}
               </Label>
-              {isAutoWorkspaceBranchVariable(variable) ? (
+              {isAutoWorktreeBranchVariable(variable) ? (
                 <Input
                   readOnly
                   disabled
-                  value={workspaceBranchAutoValue ?? ""}
+                  value={worktreeBranchAutoValue ?? ""}
                 />
               ) : variable.type === "textarea" ? (
                 <Textarea
@@ -517,15 +517,15 @@ export function RoutineRunVariablesDialog({
             </div>
           ))}
 
-          {workspaceSelectionEnabled && selectedProject && companyId ? (
-            <IssueWorkspaceCard
+          {worktreeSelectionEnabled && selectedProject && companyId ? (
+            <IssueWorktreeCard
               key={`${open ? "open" : "closed"}:${selectedProject.id}`}
-              issue={workspaceIssue}
+              issue={worktreeIssue}
               project={selectedProject}
               initialEditing
               livePreview
-              onUpdate={handleWorkspaceUpdate}
-              onDraftChange={handleWorkspaceDraftChange}
+              onUpdate={handleWorktreeUpdate}
+              onDraftChange={handleWorktreeDraftChange}
             />
           ) : null}
         </div>
@@ -540,9 +540,9 @@ export function RoutineRunVariablesDialog({
             <p className="mr-auto text-xs text-amber-600">
               Missing: {missingRequired.join(", ")}
             </p>
-          ) : workspaceSelectionEnabled && !workspaceConfigValid ? (
+          ) : worktreeSelectionEnabled && !worktreeConfigValid ? (
             <p className="mr-auto text-xs text-amber-600">
-              Choose an existing workspace before running.
+              Choose an existing worktree before running.
             </p>
           ) : (
             <span className="mr-auto" />
@@ -554,8 +554,8 @@ export function RoutineRunVariablesDialog({
             onClick={() => {
               const nextVariables: Record<string, string | number | boolean> = {};
               for (const variable of variables) {
-                if (isAutoWorkspaceBranchVariable(variable)) {
-                  nextVariables[variable.name] = workspaceBranchAutoValue!;
+                if (isAutoWorktreeBranchVariable(variable)) {
+                  nextVariables[variable.name] = worktreeBranchAutoValue!;
                   continue;
                 }
                 const rawValue = values[variable.name];
@@ -572,11 +572,11 @@ export function RoutineRunVariablesDialog({
                 variables: nextVariables,
                 assigneeAgentId: selection.assigneeAgentId,
                 projectId: selection.projectId || null,
-                ...(workspaceSelectionEnabled
+                ...(worktreeSelectionEnabled
                   ? {
-                    executionWorkspaceId: workspaceConfig.executionWorkspaceId,
-                    executionWorkspacePreference: workspaceConfig.executionWorkspacePreference,
-                    executionWorkspaceSettings: workspaceConfig.executionWorkspaceSettings,
+                    executionWorkspaceId: worktreeConfig.executionWorkspaceId,
+                    executionWorkspacePreference: worktreeConfig.executionWorkspacePreference,
+                    executionWorkspaceSettings: worktreeConfig.executionWorkspaceSettings,
                   }
                   : {}),
               });

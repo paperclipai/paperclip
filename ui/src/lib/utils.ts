@@ -237,9 +237,9 @@ export function projectUrl(project: { id: string; urlKey?: string | null; name?:
 }
 
 /** Build a project workspace URL scoped under its project. */
-export function projectWorkspaceUrl(
+export function projectWorktreeUrl(
   project: { id: string; urlKey?: string | null; name?: string | null },
   workspaceId: string,
 ): string {
-  return `${projectUrl(project)}/workspaces/${workspaceId}`;
+  return `${projectUrl(project)}/worktrees/${workspaceId}`;
 }

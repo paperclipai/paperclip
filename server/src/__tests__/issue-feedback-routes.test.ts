@@ -57,7 +57,7 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(async () => null),
 }));
-const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
+const mockExecutionWorktreeService = vi.hoisted(() => ({}));
 const mockIssueReferenceService = vi.hoisted(() => ({
   deleteDocumentSource: vi.fn(async () => undefined),
   diffIssueReferenceSummary: vi.fn(() => ({
@@ -93,7 +93,7 @@ function registerModuleMocks() {
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
-    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    executionWorktreeService: () => mockExecutionWorktreeService,
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
@@ -114,8 +114,8 @@ function registerModuleMocks() {
     environmentService: () => mockEnvironmentService,
   }));
 
-  vi.doMock("../services/execution-workspaces.js", () => ({
-    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  vi.doMock("../services/execution-worktrees.js", () => ({
+    executionWorktreeService: () => mockExecutionWorktreeService,
     STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
   }));
 
@@ -151,7 +151,7 @@ describe("issue feedback trace routes", () => {
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/environments.js");
-    vi.doUnmock("../services/execution-workspaces.js");
+    vi.doUnmock("../services/execution-worktrees.js");
     vi.doUnmock("../services/feedback.js");
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../routes/issues.js");

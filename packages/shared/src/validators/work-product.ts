@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { workspaceFileRefSchema } from "./workspace-file-resource.js";
+import { worktreeFileRefSchema } from "./worktree-file-resource.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 function attachmentContentPath(attachmentId: string): string {
@@ -72,7 +72,7 @@ export type AttachmentArtifactWorkProductMetadata = z.infer<typeof attachmentArt
 
 export const issueWorkProductMetadataSchema = z
   .object({
-    resourceRef: workspaceFileRefSchema.optional().nullable(),
+    resourceRef: worktreeFileRefSchema.optional().nullable(),
   })
   .passthrough();
 

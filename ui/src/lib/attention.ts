@@ -7,7 +7,7 @@ import type {
   AttentionProjectRef,
   AttentionSeverity,
   AttentionSourceKind,
-  AttentionWorkspaceRef,
+  AttentionWorktreeRef,
 } from "@paperclipai/shared";
 
 export type AttentionListOptions = AttentionFeedQuery;
@@ -562,7 +562,7 @@ export interface AttentionGroup {
 export interface AttentionFilterOptions {
   sourceKinds: AttentionSourceKind[];
   projects: AttentionProjectRef[];
-  workspaces: AttentionWorkspaceRef[];
+  workspaces: AttentionWorktreeRef[];
   severities: AttentionSeverity[];
   /** True when at least one row has no project (adds a "No project" option). */
   hasNoProject: boolean;
@@ -725,8 +725,8 @@ export function attentionItemMatchesFilters(item: AttentionItem, filters: Attent
     if (!filters.projectIds.includes(projectId)) return false;
   }
   if (filters.workspaceIds.length > 0) {
-    const workspaceId = item.workspace?.id ?? NO_GROUP_SENTINEL;
-    if (!filters.workspaceIds.includes(workspaceId)) return false;
+    const worktreeId = item.workspace?.id ?? NO_GROUP_SENTINEL;
+    if (!filters.workspaceIds.includes(worktreeId)) return false;
   }
   return true;
 }
@@ -740,27 +740,27 @@ export function filterAttentionItems(items: AttentionItem[], filters: AttentionF
 export function buildAttentionFilterOptions(items: AttentionItem[]): AttentionFilterOptions {
   const sourceKinds = new Set<AttentionSourceKind>();
   const projects = new Map<string, AttentionProjectRef>();
-  const workspaces = new Map<string, AttentionWorkspaceRef>();
+  const worktrees = new Map<string, AttentionWorktreeRef>();
   const severities = new Set<AttentionSeverity>();
   let hasNoProject = false;
-  let hasNoWorkspace = false;
+  let hasNoWorktree = false;
 
   for (const item of items) {
     sourceKinds.add(item.sourceKind);
     severities.add(item.severity);
     if (item.project) projects.set(item.project.id, item.project);
     else hasNoProject = true;
-    if (item.workspace) workspaces.set(item.workspace.id, item.workspace);
-    else hasNoWorkspace = true;
+    if (item.workspace) worktrees.set(item.workspace.id, item.workspace);
+    else hasNoWorktree = true;
   }
 
   return {
     sourceKinds: [...sourceKinds].sort((a, b) => sourceMeta(a).label.localeCompare(sourceMeta(b).label)),
     projects: [...projects.values()].sort((a, b) => a.name.localeCompare(b.name)),
-    workspaces: [...workspaces.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    workspaces: [...worktrees.values()].sort((a, b) => a.name.localeCompare(b.name)),
     severities: ALL_SEVERITIES.filter((s) => severities.has(s)),
     hasNoProject,
-    hasNoWorkspace,
+    hasNoWorkspace: hasNoWorktree,
   };
 }
 

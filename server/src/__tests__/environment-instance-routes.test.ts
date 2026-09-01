@@ -36,7 +36,7 @@ const mockEnvironmentCustomImageService = vi.hoisted(() => ({
   cleanupExpiredSetupSessions: vi.fn(),
 }));
 
-const mockExecutionWorkspaceService = vi.hoisted(() => ({
+const mockExecutionWorktreeService = vi.hoisted(() => ({
   clearEnvironmentSelection: vi.fn(),
 }));
 
@@ -64,8 +64,8 @@ vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));
 
-vi.mock("../services/execution-workspaces.js", () => ({
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
+vi.mock("../services/execution-worktrees.js", () => ({
+  executionWorktreeService: () => mockExecutionWorktreeService,
 }));
 
 vi.mock("../services/secrets.js", () => ({
@@ -146,7 +146,7 @@ describe("environment instance routes", () => {
     });
     mockEnvironmentCustomImageService.getActiveTemplate.mockResolvedValue(null);
     mockEnvironmentCustomImageService.getSessionById.mockResolvedValue(null);
-    mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
+    mockExecutionWorktreeService.clearEnvironmentSelection.mockReset();
     mockLogActivity.mockReset();
     mockSecretService.create.mockReset();
     mockSecretService.normalizeEnvBindingsForPersistence.mockReset();

@@ -107,7 +107,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
         galleryEntry({
           key: "notion",
           name: "Notion",
-          tagline: "Read and update workspace content.",
+          tagline: "Read and update worktree content.",
         }),
         galleryEntry({
           key: "gmail",

@@ -49,7 +49,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
 }));
 
-const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+const mockExecutionWorktreesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listSummaries: vi.fn(),
 }));
@@ -92,8 +92,8 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: mockExecutionWorkspacesApi,
+vi.mock("../api/execution-worktrees", () => ({
+  executionWorktreesApi: mockExecutionWorktreesApi,
 }));
 
 vi.mock("../api/projects", () => ({
@@ -340,9 +340,9 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
-    mockExecutionWorkspacesApi.list.mockReset();
-    mockExecutionWorkspacesApi.listSummaries.mockReset();
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
+    mockExecutionWorktreesApi.list.mockReset();
+    mockExecutionWorktreesApi.listSummaries.mockReset();
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -426,10 +426,10 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
-        name: "Parent workspace",
+        name: "Parent worktree",
         mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-1",
@@ -453,13 +453,13 @@ describe("NewIssueDialog", () => {
     await flush();
 
     await waitForAssertion(() => {
-      expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1", {
+      expect(mockExecutionWorktreesApi.listSummaries).toHaveBeenCalledWith("company-1", {
         projectId: "project-1",
         projectWorkspaceId: undefined,
         reuseEligible: true,
       });
     });
-    expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    expect(mockExecutionWorktreesApi.list).not.toHaveBeenCalled();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Sub-Task"));
@@ -643,7 +643,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("applies project and execution workspace defaults for normal new issues", async () => {
+  it("applies project and execution worktree defaults for normal new issues", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -669,7 +669,7 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
         name: "PAP-100",
@@ -724,7 +724,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps the reusable workspace search popover inside the modal", async () => {
+  it("keeps the reusable worktree search popover inside the modal", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -745,7 +745,7 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
         name: "PAP-11446-on-mobile-the-agent-chat",
@@ -768,8 +768,8 @@ describe("NewIssueDialog", () => {
     await flush();
 
     await waitForAssertion(() => {
-      const workspaceInput = container.querySelector('input[placeholder="Search workspaces..."]');
-      expect(workspaceInput?.closest("[data-disable-portal]")?.getAttribute("data-disable-portal")).toBe("true");
+      const worktreeInput = container.querySelector('input[placeholder="Search worktrees..."]');
+      expect(worktreeInput?.closest("[data-disable-portal]")?.getAttribute("data-disable-portal")).toBe("true");
     });
 
     act(() => root.unmount());
@@ -1278,7 +1278,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("warns when a sub-issue stops matching the parent workspace", async () => {
+  it("warns when a sub-issue stops matching the parent worktree", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -1292,10 +1292,10 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
-        name: "Parent workspace",
+        name: "Parent worktree",
         mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-1",
@@ -1305,7 +1305,7 @@ describe("NewIssueDialog", () => {
       },
       {
         id: "workspace-2",
-        name: "Other workspace",
+        name: "Other worktree",
         mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-2",
@@ -1322,7 +1322,7 @@ describe("NewIssueDialog", () => {
       title: "Child issue",
       projectId: "project-1",
       executionWorkspaceId: "workspace-1",
-      parentExecutionWorkspaceLabel: "Parent workspace",
+      parentExecutionWorkspaceLabel: "Parent worktree",
       goalId: "goal-1",
     };
 
@@ -1330,7 +1330,7 @@ describe("NewIssueDialog", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).not.toContain("will no longer use the parent task workspace");
+    expect(container.textContent).not.toContain("will no longer use the parent task worktree");
 
     const selects = Array.from(container.querySelectorAll("select"));
     const modeSelect = selects[0] as HTMLSelectElement | undefined;
@@ -1342,8 +1342,8 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("will no longer use the parent task workspace");
-    expect(container.textContent).toContain("Parent workspace");
+    expect(container.textContent).toContain("will no longer use the parent task worktree");
+    expect(container.textContent).toContain("Parent worktree");
 
     act(() => root.unmount());
   });

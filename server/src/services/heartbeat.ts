@@ -223,7 +223,7 @@ import {
   formatManagedGitWorktreeBranchInspection,
   inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
-  realizeExecutionWorkspace,
+  realizeExecutionWorktree,
   releaseRuntimeServicesForRun,
   isUnresolvedWorkspaceBaseRefError,
   type ExecutionWorkspaceInput,
@@ -231,11 +231,11 @@ import {
   type RuntimeServiceRef,
   type UnresolvedWorkspaceBaseRefError,
   sanitizeRuntimeServiceBaseEnv,
-} from "./workspace-runtime.js";
+} from "./worktree-runtime.js";
 import {
   readManagedWorktreeInstanceOwnership,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
-} from "./workspace-instance-cleanup.js";
+} from "./worktree-instance-cleanup.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import {
@@ -267,13 +267,13 @@ import {
   buildPlanReviewContext,
 } from "./plan-review-context.js";
 import {
-  executionWorkspaceService,
+  executionWorktreeService,
   mergeExecutionWorkspaceConfig,
-} from "./execution-workspaces.js";
+} from "./execution-worktrees.js";
 import {
-  workspaceOperationService,
+  worktreeOperationService,
   type WorkspaceOperationRecorder,
-} from "./workspace-operations.js";
+} from "./worktree-operations.js";
 import {
   isProcessGroupAlive,
   terminateLocalService,
@@ -282,7 +282,7 @@ import {
   GIT_BRANCH_OWNERSHIP_METADATA_KEY,
   GIT_BRANCH_OWNERSHIP_METADATA_VERSION,
   isRuntimeOwnedGitBranch,
-} from "./execution-workspace-branch-ownership.js";
+} from "./execution-worktree-branch-ownership.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
@@ -305,7 +305,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
-} from "./execution-workspace-policy.js";
+} from "./execution-worktree-policy.js";
 import {
   instanceSettingsService,
   resolveWorktreeRunExecutionActivation,
@@ -401,7 +401,7 @@ import {
 } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
-import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { isUnsafeSessionWorkspaceCwd } from "./session-worktree-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
@@ -8317,7 +8317,7 @@ export function heartbeatService(
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspacesSvc = executionWorktreeService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime =
     options.environmentRuntime ??
@@ -8328,7 +8328,7 @@ export function heartbeatService(
     pluginWorkerManager: options.pluginWorkerManager,
     environmentRuntime,
   });
-  const workspaceOperationsSvc = workspaceOperationService(db);
+  const workspaceOperationsSvc = worktreeOperationService(db);
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -18744,7 +18744,7 @@ export function heartbeatService(
                 })
             : null,
           realizeWorkspace: () =>
-            realizeExecutionWorkspace({
+            realizeExecutionWorktree({
               db,
               base: executionWorkspaceBase,
               config: hostExecutionWorkspaceConfig,

@@ -1,13 +1,13 @@
 import type { BudgetWindowKind, PauseReason, ProjectStatus } from "../constants.js";
 import type {
-  ProjectExecutionWorkspacePolicy,
-  ProjectWorkspaceRuntimeConfig,
-  WorkspaceRuntimeService,
-} from "./workspace-runtime.js";
+  ProjectExecutionWorktreePolicy,
+  ProjectWorktreeRuntimeConfig,
+  WorktreeRuntimeService,
+} from "./worktree-runtime.js";
 import type { AgentEnvConfig } from "./secrets.js";
 
-export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
-export type ProjectWorkspaceVisibility = "default" | "advanced";
+export type ProjectWorktreeSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
+export type ProjectWorktreeVisibility = "default" | "advanced";
 
 export interface ProjectGoalRef {
   id: string;
@@ -25,26 +25,26 @@ export interface ProjectBudgetSummary {
   windowKind: BudgetWindowKind;
 }
 
-export interface ProjectWorkspace {
+export interface ProjectWorktree {
   id: string;
   companyId: string;
   projectId: string;
   name: string;
-  sourceType: ProjectWorkspaceSourceType;
+  sourceType: ProjectWorktreeSourceType;
   cwd: string | null;
   repoUrl: string | null;
   repoRef: string | null;
   defaultRef: string | null;
-  visibility: ProjectWorkspaceVisibility;
+  visibility: ProjectWorktreeVisibility;
   setupCommand: string | null;
   cleanupCommand: string | null;
   remoteProvider: string | null;
   remoteWorkspaceRef: string | null;
   sharedWorkspaceKey: string | null;
   metadata: Record<string, unknown> | null;
-  runtimeConfig: ProjectWorkspaceRuntimeConfig | null;
+  runtimeConfig: ProjectWorktreeRuntimeConfig | null;
   isPrimary: boolean;
-  runtimeServices?: WorkspaceRuntimeService[];
+  runtimeServices?: WorktreeRuntimeService[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -93,10 +93,10 @@ export interface Project {
   env: AgentEnvConfig | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
-  executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  executionWorkspacePolicy: ProjectExecutionWorktreePolicy | null;
   codebase: ProjectCodebase;
-  workspaces: ProjectWorkspace[];
-  primaryWorkspace: ProjectWorkspace | null;
+  workspaces: ProjectWorktree[];
+  primaryWorkspace: ProjectWorktree | null;
   managedByPlugin?: ProjectManagedByPlugin | null;
   /**
    * Number of tasks (issues) in the project. Populated by the projects list

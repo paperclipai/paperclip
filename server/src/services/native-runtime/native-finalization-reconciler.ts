@@ -22,7 +22,7 @@ import {
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
-import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { resumeNativeWorktreeFinalization } from "./native-worktree-finalizer.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -609,7 +609,7 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       if (!recoveryDecision.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
         throw new Error("native_reconciliation_workspace_resume_policy_missing");
       }
-      const operation = await resumeNativeWorkspaceFinalization({ db, runId: row.runId });
+      const operation = await resumeNativeWorktreeFinalization({ db, runId: row.runId });
       const workspaceFinalizeStatus = operation.status === "succeeded" ? "succeeded" : "failed";
       try {
         const finalized = await finalizeNativeRun({

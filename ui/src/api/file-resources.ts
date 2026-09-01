@@ -1,26 +1,26 @@
 import type {
-  ResolvedWorkspaceResource,
-  WorkspaceFileAvailabilityResponse,
-  WorkspaceFileContent,
-  WorkspaceFileListMode,
-  WorkspaceFileListResponse,
-  WorkspaceFileSelector,
+  ResolvedWorktreeResource,
+  WorktreeFileAvailabilityResponse,
+  WorktreeFileContent,
+  WorktreeFileListMode,
+  WorktreeFileListResponse,
+  WorktreeFileSelector,
 } from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
 
 export interface FileResourceQuery {
   path: string;
-  workspace?: WorkspaceFileSelector;
+  workspace?: WorktreeFileSelector;
   projectId?: string | null;
   workspaceId?: string | null;
 }
 
 export interface FileResourceListQuery {
-  workspace?: WorkspaceFileSelector;
+  workspace?: WorktreeFileSelector;
   projectId?: string | null;
   workspaceId?: string | null;
   path?: string | null;
-  mode?: WorkspaceFileListMode;
+  mode?: WorktreeFileListMode;
   q?: string | null;
   limit?: number;
   offset?: number;
@@ -54,10 +54,10 @@ export const fileResourcesApi = {
     issueId: string,
     query: FileResourceListQuery = {},
     options?: RequestOptions,
-  ): Promise<WorkspaceFileListResponse> {
+  ): Promise<WorktreeFileListResponse> {
     const search = buildQuery(query);
     const suffix = search ? `?${search}` : "";
-    return api.get<WorkspaceFileListResponse>(
+    return api.get<WorktreeFileListResponse>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/list${suffix}`,
       options,
     );
@@ -67,8 +67,8 @@ export const fileResourcesApi = {
    * Batch preflight for auto-detected workspace file references. Callers must
    * deduplicate and chunk to the server's 100-query cap before calling.
    */
-  availability(issueId: string, queries: FileResourceQuery[]): Promise<WorkspaceFileAvailabilityResponse> {
-    return api.post<WorkspaceFileAvailabilityResponse>(
+  availability(issueId: string, queries: FileResourceQuery[]): Promise<WorktreeFileAvailabilityResponse> {
+    return api.post<WorktreeFileAvailabilityResponse>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/availability`,
       {
         queries: queries.map((query) => ({
@@ -82,14 +82,14 @@ export const fileResourcesApi = {
     );
   },
 
-  resolve(issueId: string, query: FileResourceQuery): Promise<ResolvedWorkspaceResource> {
-    return api.get<ResolvedWorkspaceResource>(
+  resolve(issueId: string, query: FileResourceQuery): Promise<ResolvedWorktreeResource> {
+    return api.get<ResolvedWorktreeResource>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/resolve?${buildQuery(query)}`,
     );
   },
 
-  content(issueId: string, query: FileResourceQuery): Promise<WorkspaceFileContent> {
-    return api.get<WorkspaceFileContent>(
+  content(issueId: string, query: FileResourceQuery): Promise<WorktreeFileContent> {
+    return api.get<WorktreeFileContent>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/content?${buildQuery(query)}`,
     );
   },

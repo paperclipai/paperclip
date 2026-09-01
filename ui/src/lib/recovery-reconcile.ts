@@ -46,17 +46,17 @@ export function canBoardManageRuntime(
  * records the workspace under `persistedExecutionWorkspaceId`; the not-reusable failure records it
  * under `executionWorkspaceId`. We accept either key so both divergence shapes pin correctly.
  */
-export function readRecoveryReconcileWorkspaceId(
+export function readRecoveryReconcileWorktreeId(
   action: IssueRecoveryAction | null | undefined,
 ): string | null {
   if (!action || action.kind !== "workspace_validation") return null;
-  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
-  if (!workspaceValidation) return null;
-  const persisted = workspaceValidation.persistedExecutionWorkspaceId;
+  const worktreeValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!worktreeValidation) return null;
+  const persisted = worktreeValidation.persistedExecutionWorkspaceId;
   if (typeof persisted === "string" && persisted.length > 0) return persisted;
-  const executionWorkspaceId = workspaceValidation.executionWorkspaceId;
-  if (typeof executionWorkspaceId === "string" && executionWorkspaceId.length > 0) {
-    return executionWorkspaceId;
+  const executionWorktreeId = worktreeValidation.executionWorkspaceId;
+  if (typeof executionWorktreeId === "string" && executionWorktreeId.length > 0) {
+    return executionWorktreeId;
   }
   return null;
 }

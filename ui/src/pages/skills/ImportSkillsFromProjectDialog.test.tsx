@@ -3,17 +3,17 @@
 import type {
   CompanySkillProjectScanCandidate,
   Project,
-  ProjectWorkspace,
+  ProjectWorktree,
 } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   defaultSelection,
   filterCandidates,
   groupCandidates,
-  isScannableWorkspace,
+  isScannableWorktree,
   isSelectableCandidate,
   isValidSelectionSlug,
-  scannableWorkspaces,
+  scannableWorktrees,
   selectAllSelection,
   selectionKey,
   suggestedConflictSlug,
@@ -30,7 +30,7 @@ function candidate(
     name: overrides.slug,
     description: null,
     workspaceId: WS_A,
-    workspaceName: "Workspace A",
+    workspaceName: "Worktree A",
     projectId: "33333333-3333-3333-3333-333333333333",
     projectName: "Project",
     directoryRoot: ".claude/skills",
@@ -112,7 +112,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
     expect(selection.has(selectionKey(WS_A, ".claude/skills/beta"))).toBe(true);
   });
 
-  it("groups folders beneath each workspace and sorts the primary workspace first", () => {
+  it("groups folders beneath each worktree and sorts the primary worktree first", () => {
     const candidates = [
       candidate({ slug: "a", relativePath: ".claude/skills/a", status: "new" }),
       candidate({
@@ -125,16 +125,16 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
         slug: "c",
         relativePath: ".claude/skills/c",
         workspaceId: WS_B,
-        workspaceName: "Workspace B",
+        workspaceName: "Worktree B",
         status: "new",
       }),
     ];
     const groups = groupCandidates(candidates, [
-      workspace({ id: WS_A, name: "Workspace A", isPrimary: false }),
-      workspace({ id: WS_B, name: "Workspace B", isPrimary: true }),
+      worktree({ id: WS_A, name: "Worktree A", isPrimary: false }),
+      worktree({ id: WS_B, name: "Worktree B", isPrimary: true }),
     ]);
     expect(groups).toHaveLength(2);
-    expect(groups.map((group) => group.workspaceName)).toEqual(["Workspace B", "Workspace A"]);
+    expect(groups.map((group) => group.workspaceName)).toEqual(["Worktree B", "Worktree A"]);
     expect(groups[1]?.directories.map((directory) => directory.directoryRoot)).toEqual([
       ".claude/skills",
       "skills",
@@ -146,7 +146,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
     expect(filterCandidates(candidates, "DELTA").map((entry) => entry.slug)).toEqual(["delta"]);
     expect(filterCandidates(candidates, "already_imported").map((entry) => entry.slug)).toEqual(["gamma"]);
     expect(filterCandidates(candidates, ".claude/skills/epsilon").map((entry) => entry.slug)).toEqual(["epsilon"]);
-    expect(filterCandidates(candidates, "workspace a")).toHaveLength(candidates.length);
+    expect(filterCandidates(candidates, "worktree a")).toHaveLength(candidates.length);
   });
 
   it("suggests and validates a URL-safe rename for conflicts", () => {
@@ -158,7 +158,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
   });
 });
 
-function workspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {
+function worktree(overrides: Partial<ProjectWorktree>): ProjectWorktree {
   return {
     id: WS_A,
     companyId: "c",
@@ -181,34 +181,34 @@ function workspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
-  } as ProjectWorkspace;
+  } as ProjectWorktree;
 }
 
-describe("scannable workspace detection", () => {
-  it("local/git/folder workspaces with a cwd are scannable", () => {
-    expect(isScannableWorkspace(workspace({ sourceType: "local_path" }))).toBe(true);
-    expect(isScannableWorkspace(workspace({ sourceType: "git_repo" }))).toBe(true);
-    expect(isScannableWorkspace(workspace({ sourceType: "non_git_path" }))).toBe(true);
+describe("scannable worktree detection", () => {
+  it("local/git/folder worktrees with a cwd are scannable", () => {
+    expect(isScannableWorktree(worktree({ sourceType: "local_path" }))).toBe(true);
+    expect(isScannableWorktree(worktree({ sourceType: "git_repo" }))).toBe(true);
+    expect(isScannableWorktree(worktree({ sourceType: "non_git_path" }))).toBe(true);
   });
 
-  it("remote-managed workspaces are never scannable", () => {
+  it("remote-managed worktrees are never scannable", () => {
     expect(
-      isScannableWorkspace(workspace({ sourceType: "remote_managed", cwd: null })),
+      isScannableWorktree(worktree({ sourceType: "remote_managed", cwd: null })),
     ).toBe(false);
   });
 
-  it("workspaces without a cwd are not scannable", () => {
-    expect(isScannableWorkspace(workspace({ cwd: null }))).toBe(false);
-    expect(isScannableWorkspace(workspace({ cwd: "   " }))).toBe(false);
+  it("worktrees without a cwd are not scannable", () => {
+    expect(isScannableWorktree(worktree({ cwd: null }))).toBe(false);
+    expect(isScannableWorktree(worktree({ cwd: "   " }))).toBe(false);
   });
 
-  it("a remote-only project has zero scannable workspaces", () => {
+  it("a remote-only project has zero scannable worktrees", () => {
     const project = {
       workspaces: [
-        workspace({ id: WS_A, sourceType: "remote_managed", cwd: null }),
-        workspace({ id: WS_B, sourceType: "remote_managed", cwd: null }),
+        worktree({ id: WS_A, sourceType: "remote_managed", cwd: null }),
+        worktree({ id: WS_B, sourceType: "remote_managed", cwd: null }),
       ],
     } as unknown as Project;
-    expect(scannableWorkspaces(project)).toHaveLength(0);
+    expect(scannableWorktrees(project)).toHaveLength(0);
   });
 });

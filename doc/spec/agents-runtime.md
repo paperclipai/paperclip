@@ -164,7 +164,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 ## 10. Minimal setup checklist
 
 1. Choose adapter (`claude_local` or `codex_local`).
-2. Set `cwd` to the target workspace.
+2. Set `cwd` to the target worktree.
 3. Add bootstrap + normal prompt templates.
 4. Configure heartbeat policy (timer and/or assignment wakeups).
 5. Trigger a manual wakeup.

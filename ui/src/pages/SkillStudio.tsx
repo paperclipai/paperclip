@@ -472,7 +472,7 @@ function StudioNewSkillPanel({
       toast?.pushToast({
         tone: "success",
         title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the Paperclip worktree.`,
       });
       navigate(skillStudioRoute(skill.id));
     },

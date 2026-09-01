@@ -529,8 +529,8 @@ npx paperclipai run events <run-id> [--after-seq 0] [--limit 200]
 npx paperclipai run log <run-id> [--offset 0] [--limit-bytes 16384] [--text]
 npx paperclipai run cancel <run-id>
 npx paperclipai run issues <run-id>
-npx paperclipai run workspace-operations <run-id>
-npx paperclipai run workspace-log <operation-id> [--offset 0] [--limit-bytes 16384] [--text]
+npx paperclipai run worktree-operations <run-id>
+npx paperclipai run worktree-log <operation-id> [--offset 0] [--limit-bytes 16384] [--text]
 npx paperclipai run watchdog-decision <run-id> --decision continue [--reason "..."]
 ```
 
@@ -951,16 +951,16 @@ npx paperclipai budget agent:update <agent-id> --payload-json '{...}'
 npx paperclipai budget incident:resolve <incident-id> --company-id <company-id> [--payload-json '{...}']
 ```
 
-## Workspace And Environment Commands
+## Worktree And Environment Commands
 
 ```sh
-npx paperclipai workspace list --company-id <company-id>
-npx paperclipai workspace get <execution-workspace-id>
-npx paperclipai workspace close-readiness <execution-workspace-id>
-npx paperclipai workspace operations <execution-workspace-id>
-npx paperclipai workspace update <execution-workspace-id> --payload-json '{...}'
-npx paperclipai workspace runtime-service <execution-workspace-id> start --payload-json '{...}'
-npx paperclipai workspace runtime-command <execution-workspace-id> run --payload-json '{...}'
+npx paperclipai execution-worktree list --company-id <company-id>
+npx paperclipai execution-worktree get <execution-workspace-id>
+npx paperclipai execution-worktree close-readiness <execution-workspace-id>
+npx paperclipai execution-worktree operations <execution-workspace-id>
+npx paperclipai execution-worktree update <execution-workspace-id> --payload-json '{...}'
+npx paperclipai execution-worktree runtime-service <execution-workspace-id> start --payload-json '{...}'
+npx paperclipai execution-worktree runtime-command <execution-workspace-id> run --payload-json '{...}'
 ```
 
 ```sh
@@ -977,12 +977,16 @@ npx paperclipai environment probe-config --company-id <company-id> --payload-jso
 ```
 
 ```sh
-npx paperclipai project-workspace list <project-id>
-npx paperclipai project-workspace create <project-id> --payload-json '{...}'
-npx paperclipai project-workspace update <project-id> <workspace-id> --payload-json '{...}'
-npx paperclipai project-workspace delete <project-id> <workspace-id>
-npx paperclipai project-workspace runtime-service <project-id> <workspace-id> restart --payload-json '{...}'
-npx paperclipai project-workspace runtime-command <project-id> <workspace-id> run --payload-json '{...}'
+npx paperclipai project-worktree list <project-id>
+npx paperclipai project-worktree create <project-id> --payload-json '{...}'
+npx paperclipai project-worktree update <project-id> <workspace-id> --payload-json '{...}'
+npx paperclipai project-worktree delete <project-id> <workspace-id>
+npx paperclipai project-worktree runtime-service <project-id> <workspace-id> restart --payload-json '{...}'
+npx paperclipai project-worktree runtime-command <project-id> <workspace-id> run --payload-json '{...}'
+
+The legacy `workspace`, `execution-workspace`, `project-workspace`,
+`workspace-operations`, and `workspace-log` spellings remain working aliases in
+Phase 1. JSON fields and API paths still use `workspace` names.
 ```
 
 ## Plugin Commands

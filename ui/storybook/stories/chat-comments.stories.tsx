@@ -464,7 +464,7 @@ const issueTimelineEvents: IssueTimelineEvent[] = [
 const issueThreadNoticeReviewComments: IssueChatComment[] = [
   createComment({
     id: "comment-notice-board",
-    body: "The issue thread needs to show workspace routing changes and make old missing-disposition warnings feel resolved.",
+    body: "The issue thread needs to show worktree routing changes and make old missing-disposition warnings feel resolved.",
     createdAt: new Date("2026-04-20T13:44:00.000Z"),
   }),
   createComment({
@@ -513,7 +513,7 @@ const issueThreadNoticeReviewTimelineEvents: IssueTimelineEvent[] = [
     statusChange: undefined,
     workspaceChange: {
       from: {
-        label: "Project primary workspace",
+        label: "Project primary worktree",
         projectWorkspaceId: "workspace-primary",
         executionWorkspaceId: null,
         mode: "shared_workspace",
@@ -853,7 +853,7 @@ function IssueThreadNoticeReview() {
   return (
     <div className="paperclip-story">
       <main className="paperclip-story__inner max-w-4xl">
-        <Section eyebrow="IssueChatThread" title="Workspace changes and stale disposition notices">
+        <Section eyebrow="IssueChatThread" title="Worktree changes and stale disposition notices">
           <div className="rounded-lg border border-border bg-background/70 p-4">
             <IssueChatThread
               comments={issueThreadNoticeReviewComments}

@@ -4614,7 +4614,7 @@ registry.registerPath({
   method: "post",
   path: "/api/heartbeat-runs/{runId}/provider-trace/reproject-workspace-diffs",
   tags: ["runs"],
-  summary: "Reproject retained Codex workspace diffs into run events",
+  summary: "Reproject retained Codex worktree diffs into run events",
   request: { params: z.object({ runId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

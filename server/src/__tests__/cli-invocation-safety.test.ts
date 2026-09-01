@@ -84,10 +84,10 @@ const PNPM_ALLOWLIST = new Set<string>([
   "pnpm paperclipai feedback report --payloads",
   "pnpm paperclipai feedback export",
   "pnpm paperclipai instance settings:experimental",
-  "pnpm paperclipai worktree ensure-seeded",
-  "pnpm paperclipai worktree repair",
-  "pnpm paperclipai worktree env",
-  "pnpm paperclipai worktree env --json",
+  "pnpm paperclipai dev-worktree ensure-seeded",
+  "pnpm paperclipai dev-worktree repair",
+  "pnpm paperclipai dev-worktree env",
+  "pnpm paperclipai dev-worktree env --json",
 ]);
 
 // ── Documentation phrases ─────────────────────────────────────────────────
@@ -503,7 +503,7 @@ describe("paperclipai CLI invocation safety", () => {
   it("flags a context-profile value and every worktree path/ref/id/name option", () => {
     expect(scanText("doc/E.md", "pnpm paperclipai context use default")).toHaveLength(1);
     // Path, ref, id, and name options on worktree commands.
-    expect(scanText("doc/E.md", "pnpm paperclipai worktree repair --branch PAP-1-x")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai dev-worktree repair --branch PAP-1-x")).toHaveLength(1);
     expect(scanText("doc/E.md", "pnpm paperclipai worktree:make my-feature --start-point origin/main")).toHaveLength(1);
     expect(scanText("doc/E.md", "pnpm paperclipai worktree init --from-config ~/.paperclip/config.json")).toHaveLength(1);
     expect(scanText("doc/E.md", "pnpm paperclipai worktree reseed --to PAP-1-x")).toHaveLength(1);
@@ -522,7 +522,7 @@ describe("paperclipai CLI invocation safety", () => {
     expect(scanText("doc/E.md", "pnpm paperclipai issue create --title $(cat /etc/passwd)")).toHaveLength(1);
     expect(scanText("doc/E.md", "pnpm paperclipai run --instance $INSTANCE")).toHaveLength(1);
     // A literal command wrapped in $( ) is still an offender.
-    expect(scanText("doc/E.md", 'eval "$(pnpm paperclipai worktree env)"')).toHaveLength(1);
+    expect(scanText("doc/E.md", 'eval "$(pnpm paperclipai dev-worktree env)"')).toHaveLength(1);
   });
 
   it("flags an allowlisted prefix followed by a quoted or backtick suffix", () => {
@@ -693,7 +693,7 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("allows an exact allowlist entry and a bare documentation mention", () => {
     expect(scanText("doc/E.md", "pnpm paperclipai run")).toEqual([]);
-    expect(scanText("doc/E.md", "pnpm paperclipai worktree env --json")).toEqual([]);
+    expect(scanText("doc/E.md", "pnpm paperclipai dev-worktree env --json")).toEqual([]);
     expect(scanText("doc/E.md", "pnpm paperclipai configure --section server")).toEqual([]);
     // A prose mention inside backticks is not a runnable command.
     expect(scanText("doc/E.md", "Do not use `pnpm paperclipai` for a content-bearing argument.")).toEqual([]);

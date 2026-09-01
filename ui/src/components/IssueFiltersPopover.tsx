@@ -40,7 +40,7 @@ type LabelOption = {
   color: string;
 };
 
-type WorkspaceOption = {
+type WorktreeOption = {
   id: string;
   name: string;
 };
@@ -64,7 +64,7 @@ export function IssueFiltersPopover({
   enableRoutineVisibilityFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
-  workspaces,
+  worktrees,
   creators,
 }: {
   state: IssueFilterState;
@@ -78,7 +78,7 @@ export function IssueFiltersPopover({
   enableRoutineVisibilityFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
-  workspaces?: WorkspaceOption[];
+  worktrees?: WorktreeOption[];
   creators?: CreatorOption[];
 }) {
   const [creatorSearch, setCreatorSearch] = useState("");
@@ -336,18 +336,18 @@ export function IssueFiltersPopover({
                 </div>
               ) : null}
 
-              {workspaces && workspaces.length > 0 ? (
+              {worktrees && worktrees.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Workspace</span>
+                  <span className="text-xs text-muted-foreground">Worktree</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
-                    {workspaces.map((workspace) => (
-                      <label key={workspace.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                    {worktrees.map((worktree) => (
+                      <label key={worktree.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                         <Checkbox
-                          checked={state.workspaces.includes(workspace.id)}
-                          onCheckedChange={() => onChange({ workspaces: toggleIssueFilterValue(state.workspaces, workspace.id) })}
+                          checked={state.workspaces.includes(worktree.id)}
+                          onCheckedChange={() => onChange({ workspaces: toggleIssueFilterValue(state.workspaces, worktree.id) })}
                         />
                         <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="text-sm">{workspace.name}</span>
+                        <span className="text-sm">{worktree.name}</span>
                       </label>
                     ))}
                   </div>

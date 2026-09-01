@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerCostCommands } from "../commands/client/cost.js";
-import { registerWorkspaceCommands } from "../commands/client/workspace.js";
+import { registerWorktreeCommands } from "../commands/client/worktree.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -17,7 +17,7 @@ function createProgram(): Command {
   program.exitOverride();
   program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
   registerCostCommands(program);
-  registerWorkspaceCommands(program);
+  registerWorktreeCommands(program);
   return program;
 }
 

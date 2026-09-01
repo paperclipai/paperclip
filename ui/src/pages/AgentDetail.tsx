@@ -107,12 +107,12 @@ import {
   type HeartbeatRunEvent,
   type AgentRuntimeState,
   type LiveEvent,
-  type WorkspaceOperation,
+  type WorktreeOperation,
   isResponsibleUserDenialCode,
   responsibleUserLabel,
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
-import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
+import { RunWorktreeRecoverySurface } from "../components/RunWorktreeRecoverySurface";
 import { RunnerInspector } from "../components/RunnerInspector";
 import { HoneycombRunLink } from "../components/HoneycombRunLink";
 import {
@@ -540,7 +540,7 @@ function parseStoredLogContent(content: string): RunLogChunk[] {
   return parsed;
 }
 
-function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
+function worktreeOperationPhaseLabel(phase: WorktreeOperation["phase"]) {
   switch (phase) {
     case "worktree_prepare":
       return "Worktree setup";
@@ -557,7 +557,7 @@ function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
   }
 }
 
-function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
+function worktreeOperationStatusTone(status: WorktreeOperation["status"]) {
   switch (status) {
     case "succeeded":
       return "border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-300";
@@ -572,12 +572,12 @@ function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
   }
 }
 
-function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation["status"] }) {
+function WorktreeOperationStatusBadge({ status }: { status: WorktreeOperation["status"] }) {
   return (
     <Badge variant="outline"
       className={cn(
         "text-(length:--text-micro) capitalize",
-        workspaceOperationStatusTone(status),
+        worktreeOperationStatusTone(status),
       )}
     >
       {status.replace("_", " ")}
@@ -585,11 +585,11 @@ function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation[
   );
 }
 
-function WorkspaceOperationLogViewer({
+function WorktreeOperationLogViewer({
   operation,
   censorUsernameInLogs,
 }: {
-  operation: WorkspaceOperation;
+  operation: WorktreeOperation;
   censorUsernameInLogs: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -619,7 +619,7 @@ function WorkspaceOperationLogViewer({
           {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
           {error && (
             <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
+              {error instanceof Error ? error.message : "Failed to load worktree operation log"}
             </div>
           )}
           {!isLoading && !error && chunks.length === 0 && (
@@ -655,11 +655,11 @@ function WorkspaceOperationLogViewer({
   );
 }
 
-function WorkspaceOperationsSection({
+function WorktreeOperationsSection({
   operations,
   censorUsernameInLogs,
 }: {
-  operations: WorkspaceOperation[];
+  operations: WorktreeOperation[];
   censorUsernameInLogs: boolean;
 }) {
   if (operations.length === 0) return null;
@@ -667,7 +667,7 @@ function WorkspaceOperationsSection({
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
       <div className="text-xs font-medium text-muted-foreground">
-        Workspace ({operations.length})
+        Worktree ({operations.length})
       </div>
       <div className="space-y-3">
         {operations.map((operation) => {
@@ -675,8 +675,8 @@ function WorkspaceOperationsSection({
           return (
             <div key={operation.id} className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
-                <WorkspaceOperationStatusBadge status={operation.status} />
+                <div className="text-sm font-medium">{worktreeOperationPhaseLabel(operation.phase)}</div>
+                <WorktreeOperationStatusBadge status={operation.status} />
                 <div className="text-(length:--text-micro) text-muted-foreground">
                   {relativeTime(operation.startedAt)}
                   {operation.finishedAt && ` to ${relativeTime(operation.finishedAt)}`}
@@ -696,7 +696,7 @@ function WorkspaceOperationsSection({
               )}
               {(asNonEmptyString(metadata?.branchName)
                 || asNonEmptyString(metadata?.baseRef)
-                || asNonEmptyString(metadata?.worktreePath)
+                || asNonEmptyString(metadata?.workspacePath)
                 || asNonEmptyString(metadata?.repoRoot)
                 || asNonEmptyString(metadata?.cleanupAction)) && (
                 <div className="grid gap-1 text-xs sm:grid-cols-2">
@@ -706,8 +706,8 @@ function WorkspaceOperationsSection({
                   {asNonEmptyString(metadata?.baseRef) && (
                     <div><span className="text-muted-foreground">Base ref: </span><span className="font-mono">{metadata?.baseRef as string}</span></div>
                   )}
-                  {asNonEmptyString(metadata?.worktreePath) && (
-                    <div className="break-all"><span className="text-muted-foreground">Worktree: </span><span className="font-mono">{metadata?.worktreePath as string}</span></div>
+                  {asNonEmptyString(metadata?.workspacePath) && (
+                    <div className="break-all"><span className="text-muted-foreground">Worktree: </span><span className="font-mono">{metadata?.workspacePath as string}</span></div>
                   )}
                   {asNonEmptyString(metadata?.repoRoot) && (
                     <div className="break-all"><span className="text-muted-foreground">Repo root: </span><span className="font-mono">{metadata?.repoRoot as string}</span></div>
@@ -719,7 +719,7 @@ function WorkspaceOperationsSection({
               )}
               {typeof metadata?.created === "boolean" && (
                 <div className="text-xs text-muted-foreground">
-                  {metadata.created ? "Created by this run" : "Reused existing workspace"}
+                  {metadata.created ? "Created by this run" : "Reused existing worktree"}
                 </div>
               )}
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
@@ -739,7 +739,7 @@ function WorkspaceOperationsSection({
                 </div>
               )}
               {operation.logRef && (
-                <WorkspaceOperationLogViewer
+                <WorktreeOperationLogViewer
                   operation={operation}
                   censorUsernameInLogs={censorUsernameInLogs}
                 />
@@ -3503,7 +3503,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Workspace-validation recovery: surfaces the recovery card when this run was declined over a
           git workspace it could not validate, wired to the same reconcile / repair / re-issue /
           break-glass handlers as the task detail page. */}
-      <RunWorkspaceRecoverySurface run={run} />
+      <RunWorktreeRecoverySurface run={run} />
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
@@ -3898,9 +3898,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   });
   const isLive = run.status === "running" || run.status === "queued";
   const shouldPollShellLog = shouldPollRunShellLog(run.status);
-  const { data: workspaceOperations = [] } = useQuery({
+  const { data: worktreeOperations = [] } = useQuery({
     queryKey: queryKeys.runWorkspaceOperations(run.id),
-    queryFn: () => heartbeatsApi.workspaceOperations(run.id),
+    queryFn: () => heartbeatsApi.worktreeOperations(run.id),
     refetchInterval: isLive ? 2000 : false,
   });
 
@@ -4322,8 +4322,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   return (
     <div className="space-y-3">
-      <WorkspaceOperationsSection
-        operations={workspaceOperations}
+      <WorktreeOperationsSection
+        operations={worktreeOperations}
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (

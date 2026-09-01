@@ -28,7 +28,7 @@ function Hydrate({ children }: { children: ReactNode }) {
 }
 
 const meta: Meta<typeof ProjectProperties> = {
-  title: "Workspaces/Project runtime provision command",
+  title: "Worktrees/Project runtime provision command",
   component: ProjectProperties,
   parameters: { layout: "padded" },
 };
@@ -42,7 +42,7 @@ const editableProject: Project = {
 };
 
 export const IsolatedStrategy: Story = {
-  name: "Isolated workspace strategy (advanced open)",
+  name: "Isolated worktree strategy (advanced open)",
   render: () => (
     <Hydrate>
       <div className="max-w-2xl rounded-lg border border-border bg-background p-4">
@@ -82,7 +82,7 @@ function StatefulConcurrency() {
 }
 
 export const SharedWorkspaceConcurrency: Story = {
-  name: "Shared workspace concurrency select",
+  name: "Shared worktree concurrency select",
   render: () => (
     <Hydrate>
       <StatefulConcurrency />

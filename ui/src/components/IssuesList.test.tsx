@@ -38,7 +38,7 @@ const mockAccessApi = vi.hoisted(() => ({
   listUserDirectory: vi.fn(),
 }));
 
-const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+const mockExecutionWorktreesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listSummaries: vi.fn(),
 }));
@@ -96,8 +96,8 @@ vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
-vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: mockExecutionWorkspacesApi,
+vi.mock("../api/execution-worktrees", () => ({
+  executionWorktreesApi: mockExecutionWorktreesApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -329,8 +329,8 @@ describe("IssuesList", () => {
     mockAuthApi.getSession.mockReset();
     mockAccessApi.listMembers.mockReset();
     mockAccessApi.listUserDirectory.mockReset();
-    mockExecutionWorkspacesApi.list.mockReset();
-    mockExecutionWorkspacesApi.listSummaries.mockReset();
+    mockExecutionWorktreesApi.list.mockReset();
+    mockExecutionWorktreesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
     mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
@@ -338,8 +338,8 @@ describe("IssuesList", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockAccessApi.listMembers.mockResolvedValue({ members: [], access: {} });
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
-    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
+    mockExecutionWorktreesApi.list.mockResolvedValue([]);
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableExternalObjects: false,
@@ -585,13 +585,13 @@ describe("IssuesList", () => {
     });
   });
 
-  it("uses workspace group defaults when creating an issue from a grouped section", async () => {
+  it("uses worktree group defaults when creating an issue from a grouped section", async () => {
     localStorage.setItem(
       "paperclip:test-issues:company-1",
       JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
     );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "execution-workspace-1",
         name: "Feature Branch",
@@ -610,7 +610,7 @@ describe("IssuesList", () => {
       id: "project-1",
       name: "Paperclip App",
       color: null,
-      workspaces: [{ id: "project-workspace-1", name: "Primary workspace" }],
+      workspaces: [{ id: "project-workspace-1", name: "Primary worktree" }],
       primaryWorkspace: { id: "project-workspace-1" },
       executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
     } as Project;
@@ -627,12 +627,12 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label*="Feature Branch"]');
       expect(button).not.toBeNull();
     });
 
     await act(async () => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label*="Feature Branch"]');
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
@@ -1714,10 +1714,10 @@ describe("IssuesList", () => {
     });
   });
 
-  it("filters the list to a single workspace when a workspace name is clicked", async () => {
+  it("filters the list to a single worktree when a worktree name is clicked", async () => {
     localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "workspace"]));
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-alpha",
         name: "Alpha",
@@ -1761,17 +1761,17 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Alpha issue");
       expect(container.textContent).toContain("Beta issue");
-      const workspaceButton = Array.from(container.querySelectorAll("button")).find(
+      const worktreeButton = Array.from(container.querySelectorAll("button")).find(
         (button) => button.textContent === "Alpha",
       );
-      expect(workspaceButton).not.toBeUndefined();
+      expect(worktreeButton).not.toBeUndefined();
     });
 
     await act(async () => {
-      const workspaceButton = Array.from(container.querySelectorAll("button")).find(
+      const worktreeButton = Array.from(container.querySelectorAll("button")).find(
         (button) => button.textContent === "Alpha",
       );
-      workspaceButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      worktreeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -1785,7 +1785,7 @@ describe("IssuesList", () => {
     });
   });
 
-  it("applies an initial workspace filter from the issues URL state", async () => {
+  it("applies an initial worktree filter from the issues URL state", async () => {
     const alphaIssue = createIssue({
       id: "issue-alpha",
       identifier: "PAP-30",
@@ -1805,7 +1805,7 @@ describe("IssuesList", () => {
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
-        initialWorkspaces={["workspace-alpha"]}
+        initialWorktrees={["workspace-alpha"]}
         onUpdateIssue={() => undefined}
       />,
       container,
@@ -1955,9 +1955,9 @@ describe("IssuesList", () => {
     });
   });
 
-  it("uses workspace summaries instead of the full workspace list on the issues page", async () => {
+  it("uses worktree summaries instead of the full worktree list on the issues page", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
+    mockExecutionWorktreesApi.listSummaries.mockResolvedValue([]);
 
     const { root } = renderWithQueryClient(
       <IssuesList
@@ -1971,8 +1971,8 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1");
-      expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+      expect(mockExecutionWorktreesApi.listSummaries).toHaveBeenCalledWith("company-1");
+      expect(mockExecutionWorktreesApi.list).not.toHaveBeenCalled();
     });
 
     act(() => {

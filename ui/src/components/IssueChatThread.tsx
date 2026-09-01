@@ -78,10 +78,10 @@ import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "..
 import { isLiveIssueRun } from "../lib/liveIssueIds";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import {
-  formatTimelineWorkspaceLabel,
+  formatTimelineWorktreeLabel,
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
-  type IssueTimelineWorkspace,
+  type IssueTimelineWorktree,
   type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -115,7 +115,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
-import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
+import { WorktreeFileMarkdownBody } from "./WorktreeFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -903,7 +903,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
   return (
-    <WorkspaceFileMarkdownBody
+    <WorktreeFileMarkdownBody
       className={cn("text-sm leading-6", onAccent && "paperclip-markdown-on-accent")}
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
@@ -912,7 +912,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       linkCaseReferences={linkCaseReferences}
     >
       {text}
-    </WorkspaceFileMarkdownBody>
+    </WorktreeFileMarkdownBody>
   );
 });
 
@@ -2700,7 +2700,7 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
-function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
+function isTimelineWorkspace(value: unknown): value is IssueTimelineWorktree {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const workspace = value as Record<string, unknown>;
   return isNullableString(workspace.label)
@@ -3200,11 +3200,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               Workspace
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineWorkspaceLabel(workspaceChange.from)}
+              {formatTimelineWorktreeLabel(workspaceChange.from)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground/70" />
             <span className="font-medium text-foreground">
-              {formatTimelineWorkspaceLabel(workspaceChange.to)}
+              {formatTimelineWorktreeLabel(workspaceChange.to)}
             </span>
           </div>
         ) : null}

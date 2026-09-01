@@ -2489,7 +2489,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-50: 1fr 280px; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[1fr_280px]). */
   --gtc-51: 160px 1fr; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[160px_1fr]). */
   --gtc-52: minmax(0,1.4fr) minmax(220px,0.8fr); /* Extracted from ui/src/pages/PluginSettings.tsx (grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]). */
-  --gtc-53: minmax(0,1.4fr) minmax(18rem,0.9fr); /* Extracted from ui/src/pages/ProjectWorkspaceDetail.tsx (grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]). */
+  --gtc-53: minmax(0,1.4fr) minmax(18rem,0.9fr); /* Extracted from ui/src/pages/ProjectWorktreeDetail.tsx (grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]). */
   --gtc-54: minmax(12rem,2.4fr) minmax(5.25rem,0.75fr) minmax(7rem,1fr) minmax(5rem,0.7fr) 2.75rem; /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem]). */
   --gtc-55: 8rem minmax(0,1fr); /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[8rem_minmax(0,1fr)]). */
   --gtc-56: minmax(0,1fr) minmax(14rem,18rem); /* Extracted from ui/src/pages/TeamCatalog.tsx (grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]). */
@@ -2618,11 +2618,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    * allow ui/src/components/SidebarProjects.test.tsx — mock project color fixture
    * allow ui/src/components/SidebarStarredProjects.test.tsx — mock project color fixture
    * allow ui/src/pages/CompanyEnvironments.test.tsx — xterm.js theme-mock assertion values (mirrors the allowlisted xterm.js config in the CompanyEnvironments.tsx source above)
-   * allow ui/src/pages/ExecutionWorkspaceDetail.test.tsx — mock project color fixture
+   * allow ui/src/pages/ExecutionWorktreeDetail.test.tsx — mock project color fixture
    * allow ui/src/pages/InviteLanding.test.tsx — "#NNNN" pull-request references inside explanatory comments, not color literals
    * allow ui/src/pages/IssueDetail.test.tsx — mock project color fixture
    * allow ui/src/pages/ProjectDetail.test.tsx — mock project color fixture
-   * allow ui/src/pages/ProjectWorkspaceDetail.test.tsx — mock project color fixture
+   * allow ui/src/pages/ProjectWorktreeDetail.test.tsx — mock project color fixture
    * allow ui/src/pages/Projects.test.tsx — mock project color fixture
    * allow ui/src/pages/Routines.test.tsx — mock routine/label color fixtures
    ── end allowlist ── */

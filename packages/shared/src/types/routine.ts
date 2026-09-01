@@ -11,7 +11,7 @@ import type {
   RoutineVariableType,
 } from "../constants.js";
 import type { EnvBinding } from "./secrets.js";
-import type { ExecutionWorkspaceMode, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { ExecutionWorktreeMode, IssueExecutionWorktreeSettings } from "./worktree-runtime.js";
 
 export interface RoutineDescriptionDocument {
   id: string;
@@ -244,12 +244,12 @@ export interface RoutineExecutionIssueOrigin {
   runId: string | null;
 }
 
-export interface RoutineRunWorkspaceContext {
+export interface RoutineRunWorktreeContext {
   projectId?: string | null;
   projectWorkspaceId?: string | null;
   executionWorkspaceId?: string | null;
-  executionWorkspacePreference?: ExecutionWorkspaceMode | null;
-  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+  executionWorkspacePreference?: ExecutionWorktreeMode | null;
+  executionWorkspaceSettings?: IssueExecutionWorktreeSettings | null;
 }
 
 export interface RoutineListItem extends Routine {

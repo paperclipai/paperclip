@@ -15,13 +15,13 @@ import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
   workspaceLoginHandoffPlugin,
   type WorkspaceHandoffExpectedIdentity,
-} from "./workspace-login-handoff-plugin.js";
+} from "./worktree-login-handoff-plugin.js";
 import {
   normalizeWorkspaceHandoffOrigin,
   resolveWorkspaceHandoffLocalCompanyId,
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
-} from "./workspace-login-handoff.js";
+} from "./worktree-login-handoff.js";
 
 export type BetterAuthSessionUser = {
   id: string;

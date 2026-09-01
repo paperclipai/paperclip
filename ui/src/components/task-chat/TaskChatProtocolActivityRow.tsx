@@ -8,7 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
-import { WorkspaceFileLink } from "@/components/WorkspaceFileLink";
+import { WorktreeFileLink } from "@/components/WorktreeFileLink";
 import { cn } from "@/lib/utils";
 import type {
   TaskChatProtocolDetail,
@@ -25,7 +25,7 @@ import {
 } from "./task-chat-activity-presentation";
 
 const COMPACT_RESEARCH_RESULT_LIMIT = 5;
-const COMPACT_WORKSPACE_FILE_LIMIT = 8;
+const COMPACT_WORKTREE_FILE_LIMIT = 8;
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "interrupted" | "informational" }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-(--status-agent-running)" aria-hidden />;
@@ -178,7 +178,7 @@ function ProviderDetails({ item }: { item: TaskChatProviderActivityItem }) {
 
 function WorkspaceChangeDetails({ item }: { item: TaskChatWorkspaceChangeItem }) {
   if (item.files.length === 0) return <p className="text-muted-foreground">No changed-file details were reported.</p>;
-  const visibleFiles = item.files.slice(0, COMPACT_WORKSPACE_FILE_LIMIT);
+  const visibleFiles = item.files.slice(0, COMPACT_WORKTREE_FILE_LIMIT);
   const hiddenFileCount = item.files.length - visibleFiles.length;
   return (
     <div className="min-w-0" data-testid="task-chat-workspace-change-details">
@@ -212,7 +212,7 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
   };
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <WorkspaceFileLink workspaceFileRef={workspaceFileRef} label={item.path} />
+      <WorktreeFileLink workspaceFileRef={workspaceFileRef} label={item.path} />
       {item.preview ? (
         item.presentation === "document" ? (
           <div className="max-h-(--sz-64) overflow-auto rounded-sm bg-muted/30 p-2 text-foreground"><MarkdownBody>{item.preview}</MarkdownBody></div>

@@ -6,11 +6,11 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchableSelect, type SearchableSelectGroup, type SearchableSelectOption } from "./SearchableSelect";
 import {
-  buildReusableExecutionWorkspaceOptionGroups,
-  reusableWorkspaceOptionMatches,
-  type ReusableExecutionWorkspaceLike,
-  type ReusableWorkspaceOption,
-} from "@/lib/reusable-execution-workspaces";
+  buildReusableExecutionWorktreeOptionGroups,
+  reusableWorktreeOptionMatches,
+  type ReusableExecutionWorktreeLike,
+  type ReusableWorktreeOption,
+} from "@/lib/reusable-execution-worktrees";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,10 +51,10 @@ function keyDown(target: Element, key: string) {
   });
 }
 
-function workspace(overrides: Partial<ReusableExecutionWorkspaceLike>): ReusableExecutionWorkspaceLike {
+function worktree(overrides: Partial<ReusableExecutionWorktreeLike>): ReusableExecutionWorktreeLike {
   return {
     id: overrides.id ?? "workspace-id",
-    name: overrides.name ?? "Workspace",
+    name: overrides.name ?? "Worktree",
     cwd: overrides.cwd ?? null,
     lastUsedAt: overrides.lastUsedAt ?? "2026-06-24T00:00:00.000Z",
     status: overrides.status,
@@ -62,14 +62,14 @@ function workspace(overrides: Partial<ReusableExecutionWorkspaceLike>): Reusable
   };
 }
 
-function buildWorkspaceSelectGroups(workspaces: readonly ReusableExecutionWorkspaceLike[]) {
-  return buildReusableExecutionWorkspaceOptionGroups(workspaces, {
+function buildWorktreeSelectGroups(workspaces: readonly ReusableExecutionWorktreeLike[]) {
+  return buildReusableExecutionWorktreeOptionGroups(workspaces, {
     now: "2026-06-24T12:00:00.000Z",
   }).map((group) => ({
     id: group.id,
     label: group.label,
     options: group.options,
-  })) satisfies SearchableSelectGroup<string, ReusableWorkspaceOption>[];
+  })) satisfies SearchableSelectGroup<string, ReusableWorktreeOption>[];
 }
 
 describe("SearchableSelect", () => {
@@ -390,10 +390,10 @@ describe("SearchableSelect", () => {
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("filters workspace options, moves with arrows, and selects the workspace id with Enter", async () => {
+  it("filters worktree options, moves with arrows, and selects the worktree id with Enter", async () => {
     const onValueChange = vi.fn();
-    const groups = buildWorkspaceSelectGroups([
-      workspace({
+    const groups = buildWorktreeSelectGroups([
+      worktree({
         id: "workspace-paperclip",
         name: "Paperclip app",
         cwd: "/srv/paperclip/home/paperclipai/paperclip/.paperclip/worktrees/PAP-11722-new-existing-workspace-selector",
@@ -401,7 +401,7 @@ describe("SearchableSelect", () => {
         status: "running",
         lastUsedAt: "2026-06-24T10:00:00.000Z",
       }),
-      workspace({
+      worktree({
         id: "workspace-marketing",
         name: "Marketing site",
         cwd: "/srv/paperclip/home/marketing-site",
@@ -412,13 +412,13 @@ describe("SearchableSelect", () => {
     ]);
 
     root = render(
-      <SearchableSelect<string, ReusableWorkspaceOption>
+      <SearchableSelect<string, ReusableWorktreeOption>
         value=""
         groups={groups}
         onValueChange={onValueChange}
-        placeholder="Choose an existing workspace"
-        searchPlaceholder="Search workspaces..."
-        filterOption={(option, query) => reusableWorkspaceOptionMatches(option, query)}
+        placeholder="Choose an existing worktree"
+        searchPlaceholder="Search worktrees..."
+        filterOption={(option, query) => reusableWorktreeOptionMatches(option, query)}
         disablePortal
         renderOption={(option, { selected }) => (
           <span data-option-key={option.key} data-selected={String(selected)}>
@@ -435,10 +435,10 @@ describe("SearchableSelect", () => {
     });
     await flush();
 
-    const input = container.querySelector("input[placeholder='Search workspaces...']") as HTMLInputElement | null;
+    const input = container.querySelector("input[placeholder='Search worktrees...']") as HTMLInputElement | null;
     expect(input).not.toBeNull();
     expect(container.textContent).toContain("Recent");
-    expect(container.textContent).toContain("All workspaces");
+    expect(container.textContent).toContain("All worktrees");
 
     setInputValue(input!, "pclip reusable");
     await flush();
@@ -472,7 +472,7 @@ describe("SearchableSelect", () => {
         workspaceId: "workspace-paperclip",
       }),
     );
-    expect(container.querySelector("input[placeholder='Search workspaces...']")).toBeNull();
+    expect(container.querySelector("input[placeholder='Search worktrees...']")).toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
 
     act(() => {
@@ -480,7 +480,7 @@ describe("SearchableSelect", () => {
     });
     await flush();
 
-    expect(container.querySelector("input[placeholder='Search workspaces...']")).toBeNull();
+    expect(container.querySelector("input[placeholder='Search worktrees...']")).toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
   });
 });

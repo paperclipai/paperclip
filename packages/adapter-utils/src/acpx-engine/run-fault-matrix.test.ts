@@ -8,7 +8,7 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { runChildProcess } from "../server-utils.js";
-import { classifyWorkspaceRestoreFailure } from "../workspace-restore-merge.js";
+import { classifyWorkspaceRestoreFailure } from "../worktree-restore-merge.js";
 
 // The composed fault matrix.
 //

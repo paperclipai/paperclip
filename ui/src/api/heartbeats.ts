@@ -1,7 +1,7 @@
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
-  WorkspaceOperation,
+  WorktreeOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
 } from "@paperclipai/shared";
@@ -137,10 +137,8 @@ export const heartbeatsApi = {
     }>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
-  workspaceOperations: (runId: string) =>
-    api.get<WorkspaceOperation[]>(
-      `/heartbeat-runs/${runId}/workspace-operations`,
-    ),
+  worktreeOperations: (runId: string) =>
+    api.get<WorktreeOperation[]>(`/heartbeat-runs/${runId}/workspace-operations`),
   providerTrace: (runId: string) =>
     api.get<ProviderTraceInspection>(`/heartbeat-runs/${runId}/provider-trace`),
   providerTraceMetadata: (companyId: string, runIds: string[]) => {

@@ -1928,7 +1928,7 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason="This tool can write to your worktree, so a human signs off before the agent posts."
               policyNumber={7}
               expiresInLabel="expires in 23h 51m"
             />
@@ -1946,7 +1946,7 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason="This tool can write to your worktree, so a human signs off before the agent posts."
               policyNumber={7}
               expiresInLabel="expires in 18h 02m"
             />
@@ -1973,7 +1973,7 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉" }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason="This tool can write to your worktree, so a human signs off before the agent posts."
               policyNumber={7}
               expiresInLabel="expires in 23h 51m"
             />

@@ -38,7 +38,7 @@ import {
 } from "./execute.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
-import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
+import { setExpensiveWorkspaceGitExecutor } from "../git-worktree-sync.js";
 import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
   getActiveStepContext,

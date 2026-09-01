@@ -2,7 +2,7 @@ import { useState } from "react";
 import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import type { Project, SharedWorktreeConcurrency } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -62,7 +62,7 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_teardown_command";
 
 const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
-  value: SharedWorkspaceConcurrency;
+  value: SharedWorktreeConcurrency;
   label: string;
   help: string;
 }[] = [
@@ -74,12 +74,12 @@ const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   {
     value: "serialize",
     label: "Serialize",
-    help: "Runs always take turns in the shared project workspace.",
+    help: "Runs always take turns in the shared project worktree.",
   },
   {
     value: "allow",
     label: "Allow",
-    help: "Runs never wait for the workspace; concurrent edits are possible.",
+    help: "Runs never wait for the worktree; concurrent edits are possible.",
   },
 ];
 
@@ -252,11 +252,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
-  const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
-  const [workspaceCwd, setWorkspaceCwd] = useState("");
-  const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [executionWorktreeAdvancedOpen, setExecutionWorktreeAdvancedOpen] = useState(false);
+  const [worktreeMode, setWorktreeMode] = useState<"local" | "repo" | null>(null);
+  const [worktreeCwd, setWorktreeCwd] = useState("");
+  const [worktreeRepoUrl, setWorktreeRepoUrl] = useState("");
+  const [worktreeError, setWorktreeError] = useState<string | null>(null);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
     if (onFieldUpdate) {
@@ -321,20 +321,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       }));
 
   const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
-  const workspaces = project.workspaces ?? [];
+  const worktrees = project.workspaces ?? [];
   const codebase = project.codebase;
-  const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
-  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
-  const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
-  const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const executionWorkspaceDefaultMode =
-    executionWorkspacePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
+  const primaryCodebaseWorktree = project.primaryWorkspace ?? null;
+  const hasAdditionalLegacyWorktrees = worktrees.some((worktree) => worktree.id !== primaryCodebaseWorktree?.id);
+  const executionWorktreePolicy = project.executionWorkspacePolicy ?? null;
+  const executionWorktreesEnabled = executionWorktreePolicy?.enabled === true;
+  const isolatedWorktreesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const executionWorktreeDefaultMode =
+    executionWorktreePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
   // Absent/unset round-trips as "auto" — we only write a value once the user picks one.
-  const executionWorkspaceSharedConcurrency: SharedWorkspaceConcurrency =
-    executionWorkspacePolicy?.sharedWorkspaceConcurrency ?? "auto";
-  const executionWorkspaceEnvironmentId = executionWorkspacePolicy?.environmentId ?? "";
-  const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
+  const executionWorkspaceSharedConcurrency: SharedWorktreeConcurrency =
+    executionWorktreePolicy?.sharedWorkspaceConcurrency ?? "auto";
+  const executionWorktreeEnvironmentId = executionWorktreePolicy?.environmentId ?? "";
+  const executionWorktreeStrategy = executionWorktreePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
     branchTemplate: "",
@@ -357,7 +357,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
     return provider !== null && provider !== "fake";
   });
-  const showExecutionWorkspaceEnvironmentControl = environmentsEnabled && runSelectableEnvironments.length > 1;
+  const showExecutionWorktreeEnvironmentControl = environmentsEnabled && runSelectableEnvironments.length > 1;
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -369,35 +369,35 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     }
   };
 
-  const createWorkspace = useMutation({
+  const createWorktree = useMutation({
     mutationFn: (data: Record<string, unknown>) => projectsApi.createWorkspace(project.id, data),
     onSuccess: () => {
-      setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
-      setWorkspaceMode(null);
-      setWorkspaceError(null);
+      setWorktreeCwd("");
+      setWorktreeRepoUrl("");
+      setWorktreeMode(null);
+      setWorktreeError(null);
       invalidateProject();
     },
   });
 
-  const removeWorkspace = useMutation({
-    mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, workspaceId),
+  const removeWorktree = useMutation({
+    mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, worktreeCwd),
     onSuccess: () => {
-      setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
-      setWorkspaceMode(null);
-      setWorkspaceError(null);
+      setWorktreeCwd("");
+      setWorktreeRepoUrl("");
+      setWorktreeMode(null);
+      setWorktreeError(null);
       invalidateProject();
     },
   });
-  const updateWorkspace = useMutation({
+  const updateWorktree = useMutation({
     mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }) =>
-      projectsApi.updateWorkspace(project.id, workspaceId, data),
+      projectsApi.updateWorkspace(project.id, worktreeCwd, data),
     onSuccess: () => {
-      setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
-      setWorkspaceMode(null);
-      setWorkspaceError(null);
+      setWorktreeCwd("");
+      setWorktreeRepoUrl("");
+      setWorktreeMode(null);
+      setWorktreeError(null);
       invalidateProject();
     },
   });
@@ -413,14 +413,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     setGoalOpen(false);
   };
 
-  const updateExecutionWorkspacePolicy = (patch: Record<string, unknown>) => {
+  const updateExecutionWorktreePolicy = (patch: Record<string, unknown>) => {
     if (!onUpdate && !onFieldUpdate) return;
     return {
       executionWorkspacePolicy: {
-        enabled: executionWorkspacesEnabled,
-        defaultMode: executionWorkspaceDefaultMode,
-        allowIssueOverride: executionWorkspacePolicy?.allowIssueOverride ?? true,
-        ...executionWorkspacePolicy,
+        enabled: executionWorktreesEnabled,
+        defaultMode: executionWorktreeDefaultMode,
+        allowIssueOverride: executionWorktreePolicy?.allowIssueOverride ?? true,
+        ...executionWorktreePolicy,
         ...patch,
       },
     };
@@ -473,8 +473,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     const nextCwd = patch.cwd !== undefined ? patch.cwd : codebase.localFolder;
     const nextRepoUrl = patch.repoUrl !== undefined ? patch.repoUrl : codebase.repoUrl;
     if (!nextCwd && !nextRepoUrl) {
-      if (primaryCodebaseWorkspace) {
-        removeWorkspace.mutate(primaryCodebaseWorkspace.id);
+      if (primaryCodebaseWorktree) {
+        removeWorktree.mutate(primaryCodebaseWorktree.id);
       }
       return;
     }
@@ -486,65 +486,65 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       isPrimary: true,
     };
 
-    if (primaryCodebaseWorkspace) {
-      updateWorkspace.mutate({ workspaceId: primaryCodebaseWorkspace.id, data });
+    if (primaryCodebaseWorktree) {
+      updateWorktree.mutate({ workspaceId: primaryCodebaseWorktree.id, data });
       return;
     }
 
-    createWorkspace.mutate(data);
+    createWorktree.mutate(data);
   };
 
-  const submitLocalWorkspace = () => {
-    const cwd = workspaceCwd.trim();
+  const submitLocalWorktree = () => {
+    const cwd = worktreeCwd.trim();
     if (!cwd) {
-      setWorkspaceError(null);
+      setWorktreeError(null);
       persistCodebase({ cwd: null });
       return;
     }
     if (!isAbsolutePath(cwd)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorktreeError("Local folder must be a full absolute path.");
       return;
     }
-    setWorkspaceError(null);
+    setWorktreeError(null);
     persistCodebase({ cwd });
   };
 
-  const submitRepoWorkspace = () => {
-    const repoUrl = workspaceRepoUrl.trim();
+  const submitRepoWorktree = () => {
+    const repoUrl = worktreeRepoUrl.trim();
     if (!repoUrl) {
-      setWorkspaceError(null);
+      setWorktreeError(null);
       persistCodebase({ repoUrl: null });
       return;
     }
     if (!looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+      setWorktreeError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
       return;
     }
-    setWorkspaceError(null);
+    setWorktreeError(null);
     persistCodebase({ repoUrl });
   };
 
-  const clearLocalWorkspace = () => {
+  const clearLocalWorktree = () => {
     const confirmed = window.confirm(
       codebase.repoUrl
-        ? "Clear local folder from this workspace?"
-        : "Delete this workspace local folder?",
+        ? "Clear local folder from this worktree?"
+        : "Delete this worktree local folder?",
     );
     if (!confirmed) return;
     persistCodebase({ cwd: null });
   };
 
-  const clearRepoWorkspace = () => {
+  const clearRepoWorktree = () => {
     const hasLocalFolder = Boolean(codebase.localFolder);
     const confirmed = window.confirm(
       hasLocalFolder
-        ? "Clear repo from this workspace?"
-        : "Delete this workspace repo?",
+        ? "Clear repo from this worktree?"
+        : "Delete this worktree repo?",
     );
     if (!confirmed) return;
-    if (primaryCodebaseWorkspace && hasLocalFolder) {
-      updateWorkspace.mutate({
-        workspaceId: primaryCodebaseWorkspace.id,
+    if (primaryCodebaseWorktree && hasLocalFolder) {
+      updateWorktree.mutate({
+        workspaceId: primaryCodebaseWorktree.id,
         data: { repoUrl: null, repoRef: null, defaultRef: null, sourceType: deriveSourceType(codebase.localFolder, null) },
       });
       return;
@@ -751,9 +751,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       size="xs"
                       className="h-6 px-2"
                       onClick={() => {
-                        setWorkspaceMode("repo");
-                        setWorkspaceRepoUrl(codebase.repoUrl ?? "");
-                        setWorkspaceError(null);
+                        setWorktreeMode("repo");
+                        setWorktreeRepoUrl(codebase.repoUrl ?? "");
+                        setWorktreeError(null);
                       }}
                     >
                       Change repo
@@ -761,7 +761,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      onClick={clearRepoWorkspace}
+                      onClick={clearRepoWorktree}
                       aria-label="Clear repo"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -776,9 +776,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     size="xs"
                     className="h-6 px-2"
                     onClick={() => {
-                      setWorkspaceMode("repo");
-                      setWorkspaceRepoUrl(codebase.repoUrl ?? "");
-                      setWorkspaceError(null);
+                      setWorktreeMode("repo");
+                      setWorktreeRepoUrl(codebase.repoUrl ?? "");
+                      setWorktreeError(null);
                     }}
                   >
                     Set repo
@@ -817,9 +817,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       size="xs"
                       className="h-6 px-2"
                       onClick={() => {
-                        setWorkspaceMode("local");
-                        setWorkspaceCwd(codebase.localFolder ?? "");
-                        setWorkspaceError(null);
+                        setWorktreeMode("local");
+                        setWorktreeCwd(codebase.localFolder ?? "");
+                        setWorktreeError(null);
                       }}
                     >
                       {codebase.localFolder ? "Change local folder" : "Set local folder"}
@@ -828,7 +828,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        onClick={clearLocalWorkspace}
+                        onClick={clearLocalWorktree}
                         aria-label="Clear local folder"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -839,15 +839,15 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             )}
 
-            {hasAdditionalLegacyWorkspaces && (
+            {hasAdditionalLegacyWorktrees && (
               <div className="text-(length:--text-micro) text-muted-foreground">
-                Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
+                Additional legacy worktree records exist on this project. Paperclip is using the primary worktree as the codebase view.
               </div>
             )}
 
-            {primaryCodebaseWorkspace?.runtimeServices && primaryCodebaseWorkspace.runtimeServices.length > 0 ? (
+            {primaryCodebaseWorktree?.runtimeServices && primaryCodebaseWorktree.runtimeServices.length > 0 ? (
               <div className="space-y-1">
-                {primaryCodebaseWorkspace.runtimeServices.map((service) => (
+                {primaryCodebaseWorktree.runtimeServices.map((service) => (
                   <div
                     key={service.id}
                     className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1"
@@ -903,13 +903,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             ) : null}
           </div>
-          {!hideHostPaths && workspaceMode === "local" && (
+          {!hideHostPaths && worktreeMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
                 <input
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                  value={workspaceCwd}
-                  onChange={(e) => setWorkspaceCwd(e.target.value)}
+                  value={worktreeCwd}
+                  onChange={(e) => setWorktreeCwd(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
                 />
                 <ChoosePathButton />
@@ -919,8 +919,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={(!workspaceCwd.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitLocalWorkspace}
+                  disabled={(!worktreeCwd.trim() && !primaryCodebaseWorktree) || createWorktree.isPending || updateWorktree.isPending}
+                  onClick={submitLocalWorktree}
                 >
                   Save
                 </Button>
@@ -929,9 +929,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   size="xs"
                   className="h-6 px-2"
                   onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceCwd("");
-                    setWorkspaceError(null);
+                    setWorktreeMode(null);
+                    setWorktreeCwd("");
+                    setWorktreeError(null);
                   }}
                 >
                   Cancel
@@ -939,12 +939,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             </div>
           )}
-          {workspaceMode === "repo" && (
+          {worktreeMode === "repo" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <input
                 className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                value={workspaceRepoUrl}
-                onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
+                value={worktreeRepoUrl}
+                onChange={(e) => setWorktreeRepoUrl(e.target.value)}
                 placeholder="https://github.com/org/repo"
               />
               <div className="flex items-center gap-2">
@@ -952,8 +952,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitRepoWorkspace}
+                  disabled={(!worktreeRepoUrl.trim() && !primaryCodebaseWorktree) || createWorktree.isPending || updateWorktree.isPending}
+                  onClick={submitRepoWorktree}
                 >
                   Save
                 </Button>
@@ -962,9 +962,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   size="xs"
                   className="h-6 px-2"
                   onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceRepoUrl("");
-                    setWorkspaceError(null);
+                    setWorktreeMode(null);
+                    setWorktreeRepoUrl("");
+                    setWorktreeError(null);
                   }}
                 >
                   Cancel
@@ -972,39 +972,39 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             </div>
           )}
-          {workspaceError && (
-            <p className="text-xs text-destructive">{workspaceError}</p>
+          {worktreeError && (
+            <p className="text-xs text-destructive">{worktreeError}</p>
           )}
-          {createWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to save workspace.</p>
+          {createWorktree.isError && (
+            <p className="text-xs text-destructive">Failed to save worktree.</p>
           )}
-          {removeWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to delete workspace.</p>
+          {removeWorktree.isError && (
+            <p className="text-xs text-destructive">Failed to delete worktree.</p>
           )}
-          {updateWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to update workspace.</p>
+          {updateWorktree.isError && (
+            <p className="text-xs text-destructive">Failed to update worktree.</p>
           )}
         </div>
 
-        {isolatedWorkspacesEnabled ? (
+        {isolatedWorktreesEnabled ? (
           <>
             <Separator className="my-4" />
 
             <div className="py-1.5 space-y-2">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>Execution Workspaces</span>
+                <span>Execution Worktrees</span>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
                       className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-(length:--text-nano) text-muted-foreground hover:text-foreground"
-                      aria-label="Execution workspaces help"
+                      aria-label="Execution worktrees help"
                     >
                       ?
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Project-owned defaults for isolated task checkouts and execution workspace behavior.
+                    Project-owned defaults for isolated task checkouts and execution worktree behavior.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1021,21 +1021,21 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   </div>
                   {onUpdate || onFieldUpdate ? (
                     <ToggleSwitch
-                      checked={executionWorkspacesEnabled}
+                      checked={executionWorktreesEnabled}
                       onCheckedChange={() =>
                         commitField(
                           "execution_workspace_enabled",
-                          updateExecutionWorkspacePolicy({ enabled: !executionWorkspacesEnabled })!,
+                          updateExecutionWorktreePolicy({ enabled: !executionWorktreesEnabled })!,
                         )}
                     />
                   ) : (
                     <span className="text-xs text-muted-foreground">
-                      {executionWorkspacesEnabled ? "Enabled" : "Disabled"}
+                      {executionWorktreesEnabled ? "Enabled" : "Disabled"}
                     </span>
                   )}
                 </div>
 
-                {executionWorkspacesEnabled ? (
+                {executionWorktreesEnabled ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
@@ -1048,13 +1048,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         </div>
                       </div>
                       <ToggleSwitch
-                        checked={executionWorkspaceDefaultMode === "isolated_workspace"}
+                        checked={executionWorktreeDefaultMode === "isolated_workspace"}
                         onCheckedChange={() =>
                           commitField(
                             "execution_workspace_default_mode",
-                            updateExecutionWorkspacePolicy({
+                            updateExecutionWorktreePolicy({
                               defaultMode:
-                                executionWorkspaceDefaultMode === "isolated_workspace"
+                                executionWorktreeDefaultMode === "isolated_workspace"
                                   ? "shared_workspace"
                                   : "isolated_workspace",
                             })!,
@@ -1065,20 +1065,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <div className="space-y-0.5">
                       <div className="mb-1 flex items-center gap-1.5">
                         <label className="flex items-center gap-2 text-sm">
-                          <span>Shared workspace concurrency</span>
+                          <span>Shared worktree concurrency</span>
                           <SaveIndicator state={fieldState("execution_workspace_shared_concurrency")} />
                         </label>
                       </div>
                       {onUpdate || onFieldUpdate ? (
                         <select
                           className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                          aria-label="Shared workspace concurrency"
+                          aria-label="Shared worktree concurrency"
                           value={executionWorkspaceSharedConcurrency}
                           onChange={(e) =>
                             commitField(
                               "execution_workspace_shared_concurrency",
-                              updateExecutionWorkspacePolicy({
-                                sharedWorkspaceConcurrency: e.target.value as SharedWorkspaceConcurrency,
+                              updateExecutionWorktreePolicy({
+                                sharedWorkspaceConcurrency: e.target.value as SharedWorktreeConcurrency,
                               })!,
                             )}
                         >
@@ -1106,20 +1106,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                        onClick={() => setExecutionWorkspaceAdvancedOpen((open) => !open)}
+                        onClick={() => setExecutionWorktreeAdvancedOpen((open) => !open)}
                       >
-                        {executionWorkspaceAdvancedOpen
+                        {executionWorktreeAdvancedOpen
                           ? "Hide advanced checkout settings"
                           : "Show advanced checkout settings"}
                       </button>
                     </div>
 
-                    {executionWorkspaceAdvancedOpen ? (
+                    {executionWorktreeAdvancedOpen ? (
                       <div className="space-y-3">
                         <div className="text-xs text-muted-foreground">
                           Host-managed implementation: <span className="text-foreground">Git worktree</span>
                         </div>
-                        {showExecutionWorkspaceEnvironmentControl ? (
+                        {showExecutionWorktreeEnvironmentControl ? (
                           <div>
                             <div className="mb-1 flex items-center gap-1.5">
                               <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1129,11 +1129,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </div>
                             <select
                               className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                              value={executionWorkspaceEnvironmentId}
+                              value={executionWorktreeEnvironmentId}
                               onChange={(e) =>
                                 commitField(
                                   "execution_workspace_environment",
-                                  updateExecutionWorkspacePolicy({
+                                  updateExecutionWorktreePolicy({
                                     environmentId: e.target.value || null,
                                   })!,
                                 )}
@@ -1155,12 +1155,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.baseRef ?? ""}
+                            value={executionWorktreeStrategy.baseRef ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_base_ref", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     baseRef: value || null,
                                   },
@@ -1179,12 +1179,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.branchTemplate ?? ""}
+                            value={executionWorktreeStrategy.branchTemplate ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_branch_template", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     branchTemplate: value || null,
                                   },
@@ -1203,12 +1203,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.worktreeParentDir ?? ""}
+                            value={executionWorktreeStrategy.worktreeParentDir ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_worktree_parent_dir", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     worktreeParentDir: value || null,
                                   },
@@ -1227,12 +1227,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.provisionCommand ?? ""}
+                            value={executionWorktreeStrategy.provisionCommand ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_provision_command", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     provisionCommand: value || null,
                                   },
@@ -1251,12 +1251,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.runtimeProvisionCommand ?? ""}
+                            value={executionWorktreeStrategy.runtimeProvisionCommand ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_runtime_provision_command", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     runtimeProvisionCommand: value || null,
                                   },
@@ -1278,12 +1278,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             </label>
                           </div>
                           <DraftInput
-                            value={executionWorkspaceStrategy.teardownCommand ?? ""}
+                            value={executionWorktreeStrategy.teardownCommand ?? ""}
                             onCommit={(value) =>
                               commitField("execution_workspace_teardown_command", {
-                                ...updateExecutionWorkspacePolicy({
+                                ...updateExecutionWorktreePolicy({
                                   workspaceStrategy: {
-                                    ...executionWorkspaceStrategy,
+                                    ...executionWorktreeStrategy,
                                     type: "git_worktree",
                                     teardownCommand: value || null,
                                   },

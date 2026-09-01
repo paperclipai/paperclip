@@ -51,7 +51,7 @@ describe("humanizeSystemNotice", () => {
         "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
         "This prevents git-sensitive adapters from running in an unrelated fallback cwd.",
     });
-    expect(result.title).toBe("Task paused — workspace problem");
+    expect(result.title).toBe("Task paused — worktree problem");
     expect(result.tone).toBe("warning");
   });
 

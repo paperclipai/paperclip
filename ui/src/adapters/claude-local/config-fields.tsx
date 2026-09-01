@@ -7,7 +7,7 @@ import {
   help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
-import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import { LocalWorktreeRuntimeFields } from "../local-worktree-runtime-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -55,7 +55,7 @@ export function ClaudeLocalConfigFields({
           </div>
         </Field>
       )}
-      <LocalWorkspaceRuntimeFields
+      <LocalWorktreeRuntimeFields
         isCreate={isCreate}
         values={values}
         set={set}

@@ -125,7 +125,7 @@ export function isValidExistingBranchName(value: string): boolean {
   return true;
 }
 
-const executionWorkspaceStrategySchema = z
+const executionWorktreeStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
@@ -188,12 +188,12 @@ function isAllowedTaskEgressCidr(cidr: string): boolean {
   });
 }
 
-export const issueExecutionWorkspaceSettingsSchema = z
+export const issueExecutionWorktreeSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
     environmentId: z.string().guid().optional().nullable(),
-    workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
+    workspaceStrategy: executionWorktreeStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     networkEgress: z.object({
       allowFqdns: z.array(z.string().trim().toLowerCase().regex(
@@ -504,7 +504,7 @@ const createIssueBaseSchema = z.object({
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorktreeSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().guid()).optional(),
   watchdogDiscovery: z.object({
     kind: z.enum(ISSUE_WATCHDOG_DISCOVERY_KINDS),
@@ -613,7 +613,7 @@ export const updateIssueSchema = objectWithoutDefaults(
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
-export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
+export type IssueExecutionWorktreeSettings = z.infer<typeof issueExecutionWorktreeSettingsSchema>;
 
 export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),

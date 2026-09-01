@@ -1,6 +1,6 @@
 import type { Issue } from "./issue.js";
 import type { RoutineEnvConfig } from "./routine.js";
-import type { ExecutionWorkspaceMode, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { ExecutionWorktreeMode, IssueExecutionWorktreeSettings } from "./worktree-runtime.js";
 import type { SourceTrustMetadata } from "../trust-policy.js";
 
 export type PipelineCaseConversationSourceReason =
@@ -33,8 +33,8 @@ export interface PipelineStageAutomation {
   projectId: string | null;
   projectWorkspaceId: string | null;
   executionWorkspaceId: string | null;
-  executionWorkspacePreference: ExecutionWorkspaceMode | null;
-  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  executionWorkspacePreference: ExecutionWorktreeMode | null;
+  executionWorkspaceSettings: IssueExecutionWorktreeSettings | null;
   env: RoutineEnvConfig | null;
   latestRoutineRevisionId: string | null;
   latestRoutineRevisionNumber: number;

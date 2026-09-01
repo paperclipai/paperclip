@@ -734,7 +734,7 @@ describe("IssueBlockedNotice", () => {
           {
             id: "blocker-2",
             identifier: "PAP-409",
-            title: "Workspace cwd lost git context",
+            title: "Worktree cwd lost git context",
             status: "blocked",
             priority: "medium",
             assigneeAgentId: null,
@@ -757,7 +757,7 @@ describe("IssueBlockedNotice", () => {
                 latestRunErrorCode: "workspace_validation_failed",
               },
               nextAction:
-                "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+                "Repair the source issue worktree link, project worktree cwd, or git checkout before resuming adapter execution.",
               wakePolicy: { type: "wake_owner" },
               monitorPolicy: null,
               attemptCount: 1,
@@ -781,7 +781,7 @@ describe("IssueBlockedNotice", () => {
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
     expect(indicator?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
-    expect(indicator?.textContent).toContain("Workspace recovery needed");
+    expect(indicator?.textContent).toContain("Worktree recovery needed");
   });
 
   describe("owner-sticky retry lineage", () => {

@@ -38,14 +38,14 @@ describe("SidePanelLauncher", () => {
           { id: "open", label: "Open", items: [{ id: "plan", label: "Plan", icon: <FileText />, alreadyOpen: true }] },
           { id: "loading", label: "Recent", items: [], loading: true },
           { id: "failed", label: "Remote", items: [], error: "Recent files unavailable." },
-          { id: "disabled", items: [{ id: "files", label: "Files", disabled: true, disabledReason: "No workspace." }] },
+          { id: "disabled", items: [{ id: "files", label: "Files", disabled: true, disabledReason: "No worktree." }] },
         ]}
         onSelect={() => {}}
       />,
     ));
     expect(container.textContent).toContain("Loading…");
     expect(container.textContent).toContain("Recent files unavailable.");
-    expect(container.textContent).toContain("No workspace.");
+    expect(container.textContent).toContain("No worktree.");
     expect(container.querySelector('[aria-label="Already open"]')).not.toBeNull();
     expect(container.querySelector('[aria-disabled="true"]')).not.toBeNull();
   });

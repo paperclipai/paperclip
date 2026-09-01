@@ -409,7 +409,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
     });
   });
 
-  it("coalesces workspace revisions and runtime request lifecycle states", () => {
+  it("coalesces worktree revisions and runtime request lifecycle states", () => {
     const items = transcriptToTaskChatItems(
       [
         {
@@ -488,7 +488,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
     });
   });
 
-  it("bounds provider output and workspace previews to 8 KiB", () => {
+  it("bounds provider output and worktree previews to 8 KiB", () => {
     const oversized = "x".repeat(9 * 1024);
     const items = transcriptToTaskChatItems(
       [
@@ -841,7 +841,7 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
 
   it("keeps commentary, grouped tools, and latest question receipts in first-seen order", () => {
     const input = [
-      commentary("commentary-1", "Inspecting the workspace."),
+      commentary("commentary-1", "Inspecting the worktree."),
       tool("tool-1"),
       tool("tool-2"),
       commentary("commentary-2", "I need two product choices."),
@@ -920,7 +920,7 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ).toEqual(["commentary", pending.id, "usage"]);
   });
 
-  it("keeps aggregate workspace changes at the turn boundary outside activity", () => {
+  it("keeps aggregate worktree changes at the turn boundary outside activity", () => {
     const rows = buildTurnTimelineRows(
       paperclipRunnerTimelineItems([tool("before"), workspace, tool("after")]),
       false,
@@ -1511,13 +1511,13 @@ describe("settledRunChildren (PAP-361)", () => {
     expect(phase.items.map((item) => item.kind)).toEqual(["usage"]);
   });
 
-  it("keeps a channel-less final reply out of activity when a workspace summary follows it", () => {
+  it("keeps a channel-less final reply out of activity when a worktree summary follows it", () => {
     const finalReply = transcriptToTaskChatItems(
       [
         {
           kind: "assistant",
           ts: TS,
-          text: "Done — the workspace is updated.",
+          text: "Done — the worktree is updated.",
         } as TranscriptEntry,
       ],
       { runId: "legacy-run", running: false },
@@ -1544,7 +1544,7 @@ describe("settledRunChildren (PAP-361)", () => {
       children.some(
         (child) =>
           child.kind === "activity_phase" &&
-          child.interstitial?.text === "Done — the workspace is updated.",
+          child.interstitial?.text === "Done — the worktree is updated.",
       ),
     ).toBe(false);
   });

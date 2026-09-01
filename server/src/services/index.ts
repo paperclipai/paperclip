@@ -164,8 +164,8 @@ export {
   type MintedEnvironmentCustomImageTerminalSession,
   type ParsedCustomImageSetupSshCommand,
 } from "./environment-custom-image-terminal-sessions.js";
-export { executionWorkspaceService } from "./execution-workspaces.js";
-export { workspaceOperationService } from "./workspace-operations.js";
+export { executionWorktreeService } from "./execution-worktrees.js";
+export { worktreeOperationService } from "./worktree-operations.js";
 export {
   workspaceRuntimeLeaseService,
   buildWorkspaceRuntimeLeaseOwnerKey,
@@ -175,14 +175,14 @@ export {
   type WorkspaceRuntimeLeaseClaim,
   type WorkspaceRuntimeLeaseOwner,
   type WorkspaceRuntimeLeaseService,
-} from "./workspace-runtime-leases.js";
-export { workspaceFileResourceService } from "./workspace-file-resources.js";
+} from "./worktree-runtime-leases.js";
+export { workspaceFileResourceService } from "./worktree-file-resources.js";
 export {
   createWorkspaceGitOperationScheduler,
   getWorkspaceGitOperationSchedulerSnapshot,
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
-} from "./workspace-git-operation-scheduler.js";
+} from "./worktree-git-operation-scheduler.js";
 export { workProductService } from "./work-products.js";
 export {
   logActivity,
@@ -198,5 +198,5 @@ export {
   reconcileCodexLocalManagedHomesOnStartup,
   type CodexAuthReconciliationSummary,
 } from "./codex-auth-reconciliation.js";
-export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./worktree-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

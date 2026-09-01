@@ -21,21 +21,21 @@ export interface IssueTimelineEvent {
     to: IssueTimelineAssignee;
   };
   workspaceChange?: {
-    from: IssueTimelineWorkspace;
-    to: IssueTimelineWorkspace;
+    from: IssueTimelineWorktree;
+    to: IssueTimelineWorktree;
   };
   commentId?: string | null;
   followUpRequested?: boolean;
 }
 
-export interface IssueTimelineWorkspace {
+export interface IssueTimelineWorktree {
   label: string | null;
   projectWorkspaceId: string | null;
   executionWorkspaceId: string | null;
   mode: string | null;
 }
 
-export function formatTimelineWorkspaceLabel(workspace: IssueTimelineWorkspace) {
+export function formatTimelineWorktreeLabel(workspace: IssueTimelineWorktree) {
   const fallbackId = workspace.executionWorkspaceId ?? workspace.projectWorkspaceId;
   return workspace.label ?? (fallbackId ? fallbackId.slice(0, 8) : "None");
 }
@@ -61,14 +61,14 @@ function sameAssignee(left: IssueTimelineAssignee, right: IssueTimelineAssignee)
   return left.agentId === right.agentId && left.userId === right.userId;
 }
 
-function sameWorkspace(left: IssueTimelineWorkspace, right: IssueTimelineWorkspace) {
+function sameWorktree(left: IssueTimelineWorktree, right: IssueTimelineWorktree) {
   return left.projectWorkspaceId === right.projectWorkspaceId
     && left.executionWorkspaceId === right.executionWorkspaceId
     && left.mode === right.mode
     && left.label === right.label;
 }
 
-function workspaceFromRecord(value: unknown): IssueTimelineWorkspace | null {
+function worktreeFromRecord(value: unknown): IssueTimelineWorktree | null {
   const record = asRecord(value);
   if (!record) return null;
   return {
@@ -79,12 +79,12 @@ function workspaceFromRecord(value: unknown): IssueTimelineWorkspace | null {
   };
 }
 
-function workspaceChangeFromDetails(details: Record<string, unknown>) {
+function worktreeChangeFromDetails(details: Record<string, unknown>) {
   const change = asRecord(details.workspaceChange);
   if (!change) return null;
-  const from = workspaceFromRecord(change.from);
-  const to = workspaceFromRecord(change.to);
-  if (!from || !to || sameWorkspace(from, to)) return null;
+  const from = worktreeFromRecord(change.from);
+  const to = worktreeFromRecord(change.to);
+  if (!from || !to || sameWorktree(from, to)) return null;
   return { from, to };
 }
 
@@ -223,9 +223,9 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       }
     }
 
-    const workspaceChange = workspaceChangeFromDetails(details);
-    if (workspaceChange) {
-      timelineEvent.workspaceChange = workspaceChange;
+    const worktreeChange = worktreeChangeFromDetails(details);
+    if (worktreeChange) {
+      timelineEvent.workspaceChange = worktreeChange;
     }
 
     if (

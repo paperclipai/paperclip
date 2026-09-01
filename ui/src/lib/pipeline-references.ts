@@ -53,7 +53,7 @@ function normalizeKind(raw: unknown): WorkReference["kind"] | null {
   return null;
 }
 
-function workspaceFromRecord(id: string, label: string, record: Record<string, unknown>): WorkReference {
+function worktreeFromRecord(id: string, label: string, record: Record<string, unknown>): WorkReference {
   return {
     id,
     kind: "workspace",
@@ -104,7 +104,7 @@ function referenceFromField(key: string, value: unknown): WorkReference | null {
 
   // Workspace-shaped.
   if (explicitKind === "workspace" || record.path || record.folder || record.workspacePath) {
-    return workspaceFromRecord(key, readString(record.label) ?? label, record);
+    return worktreeFromRecord(key, readString(record.label) ?? label, record);
   }
 
   return null;
@@ -117,9 +117,9 @@ function referenceFromField(key: string, value: unknown): WorkReference | null {
 export function extractWorkReferences(caseItem: ReferenceCaseInput): WorkReference[] {
   const references: WorkReference[] = [];
 
-  const workspaceRef = readRecord(caseItem.workspaceRef);
-  if (workspaceRef && (workspaceRef.path || workspaceRef.folder || workspaceRef.workspacePath || workspaceRef.name)) {
-    references.push(workspaceFromRecord("workspaceRef", "Workspace folder", workspaceRef));
+  const worktreeRef = readRecord(caseItem.workspaceRef);
+  if (worktreeRef && (worktreeRef.path || worktreeRef.folder || worktreeRef.workspacePath || worktreeRef.name)) {
+    references.push(worktreeFromRecord("workspaceRef", "Worktree folder", worktreeRef));
   }
 
   for (const [key, value] of Object.entries(caseItem.fields ?? {})) {

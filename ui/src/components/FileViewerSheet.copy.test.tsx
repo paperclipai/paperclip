@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResolvedWorkspaceResource, WorkspaceFileContent } from "@paperclipai/shared";
+import type { ResolvedWorktreeResource, WorktreeFileContent } from "@paperclipai/shared";
 import { FileViewerSheet } from "./FileViewerSheet";
 
 const useQueryMock = vi.fn();
@@ -32,12 +32,12 @@ vi.mock("@/context/FileViewerContext", () => ({
   useRequiredFileViewer: () => viewerMock,
 }));
 
-vi.mock("@/components/WorkspaceFileBrowser", () => ({
-  WorkspaceFileBrowser: () => null,
+vi.mock("@/components/WorktreeFileBrowser", () => ({
+  WorktreeFileBrowser: () => null,
 }));
 
-vi.mock("@/components/WorkspaceFileMarkdownBody", () => ({
-  WorkspaceFileMarkdownBody: ({ children }: { children: string }) => (
+vi.mock("@/components/WorktreeFileMarkdownBody", () => ({
+  WorktreeFileMarkdownBody: ({ children }: { children: string }) => (
     <div data-testid="mock-rendered-markdown">Rendered Markdown: {children}</div>
   ),
 }));
@@ -49,12 +49,12 @@ function ok<T>(data: T) {
   return { data, isFetching: false, isError: false, error: null, refetch: vi.fn(async () => ({ data })) };
 }
 
-const resolvedResource: ResolvedWorkspaceResource = {
+const resolvedResource: ResolvedWorktreeResource = {
   kind: "file",
   provider: "git_worktree",
   title: "tweet.md",
   displayPath: "videos/90-days-paperclip/tweet.md",
-  workspaceLabel: "Isolated workspace",
+  workspaceLabel: "Isolated worktree",
   workspaceKind: "execution_workspace",
   workspaceId: "ws-1",
   contentType: "text/markdown; charset=utf-8",
@@ -63,7 +63,7 @@ const resolvedResource: ResolvedWorkspaceResource = {
   capabilities: { preview: true, download: true, listChildren: false },
 };
 
-const content: WorkspaceFileContent = {
+const content: WorktreeFileContent = {
   resource: resolvedResource,
   content: {
     encoding: "utf8",

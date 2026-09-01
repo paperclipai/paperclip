@@ -28,9 +28,9 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
-import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
-import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
-import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { listCurrentRuntimeServicesForProjectWorkspaces } from "./worktree-runtime-read-model.js";
+import { parseProjectExecutionWorkspacePolicy } from "./execution-worktree-policy.js";
+import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-worktree-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;

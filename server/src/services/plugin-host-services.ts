@@ -32,7 +32,7 @@ import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
-import { executionWorkspaceService } from "./execution-workspaces.js";
+import { executionWorktreeService } from "./execution-worktrees.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
@@ -746,7 +746,7 @@ export function buildHostServices(
     runtimeEnv: options.heartbeatRuntimeEnv,
   });
   const projects = projectService(db);
-  const executionWorkspaces = executionWorkspaceService(db);
+  const executionWorkspaces = executionWorktreeService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);

@@ -1,17 +1,17 @@
 import { createContext, useContext, useCallback, useMemo, type ReactNode } from "react";
 import { useLocation, useNavigate, type NavigateOptions } from "@/lib/router";
-import type { WorkspaceFileSelector } from "@paperclipai/shared";
-import type { ParsedWorkspaceFileRef } from "@/lib/workspace-file-parser";
+import type { WorktreeFileSelector } from "@paperclipai/shared";
+import type { ParsedWorktreeFileRef } from "@/lib/worktree-file-parser";
 import {
-  useWorkspaceFileAvailability,
-  type WorkspaceFileAvailabilityRegistry,
-} from "@/hooks/useWorkspaceFileAvailability";
+  useWorktreeFileAvailability,
+  type WorktreeFileAvailabilityRegistry,
+} from "@/hooks/useWorktreeFileAvailability";
 
 export interface FileViewerUrlState {
   path: string;
   line: number | null;
   column: number | null;
-  workspace: WorkspaceFileSelector;
+  workspace: WorktreeFileSelector;
   projectId: string | null;
   workspaceId: string | null;
 }
@@ -23,7 +23,7 @@ export interface FileViewerContextValue {
    * it so a chip only renders once this issue's session can actually open the
    * resolved target.
    */
-  availability: WorkspaceFileAvailabilityRegistry;
+  availability: WorktreeFileAvailabilityRegistry;
   /** Current viewer state derived from the URL, or null if closed. */
   state: FileViewerUrlState | null;
   /** True when the sheet is in browse mode (URL carries `browse=1`). */
@@ -34,8 +34,8 @@ export interface FileViewerContextValue {
   browseWorkspaceId: string | null;
   folderPath: string | null;
   open(
-    ref: Pick<ParsedWorkspaceFileRef, "path" | "line" | "column" | "projectId" | "workspaceId"> & {
-      workspace?: WorkspaceFileSelector;
+    ref: Pick<ParsedWorktreeFileRef, "path" | "line" | "column" | "projectId" | "workspaceId"> & {
+      workspace?: WorktreeFileSelector;
     },
     opts?: {
       fromBrowse?: boolean;
@@ -47,8 +47,8 @@ export interface FileViewerContextValue {
   /** Update URL-backed browse state without closing the active preview. */
   updateBrowseState(opts: Partial<FileViewerBrowseState>): void;
   openFolder(
-    ref: Pick<ParsedWorkspaceFileRef, "path" | "projectId" | "workspaceId"> & {
-      workspace?: WorkspaceFileSelector;
+    ref: Pick<ParsedWorktreeFileRef, "path" | "projectId" | "workspaceId"> & {
+      workspace?: WorktreeFileSelector;
     },
   ): void;
   /** From a file opened via browse, return to the browse list. */
@@ -78,22 +78,22 @@ export function readFileViewerStateFromSearch(search: string): FileViewerUrlStat
   if (!path) return null;
   const lineRaw = params.get("line");
   const columnRaw = params.get("column");
-  const workspaceRaw = params.get("workspace");
+  const worktreeRaw = params.get("workspace");
   const projectIdRaw = params.get("projectId");
-  const workspaceIdRaw = params.get("workspaceId");
-  const hasExplicitTarget = Boolean(projectIdRaw && workspaceIdRaw);
+  const worktreeIdRaw = params.get("workspaceId");
+  const hasExplicitTarget = Boolean(projectIdRaw && worktreeIdRaw);
   const line = lineRaw ? Number.parseInt(lineRaw, 10) : NaN;
   const column = columnRaw ? Number.parseInt(columnRaw, 10) : NaN;
-  const workspace = (workspaceRaw === "execution" || workspaceRaw === "project")
-    ? workspaceRaw
+  const worktree = (worktreeRaw === "execution" || worktreeRaw === "project")
+    ? worktreeRaw
     : "auto";
   return {
     path,
     line: Number.isFinite(line) && line > 0 ? line : null,
     column: Number.isFinite(column) && column > 0 ? column : null,
-    workspace,
+    workspace: worktree,
     projectId: hasExplicitTarget ? projectIdRaw : null,
-    workspaceId: hasExplicitTarget ? workspaceIdRaw : null,
+    workspaceId: hasExplicitTarget ? worktreeIdRaw : null,
   };
 }
 
@@ -140,12 +140,12 @@ export function readBrowseStateFromSearch(search: string): FileViewerBrowseState
   const q = params.get("q");
   const folder = params.get("folder");
   const projectId = params.get("projectId");
-  const workspaceId = params.get("workspaceId");
+  const worktreeId = params.get("workspaceId");
   return {
     q: q && q.length > 0 ? q : null,
     folderPath: folder && folder.length > 0 ? folder : null,
     projectId: projectId || null,
-    workspaceId: workspaceId || null,
+    workspaceId: worktreeId || null,
   };
 }
 
@@ -214,7 +214,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   const navigate = useNavigate();
   const state = useMemo(() => readFileViewerStateFromSearch(location.search), [location.search]);
   const browseState = useMemo(() => readBrowseStateFromSearch(location.search), [location.search]);
-  const availability = useWorkspaceFileAvailability(issueId);
+  const availability = useWorktreeFileAvailability(issueId);
 
   const navigateSearch = useCallback(
     (nextSearch: string, opts?: Partial<NavigateOptions>) => {

@@ -67,7 +67,7 @@ const DEFAULT_ADMIN_REMEDIATION =
 const PLATFORM_TITLES: Record<string, string> = {
   skill_authentication_required: "Sign in to manage skills.",
   skill_company_boundary_denied: "This skill belongs to another organization.",
-  skill_workspace_boundary_denied: "This skill source is outside an allowed workspace.",
+  skill_workspace_boundary_denied: "This skill source is outside an allowed worktree.",
   skill_source_validation_failed: "This skill source failed validation.",
   skill_unsafe_content_blocked: "This skill contains unsafe content.",
   skill_secret_handling_blocked: "This skill exposes a secret value.",
@@ -79,7 +79,7 @@ const PLATFORM_REMEDIATIONS: Record<string, string> = {
   skill_authentication_required: "Sign in and try again.",
   skill_company_boundary_denied: "Open the skill from the organization that owns it.",
   skill_workspace_boundary_denied:
-    "Import from a configured Paperclip workspace or the organization managed-skill directory.",
+    "Import from a configured Paperclip worktree or the organization managed-skill directory.",
   skill_source_validation_failed: "Fix the flagged source and retry.",
   skill_unsafe_content_blocked:
     "Remove the fetch-and-execute or unsafe pattern before saving.",

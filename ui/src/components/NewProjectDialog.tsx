@@ -58,9 +58,9 @@ export function NewProjectDialog() {
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
   const [expanded, setExpanded] = useState(false);
-  const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
-  const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [worktreeLocalPath, setWorktreeLocalPath] = useState("");
+  const [worktreeRepoUrl, setWorktreeRepoUrl] = useState("");
+  const [worktreeError, setWorktreeError] = useState<string | null>(null);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
@@ -110,9 +110,9 @@ export function NewProjectDialog() {
     setGoalIds([]);
     setTargetDate("");
     setExpanded(false);
-    setWorkspaceLocalPath("");
-    setWorkspaceRepoUrl("");
-    setWorkspaceError(null);
+    setWorktreeLocalPath("");
+    setWorktreeRepoUrl("");
+    setWorktreeError(null);
   }
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
@@ -128,13 +128,13 @@ export function NewProjectDialog() {
     }
   };
 
-  const deriveWorkspaceNameFromPath = (value: string) => {
+  const deriveWorktreeNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");
     const segments = normalized.split(/[\\/]/).filter(Boolean);
     return segments[segments.length - 1] ?? "Local folder";
   };
 
-  const deriveWorkspaceNameFromRepo = (value: string) => {
+  const deriveWorktreeNameFromRepo = (value: string) => {
     try {
       const parsed = new URL(value);
       const segments = parsed.pathname.split("/").filter(Boolean);
@@ -147,19 +147,19 @@ export function NewProjectDialog() {
 
   async function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
-    const localPath = workspaceLocalPath.trim();
-    const repoUrl = workspaceRepoUrl.trim();
+    const localPath = worktreeLocalPath.trim();
+    const repoUrl = worktreeRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorktreeError("Local folder must be a full absolute path.");
       return;
     }
     if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+      setWorktreeError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
       return;
     }
 
-    setWorkspaceError(null);
+    setWorktreeError(null);
 
     try {
       const created = await createProject.mutateAsync({
@@ -174,8 +174,8 @@ export function NewProjectDialog() {
       if (localPath || repoUrl) {
         const workspacePayload: Record<string, unknown> = {
           name: localPath
-            ? deriveWorkspaceNameFromPath(localPath)
-            : deriveWorkspaceNameFromRepo(repoUrl),
+            ? deriveWorktreeNameFromPath(localPath)
+            : deriveWorktreeNameFromRepo(repoUrl),
           ...(localPath ? { cwd: localPath } : {}),
           ...(repoUrl ? { repoUrl } : {}),
         };
@@ -297,8 +297,8 @@ export function NewProjectDialog() {
             </div>
             <input
               className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-              value={workspaceRepoUrl}
-              onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
+              value={worktreeRepoUrl}
+              onChange={(e) => { setWorktreeRepoUrl(e.target.value); setWorktreeError(null); }}
               placeholder="https://github.com/org/repo"
             />
           </div>
@@ -327,8 +327,8 @@ export function NewProjectDialog() {
               <div className="flex items-center gap-2">
                 <input
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                  value={workspaceLocalPath}
-                  onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
+                  value={worktreeLocalPath}
+                  onChange={(e) => { setWorktreeLocalPath(e.target.value); setWorktreeError(null); }}
                   placeholder="/absolute/path/to/workspace"
                 />
                 <ChoosePathButton />
@@ -336,8 +336,8 @@ export function NewProjectDialog() {
             </div>
           )}
 
-          {workspaceError && (
-            <p className="text-xs text-destructive">{workspaceError}</p>
+          {worktreeError && (
+            <p className="text-xs text-destructive">{worktreeError}</p>
           )}
         </div>
 

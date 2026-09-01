@@ -35,8 +35,8 @@ import type {
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
-import type { Project, ProjectWorkspace } from "./project.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { Project, ProjectWorktree } from "./project.js";
+import type { ExecutionWorktree, IssueExecutionWorktreeSettings } from "./worktree-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
 import type {
   LowTrustReviewPresetPolicy,
@@ -52,8 +52,8 @@ export interface IssueAncestorProject {
   description: string | null;
   status: string;
   goalId: string | null;
-  workspaces: ProjectWorkspace[];
-  primaryWorkspace: ProjectWorkspace | null;
+  workspaces: ProjectWorktree[];
+  primaryWorkspace: ProjectWorktree | null;
 }
 
 export interface IssueAncestorGoal {
@@ -165,7 +165,7 @@ export interface AcceptedPlanDecompositionChild {
   executionPolicy?: IssueExecutionPolicy | null;
   executionWorkspaceId?: string | null;
   executionWorkspacePreference?: string | null;
-  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+  executionWorkspaceSettings?: IssueExecutionWorktreeSettings | null;
   labelIds?: string[];
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
@@ -826,7 +826,7 @@ export interface Issue {
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
-  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  executionWorkspaceSettings: IssueExecutionWorktreeSettings | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
@@ -855,7 +855,7 @@ export interface Issue {
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
   goal?: Goal | null;
-  currentExecutionWorkspace?: ExecutionWorkspace | null;
+  currentExecutionWorkspace?: ExecutionWorktree | null;
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;

@@ -121,7 +121,7 @@ function registerModuleMocks() {
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
-    executionWorkspaceService: () => ({}),
+    executionWorktreeService: () => ({}),
     feedbackService: () => ({}),
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,

@@ -59,7 +59,7 @@ import {
   issueService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
-  workspaceOperationService,
+  worktreeOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
@@ -70,7 +70,7 @@ import { isLoginCommandSupportedAdapterType } from "../services/login-command.js
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
-} from "./workspace-command-authz.js";
+} from "./worktree-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -90,10 +90,10 @@ import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
-  persistReprojectedWorkspaceDiffs,
-  projectCodexWorkspaceDiffsFromTrace,
-  type WorkspaceDiffReprojectionSkipReason,
-} from "../services/provider-trace-workspace-diff-reprojection.js";
+  persistReprojectedWorktreeDiffs,
+  projectCodexWorktreeDiffsFromTrace,
+  type WorktreeDiffReprojectionSkipReason,
+} from "../services/provider-trace-worktree-diff-reprojection.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -525,7 +525,7 @@ export function agentRoutes(
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
-  const workspaceOperations = workspaceOperationService(db);
+  const workspaceOperations = worktreeOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -5918,7 +5918,7 @@ export function agentRoutes(
       if (!run) return;
 
       const trace = await providerTraces.getByRun(run.id, run.companyId);
-      let unavailable: WorkspaceDiffReprojectionSkipReason | null = null;
+      let unavailable: WorktreeDiffReprojectionSkipReason | null = null;
       if (!trace || trace.deletedAt) unavailable = { reason: "trace_unavailable" };
       else if (trace.expiresAt <= new Date()) unavailable = { reason: "trace_expired" };
       else if (trace.status !== "complete") unavailable = { reason: "trace_incomplete" };
@@ -5938,12 +5938,12 @@ export function agentRoutes(
         });
         return;
       }
-      const result = await persistReprojectedWorkspaceDiffs(db, {
+      const result = await persistReprojectedWorktreeDiffs(db, {
         traceId: trace.id,
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
-        projection: projectCodexWorkspaceDiffsFromTrace(entries),
+        projection: projectCodexWorktreeDiffsFromTrace(entries),
       });
       await logActivity(db, {
         companyId: run.companyId,

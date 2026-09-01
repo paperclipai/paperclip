@@ -140,7 +140,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../services/company-skills.js");
     vi.doUnmock("../services/assets.js");
     vi.doUnmock("../services/agent-instructions.js");
-    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/worktree-runtime.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/routines.js");
     vi.doUnmock("../routes/routines.js");

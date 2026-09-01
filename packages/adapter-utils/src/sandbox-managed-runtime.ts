@@ -19,8 +19,8 @@ import {
   resetLocalGitIndexToHead,
   withShallowGitWorkspaceClone,
   WORKSPACE_GIT_SCAN_SATURATED_CODE,
-} from "./git-workspace-sync.js";
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+} from "./git-worktree-sync.js";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./worktree-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,

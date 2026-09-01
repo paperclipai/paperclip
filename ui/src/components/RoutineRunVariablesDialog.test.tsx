@@ -3,12 +3,12 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
+import type { Agent, ExecutionWorktree, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
-let issueWorkspaceDraftCalls = 0;
-let issueWorkspaceDraft = {
+let issueWorktreeDraftCalls = 0;
+let issueWorktreeDraft = {
   executionWorkspaceId: null as string | null,
   executionWorkspacePreference: "shared_workspace",
   executionWorkspaceSettings: { mode: "shared_workspace" },
@@ -22,11 +22,11 @@ vi.mock("../api/instanceSettings", () => ({
   },
 }));
 
-vi.mock("./IssueWorkspaceCard", async () => {
+vi.mock("./IssueWorktreeCard", async () => {
   const React = await import("react");
 
   return {
-    IssueWorkspaceCard: ({
+    IssueWorktreeCard: ({
       issue,
       onDraftChange,
     }: {
@@ -38,17 +38,17 @@ vi.mock("./IssueWorkspaceCard", async () => {
     }) => {
       React.useEffect(() => {
         latestWorkspaceIssue = issue;
-        issueWorkspaceDraftCalls += 1;
-        if (issueWorkspaceDraftCalls > 20) {
-          throw new Error("IssueWorkspaceCard onDraftChange looped");
+        issueWorktreeDraftCalls += 1;
+        if (issueWorktreeDraftCalls > 20) {
+          throw new Error("IssueWorktreeCard onDraftChange looped");
         }
-        onDraftChange?.(issueWorkspaceDraft, {
+        onDraftChange?.(issueWorktreeDraft, {
           canSave: true,
           workspaceBranchName: issueWorkspaceBranchName,
         });
       }, [onDraftChange]);
 
-      return <div data-testid="workspace-card">Workspace card</div>;
+      return <div data-testid="workspace-card">Worktree card</div>;
     },
   };
 });
@@ -75,7 +75,7 @@ function createProject(): Project {
     goalId: null,
     goalIds: [],
     goals: [],
-    name: "Workspace project",
+    name: "Worktree project",
     description: null,
     status: "in_progress",
     leadAgentId: null,
@@ -136,7 +136,7 @@ function createAgent(): Agent {
   };
 }
 
-function createExecutionWorkspace(): ExecutionWorkspace {
+function createExecutionWorktree(): ExecutionWorktree {
   return {
     id: "workspace-1",
     companyId: "company-1",
@@ -230,8 +230,8 @@ describe("RoutineRunVariablesDialog", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    issueWorkspaceDraftCalls = 0;
-    issueWorkspaceDraft = {
+    issueWorktreeDraftCalls = 0;
+    issueWorktreeDraft = {
       executionWorkspaceId: null,
       executionWorkspacePreference: "shared_workspace",
       executionWorkspaceSettings: { mode: "shared_workspace" },
@@ -245,7 +245,7 @@ describe("RoutineRunVariablesDialog", () => {
     document.body.innerHTML = "";
   });
 
-  it("does not loop when the workspace card reports the same draft repeatedly", async () => {
+  it("does not loop when the worktree card reports the same draft repeatedly", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -274,7 +274,7 @@ describe("RoutineRunVariablesDialog", () => {
       );
     });
 
-    expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
+    expect(issueWorktreeDraftCalls).toBeLessThanOrEqual(2);
     expect(document.body.textContent).toContain("Run routine");
     expect(document.body.textContent).not.toContain("Search agents...");
     expect(document.body.textContent).not.toContain("Search projects...");
@@ -349,8 +349,8 @@ describe("RoutineRunVariablesDialog", () => {
     });
   });
 
-  it("renders workspaceBranch as a read-only selected workspace value", async () => {
-    issueWorkspaceDraft = {
+  it("renders worktreeBranch as a read-only selected worktree value", async () => {
+    issueWorktreeDraft = {
       executionWorkspaceId: "workspace-1",
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
@@ -436,13 +436,13 @@ describe("RoutineRunVariablesDialog", () => {
   });
 
   it("prefills the supplied execution workspace for workspace-specific routine runs", async () => {
-    const workspace = createExecutionWorkspace();
-    issueWorkspaceDraft = {
-      executionWorkspaceId: workspace.id,
+    const worktree = createExecutionWorktree();
+    issueWorktreeDraft = {
+      executionWorkspaceId: worktree.id,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     };
-    issueWorkspaceBranchName = workspace.branchName;
+    issueWorkspaceBranchName = worktree.branchName;
 
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -464,7 +464,7 @@ describe("RoutineRunVariablesDialog", () => {
             agents={[createAgent()]}
             defaultProjectId="project-1"
             defaultAssigneeAgentId="agent-1"
-            defaultExecutionWorkspace={workspace}
+            defaultExecutionWorkspace={worktree}
             variables={[]}
             isPending={false}
             onSubmit={() => {}}
@@ -478,10 +478,10 @@ describe("RoutineRunVariablesDialog", () => {
     }
 
     expect(latestWorkspaceIssue).toMatchObject({
-      executionWorkspaceId: workspace.id,
+      executionWorkspaceId: worktree.id,
       executionWorkspacePreference: "reuse_existing",
-      currentExecutionWorkspace: workspace,
-      projectWorkspaceId: workspace.projectWorkspaceId,
+      currentExecutionWorkspace: worktree,
+      projectWorkspaceId: worktree.projectWorkspaceId,
     });
 
     await flushUi(() => {

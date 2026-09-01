@@ -15,7 +15,7 @@ const baseProps = {
   isWrite: true,
   binding,
   input: { channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false },
-  reason: "This tool can write to your workspace, so a human signs off before the agent posts.",
+  reason: "This tool can write to your worktree, so a human signs off before the agent posts.",
   policyNumber: 7,
   expiresInLabel: "expires in 23h 51m",
 };

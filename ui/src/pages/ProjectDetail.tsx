@@ -3,7 +3,7 @@ import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/route
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorktreesApi } from "../api/execution-worktrees";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
@@ -23,11 +23,11 @@ import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { ProjectWorktreesContent } from "../components/ProjectWorktreesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
-import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { buildProjectWorktreeSummaries } from "../lib/project-worktrees-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { PROJECT_ICONS } from "../lib/project-icons";
@@ -48,7 +48,7 @@ import {
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "worktrees" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -66,7 +66,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "plugin-operations") return "plugin-operations";
-  if (tab === "workspaces") return "workspaces";
+  if (tab === "worktrees") return "worktrees";
   return null;
 }
 
@@ -434,39 +434,39 @@ export function ProjectDetail() {
   // disabled query reports isLoading=false — so "not loading" alone cannot
   // distinguish "contribution unavailable" from "not asked yet" on cold loads.
   const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
-  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
-  const workspaceTabProjectId = project?.id ?? null;
-  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
-    queryKey: workspaceTabProjectId && resolvedCompanyId
-      ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
-      : ["issues", "__workspace-tab__", "disabled"],
-    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
-    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  const isolatedWorktreesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const worktreeTabProjectId = project?.id ?? null;
+  const { data: worktreeTabIssues = [], isLoading: isWorktreeTabIssuesLoading, error: worktreeTabIssuesError } = useQuery({
+    queryKey: worktreeTabProjectId && resolvedCompanyId
+      ? queryKeys.issues.listByProject(resolvedCompanyId, worktreeTabProjectId)
+      : ["issues", "__worktree-tab__", "disabled"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: worktreeTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && worktreeTabProjectId && isolatedWorktreesEnabled),
   });
   const {
-    data: workspaceTabExecutionWorkspaces = [],
-    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
-    error: workspaceTabExecutionWorkspacesError,
+    data: worktreeTabExecutionWorktrees = [],
+    isLoading: isWorktreeTabExecutionWorktreesLoading,
+    error: worktreeTabExecutionWorktreesError,
   } = useQuery({
-    queryKey: workspaceTabProjectId && resolvedCompanyId
-      ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
-      : ["execution-workspaces", "__workspace-tab__", "disabled"],
-    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
-    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+    queryKey: worktreeTabProjectId && resolvedCompanyId
+      ? queryKeys.executionWorktrees.list(resolvedCompanyId, { projectId: worktreeTabProjectId })
+      : ["execution-worktrees", "__worktree-tab__", "disabled"],
+    queryFn: () => executionWorktreesApi.list(resolvedCompanyId!, { projectId: worktreeTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && worktreeTabProjectId && isolatedWorktreesEnabled),
   });
-  const workspaceSummaries = useMemo(() => {
-    if (!project || !isolatedWorkspacesEnabled) return [];
-    return buildProjectWorkspaceSummaries({
+  const worktreeSummaries = useMemo(() => {
+    if (!project || !isolatedWorktreesEnabled) return [];
+    return buildProjectWorktreeSummaries({
       project,
-      issues: workspaceTabIssues,
-      executionWorkspaces: workspaceTabExecutionWorkspaces,
+      issues: worktreeTabIssues,
+      executionWorktrees: worktreeTabExecutionWorktrees,
     });
-  }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
-  const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
-  const workspaceTabDecisionLoaded =
+  }, [project, isolatedWorktreesEnabled, worktreeTabIssues, worktreeTabExecutionWorktrees]);
+  const showWorktreesTab = isolatedWorktreesEnabled && worktreeSummaries.length > 0;
+  const worktreeTabDecisionLoaded =
     experimentalSettingsQuery.isFetched &&
-    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
-  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
+    (!isolatedWorktreesEnabled || (!isWorktreeTabIssuesLoading && !isWorktreeTabExecutionWorktreesLoading));
+  const worktreeTabError = (worktreeTabIssuesError ?? worktreeTabExecutionWorktreesError) as Error | null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -557,8 +557,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/plugin-operations`, { replace: true });
       return;
     }
-    if (activeTab === "workspaces") {
-      navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
+    if (activeTab === "worktrees") {
+      navigate(`/projects/${canonicalProjectRef}/worktrees`, { replace: true });
       return;
     }
     if (activeTab === "list") {
@@ -684,7 +684,7 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
-  if (activeTab === "workspaces" && workspaceTabDecisionLoaded && !showWorkspacesTab) {
+  if (activeTab === "worktrees" && worktreeTabDecisionLoaded && !showWorktreesTab) {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
@@ -706,10 +706,10 @@ export function ProjectDetail() {
     if (cachedTab === "plugin-operations" && project?.managedByPlugin) {
       return <Navigate to={`/projects/${canonicalProjectRef}/plugin-operations`} replace />;
     }
-    if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
-      return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
+    if (cachedTab === "worktrees" && worktreeTabDecisionLoaded && showWorktreesTab) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/worktrees`} replace />;
     }
-    if (cachedTab === "workspaces" && !workspaceTabDecisionLoaded) {
+    if (cachedTab === "worktrees" && !worktreeTabDecisionLoaded) {
       return <PageSkeleton variant="detail" />;
     }
     if (isProjectPluginTab(cachedTab)) {
@@ -742,8 +742,8 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
-    } else if (tab === "workspaces") {
-      navigate(`/projects/${canonicalProjectRef}/workspaces`);
+    } else if (tab === "worktrees") {
+      navigate(`/projects/${canonicalProjectRef}/worktrees`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "plugin-operations") {
@@ -881,7 +881,7 @@ export function ProjectDetail() {
             { value: "list", label: "Tasks" },
             { value: "overview", label: "Overview" },
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            ...(showWorktreesTab ? [{ value: "worktrees", label: "Worktrees" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -918,20 +918,20 @@ export function ProjectDetail() {
         />
       )}
 
-      {activeTab === "workspaces" ? (
-        workspaceTabDecisionLoaded ? (
-          workspaceTabError ? (
-            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+      {activeTab === "worktrees" ? (
+        worktreeTabDecisionLoaded ? (
+          worktreeTabError ? (
+            <p className="text-sm text-destructive">{worktreeTabError.message}</p>
           ) : (
-            <ProjectWorkspacesContent
+            <ProjectWorktreesContent
               companyId={resolvedCompanyId!}
               projectId={project.id}
               projectRef={canonicalProjectRef}
-              summaries={workspaceSummaries}
+              summaries={worktreeSummaries}
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">Loading worktrees...</p>
         )
       ) : null}
 

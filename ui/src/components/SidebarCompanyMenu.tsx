@@ -55,7 +55,7 @@ const WORKSPACE_ICON_CLASS = "size-5 shrink-0 rounded-md text-(length:--text-mic
 const WORKSPACE_BADGE_CLASS =
   "shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground";
 
-function WorkspaceIcon({ company }: { company: Company }) {
+function WorktreeIcon({ company }: { company: Company }) {
   return (
     <CompanyPatternIcon
       companyName={company.name}
@@ -168,7 +168,7 @@ function SortableCompanyItem({
         isSelected && "bg-accent text-accent-foreground",
       )}
     >
-      <WorkspaceIcon company={company} />
+      <WorktreeIcon company={company} />
       <span className="min-w-0 flex-1 truncate">{company.name}</span>
       {isEditing ? (
         <button
@@ -363,7 +363,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {isCloud
               ? currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null
-              : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
+              : selectedCompany ? <WorktreeIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to
                 the nav to buy that width. A name that still

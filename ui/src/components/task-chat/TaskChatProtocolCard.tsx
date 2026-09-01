@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
-import { WorkspaceFileLink } from "@/components/WorkspaceFileLink";
+import { WorktreeFileLink } from "@/components/WorktreeFileLink";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -396,12 +396,12 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
   ].filter(Boolean).join(" ");
   const summary = item.complete
     ? `${fileLabel} changed${stats ? ` · ${stats}` : ""}`
-    : "Workspace changes in progress";
+    : "Worktree changes in progress";
   return (
     <>
       <CardShell
         icon={GitBranch}
-        title="Workspace changes"
+        title="Worktree changes"
         status={item.complete ? "completed" : "running"}
         summary={summary}
         testId="task-chat-workspace-change"
@@ -463,7 +463,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
         <DialogContent className="w-full max-w-(--pct-90) overflow-hidden">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">
-              {selected?.path ?? "Workspace diff"}
+              {selected?.path ?? "Worktree diff"}
             </DialogTitle>
           </DialogHeader>
           {item.files.length > 1 ? (
@@ -532,7 +532,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
         testId="task-chat-workspace-file"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <WorkspaceFileLink
+          <WorktreeFileLink
             workspaceFileRef={workspaceFileRef}
             label={item.path}
           />

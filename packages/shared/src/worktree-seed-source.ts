@@ -119,7 +119,7 @@ export function resolveRegisteredWorktreeSeedSource(
   const explicitSource = input.explicitSourceConfigPath?.trim();
   if (!registeredCwd && !explicitSource) {
     throw new Error(
-      "Worktree seed source is not registered. Managed boot requires a project workspace; manual boot requires --from-config.",
+      "Worktree seed source is not registered. Managed boot requires a project worktree; manual boot requires --from-config.",
     );
   }
 
@@ -133,7 +133,7 @@ export function resolveRegisteredWorktreeSeedSource(
       throw new Error(`Registered base project workspace does not exist at ${resolvedRegisteredCwd}.`);
     }
     if (canonicalBaseCwd !== resolvedRegisteredCwd) {
-      throw new Error("Registered base project workspace must be canonical and cannot use a symlink alias.");
+      throw new Error("Registered base project worktree must be canonical and cannot use a symlink alias.");
     }
     if (!lstatSync(canonicalBaseCwd).isDirectory()) {
       throw new Error(`Registered base project workspace is not a directory at ${canonicalBaseCwd}.`);
@@ -148,18 +148,18 @@ export function resolveRegisteredWorktreeSeedSource(
   const selectedPath = registeredConfigPath ?? explicitSource;
   if (!selectedPath) {
     throw new Error(
-      "Registered base project workspace has no Paperclip config of its own and no explicit source was provided.",
+      "Registered base project worktree has no Paperclip config of its own and no explicit source was provided.",
     );
   }
   const canonicalSourceConfigPath = canonicalRegularFile(selectedPath, "Registered source Paperclip config");
   if (registeredConfigPath && canonicalSourceConfigPath !== registeredConfigPath) {
-    throw new Error("Registered source Paperclip config escapes the base project workspace or uses a symlink alias.");
+    throw new Error("Registered source Paperclip config escapes the base project worktree or uses a symlink alias.");
   }
 
   if (explicitSource) {
     const canonicalExplicitSource = canonicalRegularFile(explicitSource, "Explicit source Paperclip config");
     if (canonicalExplicitSource !== canonicalSourceConfigPath) {
-      throw new Error("Explicit source Paperclip config does not match the registered base project workspace.");
+      throw new Error("Explicit source Paperclip config does not match the registered base project worktree.");
     }
   }
 

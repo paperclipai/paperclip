@@ -6,7 +6,7 @@ import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { Link, useNavigate } from "@/lib/router";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorktreesApi } from "../api/execution-worktrees";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -33,8 +33,8 @@ import {
   issueFilterLabel,
   issuePriorityOrder,
   normalizeIssueFilterState,
-  resolveIssueFilterWorkspaceId,
-  shouldIncludeIssueFilterWorkspaceOption,
+  resolveIssueFilterWorktreeId,
+  shouldIncludeIssueFilterWorktreeOption,
   issueStatusOrder,
   type IssueFilterState,
 } from "../lib/issue-filters";
@@ -42,7 +42,7 @@ import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   getAvailableInboxIssueColumns,
   normalizeInboxIssueColumns,
-  resolveIssueWorkspaceName,
+  resolveIssueWorktreeName,
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
@@ -232,14 +232,14 @@ function getInitialViewState(
 function getInitialWorkspaceViewState(
   key: string,
   initialAssignees?: string[],
-  initialWorkspaces?: string[],
+  initialWorktrees?: string[],
   defaultSortField?: IssueSortField,
 ): IssueViewState {
   const stored = getInitialViewState(key, initialAssignees, defaultSortField);
-  if (!initialWorkspaces) return stored;
+  if (!initialWorktrees) return stored;
   return {
     ...stored,
-    workspaces: initialWorkspaces,
+    workspaces: initialWorktrees,
     statuses: [],
   };
 }
@@ -474,7 +474,7 @@ interface IssuesListProps {
   viewStateKey: string;
   issueLinkState?: unknown;
   initialAssignees?: string[];
-  initialWorkspaces?: string[];
+  initialWorktrees?: string[];
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -690,7 +690,7 @@ export function IssuesList({
   viewStateKey,
   issueLinkState,
   initialAssignees,
-  initialWorkspaces,
+  initialWorktrees,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -761,10 +761,10 @@ export function IssuesList({
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
-  const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const initialWorktreesKey = initialWorktrees?.join("|") ?? "";
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorktrees, defaultSortField),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -781,14 +781,14 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorktreesKey}`);
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
+    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorktreesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorktrees, defaultSortField));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
+  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorktrees, initialWorktreesKey, defaultSortField]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -868,11 +868,11 @@ export function IssuesList({
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
-  const { data: executionWorkspaces = [] } = useQuery({
+  const { data: executionWorktrees = [] } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
-      : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
+      ? queryKeys.executionWorktrees.summaryList(selectedCompanyId)
+      : ["execution-worktrees", "__disabled__"],
+    queryFn: () => executionWorktreesApi.listSummaries(selectedCompanyId!),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 
@@ -898,7 +898,7 @@ export function IssuesList({
     return map;
   }, [projects]);
 
-  const projectWorkspaceById = useMemo(() => {
+  const projectWorktreeById = useMemo(() => {
     const map = new Map<string, { name: string; projectId: string }>();
     for (const project of projects ?? []) {
       for (const workspace of project.workspaces ?? []) {
@@ -908,7 +908,7 @@ export function IssuesList({
     return map;
   }, [projects]);
 
-  const defaultProjectWorkspaceIdByProjectId = useMemo(() => {
+  const defaultProjectWorktreeIdByProjectId = useMemo(() => {
     const map = new Map<string, string>();
     for (const project of projects ?? []) {
       const defaultWorkspaceId =
@@ -920,20 +920,20 @@ export function IssuesList({
     return map;
   }, [projects]);
   const defaultProjectWorkspaceIds = useMemo(
-    () => new Set(defaultProjectWorkspaceIdByProjectId.values()),
-    [defaultProjectWorkspaceIdByProjectId],
+    () => new Set(defaultProjectWorktreeIdByProjectId.values()),
+    [defaultProjectWorktreeIdByProjectId],
   );
 
-  const executionWorkspaceById = useMemo(() => {
+  const executionWorktreeById = useMemo(() => {
     const map = new Map<string, {
       name: string;
       mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
       projectWorkspaceId: string | null;
       projectId: string | null;
     }>();
-    for (const workspace of executionWorkspaces) {
+    for (const workspace of executionWorktrees) {
       const projectWorkspace = workspace.projectWorkspaceId
-        ? projectWorkspaceById.get(workspace.projectWorkspaceId) ?? null
+        ? projectWorktreeById.get(workspace.projectWorkspaceId) ?? null
         : null;
       map.set(workspace.id, {
         name: workspace.name,
@@ -943,20 +943,20 @@ export function IssuesList({
       });
     }
     return map;
-  }, [executionWorkspaces, projectWorkspaceById]);
+  }, [executionWorktrees, projectWorktreeById]);
   const issueFilterWorkspaceContext = useMemo(() => ({
-    executionWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
-  }), [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById]);
+    executionWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
+  }), [defaultProjectWorktreeIdByProjectId, executionWorktreeById]);
 
   const workspaceNameMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const [workspaceId, workspace] of projectWorkspaceById) {
-      if (!shouldIncludeIssueFilterWorkspaceOption({ id: workspaceId }, defaultProjectWorkspaceIds)) continue;
+    for (const [workspaceId, workspace] of projectWorktreeById) {
+      if (!shouldIncludeIssueFilterWorktreeOption({ id: workspaceId }, defaultProjectWorkspaceIds)) continue;
       map.set(workspaceId, workspace.name);
     }
-    for (const [workspaceId, workspace] of executionWorkspaceById) {
-      if (!shouldIncludeIssueFilterWorkspaceOption({
+    for (const [workspaceId, workspace] of executionWorktreeById) {
+      if (!shouldIncludeIssueFilterWorktreeOption({
         id: workspaceId,
         mode: workspace.mode,
         projectWorkspaceId: workspace.projectWorkspaceId,
@@ -964,7 +964,7 @@ export function IssuesList({
       map.set(workspaceId, workspace.name);
     }
     return map;
-  }, [defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
+  }, [defaultProjectWorkspaceIds, executionWorktreeById, projectWorktreeById]);
 
   const workspaceOptions = useMemo(() => {
     const options = new Map<string, string>();
@@ -1232,18 +1232,18 @@ export function IssuesList({
     if (viewState.groupBy === "workspace") {
       const groups = groupBy(
         filtered,
-        (issue) => resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext) ?? "__no_workspace",
+        (issue) => resolveIssueFilterWorktreeId(issue, issueFilterWorkspaceContext) ?? "__no_workspace",
       );
       return Object.keys(groups)
         .sort((a, b) => {
-          // Groups with items first, "no workspace" last
+          // Groups with items first, "no worktree" last
           if (a === "__no_workspace") return 1;
           if (b === "__no_workspace") return -1;
           return (groups[b]?.length ?? 0) - (groups[a]?.length ?? 0);
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? "No Worktree" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1586,19 +1586,19 @@ export function IssuesList({
         const representativeIssue = group?.items.find((issue) =>
           issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
         ) ?? null;
-        const executionWorkspace = executionWorkspaceById.get(groupKey);
+        const executionWorkspace = executionWorktreeById.get(groupKey);
         if (executionWorkspace) {
           defaults.executionWorkspaceId = groupKey;
           defaults.executionWorkspaceMode = "reuse_existing";
           if (executionWorkspace.projectWorkspaceId) defaults.projectWorkspaceId = executionWorkspace.projectWorkspaceId;
           const groupedProjectId = executionWorkspace.projectId
             ?? (executionWorkspace.projectWorkspaceId
-              ? projectWorkspaceById.get(executionWorkspace.projectWorkspaceId)?.projectId
+              ? projectWorktreeById.get(executionWorkspace.projectWorkspaceId)?.projectId
               : null)
             ?? (representativeIssue?.executionWorkspaceId === groupKey ? representativeIssue.projectId : null);
           if (groupedProjectId) defaults.projectId = groupedProjectId;
         } else {
-          const projectWorkspace = projectWorkspaceById.get(groupKey);
+          const projectWorkspace = projectWorktreeById.get(groupKey);
           if (projectWorkspace) {
             defaults.projectWorkspaceId = groupKey;
             defaults.projectId = projectWorkspace.projectId;
@@ -1615,10 +1615,10 @@ export function IssuesList({
   }, [
     baseCreateIssueDefaults,
     currentUserId,
-    executionWorkspaceById,
+    executionWorktreeById,
     issueById,
     projectId,
-    projectWorkspaceById,
+    projectWorktreeById,
     viewState.groupBy,
   ]);
 
@@ -1815,7 +1815,7 @@ export function IssuesList({
             enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
-            workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
+            worktrees={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
           />
 
           {/* Sort (list view only) */}
@@ -1881,7 +1881,7 @@ export function IssuesList({
                     ["priority", "Priority"],
                     ["assignee", "Responsible"],
                     ["project", "Project"],
-                    ["workspace", "Workspace"],
+                    ["workspace", "Worktree"],
                     ["parent", "Parent Task"],
                     ["none", "None"],
                   ] as const)
@@ -2194,11 +2194,11 @@ export function IssuesList({
                               columns={visibleTrailingIssueColumns}
                               projectName={issueProject?.name ?? null}
                               projectColor={issueProject?.color ?? null}
-                              workspaceId={resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext)}
-                              workspaceName={resolveIssueWorkspaceName(issue, {
-                                executionWorkspaceById,
-                                projectWorkspaceById,
-                                defaultProjectWorkspaceIdByProjectId,
+                              workspaceId={resolveIssueFilterWorktreeId(issue, issueFilterWorkspaceContext)}
+                              workspaceName={resolveIssueWorktreeName(issue, {
+                                executionWorktreeById,
+                                projectWorktreeById,
+                                defaultProjectWorktreeIdByProjectId,
                               })}
                               onFilterWorkspace={filterToWorkspace}
                               assigneeName={agentName(issue.assigneeAgentId)}

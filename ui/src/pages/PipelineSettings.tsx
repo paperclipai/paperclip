@@ -7,9 +7,9 @@ import {
   isPipelineTerminalStageKind,
   PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   syncRoutineVariablesWithTemplate,
-  type ExecutionWorkspaceMode,
-  type ExecutionWorkspaceSummary,
-  type IssueExecutionWorkspaceSettings,
+  type ExecutionWorktreeMode,
+  type ExecutionWorktreeSummary,
+  type IssueExecutionWorktreeSettings,
   type RoutineEnvConfig,
   type RoutineVariable,
 } from "@paperclipai/shared";
@@ -41,7 +41,7 @@ import {
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorktreesApi } from "../api/execution-worktrees";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
@@ -93,11 +93,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { getRecentAssigneeIds, sortAgentsByRecency } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import {
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
-  issueExecutionWorkspaceModeForExistingWorkspace,
-} from "../lib/project-workspace-defaults";
-import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
+  defaultExecutionWorktreeModeForProject,
+  defaultProjectWorktreeIdForProject,
+  issueExecutionWorktreeModeForExistingWorktree,
+} from "../lib/project-worktree-defaults";
+import { orderReusableExecutionWorktrees } from "../lib/reusable-execution-worktrees";
 import { cn, relativeTime } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
@@ -132,8 +132,8 @@ type StageConfig = {
     projectId?: string | null;
     projectWorkspaceId?: string | null;
     executionWorkspaceId?: string | null;
-    executionWorkspacePreference?: ExecutionWorkspaceMode | string | null;
-    executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+    executionWorkspacePreference?: ExecutionWorktreeMode | string | null;
+    executionWorkspaceSettings?: IssueExecutionWorktreeSettings | null;
     // Derived (read-only) fields the server adds from the backing automation
     // routine. They are never persisted into stage config — stage secrets live
     // on `routines.env` and are saved through the automation-env route.
@@ -311,15 +311,15 @@ function stageConfig(stage: PipelineStage | null | undefined): StageConfig {
 
 const STAGE_EXECUTION_WORKSPACE_OPTIONS = [
   { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "isolated_workspace", label: "New isolated worktree" },
+  { value: "reuse_existing", label: "Reuse existing worktree" },
 ] as const;
 
 function nullableString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function nullableExecutionWorkspaceMode(value: unknown): ExecutionWorkspaceMode | "" {
+function nullableExecutionWorktreeMode(value: unknown): ExecutionWorktreeMode | "" {
   switch (nullableString(value)) {
     case "inherit":
     case "shared_workspace":
@@ -327,15 +327,15 @@ function nullableExecutionWorkspaceMode(value: unknown): ExecutionWorkspaceMode 
     case "operator_branch":
     case "reuse_existing":
     case "agent_default":
-      return nullableString(value) as ExecutionWorkspaceMode;
+      return nullableString(value) as ExecutionWorktreeMode;
     default:
       return "";
   }
 }
 
-function nullableExecutionWorkspaceSettings(value: unknown): IssueExecutionWorkspaceSettings | null {
+function nullableExecutionWorktreeSettings(value: unknown): IssueExecutionWorktreeSettings | null {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as IssueExecutionWorkspaceSettings
+    ? value as IssueExecutionWorktreeSettings
     : null;
 }
 
@@ -362,8 +362,8 @@ export function buildStageAutomationForSave(input: {
   projectId: string;
   projectWorkspaceId: string;
   executionWorkspaceId: string;
-  executionWorkspacePreference: ExecutionWorkspaceMode | "";
-  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  executionWorkspacePreference: ExecutionWorktreeMode | "";
+  executionWorkspaceSettings: IssueExecutionWorktreeSettings | null;
 }) {
   return {
     assigneeAgentId: input.assigneeAgentId || null,
@@ -381,14 +381,14 @@ export function buildStageAutomationForSave(input: {
   };
 }
 
-function executionWorkspaceSettingsForPreference(
-  preference: ExecutionWorkspaceMode | "",
-  reusableWorkspace: Pick<ExecutionWorkspaceSummary, "mode"> | null,
-): IssueExecutionWorkspaceSettings | null {
+function executionWorktreeSettingsForPreference(
+  preference: ExecutionWorktreeMode | "",
+  reusableWorkspace: Pick<ExecutionWorktreeSummary, "mode"> | null,
+): IssueExecutionWorktreeSettings | null {
   if (!preference) return null;
   return {
     mode: preference === "reuse_existing"
-      ? issueExecutionWorkspaceModeForExistingWorkspace(reusableWorkspace?.mode)
+      ? issueExecutionWorktreeModeForExistingWorktree(reusableWorkspace?.mode)
       : preference,
   };
 }
@@ -403,11 +403,11 @@ function stageAutomation(stage: PipelineStage | null | undefined) {
       projectId: "",
       projectWorkspaceId: "",
       executionWorkspaceId: "",
-      executionWorkspacePreference: "" as ExecutionWorkspaceMode | "",
-      executionWorkspaceSettings: null as IssueExecutionWorkspaceSettings | null,
+      executionWorkspacePreference: "" as ExecutionWorktreeMode | "",
+      executionWorkspaceSettings: null as IssueExecutionWorktreeSettings | null,
     };
   }
-  const executionWorkspaceSettings = nullableExecutionWorkspaceSettings(automation.executionWorkspaceSettings);
+  const executionWorktreeSettings = nullableExecutionWorktreeSettings(automation.executionWorkspaceSettings);
   return {
     assigneeAgentId: nullableString(automation.assigneeAgentId),
     titleTemplate: pipelineAutomationTitleTemplate(automation.titleTemplate),
@@ -416,9 +416,9 @@ function stageAutomation(stage: PipelineStage | null | undefined) {
     projectWorkspaceId: nullableString(automation.projectWorkspaceId),
     executionWorkspaceId: nullableString(automation.executionWorkspaceId),
     executionWorkspacePreference:
-      nullableExecutionWorkspaceMode(automation.executionWorkspacePreference)
-      || nullableExecutionWorkspaceMode(executionWorkspaceSettings?.mode),
-    executionWorkspaceSettings,
+      nullableExecutionWorktreeMode(automation.executionWorkspacePreference)
+      || nullableExecutionWorktreeMode(executionWorktreeSettings?.mode),
+    executionWorktreeSettings,
   };
 }
 
@@ -739,8 +739,8 @@ type StageFormValues = {
   automationProjectId: string;
   automationProjectWorkspaceId: string;
   automationExecutionWorkspaceId: string;
-  automationExecutionWorkspacePreference: ExecutionWorkspaceMode | "";
-  automationExecutionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  automationExecutionWorkspacePreference: ExecutionWorktreeMode | "";
+  automationExecutionWorkspaceSettings: IssueExecutionWorktreeSettings | null;
   automationTitleTemplate: string;
 };
 
@@ -785,7 +785,7 @@ function computeStageForm(
     automationProjectWorkspaceId: automation.projectWorkspaceId,
     automationExecutionWorkspaceId: automation.executionWorkspaceId,
     automationExecutionWorkspacePreference: automation.executionWorkspacePreference,
-    automationExecutionWorkspaceSettings: automation.executionWorkspaceSettings,
+    automationExecutionWorkspaceSettings: automation.executionWorkspaceSettings ?? null,
     automationTitleTemplate: automation.titleTemplate,
   };
 }
@@ -1288,12 +1288,12 @@ export function PipelineSettings() {
   const [disableReason, setDisableReason] = useState("");
   const [stageAssigneeAgentId, setStageAssigneeAgentId] = useState("");
   const [stageProjectId, setStageProjectId] = useState("");
-  const [stageProjectWorkspaceId, setStageProjectWorkspaceId] = useState("");
-  const [stageExecutionWorkspacePreference, setStageExecutionWorkspacePreference] =
-    useState<ExecutionWorkspaceMode | "">("");
-  const [stageExecutionWorkspaceId, setStageExecutionWorkspaceId] = useState("");
-  const [stageExecutionWorkspaceSettings, setStageExecutionWorkspaceSettings] =
-    useState<IssueExecutionWorkspaceSettings | null>(null);
+  const [stageProjectWorktreeId, setStageProjectWorktreeId] = useState("");
+  const [stageExecutionWorktreePreference, setStageExecutionWorktreePreference] =
+    useState<ExecutionWorktreeMode | "">("");
+  const [stageExecutionWorktreeId, setStageExecutionWorktreeId] = useState("");
+  const [stageExecutionWorktreeSettings, setStageExecutionWorktreeSettings] =
+    useState<IssueExecutionWorktreeSettings | null>(null);
   const [selectedApproval, setSelectedApproval] = useState("any_human");
   const [issueTitleTemplate, setIssueTitleTemplate] = useState<string>(PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE);
   const [instructionsBody, setInstructionsBody] = useState("");
@@ -1553,44 +1553,44 @@ export function PipelineSettings() {
     () => orderedProjects.find((project) => project.id === stageProjectId) ?? null,
     [orderedProjects, stageProjectId],
   );
-  const selectedAutomationProjectWorkspace = useMemo(
+  const selectedAutomationProjectWorktree = useMemo(
     () =>
-      selectedAutomationProject?.workspaces.find((workspace) => workspace.id === stageProjectWorkspaceId)
+      selectedAutomationProject?.workspaces.find((worktree) => worktree.id === stageProjectWorktreeId)
       ?? null,
-    [selectedAutomationProject, stageProjectWorkspaceId],
+    [selectedAutomationProject, stageProjectWorktreeId],
   );
-  const selectedProjectSupportsExecutionWorkspace =
+  const selectedProjectSupportsExecutionWorktree =
     experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true
     && Boolean(selectedAutomationProject?.executionWorkspacePolicy?.enabled);
-  const reusableExecutionWorkspacesQuery = useQuery({
+  const reusableExecutionWorktreesQuery = useQuery({
     queryKey: selectedCompanyId && stageProjectId
-      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId, {
+      ? queryKeys.executionWorktrees.summaryList(selectedCompanyId, {
           projectId: stageProjectId,
-          projectWorkspaceId: stageProjectWorkspaceId || undefined,
+          projectWorkspaceId: stageProjectWorktreeId || undefined,
           reuseEligible: true,
         })
-      : ["execution-workspaces", "summary", "none-pipeline-stage"],
+      : ["execution-worktrees", "summary", "none-pipeline-stage"],
     queryFn: () =>
-      executionWorkspacesApi.listSummaries(selectedCompanyId!, {
+      executionWorktreesApi.listSummaries(selectedCompanyId!, {
         projectId: stageProjectId,
-        projectWorkspaceId: stageProjectWorkspaceId || undefined,
+        projectWorkspaceId: stageProjectWorktreeId || undefined,
         reuseEligible: true,
       }),
     enabled:
       Boolean(selectedCompanyId) &&
       Boolean(stageProjectId) &&
-      selectedProjectSupportsExecutionWorkspace &&
-      stageExecutionWorkspacePreference === "reuse_existing",
+      selectedProjectSupportsExecutionWorktree &&
+      stageExecutionWorktreePreference === "reuse_existing",
   });
-  const deduplicatedReusableWorkspaces = useMemo<ExecutionWorkspaceSummary[]>(
-    () => orderReusableExecutionWorkspaces(reusableExecutionWorkspacesQuery.data ?? []),
-    [reusableExecutionWorkspacesQuery.data],
+  const deduplicatedReusableWorktrees = useMemo<ExecutionWorktreeSummary[]>(
+    () => orderReusableExecutionWorktrees(reusableExecutionWorktreesQuery.data ?? []),
+    [reusableExecutionWorktreesQuery.data],
   );
-  const selectedReusableExecutionWorkspace = useMemo(
+  const selectedReusableExecutionWorktree = useMemo(
     () =>
-      deduplicatedReusableWorkspaces.find((workspace) => workspace.id === stageExecutionWorkspaceId)
+      deduplicatedReusableWorktrees.find((worktree) => worktree.id === stageExecutionWorktreeId)
       ?? null,
-    [deduplicatedReusableWorkspaces, stageExecutionWorkspaceId],
+    [deduplicatedReusableWorktrees, stageExecutionWorktreeId],
   );
   const approvalOptions = useMemo<InlineEntityOption[]>(
     () => [
@@ -1676,10 +1676,10 @@ export function PipelineSettings() {
     setDisableReason(form.disableReason);
     setStageAssigneeAgentId(form.assigneeAgentId);
     setStageProjectId(form.automationProjectId);
-    setStageProjectWorkspaceId(form.automationProjectWorkspaceId);
-    setStageExecutionWorkspacePreference(form.automationExecutionWorkspacePreference);
-    setStageExecutionWorkspaceId(form.automationExecutionWorkspaceId);
-    setStageExecutionWorkspaceSettings(form.automationExecutionWorkspaceSettings);
+    setStageProjectWorktreeId(form.automationProjectWorkspaceId);
+    setStageExecutionWorktreePreference(form.automationExecutionWorkspacePreference);
+    setStageExecutionWorktreeId(form.automationExecutionWorkspaceId);
+    setStageExecutionWorktreeSettings(form.automationExecutionWorkspaceSettings);
     setIssueTitleTemplate(form.automationTitleTemplate);
     setSelectedApproval(form.approval);
     setApproveTarget(form.approveTarget);
@@ -1702,17 +1702,17 @@ export function PipelineSettings() {
 
   useEffect(() => {
     if (!stageProjectId || !selectedAutomationProject) return;
-    if (!stageProjectWorkspaceId) {
-      setStageProjectWorkspaceId(defaultProjectWorkspaceIdForProject(selectedAutomationProject));
+    if (!stageProjectWorktreeId) {
+      setStageProjectWorktreeId(defaultProjectWorktreeIdForProject(selectedAutomationProject));
     }
-    if (!stageExecutionWorkspacePreference) {
-      setStageExecutionWorkspacePreference(defaultExecutionWorkspaceModeForProject(selectedAutomationProject));
+    if (!stageExecutionWorktreePreference) {
+      setStageExecutionWorktreePreference(defaultExecutionWorktreeModeForProject(selectedAutomationProject));
     }
   }, [
     selectedAutomationProject,
-    stageExecutionWorkspacePreference,
+    stageExecutionWorktreePreference,
     stageProjectId,
-    stageProjectWorkspaceId,
+    stageProjectWorktreeId,
   ]);
 
   useEffect(() => {
@@ -1771,11 +1771,11 @@ export function PipelineSettings() {
       if (!pipelineId || !selectedStage || !pipeline) return null;
       if (
         stageProjectId &&
-        selectedProjectSupportsExecutionWorkspace &&
-        stageExecutionWorkspacePreference === "reuse_existing" &&
-        !stageExecutionWorkspaceId
+        selectedProjectSupportsExecutionWorktree &&
+        stageExecutionWorktreePreference === "reuse_existing" &&
+        !stageExecutionWorktreeId
       ) {
-        throw new Error("Choose an existing workspace before saving this stage.");
+        throw new Error("Choose an existing worktree before saving this stage.");
       }
       const parsedApproval = parseApprovalValue(selectedApproval);
       const nextRequiresApproval = stageKind === "review";
@@ -1789,10 +1789,10 @@ export function PipelineSettings() {
           titleTemplate: issueTitleTemplate,
           instructionsBody,
           projectId: stageProjectId,
-          projectWorkspaceId: stageProjectWorkspaceId,
-          executionWorkspaceId: stageExecutionWorkspaceId,
-          executionWorkspacePreference: stageExecutionWorkspacePreference,
-          executionWorkspaceSettings: currentAutomationExecutionWorkspaceSettings,
+          projectWorkspaceId: stageProjectWorktreeId,
+          executionWorkspaceId: stageExecutionWorktreeId,
+          executionWorkspacePreference: stageExecutionWorktreePreference,
+          executionWorkspaceSettings: currentAutomationExecutionWorktreeSettings,
         }),
         requireApproval: nextRequiresApproval,
         approver: nextRequiresApproval && parsedApproval.kind !== "any_human"
@@ -2081,31 +2081,31 @@ export function PipelineSettings() {
     if (nextProjectId) trackRecentProject(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     setStageProjectId(nextProjectId);
-    setStageProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
-    setStageExecutionWorkspacePreference(nextProject ? defaultExecutionWorkspaceModeForProject(nextProject) : "");
-    setStageExecutionWorkspaceId("");
-    setStageExecutionWorkspaceSettings(null);
+    setStageProjectWorktreeId(defaultProjectWorktreeIdForProject(nextProject));
+    setStageExecutionWorktreePreference(nextProject ? defaultExecutionWorktreeModeForProject(nextProject) : "");
+    setStageExecutionWorktreeId("");
+    setStageExecutionWorktreeSettings(null);
   };
 
-  const handleAutomationProjectWorkspaceChange = (nextProjectWorkspaceId: string) => {
-    setStageProjectWorkspaceId(nextProjectWorkspaceId);
-    setStageExecutionWorkspaceId("");
-    setStageExecutionWorkspaceSettings(null);
+  const handleAutomationProjectWorktreeChange = (nextProjectWorkspaceId: string) => {
+    setStageProjectWorktreeId(nextProjectWorkspaceId);
+    setStageExecutionWorktreeId("");
+    setStageExecutionWorktreeSettings(null);
   };
 
-  const handleAutomationExecutionWorkspacePreferenceChange = (nextPreference: string) => {
-    const preference = nullableExecutionWorkspaceMode(nextPreference);
-    setStageExecutionWorkspacePreference(preference);
-    setStageExecutionWorkspaceSettings(null);
+  const handleAutomationExecutionWorktreePreferenceChange = (nextPreference: string) => {
+    const preference = nullableExecutionWorktreeMode(nextPreference);
+    setStageExecutionWorktreePreference(preference);
+    setStageExecutionWorktreeSettings(null);
     if (preference !== "reuse_existing") {
-      setStageExecutionWorkspaceId("");
+      setStageExecutionWorktreeId("");
     }
   };
 
-  const handleAutomationExecutionWorkspaceIdChange = (nextExecutionWorkspaceId: string) => {
-    setStageExecutionWorkspaceId(nextExecutionWorkspaceId);
-    const workspace = deduplicatedReusableWorkspaces.find((entry) => entry.id === nextExecutionWorkspaceId) ?? null;
-    setStageExecutionWorkspaceSettings(executionWorkspaceSettingsForPreference("reuse_existing", workspace));
+  const handleAutomationExecutionWorktreeIdChange = (nextExecutionWorkspaceId: string) => {
+    setStageExecutionWorktreeId(nextExecutionWorkspaceId);
+    const worktree = deduplicatedReusableWorktrees.find((entry) => entry.id === nextExecutionWorkspaceId) ?? null;
+    setStageExecutionWorktreeSettings(executionWorktreeSettingsForPreference("reuse_existing", worktree));
   };
 
   const handleStageSectionChange = (section: StageSectionKey) => {
@@ -2145,17 +2145,17 @@ export function PipelineSettings() {
   const otherStages = stages.filter((stage) => stage.id !== selectedStage?.id);
   const isReviewStage = stageKind === "review";
   const defaultAutoAdvanceStage = nextStageByPosition(stages, selectedStage) ?? otherStages[0] ?? null;
-  const currentAutomationExecutionWorkspaceSettings =
-    stageProjectId && stageExecutionWorkspacePreference
+  const currentAutomationExecutionWorktreeSettings =
+    stageProjectId && stageExecutionWorktreePreference
       ? (
-          stageExecutionWorkspaceSettings
-          ?? executionWorkspaceSettingsForPreference(stageExecutionWorkspacePreference, selectedReusableExecutionWorkspace)
+          stageExecutionWorktreeSettings
+          ?? executionWorktreeSettingsForPreference(stageExecutionWorktreePreference, selectedReusableExecutionWorktree)
         )
       : null;
-  const canSaveAutomationWorkspace =
-    !selectedProjectSupportsExecutionWorkspace ||
-    stageExecutionWorkspacePreference !== "reuse_existing" ||
-    Boolean(stageExecutionWorkspaceId);
+  const canSaveAutomationWorktree =
+    !selectedProjectSupportsExecutionWorktree ||
+    stageExecutionWorktreePreference !== "reuse_existing" ||
+    Boolean(stageExecutionWorktreeId);
 
   const savedStageForm = selectedStage
     ? computeStageForm(selectedStage, pipeline.transitions ?? [])
@@ -2186,11 +2186,11 @@ export function PipelineSettings() {
         breakdownWhenFinishedMoveTo,
         transitionTargetIds: [...transitionTargets].sort(),
         automationProjectId: stageProjectId,
-        automationProjectWorkspaceId: stageProjectId ? stageProjectWorkspaceId : "",
+        automationProjectWorkspaceId: stageProjectId ? stageProjectWorktreeId : "",
         automationExecutionWorkspaceId:
-          stageProjectId && stageExecutionWorkspacePreference === "reuse_existing" ? stageExecutionWorkspaceId : "",
-        automationExecutionWorkspacePreference: stageProjectId ? stageExecutionWorkspacePreference : "",
-        automationExecutionWorkspaceSettings: currentAutomationExecutionWorkspaceSettings,
+          stageProjectId && stageExecutionWorktreePreference === "reuse_existing" ? stageExecutionWorktreeId : "",
+        automationExecutionWorkspacePreference: stageProjectId ? stageExecutionWorktreePreference : "",
+        automationExecutionWorkspaceSettings: currentAutomationExecutionWorktreeSettings,
         automationTitleTemplate: pipelineAutomationTitleTemplate(issueTitleTemplate),
       }
     : null;
@@ -2353,7 +2353,7 @@ export function PipelineSettings() {
                 ) : null}
               </div>
               {!breakdownTargetPipelineId ? (
-                <p className="text-xs text-muted-foreground">A pipeline in this workspace</p>
+                <p className="text-xs text-muted-foreground">A pipeline in this worktree</p>
               ) : null}
             </div>
           </FieldRow>
@@ -2980,38 +2980,38 @@ export function PipelineSettings() {
                                 />
                                 {selectedAutomationProject ? (
                                   <select
-                                    aria-label="Project workspace"
-                                    value={stageProjectWorkspaceId}
-                                    onChange={(event) => handleAutomationProjectWorkspaceChange(event.target.value)}
+                                    aria-label="Project worktree"
+                                    value={stageProjectWorktreeId}
+                                    onChange={(event) => handleAutomationProjectWorktreeChange(event.target.value)}
                                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   >
                                     <option value="">Project fallback</option>
-                                    {(selectedAutomationProject.workspaces ?? []).map((workspace) => (
-                                      <option key={workspace.id} value={workspace.id}>
-                                        {workspace.name}{workspace.isPrimary ? " · primary" : ""}
+                                    {(selectedAutomationProject.workspaces ?? []).map((worktree) => (
+                                      <option key={worktree.id} value={worktree.id}>
+                                        {worktree.name}{worktree.isPrimary ? " · primary" : ""}
                                       </option>
                                     ))}
                                   </select>
                                 ) : (
                                   <div className="flex h-10 items-center rounded-md border border-dashed border-border px-3 text-sm text-muted-foreground">
-                                    Project workspace
+                                    Project worktree
                                   </div>
                                 )}
                               </div>
-                              {selectedAutomationProject && !selectedAutomationProjectWorkspace ? (
+                              {selectedAutomationProject && !selectedAutomationProjectWorktree ? (
                                 <p className="mt-2 text-xs text-muted-foreground">
-                                  This project has no saved workspace default. Paperclip will use the project fallback when automation runs.
+                                  This project has no saved worktree default. Paperclip will use the project fallback when automation runs.
                                 </p>
                               ) : null}
                             </FieldRow>
 
-                            {selectedAutomationProject && selectedProjectSupportsExecutionWorkspace ? (
-                              <FieldRow label="Execution workspace">
+                            {selectedAutomationProject && selectedProjectSupportsExecutionWorktree ? (
+                              <FieldRow label="Execution worktree">
                                 <div className="grid gap-2 sm:grid-cols-(--gtc-43)">
                                   <select
-                                    aria-label="Execution workspace mode"
-                                    value={stageExecutionWorkspacePreference || "shared_workspace"}
-                                    onChange={(event) => handleAutomationExecutionWorkspacePreferenceChange(event.target.value)}
+                                    aria-label="Execution worktree mode"
+                                    value={stageExecutionWorktreePreference || "shared_workspace"}
+                                    onChange={(event) => handleAutomationExecutionWorktreePreferenceChange(event.target.value)}
                                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                   >
                                     {STAGE_EXECUTION_WORKSPACE_OPTIONS.map((option) => (
@@ -3020,36 +3020,36 @@ export function PipelineSettings() {
                                       </option>
                                     ))}
                                   </select>
-                                  {stageExecutionWorkspacePreference === "reuse_existing" ? (
+                                  {stageExecutionWorktreePreference === "reuse_existing" ? (
                                     <select
-                                      aria-label="Existing execution workspace"
-                                      value={stageExecutionWorkspaceId}
-                                      onChange={(event) => handleAutomationExecutionWorkspaceIdChange(event.target.value)}
+                                      aria-label="Existing execution worktree"
+                                      value={stageExecutionWorktreeId}
+                                      onChange={(event) => handleAutomationExecutionWorktreeIdChange(event.target.value)}
                                       className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                                     >
-                                      <option value="">Choose an existing workspace</option>
-                                      {deduplicatedReusableWorkspaces.map((workspace) => (
-                                        <option key={workspace.id} value={workspace.id}>
-                                          {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
+                                      <option value="">Choose an existing worktree</option>
+                                      {deduplicatedReusableWorktrees.map((worktree) => (
+                                        <option key={worktree.id} value={worktree.id}>
+                                          {worktree.name} · {worktree.status} · {worktree.branchName ?? worktree.cwd ?? worktree.id.slice(0, 8)}
                                         </option>
                                       ))}
                                     </select>
                                   ) : (
                                     <div className="flex h-10 items-center rounded-md border border-dashed border-border px-3 text-sm text-muted-foreground">
-                                      {stageExecutionWorkspacePreference === "isolated_workspace"
-                                        ? "A new workspace will be created"
-                                        : "Project default workspace"}
+                                      {stageExecutionWorktreePreference === "isolated_workspace"
+                                        ? "A new worktree will be created"
+                                        : "Project default worktree"}
                                     </div>
                                   )}
                                 </div>
-                                {stageExecutionWorkspacePreference === "reuse_existing" && selectedReusableExecutionWorkspace ? (
+                                {stageExecutionWorktreePreference === "reuse_existing" && selectedReusableExecutionWorktree ? (
                                   <p className="mt-2 text-xs text-muted-foreground">
-                                    Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing workspace"}.
+                                    Reusing {selectedReusableExecutionWorktree.name} from {selectedReusableExecutionWorktree.branchName ?? selectedReusableExecutionWorktree.cwd ?? "existing worktree"}.
                                   </p>
                                 ) : null}
-                                {!canSaveAutomationWorkspace ? (
+                                {!canSaveAutomationWorktree ? (
                                   <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                                    Choose an existing workspace before saving reuse mode.
+                                    Choose an existing worktree before saving reuse mode.
                                   </p>
                                 ) : null}
                               </FieldRow>
@@ -3096,7 +3096,7 @@ export function PipelineSettings() {
                               contentClassName="min-h-(--sz-120px) text-sm leading-7"
                               mentions={mentionOptions}
                               onSubmit={() => {
-                                if (!saveStage.isPending && stageName.trim() && !reviewTargetsMissing && canSaveAutomationWorkspace) {
+                                if (!saveStage.isPending && stageName.trim() && !reviewTargetsMissing && canSaveAutomationWorktree) {
                                   saveStage.mutate();
                                 }
                               }}
@@ -3295,7 +3295,7 @@ export function PipelineSettings() {
                   </span>
                   <Button
                     type="submit"
-                    disabled={saveStage.isPending || !stageName.trim() || reviewTargetsMissing || !canSaveAutomationWorkspace}
+                    disabled={saveStage.isPending || !stageName.trim() || reviewTargetsMissing || !canSaveAutomationWorktree}
                   >
                     {saveStage.isPending ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
                     {saveStage.isPending ? "Saving..." : "Save stage"}

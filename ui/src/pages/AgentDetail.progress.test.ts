@@ -83,13 +83,13 @@ describe("buildHeartbeatProgressLogLine", () => {
   it("renders progress messages without phases using the live event timestamp", () => {
     expect(
       buildHeartbeatProgressLogLine(
-        { message: "Preparing workspace" },
+        { message: "Preparing worktree" },
         "2026-07-04T05:01:00.000Z",
       ),
     ).toEqual({
       ts: "2026-07-04T05:01:00.000Z",
       stream: "system",
-      chunk: "Preparing workspace",
+      chunk: "Preparing worktree",
     });
   });
 

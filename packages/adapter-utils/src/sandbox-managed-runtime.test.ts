@@ -11,7 +11,7 @@ import {
   runLocalGit,
   setExpensiveWorkspaceGitExecutor,
   WORKSPACE_GIT_SCAN_SATURATED_CODE,
-} from "./git-workspace-sync.js";
+} from "./git-worktree-sync.js";
 
 import {
   assertSyncOperationsConfined,

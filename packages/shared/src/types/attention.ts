@@ -59,7 +59,7 @@ export interface AttentionProjectRef {
   icon: string | null;
 }
 
-export interface AttentionWorkspaceRef {
+export interface AttentionWorktreeRef {
   id: string;
   name: string;
 }
@@ -237,7 +237,7 @@ export interface AttentionItem {
   updatedAt: string;
   relatedIssue: AttentionSubject | null;
   project: AttentionProjectRef | null;
-  workspace: AttentionWorkspaceRef | null;
+  workspace: AttentionWorktreeRef | null;
   expiresAt: string | null;
   ruleKey: string | null;
   originAgentName: string | null;

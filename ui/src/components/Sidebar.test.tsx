@@ -268,7 +268,7 @@ describe("Sidebar", () => {
     });
   });
 
-  it("renders plugin sidebar slots in Work below Workspaces", async () => {
+  it("renders plugin sidebar slots in Work below Worktrees", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
@@ -278,8 +278,8 @@ describe("Sidebar", () => {
     const workSectionContainer = sidebarSlot?.parentElement?.parentElement;
     const workText = workSectionContainer?.textContent ?? "";
     expect(workText).toContain("Work");
-    expect(workText).toContain("Workspaces");
-    expect(workText.indexOf("Workspaces")).toBeLessThan(workText.indexOf("Plugin slot outlet"));
+    expect(workText).toContain("Worktrees");
+    expect(workText.indexOf("Worktrees")).toBeLessThan(workText.indexOf("Plugin slot outlet"));
 
     const primaryNavText = container.querySelector("nav > div:first-child")?.textContent ?? "";
     expect(primaryNavText).toContain("Inbox");
@@ -290,11 +290,11 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Workspaces link while experimental settings are loading", async () => {
+  it("does not flash the Worktrees link while experimental settings are loading", async () => {
     mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
-    expect(container.textContent).not.toContain("Workspaces");
+    expect(container.textContent).not.toContain("Worktrees");
 
     flushSync(() => {
       root.unmount();
@@ -526,12 +526,12 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Workspaces link when isolated workspaces are enabled", async () => {
+  it("shows the Worktrees link when isolated worktrees are enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
-    expect(link?.getAttribute("href")).toBe("/workspaces");
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Worktrees");
+    expect(link?.getAttribute("href")).toBe("/worktrees");
 
     flushSync(() => {
       root.unmount();

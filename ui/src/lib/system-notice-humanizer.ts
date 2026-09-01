@@ -70,7 +70,7 @@ export function humanizeSystemNotice(input: {
   }
   if (code === "workspace_validation_failed" || body.includes("workspace failed validation")) {
     return {
-      title: "Task paused — workspace problem",
+      title: "Task paused — worktree problem",
       tone: presentationTone ?? "warning",
     };
   }

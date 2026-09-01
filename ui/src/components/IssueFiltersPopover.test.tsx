@@ -64,7 +64,7 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
+          worktrees={[{ id: "workspace-1", name: "Worktree One" }]}
           enableRoutineVisibilityFilter
         />,
       );
@@ -94,7 +94,7 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
+          worktrees={[{ id: "workspace-1", name: "Worktree One" }]}
           enableRoutineVisibilityFilter
         />,
       );

@@ -23,7 +23,7 @@ export function buildSubIssueDefaultsForViewer(
   issue: SubIssueDefaultSource,
   currentUserId?: string | null,
 ) {
-  const parentExecutionWorkspaceLabel =
+  const parentExecutionWorktreeLabel =
     issue.currentExecutionWorkspace?.name
     ?? issue.currentExecutionWorkspace?.branchName
     ?? issue.currentExecutionWorkspace?.cwd
@@ -45,7 +45,7 @@ export function buildSubIssueDefaultsForViewer(
       : issue.executionWorkspacePreference
         ? { executionWorkspaceMode: issue.executionWorkspacePreference }
         : {}),
-    ...(parentExecutionWorkspaceLabel ? { parentExecutionWorkspaceLabel } : {}),
+    ...(parentExecutionWorktreeLabel ? { parentExecutionWorktreeLabel } : {}),
     ...(issue.assigneeAgentId ? { assigneeAgentId: issue.assigneeAgentId } : {}),
     ...(inheritedAssigneeUserId ? { assigneeUserId: inheritedAssigneeUserId } : {}),
   };

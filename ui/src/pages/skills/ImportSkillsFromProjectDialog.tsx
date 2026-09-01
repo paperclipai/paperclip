@@ -25,7 +25,7 @@ import type {
   CompanySkillProjectScanCandidate,
   CompanySkillProjectScanResult,
   Project,
-  ProjectWorkspace,
+  ProjectWorktree,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -78,16 +78,16 @@ export function selectionKey(workspaceId: string, path: string): string {
   return `${workspaceId} ${path}`;
 }
 
-export function isScannableWorkspace(workspace: ProjectWorkspace): boolean {
+export function isScannableWorktree(workspace: ProjectWorktree): boolean {
   if (workspace.sourceType === "remote_managed") return false;
   return typeof workspace.cwd === "string" && workspace.cwd.trim().length > 0;
 }
 
-export function scannableWorkspaces(project: Project): ProjectWorkspace[] {
-  return project.workspaces.filter(isScannableWorkspace);
+export function scannableWorktrees(project: Project): ProjectWorktree[] {
+  return project.workspaces.filter(isScannableWorktree);
 }
 
-function workspaceKindLabel(sourceType: ProjectWorkspace["sourceType"]): string {
+function worktreeKindLabel(sourceType: ProjectWorktree["sourceType"]): string {
   switch (sourceType) {
     case "git_repo":
       return "git";
@@ -102,8 +102,8 @@ function workspaceKindLabel(sourceType: ProjectWorkspace["sourceType"]): string 
   }
 }
 
-function summarizeWorkspaceKinds(workspaces: ProjectWorkspace[]): string {
-  const kinds = Array.from(new Set(workspaces.map((ws) => workspaceKindLabel(ws.sourceType))));
+function summarizeWorktreeKinds(workspaces: ProjectWorktree[]): string {
+  const kinds = Array.from(new Set(workspaces.map((ws) => worktreeKindLabel(ws.sourceType))));
   return kinds.join(", ");
 }
 
@@ -138,7 +138,7 @@ export interface CandidateDirectoryGroup {
   candidates: CompanySkillProjectScanCandidate[];
 }
 
-export interface CandidateWorkspaceGroup {
+export interface CandidateWorktreeGroup {
   key: string;
   workspaceId: string;
   workspaceName: string;
@@ -148,10 +148,10 @@ export interface CandidateWorkspaceGroup {
 
 export function groupCandidates(
   candidates: CompanySkillProjectScanCandidate[],
-  workspaces: ProjectWorkspace[] = [],
-): CandidateWorkspaceGroup[] {
-  const workspaceMetadata = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
-  const groups = new Map<string, CandidateWorkspaceGroup>();
+  workspaces: ProjectWorktree[] = [],
+): CandidateWorktreeGroup[] {
+  const worktreeMetadata = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  const groups = new Map<string, CandidateWorktreeGroup>();
   for (const candidate of candidates) {
     let group = groups.get(candidate.workspaceId);
     if (!group) {
@@ -159,7 +159,7 @@ export function groupCandidates(
         key: candidate.workspaceId,
         workspaceId: candidate.workspaceId,
         workspaceName: candidate.workspaceName,
-        isPrimary: workspaceMetadata.get(candidate.workspaceId)?.isPrimary ?? false,
+        isPrimary: worktreeMetadata.get(candidate.workspaceId)?.isPrimary ?? false,
         directories: [],
       };
       groups.set(candidate.workspaceId, group);
@@ -516,7 +516,7 @@ export function ImportSkillsFromProjectDialog({
               Import skills from project
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Pick a project, scan its workspaces for skills, and import them as references.
+              Pick a project, scan its worktrees for skills, and import them as references.
             </DialogDescription>
           </div>
           <button
@@ -691,9 +691,9 @@ function PickProjectStep({
         ) : (
           <ul className="divide-y divide-border/60" data-testid="project-list">
             {projects.map((project) => {
-              const scannable = scannableWorkspaces(project);
+              const scannable = scannableWorktrees(project);
               const disabled = scannable.length === 0;
-              const kinds = summarizeWorkspaceKinds(project.workspaces);
+              const kinds = summarizeWorktreeKinds(project.workspaces);
               return (
                 <li key={project.id}>
                   <button
@@ -713,13 +713,13 @@ function PickProjectStep({
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{project.name}</div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {project.workspaces.length} workspace
+                        {project.workspaces.length} worktree
                         {project.workspaces.length === 1 ? "" : "s"}
                         {kinds ? ` · ${kinds}` : ""}
                       </div>
                       {disabled && (
                         <div className="mt-1 text-(length:--text-micro) text-muted-foreground">
-                          Remote-only project — no locally scannable workspaces to import from.
+                          Remote-only project — no locally scannable worktrees to import from.
                         </div>
                       )}
                     </div>
@@ -752,7 +752,7 @@ function ScanningStep({ projectName }: { projectName: string }) {
       <div>
         <p className="text-sm font-medium">Scanning {projectName || "project"} for skills…</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Looking in well-known skill folders across each workspace.
+          Looking in well-known skill folders across each worktree.
         </p>
       </div>
       <div className="flex max-w-md flex-wrap justify-center gap-1.5">
@@ -790,23 +790,23 @@ function ProjectSkillBrowser({
   onAddSkill: (workspaceId: string, path: string) => void;
   addingKey: string | null;
 }) {
-  const workspaces = scannableWorkspaces(project);
-  const initialWorkspace = workspaces.find((workspace) => workspace.isPrimary) ?? workspaces[0] ?? null;
-  const [workspaceId, setWorkspaceId] = useState(initialWorkspace?.id ?? "");
+  const worktrees = scannableWorktrees(project);
+  const initialWorktree = worktrees.find((worktree) => worktree.isPrimary) ?? worktrees[0] ?? null;
+  const [worktreeId, setWorktreeId] = useState(initialWorktree?.id ?? "");
   const [folderPath, setFolderPath] = useState(".");
   const browseQuery = useQuery({
-    queryKey: ["company-skills", "browse-project", companyId, project.id, workspaceId, folderPath],
+    queryKey: ["company-skills", "browse-project", companyId, project.id, worktreeId, folderPath],
     queryFn: () => companySkillsApi.browseProject(companyId, {
       projectId: project.id,
-      workspaceId,
+      workspaceId: worktreeId,
       path: folderPath,
     }),
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(worktreeId),
   });
   const result = browseQuery.data;
 
-  function changeWorkspace(nextWorkspaceId: string) {
-    setWorkspaceId(nextWorkspaceId);
+  function changeWorktree(nextWorkspaceId: string) {
+    setWorktreeId(nextWorkspaceId);
     setFolderPath(".");
   }
 
@@ -822,17 +822,17 @@ function ProjectSkillBrowser({
             <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Discovered skills
           </Button>
         </div>
-        {workspaces.length > 1 && (
-          <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Project workspace">
-            {workspaces.map((workspace) => (
+        {worktrees.length > 1 && (
+          <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Project worktree">
+            {worktrees.map((worktree) => (
               <Button
-                key={workspace.id}
+                key={worktree.id}
                 type="button"
-                variant={workspace.id === workspaceId ? "secondary" : "ghost"}
+                variant={worktree.id === worktreeId ? "secondary" : "ghost"}
                 size="sm"
-                onClick={() => changeWorkspace(workspace.id)}
+                onClick={() => changeWorktree(worktree.id)}
               >
-                {workspace.name}
+                {worktree.name}
               </Button>
             ))}
           </div>
@@ -863,7 +863,7 @@ function ProjectSkillBrowser({
               const selectablePath = entry.kind === "file"
                 ? entry.path.toLowerCase() === "skill.md" ? "." : entry.path.slice(0, -"/SKILL.md".length)
                 : entry.path;
-              const key = selectionKey(workspaceId, selectablePath);
+              const key = selectionKey(worktreeId, selectablePath);
               return (
                 <li key={entry.path} className="flex items-center gap-3 px-5 py-2.5">
                   {entry.kind === "directory" ? (
@@ -880,7 +880,7 @@ function ProjectSkillBrowser({
                     {entry.name}
                   </button>
                   {entry.isSkill ? (
-                    <Button size="sm" onClick={() => onAddSkill(workspaceId, entry.path)} disabled={addingKey === key}>
+                    <Button size="sm" onClick={() => onAddSkill(worktreeId, entry.path)} disabled={addingKey === key}>
                       {addingKey === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Add skill"}
                     </Button>
                   ) : entry.kind === "directory" ? (
@@ -905,7 +905,7 @@ interface SelectStepProps {
   scanError: unknown;
   onRetry: () => void;
   onImportFromPath?: () => void;
-  groups: CandidateWorkspaceGroup[];
+  groups: CandidateWorktreeGroup[];
   totalCandidates: number;
   filter: string;
   onFilterChange: (value: string) => void;
@@ -1028,7 +1028,7 @@ function SelectStep({
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="candidate-list">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 py-2.5">
-        <p className="text-xs text-muted-foreground">Choose discovered skills, or browse any workspace folder.</p>
+        <p className="text-xs text-muted-foreground">Choose discovered skills, or browse any worktree folder.</p>
         <Button variant="outline" size="sm" onClick={() => onBrowseOpenChange(true)} data-testid="browse-project-folders">
           <FolderOpen className="mr-1.5 h-3.5 w-3.5" /> Browse folders
         </Button>

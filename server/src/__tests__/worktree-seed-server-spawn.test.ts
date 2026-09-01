@@ -9,7 +9,7 @@ import {
   ensureWorktreeSeeded,
   readWorktreeSeedManifest,
 } from "../../../cli/src/commands/worktree.ts";
-import { realizeExecutionWorkspace } from "../services/workspace-runtime.ts";
+import { realizeExecutionWorktree } from "../services/worktree-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -182,7 +182,7 @@ fs.writeFileSync(path.join(stateDir, "seed-manifest.json"), JSON.stringify({
 
     process.env.PAPERCLIP_CONFIG = ambientConfigPath;
     process.env.PAPERCLIP_WORKTREES_DIR = worktreeHome;
-    const workspace = await realizeExecutionWorkspace({
+    const workspace = await realizeExecutionWorktree({
       base: {
         baseCwd: repoRoot,
         source: "project_primary",

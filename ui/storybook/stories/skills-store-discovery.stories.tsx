@@ -14,7 +14,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     slug: "paperclip-dev",
     author: "Paperclip",
     version: "v2.4.1",
-    tagline: "Run and repair local Paperclip workspaces.",
+    tagline: "Run and repair local Paperclip worktrees.",
     description: "Develop and operate a local Paperclip instance.",
     categories: ["devops", "coding"],
     iconUrl: null,

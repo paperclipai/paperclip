@@ -17,8 +17,8 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import { projectWorkspaces } from "./project_workspaces.js";
-import { executionWorkspaces } from "./execution_workspaces.js";
+import { projectWorktrees } from "./project_worktrees.js";
+import { executionWorktrees } from "./execution_worktrees.js";
 import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
@@ -27,7 +27,7 @@ export const issues = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     projectId: uuid("project_id").references(() => projects.id),
-    projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
+    projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorktrees.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
@@ -66,7 +66,7 @@ export const issues = pgTable(
     monitorNotes: text("monitor_notes"),
     monitorScheduledBy: text("monitor_scheduled_by"),
     executionWorkspaceId: uuid("execution_workspace_id")
-      .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+      .references((): AnyPgColumn => executionWorktrees.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),

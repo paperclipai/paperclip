@@ -55,7 +55,7 @@ import {
   decisionService,
   decisionRetentionService,
   externalObjectService,
-  executionWorkspaceService,
+  executionWorktreeService,
   heartbeatService,
   issueThreadInteractionService,
   issueService,
@@ -66,7 +66,7 @@ import {
   routineService,
   statusCardService,
   toolAccessService,
-  workspaceOperationService,
+  worktreeOperationService,
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
@@ -886,7 +886,7 @@ export async function startServer(): Promise<StartedServer> {
   });
 
   try {
-    const result = await workspaceOperationService(db as any)
+    const result = await worktreeOperationService(db as any)
       .reconcileStaleRuntimeControlOperations();
     if (result.reconciled > 0) {
       logger.warn(
@@ -1128,7 +1128,7 @@ export async function startServer(): Promise<StartedServer> {
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
-    const terminalWorkspaces = executionWorkspaceService(db as any, {
+    const terminalWorkspaces = executionWorktreeService(db as any, {
       workspaceReaperCooldownDays: config.workspaceReaperCooldownDays,
     });
     const scheduleMergedPullRequestConfirmationSweep = () => {

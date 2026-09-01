@@ -1586,10 +1586,7 @@ describe("TaskChatThread live transcript", () => {
         comments={[]}
         onAdd={async () => {}}
         issueStatus="in_progress"
-        activeRun={{
-          ...baseRun,
-          currentStatusMessage: "Syncing workspace to environment",
-        }}
+        activeRun={{ ...baseRun, currentStatusMessage: "Syncing worktree to environment" }}
       />,
     );
 
@@ -1597,7 +1594,7 @@ describe("TaskChatThread live transcript", () => {
       '[data-testid="task-chat-live-transcript"]',
     );
     expect(tail).not.toBeNull();
-    expect(tail!.textContent).toContain("Syncing workspace to environment");
+    expect(tail!.textContent).toContain("Syncing worktree to environment");
     expect(tail!.textContent).not.toContain("Waiting for transcript...");
 
     // Without a runtime status, the generic wait message still shows.

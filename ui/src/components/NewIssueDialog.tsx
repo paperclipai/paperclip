@@ -4,7 +4,7 @@ import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/sha
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorktreesApi } from "../api/execution-worktrees";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -15,12 +15,12 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
-import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
+import { orderReusableExecutionWorktrees } from "../lib/reusable-execution-worktrees";
 import {
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
-  issueExecutionWorkspaceModeForExistingWorkspace,
-} from "../lib/project-workspace-defaults";
+  defaultExecutionWorktreeModeForProject,
+  defaultProjectWorktreeIdForProject,
+  issueExecutionWorktreeModeForExistingWorktree,
+} from "../lib/project-worktree-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
@@ -79,7 +79,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
-import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
+import { ReusableExecutionWorktreeSelect } from "./ReusableExecutionWorktreeSelect";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -331,11 +331,11 @@ const priorities = [
 
 const EXECUTION_WORKSPACE_MODES = [
   { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "isolated_workspace", label: "New isolated worktree" },
+  { value: "reuse_existing", label: "Reuse existing worktree" },
 ] as const;
 
-function defaultExecutionWorkspaceModeForIssueDefaults(
+function defaultExecutionWorktreeModeForIssueDefaults(
   defaults: {
     executionWorkspaceId?: unknown;
     executionWorkspaceMode?: unknown;
@@ -347,7 +347,7 @@ function defaultExecutionWorkspaceModeForIssueDefaults(
   }
   return typeof defaults.executionWorkspaceMode === "string" && defaults.executionWorkspaceMode.length > 0
     ? defaults.executionWorkspaceMode
-    : defaultExecutionWorkspaceModeForProject(project);
+    : defaultExecutionWorktreeModeForProject(project);
 }
 
 function isWorkModePeriodShortcut(e: Pick<React.KeyboardEvent, "code" | "ctrlKey" | "key" | "metaKey">) {
@@ -492,21 +492,21 @@ export function NewIssueDialog() {
   const [watchdogEditorOpen, setWatchdogEditorOpen] = useState(false);
   const [participantMenuOpen, setParticipantMenuOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
-  const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
+  const [projectWorktreeId, setProjectWorktreeId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelLane, setAssigneeModelLane] = useState<IssueModelLane>("primary");
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
-  const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [executionWorktreeMode, setExecutionWorktreeMode] = useState<string>("shared_workspace");
+  const [selectedExecutionWorktreeId, setSelectedExecutionWorktreeId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const executionWorktreeDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
@@ -514,8 +514,8 @@ export function NewIssueDialog() {
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel = newIssueDefaults.parentIdentifier
     ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
-  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
-  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
+  const parentExecutionWorktreeId = newIssueDefaults.executionWorkspaceId ?? "";
+  const parentExecutionWorktreeLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorktreeId;
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -540,19 +540,19 @@ export function NewIssueDialog() {
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const {
-    data: reusableExecutionWorkspaces,
-    isLoading: reusableExecutionWorkspacesLoading,
-    isError: reusableExecutionWorkspacesError,
+    data: reusableExecutionWorktrees,
+    isLoading: reusableExecutionWorktreesLoading,
+    isError: reusableExecutionWorktreesError,
   } = useQuery({
-    queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
+    queryKey: queryKeys.executionWorktrees.summaryList(effectiveCompanyId!, {
       projectId,
-      projectWorkspaceId: projectWorkspaceId || undefined,
+      projectWorkspaceId: projectWorktreeId || undefined,
       reuseEligible: true,
     }),
     queryFn: () =>
-      executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
+      executionWorktreesApi.listSummaries(effectiveCompanyId!, {
         projectId,
-        projectWorkspaceId: projectWorkspaceId || undefined,
+        projectWorkspaceId: projectWorktreeId || undefined,
         reuseEligible: true,
       }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(projectId),
@@ -731,13 +731,13 @@ export function NewIssueDialog() {
       watchdogAgentId,
       watchdogInstructions,
       projectId,
-      projectWorkspaceId,
+      projectWorkspaceId: projectWorktreeId,
       assigneeModelLane,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
-      executionWorkspaceMode,
-      selectedExecutionWorkspaceId,
+      executionWorkspaceMode: executionWorktreeMode,
+      selectedExecutionWorkspaceId: selectedExecutionWorktreeId,
       workMode,
     });
   }, [
@@ -751,12 +751,12 @@ export function NewIssueDialog() {
     watchdogAgentId,
     watchdogInstructions,
     projectId,
-    projectWorkspaceId,
+    projectWorktreeId,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    executionWorkspaceMode,
-    selectedExecutionWorkspaceId,
+    executionWorktreeMode,
+    selectedExecutionWorktreeId,
     workMode,
   ]);
 
@@ -789,13 +789,13 @@ export function NewIssueDialog() {
     watchdogAgentId,
     watchdogInstructions,
     projectId,
-    projectWorkspaceId,
+    projectWorktreeId,
     assigneeModelLane,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    executionWorkspaceMode,
-    selectedExecutionWorkspaceId,
+    executionWorktreeMode,
+    selectedExecutionWorktreeId,
     workMode,
     newIssueOpen,
     queueDraftSave,
@@ -811,31 +811,31 @@ export function NewIssueDialog() {
     if (initializationKeyRef.current === initializationKey) return;
     initializationKeyRef.current = initializationKey;
     setDialogCompanyId(selectedCompanyId);
-    executionWorkspaceDefaultProjectId.current = null;
+    executionWorktreeDefaultProjectId.current = null;
 
     const draft = loadDraft();
     if (newIssueDefaults.parentId) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
-      const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
-        ?? defaultProjectWorkspaceIdForProject(defaultProject);
-      const defaultExecutionWorkspaceMode = defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject);
+      const hasExplicitProjectWorktreeId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const defaultProjectWorktreeId = newIssueDefaults.projectWorkspaceId
+        ?? defaultProjectWorktreeIdForProject(defaultProject);
+      const defaultExecutionWorktreeMode = defaultExecutionWorktreeModeForIssueDefaults(newIssueDefaults, defaultProject);
       setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceId);
+      setProjectWorktreeId(defaultProjectWorktreeId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
+      setExecutionWorktreeMode(defaultExecutionWorktreeMode);
       setWorkMode(nextWorkMode);
-      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
+      setSelectedExecutionWorktreeId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorktreeDefaultProjectId.current = hasExplicitProjectWorktreeId || defaultProject
         ? defaultProjectId || null
         : null;
     } else if (newIssueDefaults.title) {
@@ -845,9 +845,9 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const hasExplicitProjectWorktreeId = newIssueDefaults.projectWorkspaceId !== undefined;
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorktreeId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorktreeIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
@@ -859,19 +859,19 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setExecutionWorktreeMode(defaultExecutionWorktreeModeForIssueDefaults(newIssueDefaults, defaultProject));
       setWorkMode(nextWorkMode);
-      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+      setSelectedExecutionWorktreeId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorktreeDefaultProjectId.current = hasExplicitProjectWorktreeId || newIssueDefaults.executionWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
     } else if (draft && draft.title.trim()) {
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
-      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
-      const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
-      const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
+      const hasExplicitProjectWorktreeId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const hasExplicitExecutionWorktreeId = newIssueDefaults.executionWorkspaceId !== undefined;
+      const hasExplicitExecutionWorktreeMode = newIssueDefaults.executionWorkspaceMode !== undefined;
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
@@ -888,42 +888,42 @@ export function NewIssueDialog() {
       setWatchdogInstructions(draft.watchdogInstructions ?? "");
       setShowWatchdogRow(!!(draft.watchdogAgentId));
       setProjectId(restoredProjectId);
-      setProjectWorkspaceId(
-        hasExplicitProjectWorkspaceId
+      setProjectWorktreeId(
+        hasExplicitProjectWorktreeId
           ? (newIssueDefaults.projectWorkspaceId ?? "")
-          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+          : (draft.projectWorkspaceId ?? defaultProjectWorktreeIdForProject(restoredProject)),
       );
       setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
-      setExecutionWorkspaceMode(
-        hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
-          ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
+      setExecutionWorktreeMode(
+        hasExplicitExecutionWorktreeId || hasExplicitExecutionWorktreeMode
+          ? defaultExecutionWorktreeModeForIssueDefaults(newIssueDefaults, restoredProject)
           : (
               draft.executionWorkspaceMode
-              ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject))
+              ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorktreeModeForProject(restoredProject))
             ),
       );
       setWorkMode(nextWorkMode);
-      setSelectedExecutionWorkspaceId(
-        hasExplicitExecutionWorkspaceId
+      setSelectedExecutionWorktreeId(
+        hasExplicitExecutionWorktreeId
           ? (newIssueDefaults.executionWorkspaceId ?? "")
           : (draft.selectedExecutionWorkspaceId ?? ""),
       );
-      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
+      executionWorktreeDefaultProjectId.current = hasExplicitProjectWorktreeId || hasExplicitExecutionWorktreeId || draft.projectWorkspaceId || restoredProject
         ? restoredProjectId || null
         : null;
     } else {
       setWorkMode("standard");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const hasExplicitProjectWorktreeId = newIssueDefaults.projectWorkspaceId !== undefined;
       setIssueText("", "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorktreeId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorktreeIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
@@ -935,9 +935,9 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
-      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+      setExecutionWorktreeMode(defaultExecutionWorktreeModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setSelectedExecutionWorktreeId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorktreeDefaultProjectId.current = hasExplicitProjectWorktreeId || newIssueDefaults.executionWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
     }
@@ -993,21 +993,21 @@ export function NewIssueDialog() {
     setWatchdogInstructions("");
     setShowWatchdogRow(false);
     setProjectId("");
-    setProjectWorkspaceId("");
+    setProjectWorktreeId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelLane("primary");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("shared_workspace");
-    setSelectedExecutionWorkspaceId("");
+    setExecutionWorktreeMode("shared_workspace");
+    setSelectedExecutionWorktreeId("");
     setWorkMode("standard");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
-    executionWorkspaceDefaultProjectId.current = null;
+    executionWorktreeDefaultProjectId.current = null;
     initializationKeyRef.current = null;
   }
 
@@ -1024,13 +1024,13 @@ export function NewIssueDialog() {
     setWatchdogInstructions("");
     setShowWatchdogRow(false);
     setProjectId("");
-    setProjectWorkspaceId("");
+    setProjectWorktreeId("");
     setAssigneeModelLane("primary");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("shared_workspace");
-    setSelectedExecutionWorkspaceId("");
+    setExecutionWorktreeMode("shared_workspace");
+    setSelectedExecutionWorktreeId("");
     setWorkMode("standard");
   }
 
@@ -1057,19 +1057,19 @@ export function NewIssueDialog() {
       chrome: assigneeChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
-    const executionWorkspacePolicy =
+    const executionWorktreePolicy =
       experimentalSettings?.enableIsolatedWorkspaces === true
         ? selectedProject?.executionWorkspacePolicy ?? null
         : null;
-    const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
-      (workspace) => workspace.id === selectedExecutionWorkspaceId,
+    const selectedReusableExecutionWorktree = selectableReusableWorktrees.find(
+      (worktree) => worktree.id === selectedExecutionWorktreeId,
     );
-    const requestedExecutionWorkspaceMode =
-      executionWorkspaceMode === "reuse_existing"
-        ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
-        : executionWorkspaceMode;
-    const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
-      ? { mode: requestedExecutionWorkspaceMode }
+    const requestedExecutionWorktreeMode =
+      executionWorktreeMode === "reuse_existing"
+        ? issueExecutionWorktreeModeForExistingWorktree(selectedReusableExecutionWorktree?.mode)
+        : executionWorktreeMode;
+    const executionWorktreeSettings = executionWorktreePolicy?.enabled
+      ? { mode: requestedExecutionWorktreeMode }
       : null;
     const executionPolicy = buildExecutionPolicy({
       reviewerValues: reviewerValue ? [reviewerValue] : [],
@@ -1088,13 +1088,13 @@ export function NewIssueDialog() {
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
       ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
-      ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+      ...(projectWorktreeId ? { projectWorkspaceId: projectWorktreeId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
-      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
-      ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
-        ? { executionWorkspaceId: selectedExecutionWorkspaceId }
+      ...(executionWorktreePolicy?.enabled ? { executionWorkspacePreference: executionWorktreeMode } : {}),
+      ...(executionWorktreeMode === "reuse_existing" && selectedExecutionWorktreeId
+        ? { executionWorkspaceId: selectedExecutionWorktreeId }
         : {}),
-      ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      ...(executionWorktreeSettings ? { executionWorkspaceSettings: executionWorktreeSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
       ...(taskWatchdogsEnabled && watchdogAgentId
         ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
@@ -1195,23 +1195,23 @@ export function NewIssueDialog() {
     },
     [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status],
   );
-  const currentProjectExecutionWorkspacePolicy =
+  const currentProjectExecutionWorktreePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
-  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const currentProjectSupportsExecutionWorktree = Boolean(currentProjectExecutionWorktreePolicy?.enabled);
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
-  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
-  const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
-    (workspace) => workspace.id === selectedExecutionWorkspaceId,
+  const selectableReusableWorktrees = reusableExecutionWorktrees ?? [];
+  const selectedReusableExecutionWorktree = selectableReusableWorktrees.find(
+    (worktree) => worktree.id === selectedExecutionWorktreeId,
   );
-  const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
-    ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
+  const isUsingParentExecutionWorktree = isSubIssueMode && parentExecutionWorktreeId
+    ? executionWorktreeMode === "reuse_existing" && selectedExecutionWorktreeId === parentExecutionWorktreeId
     : false;
-  const showParentWorkspaceWarning = isSubIssueMode
-    && currentProjectSupportsExecutionWorkspace
-    && Boolean(parentExecutionWorkspaceId)
-    && !isUsingParentExecutionWorkspace;
+  const showParentWorktreeWarning = isSubIssueMode
+    && currentProjectSupportsExecutionWorktree
+    && Boolean(parentExecutionWorktreeId)
+    && !isUsingParentExecutionWorktree;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -1281,28 +1281,28 @@ export function NewIssueDialog() {
     if (nextProjectId) trackRecentProject(nextProjectId);
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
-    executionWorkspaceDefaultProjectId.current = nextProjectId || null;
-    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
-    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
-    setSelectedExecutionWorkspaceId("");
+    executionWorktreeDefaultProjectId.current = nextProjectId || null;
+    setProjectWorktreeId(defaultProjectWorktreeIdForProject(nextProject));
+    setExecutionWorktreeMode(defaultExecutionWorktreeModeForProject(nextProject));
+    setSelectedExecutionWorktreeId("");
   }, [orderedProjects]);
 
   useEffect(() => {
     if (
       !newIssueOpen ||
       !projectId ||
-      selectedExecutionWorkspaceId ||
-      executionWorkspaceDefaultProjectId.current === projectId
+      selectedExecutionWorktreeId ||
+      executionWorktreeDefaultProjectId.current === projectId
     ) {
       return;
     }
     const project = orderedProjects.find((entry) => entry.id === projectId);
     if (!project) return;
-    executionWorkspaceDefaultProjectId.current = projectId;
-    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
-    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
-    setSelectedExecutionWorkspaceId("");
-  }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
+    executionWorktreeDefaultProjectId.current = projectId;
+    setProjectWorktreeId(defaultProjectWorktreeIdForProject(project));
+    setExecutionWorktreeMode(defaultExecutionWorktreeModeForProject(project));
+    setSelectedExecutionWorktreeId("");
+  }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorktreeId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -1866,20 +1866,20 @@ export function NewIssueDialog() {
             </div>
           ) : null}
 
-          {currentProject && currentProjectSupportsExecutionWorkspace && (
+          {currentProject && currentProjectSupportsExecutionWorktree && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-xs font-medium">Execution worktree</div>
               <div className="text-(length:--text-micro) text-muted-foreground">
-                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
+                Control whether this task runs in the shared worktree, a new isolated worktree, or an existing one.
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
-                value={executionWorkspaceMode}
+                value={executionWorktreeMode}
                 onChange={(e) => {
-                  setExecutionWorkspaceMode(e.target.value);
+                  setExecutionWorktreeMode(e.target.value);
                   if (e.target.value !== "reuse_existing") {
-                    setSelectedExecutionWorkspaceId("");
+                    setSelectedExecutionWorktreeId("");
                   }
                 }}
               >
@@ -1889,13 +1889,13 @@ export function NewIssueDialog() {
                   </option>
                 ))}
               </select>
-              {executionWorkspaceMode === "reuse_existing" && (
-                <ReusableExecutionWorkspaceSelect
-                  value={selectedExecutionWorkspaceId}
-                  workspaces={selectableReusableWorkspaces}
-                  onValueChange={(workspaceId) => setSelectedExecutionWorkspaceId(workspaceId)}
-                  loading={reusableExecutionWorkspacesLoading}
-                  error={reusableExecutionWorkspacesError}
+              {executionWorktreeMode === "reuse_existing" && (
+                <ReusableExecutionWorktreeSelect
+                  value={selectedExecutionWorktreeId}
+                  worktrees={selectableReusableWorktrees}
+                  onValueChange={(worktreeId) => setSelectedExecutionWorktreeId(worktreeId)}
+                  loading={reusableExecutionWorktreesLoading}
+                  error={reusableExecutionWorktreesError}
                   disablePortal
                 />
               )}
@@ -1904,14 +1904,14 @@ export function NewIssueDialog() {
                 a path on the execution host. It now falls back to a neutral
                 phrase, so the dialog never renders a host path.
               */}
-              {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
+              {executionWorktreeMode === "reuse_existing" && selectedReusableExecutionWorktree && (
                 <div className="text-(length:--text-micro) text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? "existing execution workspace"}.
+                  Reusing {selectedReusableExecutionWorktree.name} from {selectedReusableExecutionWorktree.branchName ?? "existing execution worktree"}.
                 </div>
               )}
-              {showParentWorkspaceWarning ? (
+              {showParentWorktreeWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  Warning: this sub-task will no longer use the parent task worktree{parentExecutionWorktreeLabel ? ` (${parentExecutionWorktreeLabel})` : ""}.
                 </div>
               ) : null}
             </div>

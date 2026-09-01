@@ -42,7 +42,7 @@ function humanizeKey(raw: string): string {
 
 function draftSummary(draft: McpJsonImportDraft): string {
   const keyCount = draft.credentialFields.length || draft.credentialRefs.length;
-  const where = draft.transport === "local_stdio" ? "Runs in your workspace" : "Connects over the web";
+  const where = draft.transport === "local_stdio" ? "Runs in your worktree" : "Connects over the web";
   if (keyCount === 0) return `${where}  ·  no keys needed`;
   return `${where}  ·  needs ${keyCount} ${keyCount === 1 ? "key" : "keys"}`;
 }
@@ -335,7 +335,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                We humanized the field names from the config. These run-in-your-workspace tools stay as drafts until an
+                We humanized the field names from the config. These run-in-your-worktree tools stay as drafts until an
                 admin maps them to an approved template.
               </p>
             )}

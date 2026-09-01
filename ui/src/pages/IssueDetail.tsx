@@ -44,12 +44,12 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   canBoardManageRuntime,
-  readRecoveryReconcileWorkspaceId,
+  readRecoveryReconcileWorktreeId,
 } from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorktreesApi } from "../api/execution-worktrees";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -201,7 +201,7 @@ import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
-import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { IssueWorktreeCard } from "../components/IssueWorktreeCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import {
   ImageGalleryModal,
@@ -307,7 +307,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
-  isClosedIsolatedExecutionWorkspace,
+  isClosedIsolatedExecutionWorktree,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   type AskUserQuestionsAnswer,
@@ -329,8 +329,8 @@ import {
   type RequestItemVerdictValue,
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
-  type WorkspaceFileRef,
-  workspaceFileRefSchema,
+  type WorktreeFileRef,
+  worktreeFileRefSchema,
 } from "@paperclipai/shared";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -486,11 +486,11 @@ export function canBoardResolveRecoveryAction(
   );
 }
 
-// `canBoardManageRuntime` and `readRecoveryReconcileWorkspaceId` moved to `@/lib/recovery-reconcile`
+// `canBoardManageRuntime` and `readRecoveryReconcileWorktreeId` moved to `@/lib/recovery-reconcile`
 // so the run-page recovery surface can reuse them without importing this page module. Re-exported
 // here (from the top-of-file import) to keep existing import sites — and their tests — stable, while
 // the imported bindings stay usable within this module.
-export { canBoardManageRuntime, readRecoveryReconcileWorkspaceId };
+export { canBoardManageRuntime, readRecoveryReconcileWorktreeId };
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
   previousIssueId: string | undefined;
@@ -561,12 +561,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function extractWorkspaceFileRefFromWorkProduct(workProduct: {
-  metadata: Record<string, unknown> | null;
-}): WorkspaceFileRef | null {
+function extractWorktreeFileRefFromWorkProduct(
+  workProduct: { metadata: Record<string, unknown> | null },
+): WorktreeFileRef | null {
   const metadata = asRecord(workProduct.metadata);
   if (!metadata) return null;
-  const parsed = workspaceFileRefSchema.safeParse(metadata.resourceRef);
+  const parsed = worktreeFileRefSchema.safeParse(metadata.resourceRef);
   return parsed.success ? parsed.data : null;
 }
 
@@ -2687,12 +2687,11 @@ export function IssueDetail() {
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
   // enabled and a hint tells the user what happens.
-  const closedIsolatedWorkspaceReopenPending = useMemo(
-    () =>
-      Boolean(
-        issue?.currentExecutionWorkspace &&
-        isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace),
-      ),
+  const closedIsolatedWorktreeReopenPending = useMemo(
+    () => Boolean(
+      issue?.currentExecutionWorkspace
+      && isClosedIsolatedExecutionWorktree(issue.currentExecutionWorkspace),
+    ),
     [issue?.currentExecutionWorkspace],
   );
 
@@ -5896,7 +5895,7 @@ export function IssueDetail() {
       if (!issue) throw new Error("Task is not loaded yet.");
       const sourceLabel = issue.identifier ?? "the stalled task";
       const descriptionLines = [
-        `Re-issued from ${sourceLabel} on an isolated git worktree after a workspace branch divergence.`,
+        `Re-issued from ${sourceLabel} on an isolated git worktree after a worktree branch divergence.`,
         "",
         `- Base ref (live branch): \`${request.baseRef}\``,
         ...(request.expectedBranch
@@ -5930,7 +5929,7 @@ export function IssueDetail() {
       pushToast({
         title: "Isolated re-issue created",
         body: created.identifier
-          ? `${created.identifier} will run on a fresh isolated workspace.`
+          ? `${created.identifier} will run on a fresh isolated worktree.`
           : "A fresh isolated re-issue was created.",
         tone: "success",
       });
@@ -5974,7 +5973,7 @@ export function IssueDetail() {
         | { workspaceId: string; mode: "quarantine_restore" },
     ) => {
       const { workspaceId, ...body } = input;
-      return executionWorkspacesApi.reconcile(workspaceId, body);
+      return executionWorktreesApi.reconcile(workspaceId, body);
     },
     onSuccess: (_result, variables) => {
       // Refresh the detail card itself (not just the list collections): a successful reconcile
@@ -5984,12 +5983,12 @@ export function IssueDetail() {
       pushToast(
         variables.mode === "quarantine_restore"
           ? {
-              title: "Workspace repaired",
+              title: "Worktree repaired",
               body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
               tone: "success",
             }
           : {
-              title: "Workspace branch reconciled",
+              title: "Worktree branch reconciled",
               body: "The recorded branch now matches the live branch; the task will resume.",
               tone: "success",
             },
@@ -5998,10 +5997,7 @@ export function IssueDetail() {
     onError: (err) => {
       pushToast({
         title: "Reconcile failed",
-        body:
-          err instanceof Error
-            ? err.message
-            : "Unable to reconcile the workspace branch.",
+        body: err instanceof Error ? err.message : "Unable to reconcile the worktree branch.",
         tone: "error",
       });
     },
@@ -6012,70 +6008,56 @@ export function IssueDetail() {
   // not the page-level `issue.executionWorkspaceId`, which can drift (e.g. a re-issue rebinds the
   // issue to a new workspace) while the card still shows the older action. Fall back to the
   // page-level id only when the action carries no workspace reference.
-  const reconcileExecutionWorkspaceId =
-    readRecoveryReconcileWorkspaceId(issue?.activeRecoveryAction) ??
-    issue?.executionWorkspaceId ??
-    null;
+  const reconcileExecutionWorktreeId =
+    readRecoveryReconcileWorktreeId(issue?.activeRecoveryAction) ?? issue?.executionWorkspaceId ?? null;
   const handleReconcileForwardRecoveryAction = useCallback(() => {
-    if (!reconcileExecutionWorkspaceId) {
+    if (!reconcileExecutionWorktreeId) {
       pushToast({
         title: "Reconcile failed",
-        body: "This task has no execution workspace to reconcile.",
+        body: "This task has no execution worktree to reconcile.",
         tone: "error",
       });
       return;
     }
     void reconcileRecoveryAction.mutateAsync({
-      workspaceId: reconcileExecutionWorkspaceId,
+      workspaceId: reconcileExecutionWorktreeId,
       mode: "forward",
     });
-  }, [
-    reconcileExecutionWorkspaceId,
-    reconcileRecoveryAction.mutateAsync,
-    pushToast,
-  ]);
+  }, [reconcileExecutionWorktreeId, reconcileRecoveryAction.mutateAsync, pushToast]);
   const handleBreakGlassOverrideRecoveryAction = useCallback(
     (reason: string) => {
-      if (!reconcileExecutionWorkspaceId) {
+      if (!reconcileExecutionWorktreeId) {
         pushToast({
           title: "Reconcile failed",
-          body: "This task has no execution workspace to reconcile.",
+          body: "This task has no execution worktree to reconcile.",
           tone: "error",
         });
         return;
       }
       void reconcileRecoveryAction.mutateAsync({
-        workspaceId: reconcileExecutionWorkspaceId,
+        workspaceId: reconcileExecutionWorktreeId,
         mode: "override",
         reason,
       });
     },
-    [
-      reconcileExecutionWorkspaceId,
-      reconcileRecoveryAction.mutateAsync,
-      pushToast,
-    ],
+    [reconcileExecutionWorktreeId, reconcileRecoveryAction.mutateAsync, pushToast],
   );
   // Repair action (workspace_validation, dirty divergence): quarantine the dirty worktree onto a
   // rescue branch and restore the recorded branch. Lossless — no reason required.
   const handleQuarantineRestoreRecoveryAction = useCallback(() => {
-    if (!reconcileExecutionWorkspaceId) {
+    if (!reconcileExecutionWorktreeId) {
       pushToast({
         title: "Repair failed",
-        body: "This task has no execution workspace to repair.",
+        body: "This task has no execution worktree to repair.",
         tone: "error",
       });
       return;
     }
     void reconcileRecoveryAction.mutateAsync({
-      workspaceId: reconcileExecutionWorkspaceId,
+      workspaceId: reconcileExecutionWorktreeId,
       mode: "quarantine_restore",
     });
-  }, [
-    reconcileExecutionWorkspaceId,
-    reconcileRecoveryAction.mutateAsync,
-    pushToast,
-  ]);
+  }, [reconcileExecutionWorktreeId, reconcileRecoveryAction.mutateAsync, pushToast]);
 
   const treePreviewAffectedIssues = useMemo(
     () =>
@@ -6270,8 +6252,8 @@ export function IssueDetail() {
       ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
       : "Assign an agent to wake them for triage while the subtree remains paused."
     : null;
-  const reopenComposerHint = closedIsolatedWorkspaceReopenPending
-    ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
+  const reopenComposerHint = closedIsolatedWorktreeReopenPending
+    ? "This issue's isolated worktree was archived. Your next comment or resume reopens it and rebuilds the worktree."
     : null;
   const composerHint = pausedComposerHint ?? reopenComposerHint;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold
@@ -7101,7 +7083,7 @@ export function IssueDetail() {
         />
 
         {taskChatShellEnabled ? null : (
-          <IssueWorkspaceCard
+          <IssueWorktreeCard
             issue={issue}
             project={resolvedProject}
             onUpdate={(data) => updateIssue.mutate(data)}
@@ -7126,7 +7108,7 @@ export function IssueDetail() {
             const workProductsWithFileRefs = issue.workProducts
               .map((product) => ({
                 product,
-                fileRef: extractWorkspaceFileRefFromWorkProduct(product),
+                fileRef: extractWorktreeFileRefFromWorkProduct(product),
               }))
               .filter(({ fileRef }) => fileRef !== null);
 

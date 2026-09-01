@@ -3,45 +3,45 @@ import type { Issue, Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import type { IssueModelLane } from "../../lib/issue-assignee-overrides";
 
-export function defaultProjectWorkspaceIdForProject(project: {
+export function defaultProjectWorktreeIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
   executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null;
 } | null | undefined) {
   if (!project) return null;
   return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.find((worktree) => worktree.isPrimary)?.id
     ?? project.workspaces?.[0]?.id
     ?? null;
 }
 
-export function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
+export function defaultExecutionWorktreeModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
   const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
   if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
   if (defaultMode === "adapter_default") return "agent_default";
   return "shared_workspace";
 }
 
-function primaryWorkspaceIdForProject(project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined) {
+function primaryWorktreeIdForProject(project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined) {
   return project?.primaryWorkspace?.id
-    ?? project?.workspaces.find((workspace) => workspace.isPrimary)?.id
+    ?? project?.workspaces.find((worktree) => worktree.isPrimary)?.id
     ?? project?.workspaces[0]?.id
     ?? null;
 }
 
-export function isMainIssueWorkspace(input: {
+export function isMainIssueWorktree(input: {
   issue: Pick<Issue, "projectWorkspaceId" | "currentExecutionWorkspace">;
   project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined;
 }) {
-  const workspace = input.issue.currentExecutionWorkspace ?? null;
-  const primaryWorkspaceId = primaryWorkspaceIdForProject(input.project);
-  const linkedProjectWorkspaceId = workspace?.projectWorkspaceId ?? input.issue.projectWorkspaceId ?? null;
-  if (workspace) {
-    if (workspace.mode !== "shared_workspace") return false;
-    if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
-    return workspace.mode === "shared_workspace" && linkedProjectWorkspaceId === primaryWorkspaceId;
+  const worktree = input.issue.currentExecutionWorkspace ?? null;
+  const primaryWorktreeId = primaryWorktreeIdForProject(input.project);
+  const linkedProjectWorktreeId = worktree?.projectWorkspaceId ?? input.issue.projectWorkspaceId ?? null;
+  if (worktree) {
+    if (worktree.mode !== "shared_workspace") return false;
+    if (!linkedProjectWorktreeId || !primaryWorktreeId) return true;
+    return worktree.mode === "shared_workspace" && linkedProjectWorktreeId === primaryWorktreeId;
   }
-  if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
-  return linkedProjectWorkspaceId === primaryWorkspaceId;
+  if (!linkedProjectWorktreeId || !primaryWorktreeId) return true;
+  return linkedProjectWorktreeId === primaryWorktreeId;
 }
 
 export function toDateTimeLocalValue(value: string | null | undefined) {

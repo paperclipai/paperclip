@@ -15,7 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
 import { authApi } from "../../api/auth";
-import { executionWorkspacesApi } from "../../api/execution-workspaces";
+import { executionWorktreesApi } from "../../api/execution-worktrees";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -78,17 +78,17 @@ import {
 } from "../interrupt-handoff/InterruptHandoffViews";
 import { describeReassignInterrupt } from "../../lib/interrupt-handoff";
 import {
-  buildWorkspaceRuntimeControlSections,
-  WorkspaceRuntimeQuickControls,
-  type WorkspaceRuntimeControlRequest,
-} from "../WorkspaceRuntimeControls";
+  buildWorktreeRuntimeControlSections,
+  WorktreeRuntimeQuickControls,
+  type WorktreeRuntimeControlRequest,
+} from "../WorktreeRuntimeControls";
 import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
   compactRecord,
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
-  isMainIssueWorkspace,
+  defaultExecutionWorktreeModeForProject,
+  defaultProjectWorktreeIdForProject,
+  isMainIssueWorktree,
   overrideLane,
   sortAdapterModels,
   thinkingEffortKeyFor,
@@ -453,60 +453,60 @@ export function IssueProperties({
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
   const issueProject = issue.project ?? currentProject;
-  const issueUsesMainWorkspace = useMemo(
-    () => isMainIssueWorkspace({ issue, project: issueProject }),
+  const issueUsesMainWorktree = useMemo(
+    () => isMainIssueWorktree({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
-  const workspaceRuntimeConfig = issueUsesMainWorkspace
+  const showWorktreeDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorktree;
+  const worktreeRuntimeConfig = issueUsesMainWorktree
     ? null
     : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
-  const workspaceRuntimeServices = issue.currentExecutionWorkspace?.runtimeServices ?? [];
-  const workspaceCanRunCommands = Boolean(issue.currentExecutionWorkspace?.cwd);
-  const workspaceCanStartServices = Boolean(workspaceRuntimeConfig) && workspaceCanRunCommands;
-  const workspaceRuntimeSections = useMemo(() => buildWorkspaceRuntimeControlSections({
-    runtimeConfig: workspaceRuntimeConfig,
-    runtimeServices: workspaceRuntimeServices,
-    canStartServices: workspaceCanStartServices,
-    canRunJobs: workspaceCanRunCommands,
-  }), [workspaceCanRunCommands, workspaceCanStartServices, workspaceRuntimeConfig, workspaceRuntimeServices]);
-  const hasWorkspaceRuntimeControls = !issueUsesMainWorkspace && (
-    workspaceRuntimeSections.services.length > 0
-    || workspaceRuntimeSections.otherServices.length > 0
+  const worktreeRuntimeServices = issue.currentExecutionWorkspace?.runtimeServices ?? [];
+  const worktreeCanRunCommands = Boolean(issue.currentExecutionWorkspace?.cwd);
+  const worktreeCanStartServices = Boolean(worktreeRuntimeConfig) && worktreeCanRunCommands;
+  const worktreeRuntimeSections = useMemo(() => buildWorktreeRuntimeControlSections({
+    runtimeConfig: worktreeRuntimeConfig,
+    runtimeServices: worktreeRuntimeServices,
+    canStartServices: worktreeCanStartServices,
+    canRunJobs: worktreeCanRunCommands,
+  }), [worktreeCanRunCommands, worktreeCanStartServices, worktreeRuntimeConfig, worktreeRuntimeServices]);
+  const hasWorktreeRuntimeControls = !issueUsesMainWorktree && (
+    worktreeRuntimeSections.services.length > 0
+    || worktreeRuntimeSections.otherServices.length > 0
   );
-  const controlWorkspaceRuntime = useMutation({
-    mutationFn: (request: WorkspaceRuntimeControlRequest) => {
-      const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
-      if (!workspaceId) throw new Error("This task is not attached to a workspace.");
-      return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request);
+  const controlWorktreeRuntime = useMutation({
+    mutationFn: (request: WorktreeRuntimeControlRequest) => {
+      const worktreeId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
+      if (!worktreeId) throw new Error("This task is not attached to a worktree.");
+      return executionWorktreesApi.controlRuntimeCommands(worktreeId, request.action, request);
     },
     onSuccess: (result, request) => {
-      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.setQueryData(queryKeys.executionWorktrees.detail(result.workspace.id), result.workspace);
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorktrees.overview(result.workspace.companyId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorktrees.worktreeOperations(result.workspace.id) });
       if (companyId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorktrees.list(companyId) });
       }
       setRuntimeActionErrorMessage(null);
       setRuntimeActionMessage(
         request.action === "run"
-          ? "Workspace job completed."
+          ? "Worktree job completed."
           : request.action === "stop"
-            ? "Workspace service stopped."
+            ? "Worktree service stopped."
             : request.action === "restart"
-              ? "Workspace service restarted."
-              : "Workspace service started.",
+              ? "Worktree service restarted."
+              : "Worktree service started.",
       );
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control worktree commands.");
     },
   });
-  const pendingWorkspaceRuntimeAction = controlWorkspaceRuntime.isPending ? controlWorkspaceRuntime.variables ?? null : null;
+  const pendingWorktreeRuntimeAction = controlWorktreeRuntime.isPending ? controlWorktreeRuntime.variables ?? null : null;
   const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
   const relatedTasks = useMemo(() => {
     const excluded = new Set<string>();
@@ -1845,11 +1845,11 @@ export function IssueProperties({
               )}
               onClick={() => {
                 if (option.kind === "project") {
-                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
+                  const defaultMode = defaultExecutionWorktreeModeForProject(option.project);
                   trackRecentProject(option.project.id);
                   onUpdate({
                     projectId: option.project.id,
-                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
+                    projectWorkspaceId: defaultProjectWorktreeIdForProject(option.project),
                     executionWorkspaceId: null,
                     executionWorkspacePreference: defaultMode,
                     executionWorkspaceSettings: option.project.executionWorkspacePolicy?.enabled
@@ -2447,28 +2447,28 @@ export function IssueProperties({
         ) : null}
       </PropertySection>
 
-      {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
-        <PropertySection title="Workspace">
-          {showWorkspaceDetailLink && issue.executionWorkspaceId && (
-            <PropertyRow label="Workspace">
+      {hasWorktreeRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+        <PropertySection title="Worktree">
+          {showWorktreeDetailLink && issue.executionWorkspaceId && (
+            <PropertyRow label="Worktree">
               <Link
-                to={`/execution-workspaces/${issue.executionWorkspaceId}`}
+                to={`/execution-worktrees/${issue.executionWorkspaceId}`}
                 className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
               >
                 <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                View workspace
+                View worktree
                 <ArrowUpRight className="h-3 w-3 shrink-0" />
               </Link>
             </PropertyRow>
           )}
-          {hasWorkspaceRuntimeControls && (
+          {hasWorktreeRuntimeControls && (
             <PropertyRow label="Service">
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <WorkspaceRuntimeQuickControls
-                  sections={workspaceRuntimeSections}
-                  isPending={controlWorkspaceRuntime.isPending}
-                  pendingRequest={pendingWorkspaceRuntimeAction}
-                  onAction={(request) => controlWorkspaceRuntime.mutate(request)}
+                <WorktreeRuntimeQuickControls
+                  sections={worktreeRuntimeSections}
+                  isPending={controlWorktreeRuntime.isPending}
+                  pendingRequest={pendingWorktreeRuntimeAction}
+                  onAction={(request) => controlWorktreeRuntime.mutate(request)}
                   square
                   align="start"
                   iconOnly

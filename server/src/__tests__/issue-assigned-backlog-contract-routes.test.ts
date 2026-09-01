@@ -52,7 +52,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
-  executionWorkspaceService: () => ({
+  executionWorktreeService: () => ({
     getById: vi.fn(async () => null),
   }),
   feedbackService: () => ({

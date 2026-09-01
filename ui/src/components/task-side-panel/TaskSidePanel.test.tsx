@@ -72,7 +72,7 @@ vi.mock("./TaskDocumentPanel", () => ({
 }));
 
 vi.mock("./TaskWorkspaceFilePanel", () => ({
-  TaskWorkspaceFilePanel: () => <div>Workspace file</div>,
+  TaskWorkspaceFilePanel: () => <div>Worktree file</div>,
 }));
 
 function issue(overrides: Partial<Issue> = {}): Issue {
@@ -262,13 +262,13 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Properties content");
   });
 
-  it("opens a URL-backed workspace file tab outside file-viewer provider ancestry", async () => {
+  it("opens a URL-backed worktree file tab outside file-viewer provider ancestry", async () => {
     routeFixture.location.search = "?file=ui%2Fsrc%2FApp.tsx&line=7&workspace=project";
     window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
     await render(panel({ fileTabsEnabled: true }));
 
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("App.tsx");
-    expect(container.textContent).toContain("Workspace file");
+    expect(container.textContent).toContain("Worktree file");
   });
 
   it("clears file-viewer URL state when switching to a non-file tab", async () => {

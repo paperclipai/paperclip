@@ -144,7 +144,7 @@ vi.mock("../services/index.js", () => ({
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
+  executionWorktreeService: () => ({}),
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,

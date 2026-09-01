@@ -296,7 +296,7 @@ function formatProjectScanSummary(result: CompanySkillProjectScanResult) {
   ];
   if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
   if (result.skipped.length > 0) parts.push(`${result.skipped.length} skipped`);
-  return `${parts.join(", ")} across ${result.scannedWorkspaces} workspace${result.scannedWorkspaces === 1 ? "" : "s"}.`;
+  return `${parts.join(", ")} across ${result.scannedWorkspaces} worktree${result.scannedWorkspaces === 1 ? "" : "s"}.`;
 }
 
 function fileIcon(kind: CompanySkillFileInventoryEntry["kind"]) {
@@ -1250,8 +1250,8 @@ export function DiscoveryGrid({
             size="icon-sm"
             onClick={() => onScan()}
             disabled={scanPending}
-            aria-label="Scan project workspaces for skills"
-            title="Scan project workspaces for skills"
+            aria-label="Scan project worktrees for skills"
+            title="Scan project worktrees for skills"
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
           </Button>
@@ -4370,7 +4370,7 @@ export function CompanySkills() {
     ),
     onMutate: (projectId) => {
       setScanStatusMessage(
-        projectId ? "Refreshing project skills..." : "Scanning project workspaces for skills...",
+        projectId ? "Refreshing project skills..." : "Scanning project worktrees for skills...",
       );
     },
     onSuccess: async (result) => {
@@ -4402,7 +4402,7 @@ export function CompanySkills() {
     },
     onError: (error) => {
       setScanStatusMessage(null);
-      reportSkillError(error, "Project skill scan failed", "Failed to scan project workspaces.", "Scanning projects for skills");
+      reportSkillError(error, "Project skill scan failed", "Failed to scan project worktrees.", "Scanning projects for skills");
     },
   });
 
@@ -4416,7 +4416,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the Paperclip worktree.`,
       });
     },
     onError: (error) => {
@@ -5148,7 +5148,7 @@ export function CompanySkills() {
   const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
   const studioDescription = studioForkFromId
     ? "Review the fork metadata and create an editable organization copy."
-    : "Create an editable organization skill in the Paperclip workspace.";
+    : "Create an editable organization skill in the Paperclip worktree.";
   return (
     <>
       {policyDenial.denial ? (

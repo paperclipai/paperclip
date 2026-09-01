@@ -86,8 +86,8 @@ For safer parallel local experiments, initialize a dedicated worktree instance i
 ```sh
 npx paperclipai worktree:make local-lab --seed-mode minimal
 cd ~/paperclip-local-lab
-pnpm paperclipai worktree env                       # inspect generated env exports
-eval "$(npx paperclipai worktree env)"             # bash/zsh
+pnpm paperclipai dev-worktree env                       # inspect generated env exports
+eval "$(npx paperclipai dev-worktree env)"             # bash/zsh
 pnpm paperclipai run
 pnpm paperclipai doctor
 ```
@@ -97,7 +97,7 @@ If the experiment gets noisy, repair or reseed the worktree without touching the
 ```sh
 # worktree repair rebuilds the local checkout metadata, so run the checked-out CLI through the direct-exec form.
 node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts worktree repair --branch paperclip-local-lab
-npx paperclipai worktree reseed --from . --to paperclip-local-lab
+npx paperclipai dev-worktree reseed --from . --to paperclip-local-lab
 ```
 
 When done, shut it down and remove the isolated state explicitly:

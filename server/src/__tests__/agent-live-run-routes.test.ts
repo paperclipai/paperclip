@@ -44,7 +44,7 @@ const mockProviderTraceStore = vi.hoisted(() => ({
   remove: vi.fn(),
   listMetadataForRuns: vi.fn(),
 }));
-const mockWorkspaceDiffReprojection = vi.hoisted(() => ({
+const mockWorktreeDiffReprojection = vi.hoisted(() => ({
   project: vi.fn(),
   persist: vi.fn(),
 }));
@@ -82,9 +82,9 @@ function registerModuleMocks() {
     providerTraceStore: () => mockProviderTraceStore,
   }));
 
-  vi.doMock("../services/provider-trace-workspace-diff-reprojection.js", () => ({
-    projectCodexWorkspaceDiffsFromTrace: mockWorkspaceDiffReprojection.project,
-    persistReprojectedWorkspaceDiffs: mockWorkspaceDiffReprojection.persist,
+  vi.doMock("../services/provider-trace-worktree-diff-reprojection.js", () => ({
+    projectCodexWorktreeDiffsFromTrace: mockWorktreeDiffReprojection.project,
+    persistReprojectedWorktreeDiffs: mockWorktreeDiffReprojection.persist,
   }));
 
   vi.doMock("../realtime/runner-prp-ws.js", async () => {
@@ -120,7 +120,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-    workspaceOperationService: () => ({}),
+    worktreeOperationService: () => ({}),
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -321,8 +321,8 @@ describe("agent live run routes", () => {
     });
     mockProviderTraceStore.getByRun.mockResolvedValue(null);
     mockProviderTraceStore.readExactEntries.mockResolvedValue([]);
-    mockWorkspaceDiffReprojection.project.mockReturnValue({ turns: [], skipReasons: [] });
-    mockWorkspaceDiffReprojection.persist.mockResolvedValue({
+    mockWorktreeDiffReprojection.project.mockReturnValue({ turns: [], skipReasons: [] });
+    mockWorktreeDiffReprojection.persist.mockResolvedValue({
       created: 0,
       skipped: 0,
       skipReasons: [],
@@ -1036,7 +1036,7 @@ describe("agent live run routes", () => {
     );
   });
 
-  it("lets a board member reproject only retained workspace diffs", async () => {
+  it("lets a board member reproject only retained worktree diffs", async () => {
     mockProviderTraceStore.getByRun.mockResolvedValue({
       id: "trace-1",
       status: "complete",
@@ -1047,8 +1047,8 @@ describe("agent live run routes", () => {
       { kind: "frame", frameId: 1 },
     ]);
     const projection = { turns: [{ turnId: "turn-1" }], skipReasons: [] };
-    mockWorkspaceDiffReprojection.project.mockReturnValue(projection);
-    mockWorkspaceDiffReprojection.persist.mockResolvedValue({
+    mockWorktreeDiffReprojection.project.mockReturnValue(projection);
+    mockWorktreeDiffReprojection.persist.mockResolvedValue({
       created: 1,
       skipped: 0,
       skipReasons: [],
@@ -1062,7 +1062,7 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ created: 1, skipped: 0, skipReasons: [] });
-    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledWith(
+    expect(mockWorktreeDiffReprojection.persist).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         traceId: "trace-1",
@@ -1121,7 +1121,7 @@ describe("agent live run routes", () => {
         skipReasons: [{ reason }],
       });
       expect(mockProviderTraceStore.readExactEntries).not.toHaveBeenCalled();
-      expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+      expect(mockWorktreeDiffReprojection.persist).not.toHaveBeenCalled();
     },
   );
 
@@ -1145,6 +1145,6 @@ describe("agent live run routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
-    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    expect(mockWorktreeDiffReprojection.persist).not.toHaveBeenCalled();
   });
 });

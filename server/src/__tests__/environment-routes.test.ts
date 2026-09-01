@@ -83,7 +83,7 @@ const mockGetPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
 const mockCapturePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
 const mockCancelPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
 const mockDeletePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
-const mockExecutionWorkspaceService = vi.hoisted(() => ({
+const mockExecutionWorktreeService = vi.hoisted(() => ({
   clearEnvironmentSelection: vi.fn(),
 }));
 
@@ -112,8 +112,8 @@ vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => mockEnvironmentRuntimeService,
 }));
 
-vi.mock("../services/execution-workspaces.js", () => ({
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
+vi.mock("../services/execution-worktrees.js", () => ({
+  executionWorktreeService: () => mockExecutionWorktreeService,
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
@@ -296,7 +296,7 @@ describe("environment routes", () => {
     mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(false);
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
-    mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
+    mockExecutionWorktreeService.clearEnvironmentSelection.mockReset();
     Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
     mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
       activeTemplate: null,
@@ -324,7 +324,7 @@ describe("environment routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
-    mockExecutionWorkspaceService.clearEnvironmentSelection.mockResolvedValue(0);
+    mockExecutionWorktreeService.clearEnvironmentSelection.mockResolvedValue(0);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env ?? {});
     mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
@@ -1525,7 +1525,7 @@ describe("environment routes", () => {
     expect(res.body.error).toBe("Cannot delete the managed local environment.");
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["managed_local"] });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
-    expect(mockExecutionWorkspaceService.clearEnvironmentSelection).not.toHaveBeenCalled();
+    expect(mockExecutionWorktreeService.clearEnvironmentSelection).not.toHaveBeenCalled();
   });
 
   it("rejects deleting the current instance default environment", async () => {
@@ -1900,7 +1900,7 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-ssh");
     for (const companyId of ["company-1", "company-2"]) {
-      expect(mockExecutionWorkspaceService.clearEnvironmentSelection)
+      expect(mockExecutionWorktreeService.clearEnvironmentSelection)
         .toHaveBeenCalledWith(companyId, "env-ssh");
       expect(mockIssueService.clearExecutionWorkspaceEnvironmentSelection)
         .toHaveBeenCalledWith(companyId, "env-ssh");

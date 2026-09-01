@@ -121,7 +121,7 @@ import {
   companySkillService,
   companyService,
   companySearchService,
-  executionWorkspaceService,
+  executionWorktreeService,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -168,7 +168,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo }
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
-} from "./workspace-command-authz.js";
+} from "./worktree-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   formatAttachmentSize,
@@ -193,9 +193,9 @@ import {
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
-  executionWorkspaceService as executionWorkspaceServiceDirect,
+  executionWorktreeService as executionWorkspaceServiceDirect,
   STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS,
-} from "../services/execution-workspaces.js";
+} from "../services/execution-worktrees.js";
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -229,7 +229,7 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { parseIssueExecutionWorkspaceSettings } from "../services/execution-worktree-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,

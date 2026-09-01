@@ -2,9 +2,9 @@ import { useLayoutEffect, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
-  ResolvedWorkspaceResource,
-  WorkspaceFileContent,
-  WorkspaceFileSelector,
+  ResolvedWorktreeResource,
+  WorktreeFileContent,
+  WorktreeFileSelector,
 } from "@paperclipai/shared";
 import { FileViewerProvider } from "@/context/FileViewerContext";
 import { FileViewerSheet } from "@/components/FileViewerSheet";
@@ -46,7 +46,7 @@ export function FileViewerSheet({
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent side="right" className={classes}>
         {/* header, metadata chips, content region */}
-        <p>Workspace file contents would render here.</p>
+        <p>Worktree file contents would render here.</p>
       </SheetContent>
     </Sheet>
   );
@@ -54,8 +54,8 @@ export function FileViewerSheet({
 `;
 
 function buildResource(
-  overrides: Partial<ResolvedWorkspaceResource> = {},
-): ResolvedWorkspaceResource {
+  overrides: Partial<ResolvedWorktreeResource> = {},
+): ResolvedWorktreeResource {
   return {
     kind: "file",
     provider: "git_worktree",
@@ -74,9 +74,9 @@ function buildResource(
 }
 
 function buildContent(
-  resource: ResolvedWorkspaceResource,
+  resource: ResolvedWorktreeResource,
   data = SAMPLE_CODE,
-): WorkspaceFileContent {
+): WorktreeFileContent {
   return {
     resource,
     content: { encoding: "utf8", data },
@@ -135,7 +135,7 @@ type ViewerRenderProps = {
   path: string;
   line?: number | null;
   column?: number | null;
-  workspace?: WorkspaceFileSelector;
+  workspace?: WorktreeFileSelector;
   showPromptWhenEmpty?: boolean;
 };
 
@@ -171,9 +171,9 @@ function FileViewerShell({
 function seedContent(
   queryClient: ReturnType<typeof useQueryClient>,
   path: string,
-  workspace: WorkspaceFileSelector,
-  resource: ResolvedWorkspaceResource,
-  content: WorkspaceFileContent | null,
+  workspace: WorktreeFileSelector,
+  resource: ResolvedWorktreeResource,
+  content: WorktreeFileContent | null,
 ) {
   queryClient.setQueryData(
     queryKeys.issues.fileResource(ISSUE_ID, { path, workspace }),
@@ -323,7 +323,7 @@ export const ErrorNotFoundWithFallback: Story = {
 };
 
 export const ErrorNoWorkspace: Story = {
-  name: "Error — no workspace",
+  name: "Error — no worktree",
   render: () => (
     <FileViewerShell
       path="ui/src/components/FileViewerSheet.tsx"
@@ -332,7 +332,7 @@ export const ErrorNoWorkspace: Story = {
         if (url.pathname.includes("/file-resources/resolve")) {
           return Response.json(
             {
-              error: "This issue has no project or execution workspace.",
+              error: "This issue has no project or execution worktree.",
               code: "no_workspace",
             },
             { status: 422 },
@@ -345,7 +345,7 @@ export const ErrorNoWorkspace: Story = {
 };
 
 export const ErrorOutsideWorkspace: Story = {
-  name: "Error — path outside workspace",
+  name: "Error — path outside worktree",
   render: () => (
     <FileViewerShell
       path="../../../etc/passwd"
@@ -354,7 +354,7 @@ export const ErrorOutsideWorkspace: Story = {
         if (url.pathname.includes("/file-resources/resolve")) {
           return Response.json(
             {
-              error: "Path escapes workspace root.",
+              error: "Path escapes worktree root.",
               code: "outside_workspace_root",
             },
             { status: 400 },
@@ -376,7 +376,7 @@ export const ErrorDeniedSensitive: Story = {
         if (url.pathname.includes("/file-resources/resolve")) {
           return Response.json(
             {
-              error: "Blocked by workspace file policy.",
+              error: "Blocked by worktree file policy.",
               code: "denied_by_policy_sensitive",
             },
             { status: 403 },
@@ -389,7 +389,7 @@ export const ErrorDeniedSensitive: Story = {
 };
 
 export const RemoteWorkspace: Story = {
-  name: "Remote workspace (preview unsupported)",
+  name: "Remote worktree (preview unsupported)",
   render: () => {
     const resource = buildResource({
       kind: "remote_resource",
@@ -418,7 +418,7 @@ export const RemoteWorkspace: Story = {
 };
 
 export const WorkspaceArchived: Story = {
-  name: "Workspace archived / cleaned up",
+  name: "Worktree archived / cleaned up",
   render: () => (
     <FileViewerShell
       path="ui/src/components/FileViewerSheet.tsx"

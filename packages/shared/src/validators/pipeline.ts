@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
-  issueExecutionWorkspaceSettingsSchema,
+  issueExecutionWorktreeSettingsSchema,
 } from "./issue.js";
 
 const routineVariableLikeNameSchema = z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]*$/);
@@ -30,7 +30,7 @@ export const pipelineStageOnEnterSchema = z.object({
   projectWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorktreeSettingsSchema.optional().nullable(),
 }).passthrough();
 
 export const pipelineStageAutomationSchema = z.object({
@@ -41,7 +41,7 @@ export const pipelineStageAutomationSchema = z.object({
   projectWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorktreeSettingsSchema.optional().nullable(),
 }).passthrough();
 
 export const pipelineStageCarryOverPolicySchema = z.object({

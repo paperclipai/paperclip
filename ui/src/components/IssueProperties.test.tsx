@@ -4,12 +4,12 @@ import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
-  ExecutionWorkspace,
+  ExecutionWorktree,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueLabel,
   Project,
-  WorkspaceRuntimeService,
+  WorktreeRuntimeService,
 } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
@@ -27,7 +27,7 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+const mockExecutionWorktreesApi = vi.hoisted(() => ({
   controlRuntimeCommands: vi.fn(),
 }));
 
@@ -80,8 +80,8 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
-vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: mockExecutionWorkspacesApi,
+vi.mock("../api/execution-worktrees", () => ({
+  executionWorktreesApi: mockExecutionWorktreesApi,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -278,7 +278,7 @@ function createLabel(overrides: Partial<IssueLabel> = {}): IssueLabel {
   };
 }
 
-function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
+function createRuntimeService(overrides: Partial<WorktreeRuntimeService> = {}): WorktreeRuntimeService {
   return {
     id: "service-1",
     companyId: "company-1",
@@ -311,7 +311,7 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
   };
 }
 
-function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorkspace {
+function createExecutionWorktree(overrides: Partial<ExecutionWorktree> = {}): ExecutionWorktree {
   return {
     id: "workspace-1",
     companyId: "company-1",
@@ -345,7 +345,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
 }
 
 function createProject(overrides: Partial<Project> = {}): Project {
-  const primaryWorkspace = {
+  const primaryWorktree = {
     id: "workspace-main",
     companyId: "company-1",
     projectId: "project-1",
@@ -397,8 +397,8 @@ function createProject(overrides: Partial<Project> = {}): Project {
       effectiveLocalFolder: "/tmp/paperclip",
       origin: "local_folder",
     },
-    workspaces: [primaryWorkspace],
-    primaryWorkspace,
+    workspaces: [primaryWorktree],
+    primaryWorkspace: primaryWorktree,
     archivedAt: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
@@ -464,7 +464,7 @@ describe("IssueProperties", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
-    mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
+    mockExecutionWorktreesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
@@ -1503,15 +1503,15 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows a green service link above the workspace row for a live non-main workspace", async () => {
+  it("shows a green service link above the worktree row for a live non-main worktree", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
-    const updatedWorkspace = createExecutionWorkspace({
+    const updatedWorktree = createExecutionWorktree({
       mode: "isolated_workspace",
       runtimeServices: [createRuntimeService({ url: serviceUrl, status: "stopped", stoppedAt: new Date("2026-04-06T12:06:00.000Z") })],
     });
-    mockExecutionWorkspacesApi.controlRuntimeCommands.mockResolvedValue({
-      workspace: updatedWorkspace,
+    mockExecutionWorktreesApi.controlRuntimeCommands.mockResolvedValue({
+      workspace: updatedWorktree,
       operation: {},
     });
     const root = renderProperties(container, {
@@ -1519,7 +1519,7 @@ describe("IssueProperties", () => {
         projectId: "project-1",
         projectWorkspaceId: "workspace-main",
         executionWorkspaceId: "workspace-1",
-        currentExecutionWorkspace: createExecutionWorkspace({
+        currentExecutionWorkspace: createExecutionWorktree({
           mode: "isolated_workspace",
           config: {
             environmentId: null,
@@ -1543,7 +1543,7 @@ describe("IssueProperties", () => {
     expect(serviceLink).not.toBeNull();
     expect(serviceLink?.className).toContain("sm:self-start");
     expect(serviceLink?.className).not.toContain("sm:self-end");
-    expect((container.textContent ?? "").indexOf("Workspace")).toBeLessThan(
+    expect((container.textContent ?? "").indexOf("Worktree")).toBeLessThan(
       (container.textContent ?? "").indexOf("Service"),
     );
     const stopButton = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
@@ -1556,12 +1556,12 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(mockExecutionWorkspacesApi.controlRuntimeCommands).toHaveBeenCalledWith(
+    expect(mockExecutionWorktreesApi.controlRuntimeCommands).toHaveBeenCalledWith(
       "workspace-1",
       "stop",
       expect.objectContaining({ action: "stop", runtimeServiceId: "service-1" }),
     );
-    expect(container.textContent).toContain("Workspace service stopped.");
+    expect(container.textContent).toContain("Worktree service stopped.");
 
     act(() => root.unmount());
   });
@@ -1585,14 +1585,14 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows only the workspace detail link for non-default workspaces", async () => {
+  it("shows only the worktree detail link for non-default worktrees", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const root = renderProperties(container, {
       issue: createIssue({
         projectId: "project-1",
         projectWorkspaceId: "workspace-main",
         executionWorkspaceId: "workspace-1",
-        currentExecutionWorkspace: createExecutionWorkspace({
+        currentExecutionWorkspace: createExecutionWorktree({
           mode: "isolated_workspace",
         }),
       }),
@@ -1602,12 +1602,12 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    const workspaceLink = Array.from(container.querySelectorAll("a")).find(
-      (link) => link.textContent?.trim() === "View workspace",
+    const worktreeLink = Array.from(container.querySelectorAll("a")).find(
+      (link) => link.textContent?.trim() === "View worktree",
     );
-    expect(container.textContent).not.toContain("View workspace tasks");
-    expect(workspaceLink).not.toBeUndefined();
-    expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+    expect(container.textContent).not.toContain("View worktree tasks");
+    expect(worktreeLink).not.toBeUndefined();
+    expect(worktreeLink?.getAttribute("href")).toBe("/execution-worktrees/workspace-1");
 
     act(() => root.unmount());
   });
@@ -1621,7 +1621,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         executionWorkspaceId: "workspace-1",
-        currentExecutionWorkspace: createExecutionWorkspace({
+        currentExecutionWorkspace: createExecutionWorktree({
           branchName: "pap-1-workspace",
           cwd: "/tmp/paperclip/PAP-1",
         }),
@@ -1647,7 +1647,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("does not show a service link for the main shared workspace", async () => {
+  it("does not show a service link for the main shared worktree", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
     const root = renderProperties(container, {
@@ -1655,7 +1655,7 @@ describe("IssueProperties", () => {
         projectId: "project-1",
         projectWorkspaceId: "workspace-main",
         executionWorkspaceId: "workspace-1",
-        currentExecutionWorkspace: createExecutionWorkspace({
+        currentExecutionWorkspace: createExecutionWorktree({
           mode: "shared_workspace",
           projectWorkspaceId: "workspace-main",
           runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running" })],
@@ -1667,9 +1667,9 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.querySelector(`a[href="${serviceUrl}"]`)).toBeNull();
-    expect(container.textContent).not.toContain("View workspace tasks");
+    expect(container.textContent).not.toContain("View worktree tasks");
     expect(Array.from(container.querySelectorAll("a")).some(
-      (link) => link.textContent?.trim() === "View workspace",
+      (link) => link.textContent?.trim() === "View worktree",
     )).toBe(false);
 
     act(() => root.unmount());

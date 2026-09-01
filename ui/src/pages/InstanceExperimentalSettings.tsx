@@ -365,7 +365,7 @@ export function InstanceExperimentalSettings() {
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
-  const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableIsolatedWorktrees = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
@@ -676,19 +676,19 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
-        title="Enable Isolated Workspaces"
-        description="Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing task runs."
-        checked={enableIsolatedWorkspaces}
+        title="Enable Isolated Worktrees"
+        description="Show execution worktree controls in project configuration and allow isolated worktree behavior for new and existing task runs."
+        checked={enableIsolatedWorktrees}
         onCheckedChange={(checked) => toggleMutation.mutate({ enableIsolatedWorkspaces: checked })}
         disabled={toggleMutation.isPending}
         settingKey="enableIsolatedWorkspaces"
         managed={managedKeys.enableIsolatedWorkspaces}
-        ariaLabel="Toggle isolated workspaces experimental setting"
+        ariaLabel="Toggle isolated worktrees experimental setting"
       />
 
       <ExperimentalToggleCard
         title="Experimental File Viewer"
-        description="Show task detail controls for browsing and previewing workspace files relative to a task."
+        description="Show task detail controls for browsing and previewing worktree files relative to a task."
         checked={enableExperimentalFileViewer}
         onCheckedChange={(checked) => toggleMutation.mutate({ enableExperimentalFileViewer: checked })}
         disabled={toggleMutation.isPending}
@@ -857,7 +857,7 @@ export function InstanceExperimentalSettings() {
 
       <ExperimentalToggleCard
         title="Summaries"
-        description="Show Summarizer-generated status slots on project and workspace pages, with on-demand refresh and revision history. Existing summary data is kept when this is disabled."
+        description="Show Summarizer-generated status slots on project and worktree pages, with on-demand refresh and revision history. Existing summary data is kept when this is disabled."
         footnote="Status Cards requires Summaries. Disabling Summaries also disables Status Cards."
         checked={enableSummaries}
         onCheckedChange={(checked) =>

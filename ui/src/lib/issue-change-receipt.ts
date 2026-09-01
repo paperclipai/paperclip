@@ -37,8 +37,8 @@ const FIELD_LABELS: Record<string, string> = {
   requestDepth: "Request depth",
   sourceTrust: "Source trust",
   executionPolicy: "Execution policy",
-  executionWorkspaceId: "Execution workspace",
-  projectWorkspaceId: "Project workspace",
+  executionWorkspaceId: "Execution worktree",
+  projectWorkspaceId: "Project worktree",
 };
 
 /** Human label for a changed field, e.g. `assigneeAgentId` → "Assignee". */

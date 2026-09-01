@@ -188,7 +188,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 │  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
 │                                                              │
 │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│  │ Org Chart │  │Workspaces │  │  Plugins  │  │  Budget   │  │
+│  │ Org Chart │  │ Worktrees │  │  Plugins  │  │  Budget   │  │
 │  │ & Agents  │  │ & Runtime │  │           │  │ & Costs   │  │
 │  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
 │                                                              │
@@ -227,14 +227,16 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td>
 
-**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, workspace resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
+**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, worktree resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
 
 </td>
 </tr>
 <tr>
 <td>
 
-**Workspaces & Runtime** — Project workspaces, isolated execution workspaces (git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
+**Worktrees & Runtime** — Project worktrees, isolated execution worktrees (Git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
+
+Persisted integration contracts still use `workspace` names in Phase 1. See the [worktree terminology mapping](doc/terminology/worktree-mapping.md).
 
 </td>
 <td>

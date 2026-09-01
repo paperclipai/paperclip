@@ -20,13 +20,13 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../services/workspace-readiness.js";
+import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../services/worktree-readiness.js";
 import {
   resolveWorkspaceReadinessLocalToken,
   WORKSPACE_READINESS_TOKEN_HEADER,
   WORKSPACE_READINESS_USER_EMAIL_HEADER,
   WORKSPACE_READINESS_USER_ID_HEADER,
-} from "../auth/workspace-login-handoff.js";
+} from "../auth/worktree-login-handoff.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(

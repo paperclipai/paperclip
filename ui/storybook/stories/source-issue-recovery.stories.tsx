@@ -146,7 +146,7 @@ function AllStatesPanel() {
             sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
           },
           nextAction:
-            "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+            "Repair the source issue worktree link, project worktree cwd, or git checkout before resuming adapter execution.",
         })}
         canFalsePositive
       />
@@ -392,7 +392,7 @@ function BlockerNoticePanel() {
           buildBlocker({
             id: "blocker-5",
             identifier: "PAP-10409",
-            title: "Phase 6 follow-up failed: git workspace lost",
+            title: "Phase 6 follow-up failed: git worktree lost",
             status: "blocked",
             activeRecoveryAction: buildAction({
               kind: "workspace_validation",
@@ -400,7 +400,7 @@ function BlockerNoticePanel() {
               fingerprint: "fp-workspace-blocker",
               evidence: { latestRunErrorCode: "workspace_validation_failed" },
               nextAction:
-                "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+                "Repair the source issue worktree link, project worktree cwd, or git checkout before resuming adapter execution.",
             }),
           }),
         ]}
@@ -557,7 +557,7 @@ function InboxRowPanel() {
           ...baseIssue,
           id: "issue-recovery-workspace",
           identifier: "PAP-10409",
-          title: "Phase 6 follow-up failed: git workspace lost",
+          title: "Phase 6 follow-up failed: git worktree lost",
           status: "blocked",
           activeRecoveryAction: buildAction({
             kind: "workspace_validation",
@@ -565,7 +565,7 @@ function InboxRowPanel() {
             fingerprint: "fp-workspace-row",
             evidence: { latestRunErrorCode: "workspace_validation_failed" },
             nextAction:
-              "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+              "Repair the source issue worktree link, project worktree cwd, or git checkout before resuming adapter execution.",
           }),
         }}
       />

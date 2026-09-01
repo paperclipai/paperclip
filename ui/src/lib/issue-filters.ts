@@ -1,13 +1,13 @@
 import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
 
-export type IssueFilterWorkspaceLookup = {
+export type IssueFilterWorktreeLookup = {
   mode?: string | null;
   projectWorkspaceId?: string | null;
 };
 
-export type IssueFilterWorkspaceContext = {
-  executionWorkspaceById?: ReadonlyMap<string, IssueFilterWorkspaceLookup>;
-  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+export type IssueFilterWorktreeContext = {
+  executionWorktreeById?: ReadonlyMap<string, IssueFilterWorktreeLookup>;
+  defaultProjectWorktreeIdByProjectId?: ReadonlyMap<string, string>;
   externalObjectSummaryByIssueId?: ReadonlyMap<string, ExternalObjectSummary>;
   externalObjectSummariesReady?: boolean;
 };
@@ -123,35 +123,35 @@ export function toggleIssueFilterValue(values: string[], value: string): string[
   return values.includes(value) ? values.filter((existing) => existing !== value) : [...values, value];
 }
 
-export function resolveIssueFilterWorkspaceId(
+export function resolveIssueFilterWorktreeId(
   issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
-  context: IssueFilterWorkspaceContext = {},
+  context: IssueFilterWorktreeContext = {},
 ): string | null {
-  const defaultProjectWorkspaceId = issue.projectId
-    ? context.defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null
+  const defaultProjectWorktreeId = issue.projectId
+    ? context.defaultProjectWorktreeIdByProjectId?.get(issue.projectId) ?? null
     : null;
 
   if (issue.executionWorkspaceId) {
-    const executionWorkspace = context.executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
-    const linkedProjectWorkspaceId =
-      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
-    const isDefaultSharedExecutionWorkspace =
-      executionWorkspace?.mode === "shared_workspace"
-      && linkedProjectWorkspaceId != null
-      && linkedProjectWorkspaceId === defaultProjectWorkspaceId;
-    if (isDefaultSharedExecutionWorkspace) return null;
+    const executionWorktree = context.executionWorktreeById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorktreeId =
+      executionWorktree?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorktree =
+      executionWorktree?.mode === "shared_workspace"
+      && linkedProjectWorktreeId != null
+      && linkedProjectWorktreeId === defaultProjectWorktreeId;
+    if (isDefaultSharedExecutionWorktree) return null;
     return issue.executionWorkspaceId;
   }
 
   if (issue.projectWorkspaceId) {
-    if (issue.projectWorkspaceId === defaultProjectWorkspaceId) return null;
+    if (issue.projectWorkspaceId === defaultProjectWorktreeId) return null;
     return issue.projectWorkspaceId;
   }
 
   return null;
 }
 
-export function shouldIncludeIssueFilterWorkspaceOption(
+export function shouldIncludeIssueFilterWorktreeOption(
   workspace: { id: string; mode?: string | null; projectWorkspaceId?: string | null },
   defaultProjectWorkspaceIds: ReadonlySet<string>,
 ): boolean {
@@ -200,7 +200,7 @@ export function applyIssueFilters(
   currentUserId?: string | null,
   enableRoutineVisibilityFilter = false,
   liveIssueIds?: ReadonlySet<string>,
-  workspaceContext: IssueFilterWorkspaceContext = {},
+  workspaceContext: IssueFilterWorktreeContext = {},
 ): Issue[] {
   let result = issues;
   if (state.liveOnly) {
@@ -238,8 +238,8 @@ export function applyIssueFilters(
   }
   if (state.workspaces.length > 0) {
     result = result.filter((issue) => {
-      const workspaceId = resolveIssueFilterWorkspaceId(issue, workspaceContext);
-      return workspaceId != null && state.workspaces.includes(workspaceId);
+      const worktreeId = resolveIssueFilterWorktreeId(issue, workspaceContext);
+      return worktreeId != null && state.workspaces.includes(worktreeId);
     });
   }
   if (state.externalObjectStatuses.length > 0) {

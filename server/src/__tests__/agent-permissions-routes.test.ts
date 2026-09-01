@@ -185,8 +185,8 @@ function registerModuleMocks() {
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   }));
 
-  vi.doMock("../services/workspace-operations.js", () => ({
-    workspaceOperationService: () => mockWorkspaceOperationService,
+  vi.doMock("../services/worktree-operations.js", () => ({
+    worktreeOperationService: () => mockWorkspaceOperationService,
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
@@ -212,7 +212,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
-    workspaceOperationService: () => mockWorkspaceOperationService,
+    worktreeOperationService: () => mockWorkspaceOperationService,
     environmentService: () => mockEnvironmentService,
   }));
 }

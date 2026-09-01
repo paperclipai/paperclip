@@ -34,7 +34,7 @@ const mockDocumentsService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
 }));
 
-const mockExecutionWorkspaceService = vi.hoisted(() => ({
+const mockExecutionWorktreeService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
@@ -112,7 +112,7 @@ vi.mock("../services/index.js", () => ({
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  executionWorktreeService: () => mockExecutionWorktreeService,
   feedbackService: () => mockFeedbackService,
   goalService: () => mockGoalService,
   heartbeatService: () => mockHeartbeatService,
@@ -135,8 +135,8 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => mockWorkProductService,
 }));
 
-vi.mock("../services/execution-workspaces.js", () => ({
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
+vi.mock("../services/execution-worktrees.js", () => ({
+  executionWorktreeService: () => mockExecutionWorktreeService,
   STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
@@ -218,7 +218,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
-    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorktreeService.getById.mockResolvedValue(null);
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
@@ -371,7 +371,7 @@ describe.sequential("issue goal context routes", () => {
         updatedAt: new Date("2026-03-20T00:00:00Z"),
       },
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
+    mockExecutionWorktreeService.getById.mockResolvedValueOnce({
       id: workspaceId,
       companyId: "company-1",
       projectId: legacyProjectLinkedIssue.projectId,
@@ -506,7 +506,7 @@ describe.sequential("issue goal context routes", () => {
       ...legacyProjectLinkedIssue,
       executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
+    mockExecutionWorktreeService.getById.mockResolvedValue({
       id: "55555555-5555-4555-8555-555555555555",
       name: "PAP-581 workspace",
       mode: "isolated_workspace",
@@ -528,7 +528,7 @@ describe.sequential("issue goal context routes", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(mockExecutionWorktreeService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
     expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
       id: "55555555-5555-4555-8555-555555555555",
       mode: "isolated_workspace",

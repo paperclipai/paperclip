@@ -44,7 +44,7 @@ describe("lexical single copy", () => {
   }
 
   /** Walks up from this file to the pnpm workspace root. */
-  function workspaceRoot(): string {
+  function worktreeRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     const { root } = parse(dir);
     while (!existsSync(join(dir, "pnpm-workspace.yaml"))) {
@@ -63,7 +63,7 @@ describe("lexical single copy", () => {
     //
     // With no override, pnpm honours every declared range, and the copy
     // checks below confirm the app and the editor landed on the same one.
-    const manifest = JSON.parse(readFileSync(join(workspaceRoot(), "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(join(worktreeRoot(), "package.json"), "utf8"));
     const overrides: Record<string, string> = manifest.pnpm?.overrides ?? {};
     const forced = Object.keys(overrides).filter(
       (name) => name === "lexical" || name.startsWith("@lexical/"),

@@ -21,7 +21,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   adapterExecutionTargetToRemoteSpec: mockAdapterExecutionTargetToRemoteSpec,
 }));
 
-vi.mock("../services/workspace-realization.js", () => ({
+vi.mock("../services/worktree-realization.js", () => ({
   buildWorkspaceRealizationRequest: mockBuildWorkspaceRealizationRequest,
 }));
 
@@ -35,8 +35,8 @@ vi.mock("../services/environments.js", () => ({
   })),
 }));
 
-vi.mock("../services/execution-workspaces.js", () => ({
-  executionWorkspaceService: vi.fn(() => ({
+vi.mock("../services/execution-worktrees.js", () => ({
+  executionWorktreeService: vi.fn(() => ({
     update: mockUpdateExecutionWorkspace,
   })),
 }));
@@ -63,7 +63,7 @@ import {
   EnvironmentRunError,
 } from "../services/environment-run-orchestrator.ts";
 import type { Environment, EnvironmentLease, ExecutionWorkspace } from "@paperclipai/shared";
-import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.ts";
+import type { RealizedExecutionWorkspace } from "../services/worktree-runtime.ts";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.ts";
 
 // ---------------------------------------------------------------------------

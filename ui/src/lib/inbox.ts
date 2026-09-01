@@ -11,7 +11,7 @@ import {
   defaultIssueFilterState,
   normalizeIssueFilterState,
   type IssueFilterState,
-  type IssueFilterWorkspaceContext,
+  type IssueFilterWorktreeContext,
 } from "./issue-filters";
 import { formatAssigneeUserLabel } from "./assignees";
 
@@ -127,22 +127,22 @@ export type InboxKeyboardNavEntry =
       issue: Issue;
     };
 
-export interface InboxProjectWorkspaceLookup {
+export interface InboxProjectWorktreeLookup {
   name: string;
   projectId?: string | null;
 }
 
-export interface InboxExecutionWorkspaceLookup {
+export interface InboxExecutionWorktreeLookup {
   name: string;
   mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
   projectWorkspaceId: string | null;
   projectId?: string | null;
 }
 
-export interface InboxWorkspaceGroupingOptions {
-  executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
-  projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
-  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+export interface InboxWorktreeGroupingOptions {
+  executionWorktreeById?: ReadonlyMap<string, InboxExecutionWorktreeLookup>;
+  projectWorktreeById?: ReadonlyMap<string, InboxProjectWorktreeLookup>;
+  defaultProjectWorktreeIdByProjectId?: ReadonlyMap<string, string>;
   projectById?: ReadonlyMap<string, { name: string | null | undefined }>;
   agentById?: ReadonlyMap<string, string | null | undefined>;
   userLabelById?: ReadonlyMap<string, string>;
@@ -410,12 +410,12 @@ export function saveInboxWorkItemGroupBy(groupBy: InboxWorkItemGroupBy) {
   }
 }
 
-export function shouldResetInboxWorkspaceGrouping(
+export function shouldResetInboxWorktreeGrouping(
   groupBy: InboxWorkItemGroupBy,
-  isolatedWorkspacesEnabled: boolean,
+  isolatedWorktreesEnabled: boolean,
   experimentalSettingsLoaded: boolean,
 ): boolean {
-  return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorkspacesEnabled;
+  return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorktreesEnabled;
 }
 
 export function shouldIncludeRoutineExecutionIssue(
@@ -434,12 +434,12 @@ export function matchesInboxIssueSearch(
   issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
   query: string,
   {
-    isolatedWorkspacesEnabled = false,
-    executionWorkspaceById,
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
-  }: InboxWorkspaceGroupingOptions & {
-    isolatedWorkspacesEnabled?: boolean;
+    isolatedWorktreesEnabled = false,
+    executionWorktreeById,
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
+  }: InboxWorktreeGroupingOptions & {
+    isolatedWorktreesEnabled?: boolean;
   } = {},
 ): boolean {
   const normalizedQuery = query.trim().toLowerCase();
@@ -447,32 +447,32 @@ export function matchesInboxIssueSearch(
   if (issue.title.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.identifier?.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.description?.toLowerCase().includes(normalizedQuery)) return true;
-  if (!isolatedWorkspacesEnabled) return false;
+  if (!isolatedWorktreesEnabled) return false;
 
-  const workspaceName = resolveIssueWorkspaceName(issue, {
-    executionWorkspaceById,
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
+  const worktreeName = resolveIssueWorktreeName(issue, {
+    executionWorktreeById,
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
   });
-  return workspaceName?.toLowerCase().includes(normalizedQuery) ?? false;
+  return worktreeName?.toLowerCase().includes(normalizedQuery) ?? false;
 }
 
 export function getArchivedInboxSearchIssues({
   visibleIssues,
   searchableIssues,
   query,
-  isolatedWorkspacesEnabled = false,
-  executionWorkspaceById,
-  projectWorkspaceById,
-  defaultProjectWorkspaceIdByProjectId,
+  isolatedWorktreesEnabled = false,
+  executionWorktreeById,
+  projectWorktreeById,
+  defaultProjectWorktreeIdByProjectId,
 }: {
   visibleIssues: Issue[];
   searchableIssues: Issue[];
   query: string;
-  isolatedWorkspacesEnabled?: boolean;
-  executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
-  projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
-  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  isolatedWorktreesEnabled?: boolean;
+  executionWorktreeById?: ReadonlyMap<string, InboxExecutionWorktreeLookup>;
+  projectWorktreeById?: ReadonlyMap<string, InboxProjectWorktreeLookup>;
+  defaultProjectWorktreeIdByProjectId?: ReadonlyMap<string, string>;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -482,10 +482,10 @@ export function getArchivedInboxSearchIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id))
     .filter((issue) =>
       matchesInboxIssueSearch(issue, normalizedQuery, {
-        isolatedWorkspacesEnabled,
-        executionWorkspaceById,
-        projectWorkspaceById,
-        defaultProjectWorkspaceIdByProjectId,
+        isolatedWorktreesEnabled,
+        executionWorktreeById,
+        projectWorktreeById,
+        defaultProjectWorktreeIdByProjectId,
       }),
     )
     .sort(sortIssuesByMostRecentActivity);
@@ -510,7 +510,7 @@ export function getInboxSearchSupplementIssues({
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
-  issueFilterContext?: IssueFilterWorkspaceContext;
+  issueFilterContext?: IssueFilterWorktreeContext;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -531,125 +531,125 @@ export function getInboxSearchSupplementIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
-function formatDefaultWorkspaceGroupLabel(name: string | null | undefined): string {
+function formatDefaultWorktreeGroupLabel(name: string | null | undefined): string {
   const normalizedName = name?.trim();
-  return normalizedName ? `${normalizedName} (default)` : "Default workspace";
+  return normalizedName ? `${normalizedName} (default)` : "Default worktree";
 }
 
-function resolveDefaultProjectWorkspaceInfo(
+function resolveDefaultProjectWorktreeInfo(
   issue: Pick<Issue, "projectId">,
   {
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
-  }: Pick<InboxWorkspaceGroupingOptions, "projectWorkspaceById" | "defaultProjectWorkspaceIdByProjectId">,
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
+  }: Pick<InboxWorktreeGroupingOptions, "projectWorktreeById" | "defaultProjectWorktreeIdByProjectId">,
 ): { id: string; label: string } | null {
   if (!issue.projectId) return null;
-  const defaultProjectWorkspaceId = defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null;
-  if (!defaultProjectWorkspaceId) return null;
+  const defaultProjectWorktreeId = defaultProjectWorktreeIdByProjectId?.get(issue.projectId) ?? null;
+  if (!defaultProjectWorktreeId) return null;
   return {
-    id: defaultProjectWorkspaceId,
-    label: formatDefaultWorkspaceGroupLabel(projectWorkspaceById?.get(defaultProjectWorkspaceId)?.name),
+    id: defaultProjectWorktreeId,
+    label: formatDefaultWorktreeGroupLabel(projectWorktreeById?.get(defaultProjectWorktreeId)?.name),
   };
 }
 
-export function resolveIssueWorkspaceName(
+export function resolveIssueWorktreeName(
   issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
   {
-    executionWorkspaceById,
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
-  }: InboxWorkspaceGroupingOptions,
+    executionWorktreeById,
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
+  }: InboxWorktreeGroupingOptions,
 ): string | null {
-  const defaultProjectWorkspaceId = issue.projectId
-    ? defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null
+  const defaultProjectWorktreeId = issue.projectId
+    ? defaultProjectWorktreeIdByProjectId?.get(issue.projectId) ?? null
     : null;
 
   if (issue.executionWorkspaceId) {
-    const executionWorkspace = executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
-    const linkedProjectWorkspaceId =
-      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
-    const isDefaultSharedExecutionWorkspace =
-      executionWorkspace?.mode === "shared_workspace" && linkedProjectWorkspaceId === defaultProjectWorkspaceId;
-    if (isDefaultSharedExecutionWorkspace) return null;
+    const executionWorktree = executionWorktreeById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorktreeId =
+      executionWorktree?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorktree =
+      executionWorktree?.mode === "shared_workspace" && linkedProjectWorktreeId === defaultProjectWorktreeId;
+    if (isDefaultSharedExecutionWorktree) return null;
 
-    const workspaceName = executionWorkspace?.name;
-    if (workspaceName) return workspaceName;
+    const worktreeName = executionWorktree?.name;
+    if (worktreeName) return worktreeName;
   }
 
   if (issue.projectWorkspaceId) {
-    if (issue.projectWorkspaceId === defaultProjectWorkspaceId) return null;
-    const workspaceName = projectWorkspaceById?.get(issue.projectWorkspaceId)?.name;
-    if (workspaceName) return workspaceName;
+    if (issue.projectWorkspaceId === defaultProjectWorktreeId) return null;
+    const worktreeName = projectWorktreeById?.get(issue.projectWorkspaceId)?.name;
+    if (worktreeName) return worktreeName;
   }
 
   return null;
 }
 
-export function resolveIssueWorkspaceGroup(
+export function resolveIssueWorktreeGroup(
   issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
   {
-    executionWorkspaceById,
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
-  }: InboxWorkspaceGroupingOptions = {},
+    executionWorktreeById,
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
+  }: InboxWorktreeGroupingOptions = {},
 ): { key: string; label: string } {
-  const defaultProjectWorkspace = resolveDefaultProjectWorkspaceInfo(issue, {
-    projectWorkspaceById,
-    defaultProjectWorkspaceIdByProjectId,
+  const defaultProjectWorktree = resolveDefaultProjectWorktreeInfo(issue, {
+    projectWorktreeById,
+    defaultProjectWorktreeIdByProjectId,
   });
 
   if (issue.executionWorkspaceId) {
-    const executionWorkspace = executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
-    const linkedProjectWorkspaceId =
-      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
-    const isDefaultSharedExecutionWorkspace =
-      executionWorkspace?.mode === "shared_workspace"
-      && linkedProjectWorkspaceId != null
-      && linkedProjectWorkspaceId === defaultProjectWorkspace?.id;
+    const executionWorktree = executionWorktreeById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorktreeId =
+      executionWorktree?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorktree =
+      executionWorktree?.mode === "shared_workspace"
+      && linkedProjectWorktreeId != null
+      && linkedProjectWorktreeId === defaultProjectWorktree?.id;
 
-    if (isDefaultSharedExecutionWorkspace && defaultProjectWorkspace) {
+    if (isDefaultSharedExecutionWorktree && defaultProjectWorktree) {
       return {
-        key: `workspace:project:${defaultProjectWorkspace.id}`,
-        label: defaultProjectWorkspace.label,
+        key: `workspace:project:${defaultProjectWorktree.id}`,
+        label: defaultProjectWorktree.label,
       };
     }
 
-    const workspaceName = executionWorkspace?.name?.trim();
-    if (workspaceName) {
+    const worktreeName = executionWorktree?.name?.trim();
+    if (worktreeName) {
       return {
         key: `workspace:execution:${issue.executionWorkspaceId}`,
-        label: workspaceName,
+        label: worktreeName,
       };
     }
   }
 
   if (issue.projectWorkspaceId) {
-    if (issue.projectWorkspaceId === defaultProjectWorkspace?.id) {
+    if (issue.projectWorkspaceId === defaultProjectWorktree?.id) {
       return {
-        key: `workspace:project:${defaultProjectWorkspace.id}`,
-        label: defaultProjectWorkspace.label,
+        key: `workspace:project:${defaultProjectWorktree.id}`,
+        label: defaultProjectWorktree.label,
       };
     }
 
-    const workspaceName = projectWorkspaceById?.get(issue.projectWorkspaceId)?.name?.trim();
-    if (workspaceName) {
+    const worktreeName = projectWorktreeById?.get(issue.projectWorkspaceId)?.name?.trim();
+    if (worktreeName) {
       return {
         key: `workspace:project:${issue.projectWorkspaceId}`,
-        label: workspaceName,
+        label: worktreeName,
       };
     }
   }
 
-  if (defaultProjectWorkspace) {
+  if (defaultProjectWorktree) {
     return {
-      key: `workspace:project:${defaultProjectWorkspace.id}`,
-      label: defaultProjectWorkspace.label,
+      key: `workspace:project:${defaultProjectWorktree.id}`,
+      label: defaultProjectWorktree.label,
     };
   }
 
   return {
     key: "workspace:none",
-    label: "No workspace",
+    label: "No worktree",
   };
 }
 
@@ -880,7 +880,7 @@ function resolveIssueAssigneeGroup(
     agentById,
     currentUserId,
     userLabelById,
-  }: Pick<InboxWorkspaceGroupingOptions, "agentById" | "currentUserId" | "userLabelById">,
+  }: Pick<InboxWorktreeGroupingOptions, "agentById" | "currentUserId" | "userLabelById">,
 ): { key: string; label: string } {
   if (issue.assigneeAgentId) {
     const agentName = agentById?.get(issue.assigneeAgentId)?.trim();
@@ -902,7 +902,7 @@ function resolveIssueAssigneeGroup(
 
 function resolveIssueProjectGroup(
   issue: Pick<Issue, "projectId">,
-  { projectById }: Pick<InboxWorkspaceGroupingOptions, "projectById">,
+  { projectById }: Pick<InboxWorktreeGroupingOptions, "projectById">,
 ): { key: string; label: string } {
   if (!issue.projectId) return { key: "project:none", label: "No project" };
 
@@ -957,14 +957,14 @@ function groupInboxWorkItemsByIssueGroup(
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
-  options: InboxWorkspaceGroupingOptions = {},
+  options: InboxWorktreeGroupingOptions = {},
 ): InboxWorkItemGroup[] {
   if (groupBy === "none") {
     return [{ key: "__all", label: null, items }];
   }
 
   if (groupBy === "workspace") {
-    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueWorkspaceGroup(issue, options));
+    return groupInboxWorkItemsByIssueGroup(items, (issue) => resolveIssueWorktreeGroup(issue, options));
   }
 
   if (groupBy === "assignee") {
@@ -1005,13 +1005,13 @@ function firstIssueFromInboxWorkItems(items: InboxWorkItem[]): Issue | null {
   return items.find((item): item is InboxWorkItem & { kind: "issue" } => item.kind === "issue")?.issue ?? null;
 }
 
-function projectIdForProjectWorkspace(
+function projectIdForProjectWorktree(
   projectWorkspaceId: string | null | undefined,
-  options: InboxWorkspaceGroupingOptions,
+  options: InboxWorktreeGroupingOptions,
   fallbackIssue: Issue | null,
 ) {
   if (!projectWorkspaceId) return fallbackIssue?.projectId ?? null;
-  return options.projectWorkspaceById?.get(projectWorkspaceId)?.projectId
+  return options.projectWorktreeById?.get(projectWorkspaceId)?.projectId
     ?? (fallbackIssue?.projectWorkspaceId === projectWorkspaceId ? fallbackIssue.projectId : null);
 }
 
@@ -1019,7 +1019,7 @@ export function buildInboxIssueGroupCreateDefaults(
   groupKey: string,
   groupBy: InboxWorkItemGroupBy,
   items: InboxWorkItem[],
-  options: InboxWorkspaceGroupingOptions = {},
+  options: InboxWorktreeGroupingOptions = {},
 ): InboxIssueGroupCreateDefaults | null {
   const fallbackIssue = firstIssueFromInboxWorkItems(items);
   if (!fallbackIssue) return null;
@@ -1045,28 +1045,28 @@ export function buildInboxIssueGroupCreateDefaults(
 
   if (groupBy === "workspace") {
     if (key.startsWith("workspace:execution:")) {
-      const executionWorkspaceId = key.slice("workspace:execution:".length);
-      if (!executionWorkspaceId) return {};
-      const executionWorkspace = options.executionWorkspaceById?.get(executionWorkspaceId) ?? null;
-      const projectWorkspaceId = executionWorkspace?.projectWorkspaceId
-        ?? (fallbackIssue.executionWorkspaceId === executionWorkspaceId ? fallbackIssue.projectWorkspaceId : null);
-      const projectId = executionWorkspace?.projectId
-        ?? projectIdForProjectWorkspace(projectWorkspaceId, options, fallbackIssue);
+      const executionWorktreeId = key.slice("workspace:execution:".length);
+      if (!executionWorktreeId) return {};
+      const executionWorktree = options.executionWorktreeById?.get(executionWorktreeId) ?? null;
+      const projectWorktreeId = executionWorktree?.projectWorkspaceId
+        ?? (fallbackIssue.executionWorkspaceId === executionWorktreeId ? fallbackIssue.projectWorkspaceId : null);
+      const projectId = executionWorktree?.projectId
+        ?? projectIdForProjectWorktree(projectWorktreeId, options, fallbackIssue);
       return {
-        executionWorkspaceId,
+        executionWorkspaceId: executionWorktreeId,
         executionWorkspaceMode: "reuse_existing",
         ...(projectId ? { projectId } : {}),
-        ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+        ...(projectWorktreeId ? { projectWorkspaceId: projectWorktreeId } : {}),
       };
     }
 
     if (key.startsWith("workspace:project:")) {
-      const projectWorkspaceId = key.slice("workspace:project:".length);
-      if (!projectWorkspaceId) return {};
-      const projectId = projectIdForProjectWorkspace(projectWorkspaceId, options, fallbackIssue);
+      const projectWorktreeId = key.slice("workspace:project:".length);
+      if (!projectWorktreeId) return {};
+      const projectId = projectIdForProjectWorktree(projectWorktreeId, options, fallbackIssue);
       return {
         ...(projectId ? { projectId } : {}),
-        projectWorkspaceId,
+        projectWorkspaceId: projectWorktreeId,
       };
     }
   }
@@ -1156,7 +1156,7 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
 export function buildGroupedInboxSections(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
-  workspaceGrouping: InboxWorkspaceGroupingOptions,
+  workspaceGrouping: InboxWorktreeGroupingOptions,
   options?: { keyPrefix?: string; searchSection?: InboxSearchSection; nestingEnabled?: boolean },
 ): InboxGroupedSection[] {
   const keyPrefix = options?.keyPrefix ?? "";

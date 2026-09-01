@@ -27,7 +27,7 @@ vi.mock("./ssh.js", () => ({
 
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
 import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
-import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
+import { setExpensiveWorkspaceGitExecutor } from "./git-worktree-sync.js";
 
 describe("remote managed runtime", () => {
   const cleanupDirs: string[] = [];

@@ -73,8 +73,8 @@ export function Issues() {
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
-  const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
-  const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
+  const initialWorktrees = searchParams.getAll("workspace").filter((worktreeId) => worktreeId.length > 0);
+  const worktreeIdFilter = initialWorktrees.length === 1 ? initialWorktrees[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
     if (!nextUrl) {
@@ -129,7 +129,7 @@ export function Issues() {
     setBreadcrumbs([{ label: "Tasks" }]);
   }, [setBreadcrumbs]);
 
-  const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
+  const issuePageSize = worktreeIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
   const {
     data: issuePages,
@@ -144,7 +144,7 @@ export function Issues() {
       "participant-agent",
       participantAgentId ?? "__all__",
       "workspace",
-      workspaceIdFilter ?? "__all__",
+      worktreeIdFilter ?? "__all__",
       "compact",
       "with-routine-executions",
       "infinite",
@@ -152,7 +152,7 @@ export function Issues() {
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       participantAgentId,
-      workspaceId: workspaceIdFilter,
+      workspaceId: worktreeIdFilter,
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,
@@ -202,14 +202,14 @@ export function Issues() {
       viewStateKey="paperclip:issues-view"
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+      initialWorktrees={initialWorktrees.length > 0 ? initialWorktrees : undefined}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableRoutineVisibilityFilter
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={participantAgentId || worktreeIdFilter ? { participantAgentId, workspaceId: worktreeIdFilter } : undefined}
     />
   );
 }

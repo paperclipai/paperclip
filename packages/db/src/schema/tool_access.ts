@@ -68,13 +68,13 @@ import type {
 import { agents } from "./agents.js";
 import { approvals } from "./approvals.js";
 import { companies } from "./companies.js";
-import { executionWorkspaces } from "./execution_workspaces.js";
+import { executionWorktrees } from "./execution_worktrees.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issueThreadInteractions } from "./issue_thread_interactions.js";
 import { issues } from "./issues.js";
 import { plugins } from "./plugins.js";
 import { projects } from "./projects.js";
-import { projectWorkspaces } from "./project_workspaces.js";
+import { projectWorktrees } from "./project_worktrees.js";
 
 export const toolApplications = pgTable(
   "tool_applications",
@@ -565,8 +565,8 @@ export const toolRuntimeSlots = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     applicationId: uuid("application_id").references(() => toolApplications.id, { onDelete: "set null" }),
     connectionId: uuid("connection_id").references(() => toolConnections.id, { onDelete: "cascade" }),
-    projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
-    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
+    projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorktrees.id, { onDelete: "set null" }),
+    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorktrees.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     ownerScopeType: text("owner_scope_type").notNull().default("connection"),
     ownerScopeId: text("owner_scope_id"),

@@ -226,18 +226,18 @@ function FilterMenu({
       )}
 
       {(options.workspaces.length > 0 || options.hasNoWorkspace) && (
-        <FilterSection title="Workspace">
-          {options.workspaces.map((workspace) => (
+        <FilterSection title="Worktree">
+          {options.workspaces.map((worktree) => (
             <FilterRow
-              key={workspace.id}
-              label={workspace.name}
-              checked={filters.workspaceIds.includes(workspace.id)}
-              onToggle={() => toggle("workspaceIds", workspace.id)}
+              key={worktree.id}
+              label={worktree.name}
+              checked={filters.workspaceIds.includes(worktree.id)}
+              onToggle={() => toggle("workspaceIds", worktree.id)}
             />
           ))}
           {options.hasNoWorkspace && (
             <FilterRow
-              label="No workspace"
+              label="No worktree"
               checked={filters.workspaceIds.includes(NO_GROUP_SENTINEL)}
               onToggle={() => toggle("workspaceIds", NO_GROUP_SENTINEL)}
             />

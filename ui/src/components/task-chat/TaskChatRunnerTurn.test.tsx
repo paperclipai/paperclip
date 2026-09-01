@@ -198,7 +198,7 @@ describe("TaskChatRunnerTurn", () => {
         id: "commentary",
         kind: "message",
         author: "agent",
-        text: "I’ll inspect the workspace.",
+        text: "I’ll inspect the worktree.",
         interstitial: true,
         channel: "progress",
       },
@@ -781,7 +781,7 @@ describe("TaskChatRunnerTurn", () => {
     ).toContain("Web search stopped");
   });
 
-  it("surfaces workspace changes and file references as current activity", () => {
+  it("surfaces worktree changes and file references as current activity", () => {
     render([
       {
         id: "workspace-change",
@@ -1208,7 +1208,7 @@ describe("TaskChatRunnerTurn", () => {
           id: "commentary-1",
           kind: "message",
           author: "agent",
-          text: "I’ll inspect the workspace first.",
+          text: "I’ll inspect the worktree first.",
           interstitial: true,
           channel: "progress",
         },

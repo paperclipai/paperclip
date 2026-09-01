@@ -6,8 +6,8 @@ import {
   applyIssueFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
-  resolveIssueFilterWorkspaceId,
-  shouldIncludeIssueFilterWorkspaceOption,
+  resolveIssueFilterWorktreeId,
+  shouldIncludeIssueFilterWorktreeOption,
 } from "./issue-filters";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -120,18 +120,18 @@ describe("issue filters", () => {
       projectId: "project-1",
       projectWorkspaceId: "workspace-default",
     });
-    const workspaceContext = {
-      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "workspace-default"]]),
+    const worktreeContext = {
+      defaultProjectWorktreeIdByProjectId: new Map([["project-1", "workspace-default"]]),
     };
 
-    expect(resolveIssueFilterWorkspaceId(issue, workspaceContext)).toBeNull();
+    expect(resolveIssueFilterWorktreeId(issue, worktreeContext)).toBeNull();
     expect(applyIssueFilters(
       [issue],
       { ...defaultIssueFilterState, workspaces: ["workspace-default"] },
       null,
       false,
       undefined,
-      workspaceContext,
+      worktreeContext,
     )).toEqual([]);
   });
 
@@ -142,16 +142,16 @@ describe("issue filters", () => {
       projectWorkspaceId: "workspace-default",
       executionWorkspaceId: "execution-shared-default",
     });
-    const workspaceContext = {
-      executionWorkspaceById: new Map([[
+    const worktreeContext = {
+      executionWorktreeById: new Map([[
         "execution-shared-default",
         { mode: "shared_workspace", projectWorkspaceId: "workspace-default" },
       ]]),
-      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "workspace-default"]]),
+      defaultProjectWorktreeIdByProjectId: new Map([["project-1", "workspace-default"]]),
     };
 
-    expect(resolveIssueFilterWorkspaceId(issue, workspaceContext)).toBeNull();
-    expect(shouldIncludeIssueFilterWorkspaceOption(
+    expect(resolveIssueFilterWorktreeId(issue, worktreeContext)).toBeNull();
+    expect(shouldIncludeIssueFilterWorktreeOption(
       { id: "execution-shared-default", mode: "shared_workspace", projectWorkspaceId: "workspace-default" },
       new Set(["workspace-default"]),
     )).toBe(false);
@@ -169,18 +169,18 @@ describe("issue filters", () => {
       projectWorkspaceId: "workspace-default",
       executionWorkspaceId: "execution-isolated",
     });
-    const workspaceContext = {
-      executionWorkspaceById: new Map([[
+    const worktreeContext = {
+      executionWorktreeById: new Map([[
         "execution-isolated",
         { mode: "isolated_workspace", projectWorkspaceId: "workspace-default" },
       ]]),
-      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "workspace-default"]]),
+      defaultProjectWorktreeIdByProjectId: new Map([["project-1", "workspace-default"]]),
     };
 
-    expect(resolveIssueFilterWorkspaceId(featureIssue, workspaceContext)).toBe("workspace-feature");
-    expect(resolveIssueFilterWorkspaceId(executionIssue, workspaceContext)).toBe("execution-isolated");
-    expect(shouldIncludeIssueFilterWorkspaceOption({ id: "workspace-feature" }, new Set(["workspace-default"]))).toBe(true);
-    expect(shouldIncludeIssueFilterWorkspaceOption(
+    expect(resolveIssueFilterWorktreeId(featureIssue, worktreeContext)).toBe("workspace-feature");
+    expect(resolveIssueFilterWorktreeId(executionIssue, worktreeContext)).toBe("execution-isolated");
+    expect(shouldIncludeIssueFilterWorktreeOption({ id: "workspace-feature" }, new Set(["workspace-default"]))).toBe(true);
+    expect(shouldIncludeIssueFilterWorktreeOption(
       { id: "execution-isolated", mode: "isolated_workspace", projectWorkspaceId: "workspace-default" },
       new Set(["workspace-default"]),
     )).toBe(true);

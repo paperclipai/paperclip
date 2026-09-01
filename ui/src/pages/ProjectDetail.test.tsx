@@ -22,7 +22,7 @@ const mockIssuesApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockHeartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn() }));
 const mockBudgetsApi = vi.hoisted(() => ({ overview: vi.fn(), upsertPolicy: vi.fn() }));
-const mockExecutionWorkspacesApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockExecutionWorktreesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -49,7 +49,7 @@ vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: mockHeartbeatsApi }));
 vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
-vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
+vi.mock("../api/execution-worktrees", () => ({ executionWorktreesApi: mockExecutionWorktreesApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
 vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
@@ -92,7 +92,7 @@ vi.mock("../components/InlineEditor", () => ({
     <span>{value || placeholder || null}</span>
   ),
 }));
-vi.mock("../components/ProjectWorkspacesContent", () => ({
+vi.mock("../components/ProjectWorktreesContent", () => ({
   ProjectWorkspacesContent: () => <div data-testid="project-workspaces" />,
 }));
 vi.mock("../components/SummarySlotCard", () => ({
@@ -191,7 +191,7 @@ describe("ProjectDetail", () => {
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
-    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockExecutionWorktreesApi.list.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
       agentMemberships: {},

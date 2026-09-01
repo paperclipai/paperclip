@@ -20,7 +20,7 @@ import {
 import {
   WORKSPACE_FILE_TEXT_MAX_BYTES,
   workspaceFileResourceService,
-} from "../services/workspace-file-resources.js";
+} from "../services/worktree-file-resources.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

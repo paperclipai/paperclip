@@ -59,7 +59,7 @@ vi.mock("../services/index.js", () => ({
   environmentService: () => mockEnvironmentService,
   issueReferenceService: () => mockIssueReferenceService,
   logActivity: mockLogActivity,
-  workspaceOperationService: () => ({}),
+  worktreeOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),
@@ -70,7 +70,7 @@ vi.mock("../services/index.js", () => ({
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
-  executionWorkspaceService: () => ({}),
+  executionWorktreeService: () => ({}),
   goalService: () => ({
     getById: vi.fn(),
     getDefaultCompanyGoal: vi.fn(),

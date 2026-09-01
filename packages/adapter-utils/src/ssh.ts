@@ -10,10 +10,10 @@ import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
   readSanitizedOriginRemoteUrl,
-} from "./git-workspace-sync.js";
+} from "./git-worktree-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
-import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import type { DirectorySnapshot } from "./worktree-restore-merge.js";
+import { mergeDirectoryWithBaseline } from "./worktree-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,

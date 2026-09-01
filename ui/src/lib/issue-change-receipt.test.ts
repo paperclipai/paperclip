@@ -13,6 +13,8 @@ describe("issueChangeFieldLabel", () => {
     expect(issueChangeFieldLabel("blockedByIssueIds")).toBe("Blockers");
     expect(issueChangeFieldLabel("workMode")).toBe("Work mode");
     expect(issueChangeFieldLabel("reviewPolicy")).toBe("Who can approve");
+    expect(issueChangeFieldLabel("executionWorkspaceId")).toBe("Execution worktree");
+    expect(issueChangeFieldLabel("projectWorkspaceId")).toBe("Project worktree");
   });
 
   it("humanizes unknown camelCase and snake_case fields", () => {

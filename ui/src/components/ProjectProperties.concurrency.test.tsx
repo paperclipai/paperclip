@@ -87,13 +87,13 @@ function render(project: Project, onFieldUpdate: (field: string, data: Record<st
 }
 
 function concurrencySelect(): HTMLSelectElement {
-  const el = container.querySelector<HTMLSelectElement>('select[aria-label="Shared workspace concurrency"]');
-  if (!el) throw new Error("Shared workspace concurrency select not found");
+  const el = container.querySelector<HTMLSelectElement>('select[aria-label="Shared worktree concurrency"]');
+  if (!el) throw new Error("Shared worktree concurrency select not found");
   return el;
 }
 
-describe("ProjectProperties — shared workspace concurrency select", () => {
-  it("defaults to Auto when the policy has no sharedWorkspaceConcurrency", () => {
+describe("ProjectProperties — shared worktree concurrency select", () => {
+  it("defaults to Auto when the policy has no sharedWorktreeConcurrency", () => {
     render(makeProject(), vi.fn());
     expect(concurrencySelect().value).toBe("auto");
     expect(container.textContent).toContain("Concurrent runs on local/SSH runners");
@@ -107,7 +107,7 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       vi.fn(),
     );
     expect(concurrencySelect().value).toBe("serialize");
-    expect(container.textContent).toContain("Runs always take turns in the shared project workspace");
+    expect(container.textContent).toContain("Runs always take turns in the shared project worktree");
   });
 
   it("writes the picked value onto executionWorkspacePolicy when changed", () => {

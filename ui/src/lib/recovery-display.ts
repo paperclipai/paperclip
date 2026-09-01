@@ -92,7 +92,7 @@ export function recoveryChipLabel(
   lineage?: RecoveryRetryLineage | null,
 ): string {
   if (kind === "workspace_validation" && state === "needed") {
-    return "Workspace recovery needed";
+    return "Worktree recovery needed";
   }
   if (
     state === "in_progress" &&

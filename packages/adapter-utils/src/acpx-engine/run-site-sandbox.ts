@@ -41,7 +41,7 @@ import type {
   SitePlan,
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
-import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreOutcome } from "../worktree-restore-merge.js";
 
 /**
  * One staged in-sandbox runtime the store keeps for the next compatible resume.

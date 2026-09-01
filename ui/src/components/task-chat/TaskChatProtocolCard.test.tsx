@@ -152,7 +152,7 @@ describe("TaskChatProtocolCard", () => {
     }
   });
 
-  it("opens a workspace diff review dialog", async () => {
+  it("opens a worktree diff review dialog", async () => {
     renderCard(root, {
       id: "workspace",
       kind: "protocol",

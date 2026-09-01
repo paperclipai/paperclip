@@ -603,10 +603,10 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       blocks.push({
         type: "event",
         ts: entry.ts,
-        label: entry.complete ? "workspace diff" : "workspace changes",
+        label: entry.complete ? "worktree diff" : "worktree changes",
         tone: "info",
         text: `${entry.totals.files} changed ${entry.totals.files === 1 ? "file" : "files"}`,
-        detail: entry.source === "runner_verified" ? "Verified from workspace" : "Reported by harness",
+        detail: entry.source === "runner_verified" ? "Verified from worktree" : "Reported by harness",
       });
       continue;
     }

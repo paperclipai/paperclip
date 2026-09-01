@@ -13,7 +13,7 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, projectService, logActivity, worktreeOperationService } from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -22,15 +22,15 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
-  startRuntimeServicesForWorkspaceControl,
+  startRuntimeServicesForWorktreeControl,
   stopRuntimeServicesForProjectWorkspace,
-} from "../services/workspace-runtime.js";
+} from "../services/worktree-runtime.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectProjectExecutionWorkspaceCommandPaths,
   collectProjectWorkspaceCommandPaths,
-} from "./workspace-command-authz.js";
-import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
+} from "./worktree-command-authz.js";
+import { assertCanManageProjectWorkspaceRuntimeServices } from "./worktree-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -45,7 +45,7 @@ export function projectRoutes(db: Db) {
   const svc = projectService(db);
   const access = accessService(db);
   const secretsSvc = secretService(db);
-  const workspaceOperations = workspaceOperationService(db);
+  const workspaceOperations = worktreeOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const externalObjectsSvc = externalObjectService(db, {
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
@@ -552,7 +552,7 @@ export function projectRoutes(db: Db) {
         }
 
         if (action === "start" || action === "restart") {
-          const startedServices = await startRuntimeServicesForWorkspaceControl({
+          const startedServices = await startRuntimeServicesForWorktreeControl({
             db,
             actor: {
               id: actor.agentId ?? null,

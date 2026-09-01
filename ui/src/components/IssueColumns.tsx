@@ -29,7 +29,7 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   assignee: "Responsible",
   kickedOffBy: "Kicked off by",
   project: "Project",
-  workspace: "Workspace",
+  workspace: "Worktree",
   parent: "Parent task",
   labels: "Tags",
   updated: "Last updated",
@@ -41,7 +41,7 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   assignee: "Responsible agent or board user.",
   kickedOffBy: "Board user or agent who created the task.",
   project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the task.",
+  workspace: "Execution or project worktree used for the task.",
   parent: "Parent task identifier and title.",
   labels: "Task labels and tags.",
   updated: "Latest visible activity time.",
@@ -436,7 +436,7 @@ export function InboxIssueTrailingColumns({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
+                    Filter by worktree
                   </TooltipContent>
                 </Tooltip>
               ) : (

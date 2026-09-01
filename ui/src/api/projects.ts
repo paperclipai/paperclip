@@ -1,11 +1,11 @@
 import type {
   Project,
-  ProjectWorkspace,
-  WorkspaceOperation,
-  WorkspaceRuntimeControlTarget,
+  ProjectWorktree,
+  WorktreeOperation,
+  WorktreeRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
-import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
+import { sanitizeWorktreeRuntimeControlTarget } from "./worktree-runtime-control";
 
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
@@ -30,11 +30,11 @@ export const projectsApi = {
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
   listWorkspaces: (projectId: string, companyId?: string) =>
-    api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
+    api.get<ProjectWorktree[]>(projectPath(projectId, companyId, "/workspaces")),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>
-    api.post<ProjectWorkspace>(projectPath(projectId, companyId, "/workspaces"), data),
+    api.post<ProjectWorktree>(projectPath(projectId, companyId, "/workspaces"), data),
   updateWorkspace: (projectId: string, workspaceId: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<ProjectWorkspace>(
+    api.patch<ProjectWorktree>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
       data,
     ),
@@ -43,24 +43,24 @@ export const projectsApi = {
     workspaceId: string,
     action: "start" | "stop" | "restart",
     companyId?: string,
-    target: WorkspaceRuntimeControlTarget = {},
+    target: WorktreeRuntimeControlTarget = {},
   ) =>
-    api.post<{ workspace: ProjectWorkspace; operation: WorkspaceOperation }>(
+    api.post<{ workspace: ProjectWorktree; operation: WorktreeOperation }>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/runtime-services/${action}`),
-      sanitizeWorkspaceRuntimeControlTarget(target),
+      sanitizeWorktreeRuntimeControlTarget(target),
     ),
   controlWorkspaceCommands: (
     projectId: string,
     workspaceId: string,
     action: "start" | "stop" | "restart" | "run",
     companyId?: string,
-    target: WorkspaceRuntimeControlTarget = {},
+    target: WorktreeRuntimeControlTarget = {},
   ) =>
-    api.post<{ workspace: ProjectWorkspace; operation: WorkspaceOperation }>(
+    api.post<{ workspace: ProjectWorktree; operation: WorktreeOperation }>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/runtime-commands/${action}`),
-      sanitizeWorkspaceRuntimeControlTarget(target),
+      sanitizeWorktreeRuntimeControlTarget(target),
     ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
-    api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
+    api.delete<ProjectWorktree>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
 };

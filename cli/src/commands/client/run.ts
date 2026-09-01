@@ -206,8 +206,9 @@ export function registerRunCommands(command: Command): void {
 
   addCommonClientOptions(
     command
-      .command("workspace-operations")
-      .description("List workspace operations for a heartbeat run")
+      .command("worktree-operations")
+      .alias("workspace-operations")
+      .description("List worktree operations for a heartbeat run")
       .argument("<runId>", "Heartbeat run ID")
       .action(async (runId: string, opts: BaseClientOptions) => {
         try {
@@ -231,8 +232,9 @@ export function registerRunCommands(command: Command): void {
 
   addCommonClientOptions(
     command
-      .command("workspace-log")
-      .description("Read a workspace operation log")
+      .command("worktree-log")
+      .alias("workspace-log")
+      .description("Read a worktree operation log")
       .argument("<operationId>", "Workspace operation ID")
       .option("--offset <bytes>", "Byte offset", "0")
       .option("--limit-bytes <bytes>", "Maximum bytes to read")

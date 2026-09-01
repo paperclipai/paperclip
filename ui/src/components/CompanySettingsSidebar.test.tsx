@@ -65,7 +65,7 @@ vi.mock("./SidebarNavItem", () => ({
 }));
 
 vi.mock("./SidebarCompanyMenu", () => ({
-  SidebarCompanyMenu: () => <div>Workspace switcher</div>,
+  SidebarCompanyMenu: () => <div>Worktree switcher</div>,
 }));
 
 vi.mock("@/api/sidebarBadges", () => ({

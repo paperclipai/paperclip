@@ -54,7 +54,7 @@ export type RecoveryResolveOutcome =
   | "false_positive_in_review";
 
 /**
- * Payload for the "Re-issue on isolated workspace" action (workspace_validation only).
+ * Payload for the "Re-issue on isolated worktree" action (workspace_validation only).
  * The caller composes an isolated-workspace re-issue whose git worktree bases off `baseRef`
  * — the live (checked-out) branch that diverged, or its HEAD sha when the branch is detached.
  */
@@ -79,7 +79,7 @@ export interface IssueRecoveryActionCardProps {
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
   /**
-   * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
+   * Optional handler for the workspace_validation "Re-issue on isolated worktree" action.
    * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
    * If omitted, the re-issue button is not shown.
    */
@@ -106,7 +106,7 @@ export interface IssueRecoveryActionCardProps {
    */
   canBreakGlass?: boolean;
   /**
-   * Handler for the lossless repair — "Repair workspace — quarantine changes & restore branch"
+   * Handler for the lossless repair — "Repair worktree — quarantine changes & restore branch"
    * (workspace_validation only). Rendered only for a *dirty* divergence; the caller invokes the S4
    * reconcile op in `quarantine_restore` mode, which quarantines the dirty worktree onto a rescue
    * branch and restores the recorded branch. If omitted, the repair action is not shown.
@@ -131,7 +131,7 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "Missing Disposition",
   deliberate_wait_without_target: "Wait Without A Target",
   stranded_assigned_issue: "Stranded Task",
-  workspace_validation: "Workspace Validation",
+  workspace_validation: "Worktree Validation",
   configuration_validation: "Configuration Validation",
   active_run_watchdog: "Active Watchdog",
   issue_graph_liveness: "Task Needs Next Step",
@@ -145,7 +145,7 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   stranded_assigned_issue:
     "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
   workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
+    "Paperclip stopped this run because the task's git worktree could not be validated.",
   configuration_validation:
     "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
   active_run_watchdog:
@@ -288,14 +288,14 @@ function formatShortSha(sha: string | null): string | null {
  * live ("actual"/checked-out) branch, both HEAD shas, and a server-computed ancestry verdict +
  * plain-language explanation of why the run was declined.
  */
-interface WorkspaceContention {
+interface WorktreeContention {
   claimedByIssueId: string | null;
   claimedByIssueIdentifier: string | null;
   /** True when the claiming workspace has a queued/running run (not just a stale claim). */
   hasActiveRun: boolean;
 }
 
-interface WorkspaceDivergence {
+interface WorktreeDivergence {
   expectedBranch: string | null;
   liveBranch: string | null;
   expectedHeadSha: string | null;
@@ -311,7 +311,7 @@ interface WorkspaceDivergence {
    * Another workspace is holding the live branch. When present, the lossless quarantine repair is
    * refused server-side — re-issuing on an isolated workspace is the recommended path instead.
    */
-  contention: WorkspaceContention | null;
+  contention: WorktreeContention | null;
   /**
    * Preview of the rescue branch the quarantine repair will create. The server appends a UTC
    * timestamp at repair time, so this is the stable prefix only (rendered with a trailing marker).
@@ -346,7 +346,7 @@ function asNonNegativeInt(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
 }
 
-function readContention(value: unknown): WorkspaceContention | null {
+function readContention(value: unknown): WorktreeContention | null {
   const record = asRecord(value);
   if (!record) return null;
   const activeRun = asRecord(record.activeRun);
@@ -357,22 +357,22 @@ function readContention(value: unknown): WorkspaceContention | null {
   };
 }
 
-function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
+function readWorktreeDivergence(action: IssueRecoveryAction): WorktreeDivergence | null {
   if (action.kind !== "workspace_validation") return null;
-  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
-  if (!workspaceValidation) return null;
-  if (workspaceValidation.reason !== "git_worktree_branch_incoherence") return null;
-  const provenance = asRecord(workspaceValidation.provenance) ?? {};
-  const expectedBranch = asNonEmptyString(workspaceValidation.expectedBranch);
-  const liveBranch = asNonEmptyString(workspaceValidation.actualBranch);
+  const worktreeValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!worktreeValidation) return null;
+  if (worktreeValidation.reason !== "git_worktree_branch_incoherence") return null;
+  const provenance = asRecord(worktreeValidation.provenance) ?? {};
+  const expectedBranch = asNonEmptyString(worktreeValidation.expectedBranch);
+  const liveBranch = asNonEmptyString(worktreeValidation.actualBranch);
   const expectedHeadSha = asNonEmptyString(provenance.expectedHeadSha);
   const liveHeadSha = asNonEmptyString(provenance.actualHeadSha);
-  const cleanlinessRaw = workspaceValidation.cleanliness;
+  const cleanlinessRaw = worktreeValidation.cleanliness;
   const cleanliness =
     cleanlinessRaw === "clean" || cleanlinessRaw === "dirty" || cleanlinessRaw === "unknown"
       ? cleanlinessRaw
       : null;
-  const sourceIdentifier = asNonEmptyString(workspaceValidation.sourceIdentifier);
+  const sourceIdentifier = asNonEmptyString(worktreeValidation.sourceIdentifier);
   return {
     expectedBranch,
     liveBranch,
@@ -381,9 +381,9 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     ancestryVerdict: asAncestryVerdict(provenance.ancestryVerdict),
     plainLanguageReason: asNonEmptyString(provenance.plainLanguageReason),
     cleanliness,
-    dirtyFileCount: asNonNegativeInt(workspaceValidation.statusEntryCount),
-    dirtyPathSample: asStringArray(workspaceValidation.dirtyPathSample),
-    contention: readContention(workspaceValidation.contention),
+    dirtyFileCount: asNonNegativeInt(worktreeValidation.statusEntryCount),
+    dirtyPathSample: asStringArray(worktreeValidation.dirtyPathSample),
+    contention: readContention(worktreeValidation.contention),
     rescueBranchPreview: buildRescueBranchPreview(sourceIdentifier),
     reissueBaseRef: liveBranch ?? liveHeadSha,
   };
@@ -441,7 +441,7 @@ function DivergenceDiagnosis({
   divergence,
   dividerClass,
 }: {
-  divergence: WorkspaceDivergence;
+  divergence: WorktreeDivergence;
   dividerClass: string;
 }) {
   const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
@@ -492,7 +492,7 @@ function DivergenceDiagnosis({
             Worktree claimed by{" "}
             <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
             {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
-            can&apos;t run while another workspace holds the live branch.
+            can&apos;t run while another worktree holds the live branch.
           </span>
         </p>
       ) : null}
@@ -500,7 +500,7 @@ function DivergenceDiagnosis({
   );
 }
 
-function contentionLabel(contention: WorkspaceContention): string {
+function contentionLabel(contention: WorktreeContention): string {
   return (
     contention.claimedByIssueIdentifier ??
     (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
@@ -519,7 +519,7 @@ function BreakGlassOverride({
   onConfirm,
   pending,
 }: {
-  divergence: WorkspaceDivergence;
+  divergence: WorktreeDivergence;
   onConfirm: (reason: string) => void;
   pending: boolean;
 }) {
@@ -559,7 +559,7 @@ function BreakGlassOverride({
             Break-glass reconciliation
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
+            This overrides Paperclip&apos;s safety check and points the recorded worktree at the live
             branch{" "}
             <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
             the divergence below and record why before continuing.
@@ -629,14 +629,14 @@ function BreakGlassOverride({
  * branch to be restored. Disabled (with an inline explanation, no popover) when the live branch is
  * contended by another workspace, since the server refuses the repair in that case.
  */
-function RepairWorkspace({
+function RepairWorktree({
   divergence,
   onConfirm,
   pending,
   disabled,
   disabledReason,
 }: {
-  divergence: WorkspaceDivergence;
+  divergence: WorktreeDivergence;
   onConfirm: () => void;
   pending: boolean;
   disabled: boolean;
@@ -661,7 +661,7 @@ function RepairWorkspace({
       ) : (
         <Wrench className="h-3.5 w-3.5" aria-hidden />
       )}
-      Repair workspace — quarantine changes &amp; restore branch
+      Repair worktree — quarantine changes &amp; restore branch
     </Button>
   );
   if (disabled) {
@@ -693,7 +693,7 @@ function RepairWorkspace({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
           >
             <Wrench className="h-3.5 w-3.5" aria-hidden />
-            Repair workspace
+            Repair worktree
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
             This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
@@ -996,7 +996,7 @@ export function IssueRecoveryActionCard({
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
-  const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
+  const divergence = useMemo(() => readWorktreeDivergence(action), [action]);
   const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
 
   const headline = useMemo(() => {
@@ -1087,7 +1087,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
+    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated worktree instead.`
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1372,7 +1372,7 @@ export function IssueRecoveryActionCard({
             </Button>
           ) : null}
           {showRepairAction && divergence ? (
-            <RepairWorkspace
+            <RepairWorktree
               divergence={divergence}
               pending={quarantineRestorePending}
               disabled={repairContention !== null}
@@ -1396,7 +1396,7 @@ export function IssueRecoveryActionCard({
                   ) : (
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
                   )}
-                  Re-issue on isolated workspace
+                  Re-issue on isolated worktree
                   {reissueRecommended ? (
                     <span
                       data-testid="recovery-reissue-recommended"
@@ -1410,11 +1410,11 @@ export function IssueRecoveryActionCard({
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
                   <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Re-issue on isolated workspace
+                    Re-issue on isolated worktree
                   </div>
                   <p className="text-xs leading-5 text-muted-foreground">
                     Creates a fresh copy of this task on an isolated git worktree based on the live
-                    branch. Your current workspace and its commits are left untouched.
+                    branch. Your current worktree and its commits are left untouched.
                   </p>
                 </div>
                 <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">

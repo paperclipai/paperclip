@@ -546,7 +546,7 @@ describe("SidebarCompanyMenu", () => {
   // needs `min-w-0` on EVERY flex link of the chain (a flex item's default
   // `min-width:auto` floors it at its content width), which is invisible to
   // behavioural assertions, so the class chain itself is the contract.
-  it("lets a long workspace name truncate instead of widening the trigger", async () => {
+  it("lets a long worktree name truncate instead of widening the trigger", async () => {
     const { root } = renderMenu();
     await flushReact();
 
@@ -643,7 +643,7 @@ describe("SidebarCompanyMenu", () => {
       await flushReact();
 
       // A Cloud tenant holds exactly one company, and the harness pushes the
-      // stack's uploaded workspace icon into that company's branding — so the
+      // stack's uploaded worktree icon into that company's branding — so the
       // trigger renders the company logo, not the monogram.
       const trigger = container.querySelector(
         'button[aria-label="Open Acme Labs organization switcher"]',

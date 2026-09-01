@@ -178,7 +178,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
           <div className="text-xs">
             <p className="font-medium text-foreground">
-              This runs in your company's own workspace, isolated from everything else.
+              This runs in your company's own worktree, isolated from everything else.
             </p>
             <p className="mt-0.5 flex items-center gap-1 text-muted-foreground">
               <Lock className="h-3 w-3" />

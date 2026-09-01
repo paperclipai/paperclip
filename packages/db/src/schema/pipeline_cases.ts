@@ -28,7 +28,7 @@ export type PipelineCasePendingSuggestion = {
   createdAt: string;
 };
 
-export type PipelineCaseWorkspaceRef = {
+export type PipelineCaseWorktreeRef = {
   executionWorkspaceId?: string;
   path?: string;
 };
@@ -44,7 +44,7 @@ export const pipelineCases = pgTable(
     title: text("title").notNull(),
     summary: text("summary"),
     fields: jsonb("fields").$type<Record<string, unknown>>().notNull().default({}),
-    workspaceRef: jsonb("workspace_ref").$type<PipelineCaseWorkspaceRef>(),
+    workspaceRef: jsonb("workspace_ref").$type<PipelineCaseWorktreeRef>(),
     parentCaseId: uuid("parent_case_id").references((): AnyPgColumn => pipelineCases.id, { onDelete: "set null" }),
     parentCaseVersion: integer("parent_case_version"),
     requestKey: text("request_key"),

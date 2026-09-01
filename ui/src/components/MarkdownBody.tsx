@@ -23,14 +23,14 @@ function caseIdentifierFromHref(href: string | undefined): string | null {
   return match ? match[1]!.toUpperCase() : null;
 }
 import {
-  createRemarkWorkspaceFileRefs,
-  parseWorkspaceFileHref,
+  createRemarkWorktreeFileRefs,
+  parseWorktreeFileHref,
   WORKSPACE_FILE_HREF_PREFIX,
-  type WorkspaceFileRefResolver,
-} from "../lib/remark-workspace-file-refs";
+  type WorktreeFileRefResolver,
+} from "../lib/remark-worktree-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
-import { WorkspaceFileLink } from "./WorkspaceFileLink";
+import { WorktreeFileLink } from "./WorktreeFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
   externalObjectCategoryLabel,
@@ -98,7 +98,7 @@ interface MarkdownBodyProps {
    * Its identity must change when previously-pending references become
    * openable, so the markdown re-parses with the new answers.
    */
-  resolveWorkspaceFileRef?: WorkspaceFileRefResolver;
+  resolveWorkspaceFileRef?: WorktreeFileRefResolver;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -754,7 +754,7 @@ function MarkdownBodyImpl({
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }
     if (resolveWorkspaceFileRef) {
-      plugins.push(createRemarkWorkspaceFileRefs(resolveWorkspaceFileRef));
+      plugins.push(createRemarkWorktreeFileRefs(resolveWorkspaceFileRef));
     }
     if (linkIssueReferences) {
       plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
@@ -814,11 +814,11 @@ function MarkdownBodyImpl({
       </code>
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
-      const workspaceFileRef = parseWorkspaceFileHref(href);
-      if (workspaceFileRef) {
+      const worktreeFileRef = parseWorktreeFileHref(href);
+      if (worktreeFileRef) {
         return (
-          <WorkspaceFileLink
-            workspaceFileRef={workspaceFileRef}
+          <WorktreeFileLink
+            workspaceFileRef={worktreeFileRef}
             label={linkChildren}
             className={typeof anchorProps.className === "string" ? anchorProps.className : undefined}
           />

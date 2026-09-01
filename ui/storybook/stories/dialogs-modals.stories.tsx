@@ -2,14 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type {
   DocumentRevision,
-  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorktreeCloseReadiness,
   Goal,
   IssueAttachment,
 } from "@paperclipai/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { DocumentDiffModal } from "@/components/DocumentDiffModal";
-import { ExecutionWorkspaceCloseDialog } from "@/components/ExecutionWorkspaceCloseDialog";
+import { ExecutionWorktreeCloseDialog } from "@/components/ExecutionWorktreeCloseDialog";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import { NewAgentDialog } from "@/components/NewAgentDialog";
 import { NewGoalDialog } from "@/components/NewGoalDialog";
@@ -109,8 +109,8 @@ const documentRevisions: DocumentRevision[] = [
       "# Plan",
       "",
       "- Add overview stories for the dashboard.",
-      "- Create issue list stories for filters, grouping, and workspace state.",
-      "- Add dialog stories for issue, goal, project, and workspace workflows.",
+      "- Create issue list stories for filters, grouping, and worktree state.",
+      "- Add dialog stories for issue, goal, project, and worktree workflows.",
       "- Ask QA to review the final Storybook build.",
     ].join("\n"),
     changeSummary: "Expanded component coverage",
@@ -135,7 +135,7 @@ const documentRevisions: DocumentRevision[] = [
   },
 ];
 
-const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
+const closeReadinessReady: ExecutionWorktreeCloseReadiness = {
   workspaceId: "execution-workspace-storybook",
   deliveryState: "unmerged",
   state: "ready_with_warnings",
@@ -164,7 +164,7 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
     {
       kind: "stop_runtime_services",
       label: "Stop Storybook preview",
-      description: "Stops the managed Storybook preview service before archiving the workspace record.",
+      description: "Stops the managed Storybook preview service before archiving the worktree record.",
       command: "pnpm dev:stop",
     },
     {
@@ -175,8 +175,8 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
     },
     {
       kind: "archive_record",
-      label: "Archive workspace record",
-      description: "Keeps audit history while removing the workspace from active workspace views.",
+      label: "Archive worktree record",
+      description: "Keeps audit history while removing the worktree from active worktree views.",
       command: null,
     },
   ],
@@ -200,11 +200,11 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
   runtimeServices: storybookExecutionWorkspaces[0]?.runtimeServices ?? [],
 };
 
-const closeReadinessBlocked: ExecutionWorkspaceCloseReadiness = {
+const closeReadinessBlocked: ExecutionWorktreeCloseReadiness = {
   ...closeReadinessReady,
   state: "blocked",
   blockingReasons: [
-    "PAP-1670 is still open and references this execution workspace.",
+    "PAP-1670 is still open and references this execution worktree.",
     "The worktree has dirty tracked files that have not been committed.",
   ],
   warnings: [],
@@ -339,10 +339,10 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.setQueryData(queryKeys.issues.labels(COMPANY_ID), storybookIssueLabels);
   queryClient.setQueryData(queryKeys.issues.documents("issue-storybook-1"), storybookIssueDocuments);
   queryClient.setQueryData(queryKeys.issues.documentRevisions("issue-storybook-1", "plan"), documentRevisions);
-  queryClient.setQueryData(queryKeys.executionWorkspaces.closeReadiness("execution-workspace-storybook"), closeReadinessReady);
-  queryClient.setQueryData(queryKeys.executionWorkspaces.closeReadiness("execution-workspace-blocked"), closeReadinessBlocked);
+  queryClient.setQueryData(queryKeys.executionWorktrees.closeReadiness("execution-workspace-storybook"), closeReadinessReady);
+  queryClient.setQueryData(queryKeys.executionWorktrees.closeReadiness("execution-workspace-blocked"), closeReadinessBlocked);
   queryClient.setQueryData(
-    queryKeys.executionWorkspaces.list(COMPANY_ID, {
+    queryKeys.executionWorktrees.list(COMPANY_ID, {
       projectId: "project-board-ui",
       projectWorkspaceId: "workspace-board-ui",
       reuseEligible: true,
@@ -540,7 +540,7 @@ function IssueDialogOpener({
               "Cover modal flows with fixture-backed states.",
               "",
               "- Keep dialogs open by default",
-              "- Show project workspace selection",
+              "- Show project worktree selection",
               "- Include reviewer and approver context",
             ].join("\n"),
             status: "todo",
@@ -610,7 +610,7 @@ function ProjectDialogOpener({ populated }: { populated?: boolean }) {
   useEffect(() => {
     if (!populated) return undefined;
     const timer = window.setTimeout(() => {
-      fillFirstField("input[placeholder='Project name']", "Storybook review workspace");
+      fillFirstField("input[placeholder='Project name']", "Storybook review worktree");
       fillFirstField("input[placeholder='https://github.com/org/repo']", "https://github.com/paperclipai/paperclip");
       fillFirstField("input[placeholder='/absolute/path/to/workspace']", "/Users/dotta/paperclip/ui");
       fillFirstField("input[type='date']", "2026-04-30");
@@ -646,12 +646,12 @@ function ExecutionWorkspaceDialogStory({ blocked }: { blocked?: boolean }) {
   const workspace = storybookExecutionWorkspaces[0]!;
   return (
     <DialogStory
-      eyebrow="ExecutionWorkspaceCloseDialog"
-      title={blocked ? "Blocked workspace close confirmation" : "Workspace close confirmation"}
-      description="The close dialog exposes linked issues, git state, runtime services, and planned cleanup actions before archiving an execution workspace."
+      eyebrow="ExecutionWorktreeCloseDialog"
+      title={blocked ? "Blocked worktree close confirmation" : "Worktree close confirmation"}
+      description="The close dialog exposes linked issues, git state, runtime services, and planned cleanup actions before archiving an execution worktree."
       badges={blocked ? ["blocked", "dirty worktree", "linked issue"] : ["ready with warnings", "cleanup actions"]}
     >
-      <ExecutionWorkspaceCloseDialog
+      <ExecutionWorktreeCloseDialog
         workspaceId={blocked ? "execution-workspace-blocked" : workspace.id}
         workspaceName={blocked ? "PAP-1670 publish preview worktree" : workspace.name}
         currentStatus={workspace.status}
@@ -823,7 +823,7 @@ function PathInstructionsModalStory() {
     <DialogStory
       eyebrow="PathInstructionsModal"
       title="Absolute path instructions"
-      description="The path helper opens directly to platform-specific steps for copying a full local workspace path."
+      description="The path helper opens directly to platform-specific steps for copying a full local worktree path."
       badges={["macOS", "Windows", "Linux"]}
     >
       <PathInstructionsModal open onOpenChange={() => undefined} />
@@ -837,7 +837,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Open-state stories for Paperclip creation dialogs, workspace confirmations, document diffing, image attachments, and path helper modals.",
+          "Open-state stories for Paperclip creation dialogs, worktree confirmations, document diffing, image attachments, and path helper modals.",
       },
     },
   },
@@ -853,7 +853,7 @@ export const NewIssueEmpty: Story = {
     <DialogStory
       eyebrow="NewIssueDialog"
       title="Empty issue form"
-      description="Default issue creation state with no assignee, project, priority, or workspace selected."
+      description="Default issue creation state with no assignee, project, priority, or worktree selected."
       badges={["empty", "creation", "draft"]}
     >
       <IssueDialogOpener variant="empty" />
@@ -867,7 +867,7 @@ export const NewIssuePrefilled: Story = {
     <DialogStory
       eyebrow="NewIssueDialog"
       title="Prefilled issue form"
-      description="Populated issue creation state with project context, assignee, priority, description, and isolated workspace selection."
+      description="Populated issue creation state with project context, assignee, priority, description, and isolated worktree selection."
       badges={["populated", "assignee", "workspace"]}
     >
       <IssueDialogOpener variant="prefilled" />
@@ -1021,7 +1021,7 @@ export const NewProjectEmpty: Story = {
     <DialogStory
       eyebrow="NewProjectDialog"
       title="Empty project form"
-      description="Default project creation state with description, goal, target date, and workspace fields empty."
+      description="Default project creation state with description, goal, target date, and worktree fields empty."
       badges={["empty", "project", "workspace"]}
     >
       <ProjectDialogOpener />
@@ -1030,11 +1030,11 @@ export const NewProjectEmpty: Story = {
 };
 
 export const NewProjectWorkspaceConfig: Story = {
-  name: "New Project - Workspace Config",
+  name: "New Project - Worktree Config",
   render: () => (
     <DialogStory
       eyebrow="NewProjectDialog"
-      title="Project creation with workspace config"
+      title="Project creation with worktree config"
       description="Populated project creation state with repo URL, local folder path, and target date filled in."
       badges={["populated", "repo URL", "local path"]}
     >
@@ -1044,12 +1044,12 @@ export const NewProjectWorkspaceConfig: Story = {
 };
 
 export const ExecutionWorkspaceCloseReady: Story = {
-  name: "Execution Workspace Close - Ready",
+  name: "Execution Worktree Close - Ready",
   render: () => <ExecutionWorkspaceDialogStory />,
 };
 
 export const ExecutionWorkspaceCloseBlocked: Story = {
-  name: "Execution Workspace Close - Blocked",
+  name: "Execution Worktree Close - Blocked",
   render: () => <ExecutionWorkspaceDialogStory blocked />,
 };
 

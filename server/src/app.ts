@@ -48,7 +48,7 @@ import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
 import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
-import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+import { executionWorkspaceRoutes } from "./routes/execution-worktrees.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { boardChatRoutes } from "./routes/board-chat.js";

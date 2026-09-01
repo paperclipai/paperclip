@@ -25,7 +25,7 @@ import {
 import { fileResourcesApi } from "@/api/file-resources";
 import { IssueProperties } from "@/components/IssueProperties";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
-import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
+import { WorktreeFileBrowser } from "@/components/WorktreeFileBrowser";
 import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { IssuePropertiesPlansTab } from "@/components/issue-properties/IssuePropertiesPlansTab";
 import {
@@ -444,7 +444,7 @@ export function TaskSidePanel({
         : [];
       sections.push({
         id: "recent-files",
-        label: "Recent workspace files",
+        label: "Recent worktree files",
         items: recentItems,
         loading: recentFilesQuery.isLoading,
         error: recentFilesQuery.isError ? "Recent files are temporarily unavailable." : null,
@@ -541,7 +541,7 @@ export function TaskSidePanel({
     );
   } else if (activeTab.payload.kind === "files-browser") {
     content = (
-      <WorkspaceFileBrowser
+      <WorktreeFileBrowser
         issueId={issue.id}
         companyId={issue.companyId}
         onOpen={openWorkspaceFile}

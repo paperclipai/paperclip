@@ -57,7 +57,7 @@ function registerRouteMocks() {
     companySearchService: () => ({}),
     documentAnnotationService: () => ({}),
     documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
+    executionWorktreeService: () => ({}),
     feedbackService: () => ({}),
     goalService: () => ({}),
     heartbeatService: () => ({

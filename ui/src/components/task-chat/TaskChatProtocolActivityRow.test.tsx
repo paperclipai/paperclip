@@ -88,7 +88,7 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(detail?.querySelectorAll('ol[aria-label="Research sources"] li')).toHaveLength(6);
   });
 
-  it("summarizes workspace files without rendering inline diff bodies", () => {
+  it("summarizes worktree files without rendering inline diff bodies", () => {
     render({
       id: "workspace",
       kind: "protocol",

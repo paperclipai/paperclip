@@ -200,7 +200,7 @@ const agentManagementAgents: Agent[] = [
     role: "devops",
     title: "Runtime Operations Engineer",
     reportsTo: "agent-cto",
-    capabilities: "Monitors local runners, workspace services, and stuck-run recovery signals.",
+    capabilities: "Monitors local runners, worktree services, and stuck-run recovery signals.",
     adapterType: "http",
     pauseReason: null,
     pausedAt: null,
@@ -680,7 +680,7 @@ function ConfigPrimitivesStory() {
         <Field label="Select field" hint={help.workspaceStrategy}>
           <Select value={selectValue} onValueChange={setSelectValue}>
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="Workspace strategy" />
+              <SelectValue placeholder="Worktree strategy" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="project_primary">Project primary</SelectItem>

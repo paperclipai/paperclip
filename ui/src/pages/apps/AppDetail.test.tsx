@@ -832,7 +832,7 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Dotta’s Notion");
     expect(container.textContent).not.toContain("Connected by");
     expect(container.textContent).toContain("Anyone in your company can use this connection");
-    expect(container.textContent).not.toContain("workspace authorization");
+    expect(container.textContent).not.toContain("worktree authorization");
     expect(findButton("Reconnect")).toBeUndefined();
 
     await act(async () => {

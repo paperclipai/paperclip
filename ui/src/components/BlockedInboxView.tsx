@@ -5,7 +5,7 @@ import type { Issue } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
-import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
+import { applyIssueFilters, type IssueFilterState, type IssueFilterWorktreeContext } from "../lib/issue-filters";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
   blockedRowMatchesSearch,
@@ -37,7 +37,7 @@ interface BlockedInboxViewProps {
   currentUserId: string | null;
   liveIssueIds: ReadonlySet<string>;
   subtreeLiveCounts: ReadonlyMap<string, number>;
-  workspaceFilterContext: IssueFilterWorkspaceContext;
+  worktreeFilterContext?: IssueFilterWorktreeContext;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
@@ -57,7 +57,7 @@ export function BlockedInboxView({
   currentUserId,
   liveIssueIds,
   subtreeLiveCounts,
-  workspaceFilterContext,
+  worktreeFilterContext = {},
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
@@ -95,11 +95,11 @@ export function BlockedInboxView({
         currentUserId,
         true,
         liveIssueIds,
-        workspaceFilterContext,
+        worktreeFilterContext,
       ).map((issue) => issue.id),
     );
     return filteredRows.filter((row) => visibleIssueIds.has(row.issue.id));
-  }, [currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext]);
+  }, [currentUserId, filteredRows, issueFilters, liveIssueIds, worktreeFilterContext]);
   const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [issueFilteredRows, sortBy]);
   const groups = useMemo(
     () => groupBlockedInboxRows(issueFilteredRows, sortBy),

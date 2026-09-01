@@ -12,7 +12,7 @@ import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimenta
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
-import { IsolatedWorkspacesRouteGate } from "./components/IsolatedWorkspacesRouteGate";
+import { IsolatedWorktreesRouteGate } from "./components/IsolatedWorktreesRouteGate";
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
@@ -27,8 +27,8 @@ import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
-import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
-import { Workspaces } from "./pages/Workspaces";
+import { ProjectWorktreeDetail } from "./pages/ProjectWorktreeDetail";
+import { Worktrees } from "./pages/Worktrees";
 import { Issues } from "./pages/Issues";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
@@ -39,7 +39,7 @@ import { PipelineSettings } from "./pages/PipelineSettings";
 import { StatusCards } from "./pages/StatusCards";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
-import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
+import { ExecutionWorktreeDetail } from "./pages/ExecutionWorktreeDetail";
 import { Goals } from "./pages/Goals";
 import { Artifacts } from "./pages/Artifacts";
 import { GoalDetail } from "./pages/GoalDetail";
@@ -229,15 +229,18 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
-      <Route element={<IsolatedWorkspacesRouteGate />}>
-        <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      <Route element={<IsolatedWorktreesRouteGate />}>
+        <Route path="projects/:projectId/worktrees/:worktreeId" element={<ProjectWorktreeDetail />} />
       </Route>
-      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/worktrees" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/workspaces" element={<LegacyWorktreeRouteRedirect />} />
+      <Route path="projects/:projectId/workspaces/:workspaceId/*" element={<LegacyWorktreeRouteRedirect />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
-      <Route element={<IsolatedWorkspacesRouteGate />}>
-        <Route path="workspaces" element={<Workspaces />} />
+      <Route element={<IsolatedWorktreesRouteGate />}>
+        <Route path="worktrees" element={<Worktrees />} />
       </Route>
+      <Route path="workspaces" element={<LegacyWorktreeRouteRedirect />} />
       <Route path="issues" element={<Issues />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
@@ -303,14 +306,15 @@ function boardRoutes() {
       />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
-      <Route element={<IsolatedWorkspacesRouteGate />}>
-        <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+      <Route element={<IsolatedWorktreesRouteGate />}>
+        <Route path="execution-worktrees/:worktreeId" element={<ExecutionWorktreeDetail />} />
+        <Route path="execution-worktrees/:worktreeId/services" element={<ExecutionWorktreeDetail />} />
+        <Route path="execution-worktrees/:worktreeId/configuration" element={<ExecutionWorktreeDetail />} />
+        <Route path="execution-worktrees/:worktreeId/runtime-logs" element={<ExecutionWorktreeDetail />} />
+        <Route path="execution-worktrees/:worktreeId/issues" element={<ExecutionWorktreeDetail />} />
+        <Route path="execution-worktrees/:worktreeId/routines" element={<ExecutionWorktreeDetail />} />
       </Route>
+      <Route path="execution-workspaces/:workspaceId/*" element={<LegacyWorktreeRouteRedirect />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="artifacts" element={<Artifacts />} />
@@ -568,6 +572,18 @@ function StatusCardsLegacyRedirect() {
   const prefix = useActiveCompanyPrefix();
   const base = prefix ? `/${prefix}` : "";
   return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
+}
+
+export function LegacyWorktreeRouteRedirect() {
+  const location = useLocation();
+  return <Navigate to={legacyWorktreeRouteTarget(location)} replace />;
+}
+
+export function legacyWorktreeRouteTarget(location: Pick<Location, "pathname" | "search" | "hash">): string {
+  const pathname = location.pathname
+    .replace(/\/execution-workspaces(?=\/|$)/, "/execution-worktrees")
+    .replace(/\/workspaces(?=\/|$)/, "/worktrees");
+  return `${pathname}${location.search}${location.hash}`;
 }
 
 function UnprefixedBoardRedirect() {

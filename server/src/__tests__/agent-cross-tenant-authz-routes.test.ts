@@ -217,7 +217,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => mockWorkspaceOperationService,
+  worktreeOperationService: () => mockWorkspaceOperationService,
 }));
 
 vi.mock("../services/instance-settings.js", () => ({

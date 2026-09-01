@@ -12,7 +12,7 @@ import {
 } from "../constants.js";
 import {
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
-  issueExecutionWorkspaceSettingsSchema,
+  issueExecutionWorktreeSettingsSchema,
 } from "./issue.js";
 import { envConfigSchema } from "./secret.js";
 import { isValidRoutineDateString } from "../routine-variables.js";
@@ -175,7 +175,7 @@ export const runRoutineSchema = z.object({
   source: z.enum(["manual", "api"]).optional().default("manual"),
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorktreeSettingsSchema.optional().nullable(),
 });
 
 export type RunRoutine = z.infer<typeof runRoutineSchema>;

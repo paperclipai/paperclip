@@ -4,12 +4,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   Approval,
   DashboardSummary,
-  ExecutionWorkspace,
+  ExecutionWorktree,
   ExternalObjectSummary,
   HeartbeatRun,
   Issue,
   JoinRequest,
-  ProjectWorkspace,
+  ProjectWorktree,
 } from "@paperclipai/shared";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -41,8 +41,8 @@ import {
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
   resolveInboxNestingEnabled,
-  resolveIssueWorkspaceName,
-  resolveIssueWorkspaceGroup,
+  resolveIssueWorktreeName,
+  resolveIssueWorktreeGroup,
   resolveInboxSelectionIndex,
   saveInboxFilterPreferences,
   saveCollapsedInboxGroupKeys,
@@ -51,7 +51,7 @@ import {
   saveInboxWorkItemGroupBy,
   saveLastInboxTab,
   shouldShowCompanyAlerts,
-  shouldResetInboxWorkspaceGrouping,
+  shouldResetInboxWorktreeGrouping,
   shouldShowInboxSection,
   type InboxWorkItem,
 } from "./inbox";
@@ -224,7 +224,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
   };
 }
 
-function makeProjectWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWorkspace {
+function makeProjectWorktree(overrides: Partial<ProjectWorktree> = {}): ProjectWorktree {
   return {
     id: "project-workspace-1",
     companyId: "company-1",
@@ -250,7 +250,7 @@ function makeProjectWorkspace(overrides: Partial<ProjectWorkspace> = {}): Projec
   };
 }
 
-function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorkspace {
+function makeExecutionWorktree(overrides: Partial<ExecutionWorktree> = {}): ExecutionWorktree {
   return {
     id: "execution-workspace-1",
     companyId: "company-1",
@@ -834,14 +834,14 @@ describe("inbox helpers", () => {
       issue,
       "feature",
       {
-        isolatedWorkspacesEnabled: true,
-        executionWorkspaceById: new Map([
+        isolatedWorktreesEnabled: true,
+        executionWorktreeById: new Map([
           ["execution-workspace-1", { name: "Feature Branch", mode: "isolated_workspace" as const, projectWorkspaceId: "project-workspace-1" }],
         ]),
-        projectWorkspaceById: new Map([
+        projectWorktreeById: new Map([
           ["project-workspace-1", { name: "Primary workspace" }],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-2"]]),
+        defaultProjectWorktreeIdByProjectId: new Map([["project-1", "project-workspace-2"]]),
       },
     )).toBe(true);
   });
@@ -851,11 +851,11 @@ describe("inbox helpers", () => {
     issue.projectId = "project-1";
     issue.projectWorkspaceId = "project-workspace-1";
 
-    expect(resolveIssueWorkspaceGroup(issue, {
-      projectWorkspaceById: new Map([
+    expect(resolveIssueWorktreeGroup(issue, {
+      projectWorktreeById: new Map([
         ["project-workspace-1", { name: "Primary workspace" }],
       ]),
-      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+      defaultProjectWorktreeIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
     })).toEqual({
       key: "workspace:project:project-workspace-1",
       label: "Primary workspace (default)",
@@ -1253,77 +1253,77 @@ describe("inbox helpers", () => {
     issue.projectWorkspaceId = "project-workspace-1";
     issue.executionWorkspaceId = "execution-workspace-1";
 
-    const executionWorkspace = makeExecutionWorkspace();
-    const defaultWorkspace = makeProjectWorkspace();
-    const secondaryWorkspace = makeProjectWorkspace({
+    const executionWorktree = makeExecutionWorktree();
+    const defaultWorktree = makeProjectWorktree();
+    const secondaryWorktree = makeProjectWorktree({
       id: "project-workspace-2",
       name: "Secondary workspace",
       isPrimary: false,
     });
 
     expect(
-      resolveIssueWorkspaceName(issue, {
-        executionWorkspaceById: new Map([[executionWorkspace.id, executionWorkspace]]),
-        projectWorkspaceById: new Map([
-          [defaultWorkspace.id, defaultWorkspace],
-          [secondaryWorkspace.id, secondaryWorkspace],
+      resolveIssueWorktreeName(issue, {
+        executionWorktreeById: new Map([[executionWorktree.id, executionWorktree]]),
+        projectWorktreeById: new Map([
+          [defaultWorktree.id, defaultWorktree],
+          [secondaryWorktree.id, secondaryWorktree],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+        defaultProjectWorktreeIdByProjectId: new Map([[issue.projectId!, defaultWorktree.id]]),
       }),
     ).toBe("PAP-1 branch");
 
     issue.executionWorkspaceId = null;
     expect(
-      resolveIssueWorkspaceName(issue, {
-        projectWorkspaceById: new Map([
-          [defaultWorkspace.id, defaultWorkspace],
-          [secondaryWorkspace.id, secondaryWorkspace],
+      resolveIssueWorktreeName(issue, {
+        projectWorktreeById: new Map([
+          [defaultWorktree.id, defaultWorktree],
+          [secondaryWorktree.id, secondaryWorktree],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+        defaultProjectWorktreeIdByProjectId: new Map([[issue.projectId!, defaultWorktree.id]]),
       }),
     ).toBeNull();
 
-    issue.projectWorkspaceId = secondaryWorkspace.id;
+    issue.projectWorkspaceId = secondaryWorktree.id;
     expect(
-      resolveIssueWorkspaceName(issue, {
-        projectWorkspaceById: new Map([
-          [defaultWorkspace.id, defaultWorkspace],
-          [secondaryWorkspace.id, secondaryWorkspace],
+      resolveIssueWorktreeName(issue, {
+        projectWorktreeById: new Map([
+          [defaultWorktree.id, defaultWorktree],
+          [secondaryWorktree.id, secondaryWorktree],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+        defaultProjectWorktreeIdByProjectId: new Map([[issue.projectId!, defaultWorktree.id]]),
       }),
     ).toBe("Secondary workspace");
 
     issue.projectWorkspaceId = null;
     expect(
-      resolveIssueWorkspaceName(issue, {
-        projectWorkspaceById: new Map([
-          [defaultWorkspace.id, defaultWorkspace],
-          [secondaryWorkspace.id, secondaryWorkspace],
+      resolveIssueWorktreeName(issue, {
+        projectWorktreeById: new Map([
+          [defaultWorktree.id, defaultWorktree],
+          [secondaryWorktree.id, secondaryWorktree],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+        defaultProjectWorktreeIdByProjectId: new Map([[issue.projectId!, defaultWorktree.id]]),
       }),
     ).toBeNull();
 
     issue.executionWorkspaceId = "execution-workspace-shared-default";
-    issue.projectWorkspaceId = defaultWorkspace.id;
+    issue.projectWorkspaceId = defaultWorktree.id;
     expect(
-      resolveIssueWorkspaceName(issue, {
-        executionWorkspaceById: new Map([[
+      resolveIssueWorktreeName(issue, {
+        executionWorktreeById: new Map([[
           issue.executionWorkspaceId,
-          makeExecutionWorkspace({
+          makeExecutionWorktree({
             id: issue.executionWorkspaceId,
             mode: "shared_workspace",
             strategyType: "project_primary",
-            projectWorkspaceId: defaultWorkspace.id,
+            projectWorkspaceId: defaultWorktree.id,
             name: "PAP-1067",
           }),
         ]]),
-        projectWorkspaceById: new Map([
-          [defaultWorkspace.id, defaultWorkspace],
-          [secondaryWorkspace.id, secondaryWorkspace],
+        projectWorktreeById: new Map([
+          [defaultWorktree.id, defaultWorktree],
+          [secondaryWorktree.id, secondaryWorktree],
         ]),
-        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+        defaultProjectWorktreeIdByProjectId: new Map([[issue.projectId!, defaultWorktree.id]]),
       }),
     ).toBeNull();
   });
@@ -1407,15 +1407,15 @@ describe("inbox helpers", () => {
     ];
 
     expect(groupInboxWorkItems(items, "workspace", {
-      executionWorkspaceById: new Map([
+      executionWorktreeById: new Map([
         ["execution-workspace-1", { name: "Feature Branch", mode: "isolated_workspace", projectWorkspaceId: "project-workspace-1" }],
         ["execution-workspace-shared-default", { name: "Shared default workspace", mode: "shared_workspace", projectWorkspaceId: "project-workspace-1" }],
       ]),
-      projectWorkspaceById: new Map([
+      projectWorktreeById: new Map([
         ["project-workspace-1", { name: "Primary workspace" }],
         ["project-workspace-2", { name: "Secondary workspace" }],
       ]),
-      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+      defaultProjectWorktreeIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
     })).toEqual([
       { key: "workspace:execution:execution-workspace-1", label: "Feature Branch", items: [items[4]] },
       { key: "workspace:project:project-workspace-2", label: "Secondary workspace", items: [items[3]] },
@@ -1497,7 +1497,7 @@ describe("inbox helpers", () => {
     agentIssue.assigneeAgentId = "agent-1";
 
     const options = {
-      executionWorkspaceById: new Map([
+      executionWorktreeById: new Map([
         [
           "execution-workspace-1",
           {
@@ -1507,7 +1507,7 @@ describe("inbox helpers", () => {
           },
         ],
       ]),
-      projectWorkspaceById: new Map([
+      projectWorktreeById: new Map([
         ["project-workspace-1", { name: "Primary workspace", projectId: "project-1" }],
       ]),
     };
@@ -1580,12 +1580,12 @@ describe("inbox helpers", () => {
   });
 
   it("does not reset workspace grouping before experimental settings have loaded", () => {
-    expect(shouldResetInboxWorkspaceGrouping("workspace", false, false)).toBe(false);
+    expect(shouldResetInboxWorktreeGrouping("workspace", false, false)).toBe(false);
   });
 
   it("resets workspace grouping only when settings are loaded and workspace grouping is unavailable", () => {
-    expect(shouldResetInboxWorkspaceGrouping("workspace", false, true)).toBe(true);
-    expect(shouldResetInboxWorkspaceGrouping("workspace", true, true)).toBe(false);
-    expect(shouldResetInboxWorkspaceGrouping("none", false, true)).toBe(false);
+    expect(shouldResetInboxWorktreeGrouping("workspace", false, true)).toBe(true);
+    expect(shouldResetInboxWorktreeGrouping("workspace", true, true)).toBe(false);
+    expect(shouldResetInboxWorktreeGrouping("none", false, true)).toBe(false);
   });
 });

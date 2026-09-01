@@ -2341,7 +2341,7 @@ function GalleryStep({
           <ConnectMethodRow
             icon={TerminalSquare}
             title="Run your own"
-            description="Register a command Paperclip runs in your workspace for a tool that isn’t listed."
+            description="Register a command Paperclip runs in your worktree for a tool that isn’t listed."
             onClick={onRunYourOwn}
           />
           <ConnectMethodRow

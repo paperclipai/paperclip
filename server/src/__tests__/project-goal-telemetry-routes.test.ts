@@ -43,11 +43,11 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
-  workspaceOperationService: () => mockWorkspaceOperationService,
+  worktreeOperationService: () => mockWorkspaceOperationService,
 }));
 
-vi.mock("../services/workspace-runtime.js", () => ({
-  startRuntimeServicesForWorkspaceControl: vi.fn(),
+vi.mock("../services/worktree-runtime.js", () => ({
+  startRuntimeServicesForWorktreeControl: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
@@ -63,11 +63,11 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
-    workspaceOperationService: () => mockWorkspaceOperationService,
+    worktreeOperationService: () => mockWorkspaceOperationService,
   }));
 
-  vi.doMock("../services/workspace-runtime.js", () => ({
-    startRuntimeServicesForWorkspaceControl: vi.fn(),
+  vi.doMock("../services/worktree-runtime.js", () => ({
+    startRuntimeServicesForWorktreeControl: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
 }
@@ -108,7 +108,7 @@ describe("project and goal telemetry routes", () => {
     vi.resetModules();
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/worktree-runtime.js");
     vi.doUnmock("../routes/projects.js");
     vi.doUnmock("../routes/goals.js");
     vi.doUnmock("../routes/authz.js");

@@ -9,7 +9,7 @@ import { readRecoveryRetryLineage } from "./recovery-lineage";
 describe("recoveryChipLabel", () => {
   it("returns the workspace-specific label when kind is workspace_validation and state is needed", () => {
     expect(recoveryChipLabel("needed", "workspace_validation")).toBe(
-      "Workspace recovery needed",
+      "Worktree recovery needed",
     );
   });
 

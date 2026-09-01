@@ -222,7 +222,7 @@ export async function buildInventories({ repoRoot, evalRoot }) {
 
 export async function buildSkillInventory(repoRoot) {
   const skillRoot = resolve(repoRoot, "skills/paperclip");
-  const skillFiles = ["SKILL.md", "references/artifacts.md", "references/cases.md", "references/company-skills.md", "references/issue-workspaces.md", "references/routines.md", "references/workflows.md", "references/api-reference.md"];
+  const skillFiles = ["SKILL.md", "references/artifacts.md", "references/cases.md", "references/company-skills.md", "references/issue-worktrees.md", "references/routines.md", "references/workflows.md", "references/api-reference.md"];
   const rows = (await Promise.all(skillFiles.map(async (file) => parseSkillHeadings(
     await readFile(resolve(skillRoot, file), "utf8"),
     `skills/paperclip/${file}`,

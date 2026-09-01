@@ -2,16 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SearchableSelect, type SearchableSelectGroup } from "@/components/SearchableSelect";
 import {
-  buildReusableExecutionWorkspaceOptionGroups,
-  reusableWorkspaceOptionMatches,
-  type ReusableExecutionWorkspaceLike,
-  type ReusableWorkspaceOption,
-} from "@/lib/reusable-execution-workspaces";
+  buildReusableExecutionWorktreeOptionGroups,
+  reusableWorktreeOptionMatches,
+  type ReusableExecutionWorktreeLike,
+  type ReusableWorktreeOption,
+} from "@/lib/reusable-execution-worktrees";
 
 const NOW = new Date("2026-06-24T12:00:00.000Z");
 const DAY = 24 * 60 * 60 * 1000;
 
-const WORKSPACES: ReusableExecutionWorkspaceLike[] = [
+const WORKSPACES: ReusableExecutionWorktreeLike[] = [
   {
     id: "ws-auth-refresh",
     name: "auth-token-refresh",
@@ -62,7 +62,7 @@ const WORKSPACES: ReusableExecutionWorkspaceLike[] = [
   },
 ];
 
-const LONG_WORKSPACES: ReusableExecutionWorkspaceLike[] = [
+const LONG_WORKSPACES: ReusableExecutionWorktreeLike[] = [
   {
     id: "ws-long-name",
     name: "paperclip-control-plane-existing-workspace-selector-long-running-validation-branch",
@@ -82,9 +82,9 @@ const LONG_WORKSPACES: ReusableExecutionWorkspaceLike[] = [
   ...WORKSPACES.slice(0, 2),
 ];
 
-const GROUPS = buildReusableExecutionWorkspaceOptionGroups(WORKSPACES, { now: NOW });
+const GROUPS = buildReusableExecutionWorktreeOptionGroups(WORKSPACES, { now: NOW });
 
-const SELECT_GROUPS: SearchableSelectGroup<string, ReusableWorkspaceOption>[] = GROUPS.map((group) => ({
+const SELECT_GROUPS: SearchableSelectGroup<string, ReusableWorktreeOption>[] = GROUPS.map((group) => ({
   id: group.id,
   label: group.label,
   options: group.options,
@@ -104,7 +104,7 @@ function WorkspaceSelect({
   triggerClassName?: string;
   loading?: boolean;
   disabled?: boolean;
-  groups?: SearchableSelectGroup<string, ReusableWorkspaceOption>[];
+  groups?: SearchableSelectGroup<string, ReusableWorktreeOption>[];
   initialValue?: string;
   autoOpen?: boolean;
   autoQuery?: string;
@@ -134,18 +134,18 @@ function WorkspaceSelect({
 
   return (
     <div ref={rootRef}>
-      <SearchableSelect<string, ReusableWorkspaceOption>
+      <SearchableSelect<string, ReusableWorktreeOption>
         value={value}
         groups={groups}
         onValueChange={(next) => setValue(next)}
-        placeholder="Choose an existing workspace"
-        searchPlaceholder="Search workspaces..."
-        emptyMessage="No matching workspaces."
-        loadingMessage="Loading workspaces..."
+        placeholder="Choose an existing worktree"
+        searchPlaceholder="Search worktrees..."
+        emptyMessage="No matching worktrees."
+        loadingMessage="Loading worktrees..."
         loading={loading}
         disabled={disabled}
         triggerClassName={triggerClassName}
-        filterOption={(option, query) => reusableWorkspaceOptionMatches(option, query)}
+        filterOption={(option, query) => reusableWorktreeOptionMatches(option, query)}
         renderOption={(option, { selected }) => (
           <span className="flex min-w-0 flex-col">
             <span className={`truncate ${selected ? "font-medium" : ""}`}>{option.label}</span>
@@ -164,7 +164,7 @@ function FormContext({ triggerClassName }: { triggerClassName?: string }) {
     <div className="w-full max-w-sm rounded-md border border-border bg-card p-0">
       <div className="px-4 py-3 space-y-2">
         <div className="space-y-1.5">
-          <div className="text-xs font-medium">Execution workspace</div>
+          <div className="text-xs font-medium">Execution worktree</div>
           <div className="text-[11px] text-muted-foreground">
             Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
           </div>
@@ -174,8 +174,8 @@ function FormContext({ triggerClassName }: { triggerClassName?: string }) {
             defaultValue="reuse_existing"
           >
             <option value="shared_workspace">Project default</option>
-            <option value="isolated_workspace">New isolated workspace</option>
-            <option value="reuse_existing">Reuse existing workspace</option>
+            <option value="isolated_workspace">New isolated worktree</option>
+            <option value="reuse_existing">Reuse existing worktree</option>
           </select>
           <WorkspaceSelect triggerClassName={triggerClassName} />
         </div>
@@ -185,7 +185,7 @@ function FormContext({ triggerClassName }: { triggerClassName?: string }) {
 }
 
 const meta = {
-  title: "Components/SearchableSelect/Workspace picker",
+  title: "Components/SearchableSelect/Worktree picker",
   parameters: { layout: "centered" },
 } satisfies Meta;
 
@@ -213,7 +213,7 @@ export const LongNamesAndPaths: Story = {
     <div className="w-[280px]">
       <WorkspaceSelect
         triggerClassName={COMPACT_TRIGGER}
-        groups={buildReusableExecutionWorkspaceOptionGroups(LONG_WORKSPACES, { now: NOW })}
+        groups={buildReusableExecutionWorktreeOptionGroups(LONG_WORKSPACES, { now: NOW })}
         autoOpen
       />
     </div>
@@ -223,7 +223,7 @@ export const LongNamesAndPaths: Story = {
 export const NoMatches: Story = {
   render: () => (
     <div className="w-80">
-      <WorkspaceSelect triggerClassName={COMPACT_TRIGGER} autoOpen autoQuery="not a workspace" />
+      <WorkspaceSelect triggerClassName={COMPACT_TRIGGER} autoOpen autoQuery="not a worktree" />
     </div>
   ),
 };
@@ -256,7 +256,7 @@ export const DefaultAndCompactSizeComparison: Story = {
   render: () => (
     <div className="flex w-80 flex-col gap-2">
       <select className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none" defaultValue="reuse_existing">
-        <option value="reuse_existing">Reuse existing workspace</option>
+        <option value="reuse_existing">Reuse existing worktree</option>
       </select>
       <WorkspaceSelect />
       <WorkspaceSelect triggerClassName={COMPACT_TRIGGER} />

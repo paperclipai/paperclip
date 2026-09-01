@@ -151,7 +151,7 @@ export function ForkSkillDialog({
           </DialogTitle>
           <DialogDescription>
             {skill.name} is read-only because it comes from an external source.
-            Creating a fully editable copy in your workspace leaves the original
+            Creating a fully editable copy in your worktree leaves the original
             untouched and still updatable.
           </DialogDescription>
         </DialogHeader>

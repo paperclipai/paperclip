@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { WorkspaceFileContent } from "@paperclipai/shared";
+import type { WorktreeFileContent } from "@paperclipai/shared";
 import type { FileViewerUrlState } from "@/context/FileViewerContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { describeDenial, FileContentViewer, FileViewerMetadataRow } from "./FileViewerSheet";
@@ -48,14 +48,14 @@ describe("describeDenial", () => {
 });
 
 describe("FileContentViewer", () => {
-  function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileContent {
+  function content(overrides: Partial<WorktreeFileContent> = {}): WorktreeFileContent {
     return {
       resource: {
         kind: "file",
         provider: "local_fs",
         title: "notes.txt",
         displayPath: "notes.txt",
-        workspaceLabel: "Workspace",
+        workspaceLabel: "Worktree",
         workspaceKind: "project_workspace",
         workspaceId: "11111111-1111-4111-8111-111111111111",
         contentType: "text/plain; charset=utf-8",

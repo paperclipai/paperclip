@@ -172,7 +172,7 @@ function registerModuleMocks(): void {
     logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent: unknown, config: unknown) => config),
-    workspaceOperationService: () => ({}),
+    worktreeOperationService: () => ({}),
   }));
   // The start-route guard reads the login capability from the registry. The
   // `beforeEach` default declares the Claude setup-token capability for

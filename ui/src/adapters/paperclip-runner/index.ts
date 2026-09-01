@@ -699,7 +699,7 @@ function parsePrpEvent(
   }
   if (eventType === "workspace.file.referenced") {
     const entry = workspaceFileReferenceEntry(payload, ts);
-    return entry ? [entry] : [{ kind: "system", ts, text: "Runner: Ignored an unsafe workspace file reference" }];
+    return entry ? [entry] : [{ kind: "system", ts, text: "Runner: Ignored an unsafe worktree file reference" }];
   }
   if (eventType.startsWith("runtime_request.")) {
     const entry = runtimeRequestEntry(eventType, payload, event, ts, state);

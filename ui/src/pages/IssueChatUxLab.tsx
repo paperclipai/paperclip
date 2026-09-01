@@ -355,7 +355,7 @@ export function IssueChatUxLab() {
               agentMap={issueChatUxAgentMap}
               currentUserId="user-1"
               onAdd={noop}
-              composerDisabledReason="This workspace is closed, so new chat replies are disabled until the issue is reopened."
+              composerDisabledReason="This worktree is closed, so new chat replies are disabled until the issue is reopened."
               draftKey="issue-chat-ux-lab-empty"
               enableLiveTranscriptPolling={false}
             />

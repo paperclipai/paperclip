@@ -45,12 +45,12 @@ import {
   useRequiredFileViewer,
   type FileViewerUrlState,
 } from "@/context/FileViewerContext";
-import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
-import { WorkspaceFileMarkdownBody } from "@/components/WorkspaceFileMarkdownBody";
+import { WorktreeFileBrowser } from "@/components/WorktreeFileBrowser";
+import { WorktreeFileMarkdownBody } from "@/components/WorktreeFileMarkdownBody";
 import type {
-  ResolvedWorkspaceResource,
-  WorkspaceFileContent,
-  WorkspaceFileSelector,
+  ResolvedWorktreeResource,
+  WorktreeFileContent,
+  WorktreeFileSelector,
 } from "@paperclipai/shared";
 
 const FILE_VIEWER_LABELLED_BY_ID = "paperclip-file-viewer-title";
@@ -109,7 +109,7 @@ function middleTruncatePath(path: string, maxLen = 80): string {
   return `${head}…${tail}`;
 }
 
-function isMarkdownResource(resource: ResolvedWorkspaceResource): boolean {
+function isMarkdownResource(resource: ResolvedWorktreeResource): boolean {
   const contentType = resource.contentType?.toLowerCase() ?? "";
   if (contentType.includes("markdown")) return true;
   const path = (resource.displayPath || resource.title).toLowerCase();
@@ -128,22 +128,22 @@ export function describeDenial(code: string, fallback: string): { title: string;
   if (lower.includes("outside") || lower.includes("traversal")) {
     return {
       icon: <Ban aria-hidden="true" className="h-6 w-6 text-red-500" />,
-      title: "Path is outside the workspace",
-      body: "The viewer can only open files that live under the issue's workspace.",
+      title: "Path is outside the worktree",
+      body: "The viewer can only open files that live under the issue's worktree.",
     };
   }
   if (lower.includes("archive") || lower.includes("cleaned")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-6 w-6 text-muted-foreground" />,
-      title: "Workspace is no longer available",
+      title: "Worktree is no longer available",
       body: "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
     };
   }
   if (lower.includes("remote")) {
     return {
       icon: <AlertTriangle aria-hidden="true" className="h-6 w-6 text-amber-500" />,
-      title: "Remote workspace preview not supported",
-      body: "This workspace is hosted remotely and is not available for inline preview yet.",
+      title: "Remote worktree preview not supported",
+      body: "This worktree is hosted remotely and is not available for inline preview yet.",
     };
   }
   if (lower.includes("too_large") || lower.includes("size")) {
@@ -199,7 +199,7 @@ export function FileViewerMetadataRow({
   resolvedResource,
   state,
 }: {
-  resolvedResource?: ResolvedWorkspaceResource;
+  resolvedResource?: ResolvedWorktreeResource;
   state: FileViewerUrlState | null;
 }) {
   return (
@@ -231,7 +231,7 @@ export function FileViewerMetadataRow({
 }
 
 interface FileContentViewerProps {
-  content: WorkspaceFileContent;
+  content: WorktreeFileContent;
   highlightedLine: number | null;
   onLoaded?: (summary: string) => void;
 }
@@ -426,9 +426,9 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
           tabIndex={0}
           className="flex-1 overflow-auto bg-background p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         >
-          <WorkspaceFileMarkdownBody softBreaks={false}>
+          <WorktreeFileMarkdownBody softBreaks={false}>
             {content.content.data}
-          </WorkspaceFileMarkdownBody>
+          </WorktreeFileMarkdownBody>
         </div>
       )}
     </div>
@@ -511,7 +511,7 @@ export function FileViewerSheet({
     staleTime: 30_000,
   });
 
-  const resolvedResource: ResolvedWorkspaceResource | undefined = resolveQuery.data;
+  const resolvedResource: ResolvedWorktreeResource | undefined = resolveQuery.data;
   const canPreview = resolvedResource?.capabilities.preview ?? false;
   const downloadUrl = state && resolvedResource?.capabilities.download
     ? fileResourcesApi.downloadUrl(issueId, state)
@@ -584,7 +584,7 @@ export function FileViewerSheet({
   const handleBrowseOpen = useCallback(
     (ref: {
       path: string;
-      workspace: WorkspaceFileSelector;
+      workspace: WorktreeFileSelector;
       line?: number | null;
       column?: number | null;
       projectId?: string | null;
@@ -707,10 +707,10 @@ export function FileViewerSheet({
     });
   }, []);
 
-  const title = state ? basename(state.path) : "Browse workspace";
+  const title = state ? basename(state.path) : "Browse worktree";
   const description = state
     ? middleTruncatePath(state.path)
-    : "Search and preview files from this issue's workspace.";
+    : "Search and preview files from this issue's worktree.";
   const showDescription = state ? description !== title : true;
 
   return (
@@ -849,7 +849,7 @@ export function FileViewerSheet({
                 className="hidden min-h-0 shrink-0 overflow-hidden sm:flex"
                 style={{ width: fileTreeWidth }}
               >
-                <WorkspaceFileBrowser
+                <WorktreeFileBrowser
                   key={`${state.projectId ?? ""}:${state.workspaceId ?? ""}`}
                   issueId={issueId}
                   companyId={companyId}
@@ -906,7 +906,7 @@ export function FileViewerSheet({
               </div>
             </div>
           ) : browseMode ? (
-            <WorkspaceFileBrowser
+            <WorktreeFileBrowser
               issueId={issueId}
               companyId={companyId}
               onOpen={handleBrowseOpen}
@@ -926,8 +926,8 @@ export function FileViewerSheet({
 }
 
 interface FileViewerBodyProps {
-  resolveQuery: UseQueryResult<ResolvedWorkspaceResource, unknown>;
-  contentQuery: UseQueryResult<WorkspaceFileContent, unknown>;
+  resolveQuery: UseQueryResult<ResolvedWorktreeResource, unknown>;
+  contentQuery: UseQueryResult<WorktreeFileContent, unknown>;
   elapsedMs: number;
   canPreview: boolean;
   highlightedLine: number | null;
@@ -957,12 +957,12 @@ export function FileViewerBody({
         <FileViewerStateView
           icon={<FileSearch aria-hidden="true" className="h-6 w-6 text-muted-foreground" />}
           title="File not found"
-          body="That file was not found in the active workspace."
+          body="That file was not found in the active worktree."
           actions={
             <>
               {onFallbackToProject ? (
                 <Button type="button" variant="secondary" size="sm" onClick={onFallbackToProject}>
-                  Try project workspace
+                  Try project worktree
                 </Button>
               ) : null}
               <Button type="button" variant="ghost" size="sm" onClick={onRetry}>
@@ -977,8 +977,8 @@ export function FileViewerBody({
       return (
         <FileViewerStateView
           icon={<FolderOpen aria-hidden="true" className="h-6 w-6 text-muted-foreground" />}
-          title="No workspace available"
-          body="This issue does not have a workspace that supports preview yet."
+          title="No worktree available"
+          body="This issue does not have a worktree that supports preview yet."
         />
       );
     }
@@ -1004,8 +1004,8 @@ export function FileViewerBody({
     return (
       <FileViewerStateView
         icon={<Cloud aria-hidden="true" className="h-6 w-6 text-muted-foreground" />}
-        title="Remote workspace preview coming soon"
-        body="This workspace is hosted remotely; inline previews are not supported yet."
+        title="Remote worktree preview coming soon"
+        body="This worktree is hosted remotely; inline previews are not supported yet."
       />
     );
   }

@@ -1,7 +1,7 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
-import { executionWorkspaces } from "./execution_workspaces.js";
+import { executionWorktrees } from "./execution_worktrees.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 
@@ -18,7 +18,7 @@ export const environmentLeases = pgTable(
     // column is nullable so an orphan the acquire records after a concurrent
     // environment delete still persists with a null reference.
     environmentId: uuid("environment_id").references(() => environments.id, { onDelete: "set null" }),
-    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
+    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorktrees.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     status: text("status").notNull().default("active"),

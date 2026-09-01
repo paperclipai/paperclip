@@ -2768,6 +2768,27 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {
+  it("freezes the serialized legacy workspace environment contract", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "/tmp/workspace",
+        workspaceSource: "project_primary",
+        workspaceStrategy: "git_worktree",
+        workspaceId: "workspace-1",
+        workspaceRepoUrl: "https://github.com/paperclipai/paperclip.git",
+        workspaceRepoRef: "main",
+        workspaceBranch: "feature/test",
+        workspaceWorktreePath: "/tmp/worktree",
+        agentHome: "/tmp/agent-home",
+      },
+    );
+
+    expect(JSON.stringify(env)).toBe(
+      '{"PAPERCLIP_WORKSPACE_CWD":"/tmp/workspace","PAPERCLIP_WORKSPACE_SOURCE":"project_primary","PAPERCLIP_WORKSPACE_STRATEGY":"git_worktree","PAPERCLIP_WORKSPACE_ID":"workspace-1","PAPERCLIP_WORKSPACE_REPO_URL":"https://github.com/paperclipai/paperclip.git","PAPERCLIP_WORKSPACE_REPO_REF":"main","PAPERCLIP_WORKSPACE_BRANCH":"feature/test","PAPERCLIP_WORKSPACE_WORKTREE_PATH":"/tmp/worktree","AGENT_HOME":"/tmp/agent-home"}',
+    );
+  });
+
   it("adds shared workspace env vars including AGENT_HOME", () => {
     const env = applyPaperclipWorkspaceEnv(
       {},

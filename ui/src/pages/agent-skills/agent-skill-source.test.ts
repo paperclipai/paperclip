@@ -27,10 +27,10 @@ describe("buildAgentSkillSourceMeta", () => {
   it("keeps human-readable project scan labels for local skills", () => {
     expect(source({
       sourceBadge: "local",
-      sourceLabel: "Paperclip App / Engineering workspace",
+      sourceLabel: "Paperclip App / Engineering worktree",
       sourceLocator: null,
       sourceType: "local_path",
-    })).toBe("Paperclip App / Engineering workspace");
+    })).toBe("Paperclip App / Engineering worktree");
   });
 
   it("does not surface long filesystem labels for catalog skills", () => {

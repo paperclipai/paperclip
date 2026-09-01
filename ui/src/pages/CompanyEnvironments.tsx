@@ -107,7 +107,7 @@ function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): st
     return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
   }
   if (impact.reusableSandboxLeaseCount > 0) {
-    return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
+    return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution worktree or issue so Paperclip can destroy the sandbox, then retry.";
   }
   return null;
 }
@@ -1930,7 +1930,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             holder.executionWorkspaceName
             ?? holder.issueIdentifier
             ?? holder.issueTitle
-            ?? "Workspace no longer on record",
+            ?? "Worktree no longer on record",
           issueLabels: issueLabel ? [issueLabel] : [],
           leaseCount: 1,
         });
@@ -2300,7 +2300,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     the platform-managed environment owns; an SSH environment the
                     user configured is outside that contract.
                   */}
-                  <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
+                  <Field label="Remote worktree path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
@@ -2512,7 +2512,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         : deleteBlockMessage
                           ?? ([
                             reusableLeaseOnlyBlock && deleteBlastRadius
-                              ? `${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 reusable sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} reusable sandboxes`} will be destroyed; the workspaces holding them stay open and provision a fresh sandbox on their next run.`
+                              ? `${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 reusable sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} reusable sandboxes`} will be destroyed; the worktrees holding them stay open and provision a fresh sandbox on their next run.`
                               : null,
                             agentsUsingEnvironment.length > 0
                               ? `${agentsUsingEnvironment.length === 1 ? "1 agent uses" : `${agentsUsingEnvironment.length} agents use`} this environment as their default. Choose the environment those agents should be reassigned to.`
@@ -2532,7 +2532,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                           {group.workspaceId ? (
                             <Link
                               className="underline underline-offset-2 hover:text-foreground"
-                              to={`/execution-workspaces/${group.workspaceId}`}
+                              to={`/execution-worktrees/${group.workspaceId}`}
                             >
                               {group.label}
                             </Link>
@@ -2549,8 +2549,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     </ul>
                     <div className="text-xs text-muted-foreground">
                       {reusableLeaseOnlyBlock
-                        ? "Deleting destroys these sandboxes; the workspaces stay open."
-                        : "Close these workspaces to let Paperclip destroy their sandboxes, then retry the delete."}
+                        ? "Deleting destroys these sandboxes; the worktrees stay open."
+                        : "Close these worktrees to let Paperclip destroy their sandboxes, then retry the delete."}
                     </div>
                   </div>
                 ) : null}

@@ -1,21 +1,21 @@
 import type { MouseEvent, ReactNode } from "react";
 import { FileCode2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { WorkspaceFileRef } from "@paperclipai/shared";
+import type { WorktreeFileRef } from "@paperclipai/shared";
 import { useFileViewer } from "@/context/FileViewerContext";
 
 export interface ArtifactFileChipProps {
-  workspaceFileRef: WorkspaceFileRef;
+  workspaceFileRef: WorktreeFileRef;
   /** Override the rendered label. Defaults to the display path. */
   label?: ReactNode;
   className?: string;
   /** Optional override if the consumer wants to customize activation. */
-  onOpen?: (ref: WorkspaceFileRef) => void;
+  onOpen?: (ref: WorktreeFileRef) => void;
   showIcon?: boolean;
   title?: string;
 }
 
-function artifactFileDisplay(ref: WorkspaceFileRef) {
+function artifactFileDisplay(ref: WorktreeFileRef) {
   if (!ref.projectName) return ref.displayPath;
   const prefix = `${ref.projectName} / `;
   return ref.displayPath.startsWith(prefix) ? ref.displayPath : `${prefix}${ref.displayPath}`;
@@ -37,10 +37,10 @@ export function ArtifactFileChip({
     : "";
   const ariaLabel = canOpen
     ? `Open ${workspaceFileRef.displayPath}${lineSuffix} in the file viewer`
-    : `Workspace file ${workspaceFileRef.displayPath}${lineSuffix}`;
+    : `Worktree file ${workspaceFileRef.displayPath}${lineSuffix}`;
   const tooltip = title ?? (canOpen
     ? `Open ${workspaceFileRef.displayPath}${lineSuffix} in the file viewer`
-    : `Workspace file ${workspaceFileRef.displayPath}${lineSuffix}`);
+    : `Worktree file ${workspaceFileRef.displayPath}${lineSuffix}`);
 
   const classNames = cn(
     "paperclip-artifact-file-chip inline-flex items-center gap-1 rounded-sm border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-xs leading-tight text-foreground/90 align-middle no-underline hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
@@ -61,12 +61,12 @@ export function ArtifactFileChip({
     if (event.button !== 0) return;
     if (onOpen) onOpen(workspaceFileRef);
     else {
-      const workspace = workspaceFileRef.workspaceKind === "execution_workspace" ? "execution" : "project";
+      const worktree = workspaceFileRef.workspaceKind === "execution_workspace" ? "execution" : "project";
       viewer?.open({
         path: workspaceFileRef.relativePath,
         line: workspaceFileRef.line ?? null,
         column: workspaceFileRef.column ?? null,
-        workspace,
+        workspace: worktree,
         projectId: workspaceFileRef.projectId ?? null,
         workspaceId: workspaceFileRef.projectId ? workspaceFileRef.workspaceId : null,
       });
@@ -77,7 +77,7 @@ export function ArtifactFileChip({
     return (
       <span
         data-artifact-file-chip="true"
-        data-workspace-file-path={workspaceFileRef.relativePath}
+        data-worktree-file-path={workspaceFileRef.relativePath}
         aria-label={ariaLabel}
         title={tooltip}
         className={classNames}
@@ -91,7 +91,7 @@ export function ArtifactFileChip({
     <button
       type="button"
       data-artifact-file-chip="true"
-      data-workspace-file-path={workspaceFileRef.relativePath}
+      data-worktree-file-path={workspaceFileRef.relativePath}
       aria-label={ariaLabel}
       title={tooltip}
       className={classNames}

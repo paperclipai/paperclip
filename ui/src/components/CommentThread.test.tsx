@@ -176,14 +176,14 @@ describe("CommentThread", () => {
         <MemoryRouter>
           <CommentThread
             comments={[]}
-            composerDisabledReason="Workspace is closed."
+            composerDisabledReason="Worktree is closed."
             onAdd={async () => {}}
           />
         </MemoryRouter>,
       );
     });
 
-    expect(container.textContent).toContain("Workspace is closed.");
+    expect(container.textContent).toContain("Worktree is closed.");
     expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
     expect(container.textContent).not.toContain("Comment");
 

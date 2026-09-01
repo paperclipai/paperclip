@@ -40,7 +40,7 @@ The central nervous system. Manages:
 - Goal hierarchy (company → team → agent → task)
 - Heartbeat monitoring — know when agents are alive, idle, or stuck
 
-It also enforces execution-control semantics such as single-assignee issues, atomic checkout and execution locks, blockers, recovery issues, and workspace/runtime controls.
+It also enforces execution-control semantics such as single-assignee issues, atomic checkout and execution locks, blockers, recovery issues, and worktree/runtime controls.
 
 ### 2. Execution Services (adapters)
 

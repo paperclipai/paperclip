@@ -1831,7 +1831,7 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
   });
 
-  it("links the workspaces holding blocking sandbox leases in the delete dialog", async () => {
+  it("links the worktrees holding blocking sandbox leases in the delete dialog", async () => {
     mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(
       createDeleteBlastRadius({
         canDelete: false,
@@ -1887,13 +1887,13 @@ describe("CompanyEnvironments — test provider button", () => {
     const holders = document.body.querySelector<HTMLElement>(
       "[data-testid='environment-delete-lease-holders']",
     )!;
-    const workspaceLink = holders.querySelector<HTMLAnchorElement>("a[href='/execution-workspaces/ws-1']");
-    expect(workspaceLink?.textContent).toBe("ACME-7-fix-the-thing");
+    const worktreeLink = holders.querySelector<HTMLAnchorElement>("a[href='/execution-worktrees/ws-1']");
+    expect(worktreeLink?.textContent).toBe("ACME-7-fix-the-thing");
     // The two leases on ws-1 collapse into one row naming both issues.
     expect(holders.querySelectorAll("li")).toHaveLength(2);
     expect(holders.textContent).toContain("2 sandbox leases");
     expect(holders.textContent).toContain("ACME-7, ACME-9");
-    expect(holders.textContent).toContain("Workspace no longer on record");
+    expect(holders.textContent).toContain("Worktree no longer on record");
 
     // Leases as the only blocker are consentable: the confirm stays enabled
     // and destroys the sandboxes as part of the delete.

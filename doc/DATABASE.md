@@ -262,7 +262,7 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 configuration.
 
 Database backups do not include non-database instance files such as local-disk
-uploads, workspace files, or the local encrypted secrets master key. Back those paths
+uploads, worktree files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
 
 ## Secret storage
