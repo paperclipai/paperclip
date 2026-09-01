@@ -1958,21 +1958,25 @@ function createSandboxEnvironmentDriver(
             });
           }
           if (!providerLease) {
-            await destroyReusableSandboxLease({
-              environment: input.environment,
-              lease: reusableLease,
-              failureReason: replacementReason ?? "resume_failed",
-            });
             if (
               input.adapterType === "paperclip_runner" &&
               !verifyNativeHarnessBackupStamp(
                 reusableLease.metadata?.nativeHarnessBackup,
+                reusableLease.providerLeaseId,
               )
             ) {
               throw new RunnerHarnessBackupUnavailableError(
                 reusableLease.providerLeaseId,
               );
             }
+            // The verified, lease-bound backup authorizes destructive
+            // replacement. Keep the existing sandbox intact when validation
+            // fails so the only recoverable provider state is not lost.
+            await destroyReusableSandboxLease({
+              environment: input.environment,
+              lease: reusableLease,
+              failureReason: replacementReason ?? "resume_failed",
+            });
           }
         }
         const acquiredLease = providerLease ?? await pluginWorkerManager.call(
@@ -3701,9 +3705,11 @@ export function environmentRuntimeService(
           if (
             providerResourceDisposition === "destroy" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
-            !verifyNativeHarnessBackupStamp(
-              leaseSnapshot.metadata.nativeHarnessBackup,
-            )
+            (!leaseSnapshot.providerLeaseId ||
+              !verifyNativeHarnessBackupStamp(
+                leaseSnapshot.metadata.nativeHarnessBackup,
+                leaseSnapshot.providerLeaseId,
+              ))
           ) {
             throw new RunnerHarnessBackupUnavailableError(
               leaseSnapshot.providerLeaseId ?? leaseSnapshot.id,

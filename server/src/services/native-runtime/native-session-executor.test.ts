@@ -652,9 +652,10 @@ describe("verified native harness backups", () => {
         completedAt: manifest.completedAt,
       });
 
-      expect(verifyNativeHarnessBackupStamp(stamp)).toBe(true);
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
       await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
-      expect(verifyNativeHarnessBackupStamp(stamp)).toBe(false);
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;

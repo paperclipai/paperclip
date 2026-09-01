@@ -4624,6 +4624,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect.anything(),
       expect.anything(),
     );
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      seeded.pluginId,
+      "environmentDestroyLease",
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it("permits native-runner replacement only after verifying the stamped backup", async () => {

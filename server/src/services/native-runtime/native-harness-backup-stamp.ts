@@ -71,7 +71,11 @@ export function createNativeHarnessBackupStamp(input: {
   };
 }
 
-export function verifyNativeHarnessBackupStamp(value: unknown): boolean {
+export function verifyNativeHarnessBackupStamp(
+  value: unknown,
+  expectedProviderLeaseId: string,
+): boolean {
+  if (!expectedProviderLeaseId) return false;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const stamp = value as Record<string, unknown>;
   if (
@@ -93,6 +97,7 @@ export function verifyNativeHarnessBackupStamp(value: unknown): boolean {
         manifest.schema !== "paperclip.native-harness-backup.v1" ||
         manifest.normalizedSessionId !== stamp.normalizedSessionId ||
         manifest.runnerInstanceId !== stamp.runnerInstanceId ||
+        manifest.sourceProviderLeaseId !== expectedProviderLeaseId ||
         !Array.isArray(manifest.directories) ||
         manifest.directories.length === 0
       ) continue;
