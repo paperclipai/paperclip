@@ -33,6 +33,8 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: true,
       enableApps: false,
+      enableOffice3D: false,
+      office3dUrl: null,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
