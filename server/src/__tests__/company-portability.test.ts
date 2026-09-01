@@ -3409,7 +3409,7 @@ describe("company portability", () => {
     });
   });
 
-  it("disables timer heartbeats on imported agents", async () => {
+  it("disables timer heartbeats and strips raw provider tracing on created imports", async () => {
     const portability = companyPortabilityService({} as any);
 
     companySvc.create.mockResolvedValue({
@@ -3422,6 +3422,16 @@ describe("company portability", () => {
       adapterConfig: input.adapterConfig,
       runtimeConfig: input.runtimeConfig,
     }));
+
+    const sourceAgents = (await agentSvc.list()) as Array<Record<string, unknown>>;
+    agentSvc.list.mockResolvedValue(sourceAgents.map((agent) => ({
+      ...agent,
+      runtimeConfig: {
+        ...((agent.runtimeConfig ?? {}) as Record<string, unknown>),
+        debug: { providerTrace: "raw", retainedDebugSetting: true },
+      },
+    })));
+    agentSvc.list.mockClear();
 
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -3457,12 +3467,19 @@ describe("company portability", () => {
     const createdClaude = agentSvc.create.mock.calls.find(([, input]) => input.name === "ClaudeCoder");
     expect(createdClaude?.[1]).toMatchObject({
       runtimeConfig: {
+        debug: {
+          retainedDebugSetting: true,
+        },
         heartbeat: {
           enabled: false,
           maxConcurrentRuns: 20,
         },
       },
     });
+    const createdRuntimeConfig = createdClaude?.[1].runtimeConfig as
+      | Record<string, unknown>
+      | undefined;
+    expect(createdRuntimeConfig?.debug).not.toHaveProperty("providerTrace");
   });
 
   it("imports only selected files and leaves unchecked company metadata alone", async () => {
@@ -5656,6 +5673,15 @@ describe("company portability", () => {
 
   it("normalizes adapter config on replace imports before updating existing agents", async () => {
     const portability = companyPortabilityService({} as any);
+    const sourceAgents = (await agentSvc.list()) as Array<Record<string, unknown>>;
+    agentSvc.list.mockResolvedValue(sourceAgents.map((agent) => ({
+      ...agent,
+      runtimeConfig: {
+        ...((agent.runtimeConfig ?? {}) as Record<string, unknown>),
+        debug: { providerTrace: "raw", retainedDebugSetting: true },
+      },
+    })));
+    agentSvc.list.mockClear();
     const exported = await portability.exportBundle("company-1", {
       include: {
         company: true,
@@ -5716,7 +5742,20 @@ describe("company portability", () => {
       adapterConfig: {
         normalized: "updated",
       },
+      runtimeConfig: {
+        debug: {
+          retainedDebugSetting: true,
+        },
+        heartbeat: {
+          enabled: false,
+          maxConcurrentRuns: 20,
+        },
+      },
     }));
+    const runtimeUpdate = agentSvc.update.mock.calls.find(
+      ([, patch]) => patch.runtimeConfig !== undefined,
+    )?.[1].runtimeConfig as Record<string, unknown> | undefined;
+    expect(runtimeUpdate?.debug).not.toHaveProperty("providerTrace");
   });
 
   it("nameOverrides applied after collision detection do not re-validate uniqueness", async () => {

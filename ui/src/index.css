@@ -91,6 +91,10 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  --scrollbar-thumb: oklch(0.7 0 0);
+  --scrollbar-thumb-hover: oklch(0.6 0 0);
+  --scrollbar-size: 8px;
+  --scrollbar-radius: 999px;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -116,10 +120,14 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
-  --paperclip-doc-annotation-highlight-open: #fef08a;
-  --paperclip-doc-annotation-highlight-focused: #fde047;
-  --paperclip-doc-annotation-highlight-stale: #fef08a;
-  --paperclip-doc-annotation-highlight-resolved: #fef9c3;
+  --paperclip-doc-annotation-highlight-source: oklch(0.78 0.16 89);
+  --paperclip-doc-annotation-highlight-open: color-mix(in srgb, var(--paperclip-doc-annotation-highlight-source) 58%, var(--background));
+  --paperclip-doc-annotation-highlight-focused: color-mix(in srgb, var(--paperclip-doc-annotation-highlight-source) 60%, var(--background));
+  --paperclip-doc-annotation-highlight-stale: color-mix(in srgb, var(--paperclip-doc-annotation-highlight-source) 48%, var(--background));
+  --paperclip-doc-annotation-highlight-resolved: color-mix(in srgb, var(--paperclip-doc-annotation-highlight-source) 28%, var(--background));
+  --paperclip-doc-annotation-highlight-x-outset: 0.25rem;
+  --paperclip-doc-annotation-highlight-y-outset: 0.125rem;
+  --paperclip-doc-annotation-highlight-radius: 0.1875rem;
 
   /* Brand agent-capsule gradient stops (paperclip.ing/brand/).
      "The capsule is the agent" — each agent gets a 2-stop gradient,
@@ -250,9 +258,26 @@
   --motion-interstitial-dwell: 4000ms;  /* interstitial update hold: minimum before the next swaps in, and how long a finished update sits before sliding away */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
+  --motion-scrollbar-idle-delay: 600ms; /* keep the task-thread thumb visible briefly after scrolling settles */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --motion-side-panel-tab: var(--motion-duration-fast);
+
+  /* Portable side-panel geometry and hierarchy. These stay centralized so
+     task, project, agent, and future hosts render the same Codex-like chrome. */
+  --side-panel-header-height: var(--sz-48px);
+  --side-panel-tab-height: var(--sz-30px);
+  --side-panel-tab-label-max-width: var(--sz-100px);
+  --side-panel-tab-label-expanded-max-width: calc(var(--side-panel-tab-label-max-width) + var(--sz-18px));
+  --side-panel-tab-label-fade-width: var(--sz-18px);
+  --side-panel-tab-radius: var(--radius-xl);
+  --side-panel-control-radius: var(--radius-xl);
+  --side-panel-launcher-width: var(--sz-320px);
+  --side-panel-bg: var(--background);
+  --side-panel-fg: var(--foreground);
+  --side-panel-tab-active-bg: color-mix(in oklab, var(--accent) 88%, var(--background));
+  --side-panel-tab-hover-bg: color-mix(in oklab, var(--accent) 58%, transparent);
 
   /* Composer mode-chip hues (v5–v7 decisions): agent + plan reuse the task
      status hues; ask is the v5 blue. Consumed as `--sc` seeds through the
@@ -278,6 +303,10 @@
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
 
+  /* Active-turn status island and its checklist overlay. */
+  --sz-turn-status-island: min(100%, 42rem);
+  --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
+
   /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
      safe-area inset (+20px); Layout raises it to the bottom-nav height
      (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
@@ -289,6 +318,8 @@
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
+  --side-panel-bg: rgb(10 10 10);
+  --side-panel-fg: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
@@ -307,6 +338,8 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --scrollbar-thumb: oklch(0.4 0 0);
+  --scrollbar-thumb-hover: oklch(0.5 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -332,11 +365,6 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
-  --paperclip-doc-annotation-highlight-open: #a16207;
-  --paperclip-doc-annotation-highlight-focused: #ca8a04;
-  --paperclip-doc-annotation-highlight-stale: #854d0e;
-  --paperclip-doc-annotation-highlight-resolved: #713f12;
-
   /* Dark-mode AA overrides for the status-icon hues that need a mode-specific
      value (PAP-238). in_progress / blocked stay identical (same blue / red both
      modes) and in_queue tracks in_progress, so they need no override. */
@@ -348,23 +376,49 @@
 }
 
 ::highlight(paperclip-doc-annotation-open) {
-  background-color: var(--paperclip-doc-annotation-highlight-open);
+  background-color: transparent;
   color: inherit;
 }
 
 ::highlight(paperclip-doc-annotation-focused) {
-  background-color: var(--paperclip-doc-annotation-highlight-focused);
+  background-color: transparent;
   color: inherit;
 }
 
 ::highlight(paperclip-doc-annotation-stale) {
-  background-color: var(--paperclip-doc-annotation-highlight-stale);
+  background-color: transparent;
   color: inherit;
 }
 
 ::highlight(paperclip-doc-annotation-resolved) {
-  background-color: var(--paperclip-doc-annotation-highlight-resolved);
+  background-color: transparent;
   color: inherit;
+}
+
+.paperclip-doc-annotation-highlight::before {
+  position: absolute;
+  inset:
+    calc(-1 * var(--paperclip-doc-annotation-highlight-y-outset))
+    calc(-1 * var(--paperclip-doc-annotation-highlight-x-outset));
+  border-radius: var(--paperclip-doc-annotation-highlight-radius);
+  background-color: var(--paperclip-doc-annotation-highlight-open);
+  content: "";
+  transition-property: background-color;
+  transition-duration: var(--motion-duration-fast);
+  transition-timing-function: var(--motion-ease-standard);
+}
+
+.paperclip-doc-annotation-highlight[data-focused="true"]:not([data-anchor-state="stale"]):not([data-status="resolved"])::before,
+.paperclip-doc-annotation-highlight[data-hovered="true"]:not([data-anchor-state="stale"]):not([data-status="resolved"])::before {
+  background-color: var(--paperclip-doc-annotation-highlight-focused);
+}
+
+.paperclip-doc-annotation-highlight[data-anchor-state="stale"]:not([data-status="resolved"])::before {
+  background-color: var(--paperclip-doc-annotation-highlight-stale);
+}
+
+.paperclip-doc-annotation-highlight[data-status="resolved"]::before {
+  background-color: var(--paperclip-doc-annotation-highlight-resolved);
 }
 
 @layer base {
@@ -476,6 +530,32 @@
   background: transparent !important;
 }
 
+/* Task thread: keep the gutter available without painting a persistent rail.
+   Scroll events temporarily add data-scroll-active; hovering alone stays idle. */
+.scrollbar-while-scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scrollbar-while-scrolling::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+  background: transparent;
+}
+.scrollbar-while-scrolling::-webkit-scrollbar-track,
+.scrollbar-while-scrolling::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.scrollbar-while-scrolling[data-scroll-active="true"] {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.scrollbar-while-scrolling[data-scroll-active="true"]::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+}
+.scrollbar-while-scrolling[data-scroll-active="true"]::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
 /* The task-chat shell owns its desktop scroll viewport. Release Layout's
    otherwise-useful reserved main scrollbar gutter so that viewport can meet
    the properties-pane border instead of stopping one scrollbar-width early. */
@@ -568,6 +648,8 @@
     /* --motion-interstitial-dwell is deliberately NOT zeroed: it is a pacing
        hold, not a movement — zeroing it would make the interstitial line churn
        faster under reduced motion. Swaps themselves snap (line-scroll: 0). */
+    /* --motion-scrollbar-idle-delay is also a visibility hold, not movement;
+       keeping it lets reduced-motion users see the thumb while scrolling. */
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
@@ -684,6 +766,11 @@
 .tc-turn-fold[data-folded="true"] { grid-template-rows: 0fr; opacity: 0; }
 .tc-turn-fold > * { overflow: hidden; min-height: 0; }
 
+/* Hover-revealed activity carets remain discoverable on touch-only devices. */
+@media (hover: none) {
+  .tc-hover-disclosure-caret { opacity: 1; }
+}
+
 /* Settled-turn metadata remains available on hover/focus and while expanded,
    but its collapsed grid track consumes no width at rest. */
 .tc-turn-metrics {
@@ -703,6 +790,17 @@
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+.side-panel-tab-motion {
+  transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+  transition-duration: var(--motion-side-panel-tab);
+  transition-timing-function: var(--motion-ease-standard);
+}
+.side-panel-tab-label-fade {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .tc-enter-bubble,
@@ -717,7 +815,8 @@
   .tc-turn-fold,
   .tc-turn-metrics,
   .tc-line-scroll-inner,
-  .tc-pane-glide { transition: none; }
+  .tc-pane-glide,
+  .side-panel-tab-motion { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
   .tc-scroll-pill-out { transform: translate(-50%, 0); }
@@ -943,6 +1042,41 @@
 
 .tc-live-ping {
   animation: tc-live-ping var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+
+.paperclip-markdown.task-chat-reasoning-markdown,
+.paperclip-markdown.task-chat-reasoning-markdown :is(h1, h2, h3, h4, h5, h6, strong) {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+
+/* Activity rows stay on one bounded line until explicitly expanded. The mask
+   gives long provider text a quieter edge than an ellipsis, while the shared
+   expanded treatment safely wraps paths, identifiers, and unbroken tokens. */
+.task-chat-collapsed-line-fade {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 2rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 2rem),
+    transparent 100%
+  );
+}
+
+.task-chat-expanded-line-wrap,
+.paperclip-markdown.task-chat-reasoning-markdown,
+.paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2130,6 +2264,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-52vh: 52vh;
   --sz-40rem: 40rem;
   --sz-44rem: 44rem;
+  --sz-36rem: 36rem;
+  --sz-neg-1_25rem: -1.25rem;
   --sz-30pct: 30%;
   --sz-24pct: 24%;
   --sz-18pct: 18%;
@@ -2231,6 +2367,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-70px: 70px; /* Extracted from ui/src/pages/Secrets.tsx (min-h-[70px]). */
   --sz-calc-41: min(520px,calc(100vw - 2rem)); /* Extracted from ui/src/pages/Secrets.tsx (w-[min(520px,calc(100vw-2rem))]). */
   --sz-calc-42: min(80vh,34rem); /* Extracted from ui/src/pages/Secrets.tsx (max-h-[min(80vh,34rem)]). */
+  --sz-calc-43: min(98vw,90rem); /* RunnerInspector sheet width. */
   --sz-14rem: 14rem; /* Extracted from ui/src/pages/TeamCatalog.tsx (max-w-[14rem]). */
   --rad-3: 3px; /* Extracted from ui/src/components/ExternalObjectPill.tsx (ring-[3px]). */
   --rad-4: 4px; /* Extracted from ui/src/components/IssueChatThread.tsx (rounded-br-[4px]). */
@@ -2302,6 +2439,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 :root {
   --gtc-1: 56px 56px 24px minmax(0,1fr); /* Extracted from ui/src/components/DocumentDiffModal.tsx (grid-cols-[56px_56px_24px_minmax(0,1fr)]). */
   --gtc-case-revisions: 16rem 1fr; /* Extracted from ui/src/components/CaseRevisionRail.tsx (grid-cols-[16rem_1fr]). */
+  --gtc-task-chat-details: 6rem minmax(0,1fr);
   --gtc-2: auto minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[auto_minmax(0,1fr)_2.25rem]). */
   --gtc-3: minmax(0,1fr) 2.25rem; /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)_2.25rem]). */
   --gtc-4: minmax(0,1fr); /* Extracted from ui/src/components/FileTree.tsx (grid-cols-[minmax(0,1fr)]). */
@@ -2363,6 +2501,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-63: 280px 1fr;
   --gtc-64: minmax(0,20rem) 1fr;
   --gtc-65: minmax(8rem,0.38fr) minmax(0,0.62fr) auto;
+  --gtc-runner-inspector-stage: 1.25rem minmax(0,1fr);
+  --gtc-runner-inspector-filters: minmax(14rem,1fr) repeat(5,minmax(8rem,auto));
+  --gtc-runner-inspector-pipeline: 21rem minmax(0,1fr);
+  --gtc-runner-inspector-fields: 8rem 1fr;
+  --gtc-runner-inspector-presentation: minmax(18rem,0.8fr) minmax(20rem,1.2fr);
+  --gtc-runner-inspector-trace: 20rem minmax(0,1fr);
   --gtr-1: auto auto; /* Extracted from ui/src/components/ui/card.tsx (grid-rows-[auto_auto]). */
   --gtr-2: 1fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[1fr]). */
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */

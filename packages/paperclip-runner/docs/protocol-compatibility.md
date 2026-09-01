@@ -187,8 +187,9 @@ These envelopes are local Local runner implementation contracts.
 
 ## Durable wire rules
 
-- The runner opens an outbound WebSocket and sends PRP v1 `hello` before any
-  command result or event.
+- The runner opens loopback `ws://` or hostname-verified `wss://`, or accepts a
+  preview-proxy connection on its fixed listener, and completes the PRP v1
+  authenticated handshake before any command result or event.
 - A one-use bootstrap bearer capability returns a short-lived connection lease
   in `welcome`. Later connections use that lease. Neither raw capability is
   durable state.
@@ -205,8 +206,16 @@ These envelopes are local Local runner implementation contracts.
 - Frames are bounded at 1 MiB and upgrade headers at 16 KiB. Unknown or invalid
   required protocol data fails closed; malformed JSON is a bounded diagnostic.
 
-These are package-local Durable recovery rules. Production TLS, control-plane admission,
-and deployment policy remain separately reviewed work.
+Runnerd build-metadata contract v2 advertises the exact transport inventory:
+`dial_ws_loopback`, `dial_wss`, and `listen_ws`. Plaintext dial destinations
+must resolve entirely to loopback. Public dial targets require TLS trust and
+hostname validation; a private CA bundle augments the platform roots and must
+be a bounded, private, regular file. Listener mode is fixed to port 43127 and a
+single run-bound path. All modes retain the same message/frame bounds and PRP
+authentication.
+
+These are package-local Durable recovery and transport rules. Control-plane
+admission and deployment policy remain separately reviewed work.
 
 ## Change policy
 

@@ -2,6 +2,8 @@ import type {
   HeartbeatRun,
   HeartbeatRunEvent,
   WorkspaceOperation,
+  ProviderTraceFrame,
+  ProviderTraceMetadata,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -81,18 +83,44 @@ export interface WatchdogDecisionInput {
   snoozedUntil?: string | null;
 }
 
+export type RuntimeRequestKind =
+  | "runtime"
+  | "command_approval"
+  | "file_approval"
+  | "permission_approval"
+  | "user_input"
+  | "elicitation";
+
+export type RuntimeRequestResolution =
+  | { action: "accept" | "accept_for_session" | "decline" | "cancel" }
+  | { action: "submit"; answers: Record<string, { answers: string[] }> }
+  | { action: "submit"; content: Record<string, unknown> }
+  | { action: "submit"; response: import("@paperclipai/adapter-utils").PaperclipQuestionResponse };
+
 export interface HeartbeatRunListOptions {
   summary?: boolean;
 }
 
+export interface ProviderTraceInspection {
+  trace: ProviderTraceMetadata | null;
+  entries: Array<Record<string, unknown>>;
+}
+
 export const heartbeatsApi = {
-  list: (companyId: string, agentId?: string, limit?: number, options: HeartbeatRunListOptions = {}) => {
+  list: (
+    companyId: string,
+    agentId?: string,
+    limit?: number,
+    options: HeartbeatRunListOptions = {},
+  ) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
     const qs = searchParams.toString();
-    return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
+    return api.get<HeartbeatRun[]>(
+      `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,
+    );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
   events: (runId: string, afterSeq = 0, limit = 200) =>
@@ -100,16 +128,83 @@ export const heartbeatsApi = {
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ),
   log: (runId: string, offset = 0, limitBytes = 256000) =>
-    api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+    api.get<{
+      runId: string;
+      store: string;
+      logRef: string;
+      content: string;
+      nextOffset?: number;
+    }>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   workspaceOperations: (runId: string) =>
-    api.get<WorkspaceOperation[]>(`/heartbeat-runs/${runId}/workspace-operations`),
-  workspaceOperationLog: (operationId: string, offset = 0, limitBytes = 256000) =>
-    api.get<{ operationId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+    api.get<WorkspaceOperation[]>(
+      `/heartbeat-runs/${runId}/workspace-operations`,
+    ),
+  providerTrace: (runId: string) =>
+    api.get<ProviderTraceInspection>(`/heartbeat-runs/${runId}/provider-trace`),
+  providerTraceMetadata: (companyId: string, runIds: string[]) => {
+    const params = new URLSearchParams({ runIds: runIds.slice(0, 100).join(",") });
+    return api.get<ProviderTraceMetadata[]>(
+      `/companies/${companyId}/provider-traces?${params.toString()}`,
+    );
+  },
+  revealProviderTraceFrame: (runId: string, frameId: number) =>
+    api.post<ProviderTraceFrame>(
+      `/heartbeat-runs/${runId}/provider-trace/frames/${frameId}/reveal`,
+      {},
+    ),
+  deleteProviderTrace: (runId: string) =>
+    api.delete<{ ok: true }>(`/heartbeat-runs/${runId}/provider-trace`),
+  downloadProviderTrace: async (runId: string): Promise<Blob> => {
+    const response = await fetch(
+      `/api/heartbeat-runs/${runId}/provider-trace/download`,
+      {
+        credentials: "include",
+        headers: { Accept: "application/x-ndjson" },
+      },
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      throw new Error(
+        body?.error ?? `Trace download failed: ${response.status}`,
+      );
+    }
+    return response.blob();
+  },
+  workspaceOperationLog: (
+    operationId: string,
+    offset = 0,
+    limitBytes = 256000,
+  ) =>
+    api.get<{
+      operationId: string;
+      store: string;
+      logRef: string;
+      content: string;
+      nextOffset?: number;
+    }>(
       `/workspace-operations/${operationId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
-  cancel: (runId: string) => api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
+  cancel: (runId: string) =>
+    api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
+  resolveRuntimeRequest: (input: {
+    runId: string;
+    requestId: string;
+    turnId: string;
+    requestKind: RuntimeRequestKind;
+    resolution: RuntimeRequestResolution;
+  }) =>
+    api.post<{ accepted: true; commandId: string }>(
+      `/heartbeat-runs/${input.runId}/runtime-requests/${encodeURIComponent(input.requestId)}/resolve`,
+      {
+        turnId: input.turnId,
+        requestKind: input.requestKind,
+        resolution: input.resolution,
+      },
+    ),
   recordWatchdogDecision: (input: WatchdogDecisionInput) =>
     api.post(`/heartbeat-runs/${input.runId}/watchdog-decisions`, {
       decision: input.decision,
@@ -129,10 +224,13 @@ export const heartbeatsApi = {
     if (typeof options === "number") {
       searchParams.set("minCount", String(options));
     } else if (options) {
-      if (options.minCount) searchParams.set("minCount", String(options.minCount));
+      if (options.minCount)
+        searchParams.set("minCount", String(options.minCount));
       if (options.limit) searchParams.set("limit", String(options.limit));
     }
     const qs = searchParams.toString();
-    return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);
+    return api.get<LiveRunForIssue[]>(
+      `/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`,
+    );
   },
 };

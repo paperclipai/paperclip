@@ -20,9 +20,14 @@ imports or starts Paperclip's server, UI, CLI, or production database.
 - `@paperclipai/paperclip-runner/testing` — deterministic mocks plus PRP and
   semantic conformance kits. Tests and external conformance consumers import
   this explicitly.
+- `@paperclipai/paperclip-runner/evals` — versioned native-attempt metadata,
+  fail-closed package/binary compatibility checks, and explicit runnerd
+  artifact resolution for eval consumers.
 
-The package root has no mock or scenario exports, and the workspace has no
-separate eval-package importer. Provider-backed eval campaigns remain deferred.
+The package root has no mock or scenario exports. Generic credential-free
+matrix orchestration lives in the workspace-private
+`@paperclipai/paperclip-eval-kernel`; scenario content and provider-backed eval
+campaigns remain outside the runtime package.
 See [ADR 0001](docs/adr/0001-runner-testing-eval-package-boundaries.md).
 
 The two conformance surfaces intentionally prove different contracts. The
@@ -177,8 +182,11 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `check:forbidden-imports` | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core. |
 | `check:tracked-imports` | Reject tracked imports and `package.json` entry points that only resolve against untracked files, so a clean checkout of any commit builds. |
 | `check:numbered-milestones` | Reject numbered construction-milestone names in tracked package paths and source. |
-| `check:package-boundaries` | Enforce the acyclic runtime/testing dependency and manifest boundary. |
-| `check:clean-consumers` | Pack the runner and install its root and testing exports in a clean consumer. |
+| `check:package-boundaries` | Enforce the acyclic runtime/testing/eval dependency and manifest boundary. |
+| `check:clean-consumers` | Pack the runner and install its root, evals, and testing exports in a clean consumer. |
+| `test:eval-slice` | Run the credential-free eval bundle, scoring, and behavior/fault slice. |
+| `test:runner-workflow-evals` | Run the deterministic provider-neutral workflow matrix. |
+| `report:runner-workflow-evals` | Write local deterministic workflow reports without provider calls. |
 | `check:conformance-parity` | Require byte-for-byte equivalent Rust and TypeScript tracer output. |
 | `check:replay-goldens` | Require all reducer snapshots and cross-language summaries to match checked goldens. |
 | `check:replay-parity` | Run TypeScript and Rust against the same Replay fixture summaries. |

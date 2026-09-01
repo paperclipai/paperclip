@@ -188,6 +188,8 @@ export type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginSyncFileMapping,
   PluginPostUploadCommand,
   PluginSyncOperation,

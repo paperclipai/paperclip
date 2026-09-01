@@ -614,6 +614,21 @@ export interface PluginEnvironmentLease {
   expiresAt?: string | null;
 }
 
+/** Serializable provider result. The host adds refresh/close lifecycle methods. */
+export interface PluginEnvironmentRunnerIngressEndpoint {
+  kind: "authenticated_websocket";
+  websocketUrl: string;
+  secretHeaders: Array<{ name: string; value: string }>;
+  generation: string;
+}
+
+export interface PluginEnvironmentRunnerIngressEndpointParams
+  extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  port: number;
+  path: string;
+}
+
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
   workspaceMode?: string;
@@ -1350,6 +1365,10 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentRunnerIngressEndpoint: [
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+    result: PluginEnvironmentRunnerIngressEndpoint,
+  ];
   environmentSyncIn: [
     params: PluginEnvironmentSyncInParams,
     result: PluginEnvironmentSyncResult,
@@ -1440,6 +1459,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentRunnerIngressEndpoint",
   "environmentSyncIn",
   "environmentSyncOut",
   "environmentStartInteractiveSetup",

@@ -114,6 +114,21 @@ const MISSION_PROMPT_CHIPS = [
   "Launch a marketplace"
 ];
 
+// First-run onboarding stays on the proven direct adapters even when an
+// instance administrator has opted into Paperclip Runner elsewhere. The
+// experimental flag only exposes the runner in explicit agent configuration.
+const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
+  "process",
+  "http",
+  "paperclip_runner",
+]);
+
+function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+  return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
+    ? savedAdapterType
+    : "claude_local";
+}
+
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
   if (q1.trim()) parts.push(q1.trim());
@@ -473,12 +488,26 @@ function OnboardingWizardInner({
     // one.
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
-  const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>(() =>
+    restoreOnboardingAdapterType(saved?.adapterType),
+  );
+  const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  const [model, setModel] = useState((saved?.model as string) ?? "");
-  const [command, setCommand] = useState((saved?.command as string) ?? "");
-  const [args, setArgs] = useState((saved?.args as string) ?? "");
-  const [url, setUrl] = useState((saved?.url as string) ?? "");
+  // Native drafts may carry provider-specific configuration that is invalid
+  // for the legacy adapter selected above. Keep the portable working
+  // directory, but clear runner-specific execution fields while restoring.
+  const [model, setModel] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+  );
+  const [command, setCommand] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
+  );
+  const [args, setArgs] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.args as string) ?? "",
+  );
+  const [url, setUrl] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.url as string) ?? "",
+  );
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -881,10 +910,9 @@ function OnboardingWizardInner({
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
     const all = listUIAdapters()
       .filter((a) =>
-        !SYSTEM_ADAPTER_TYPES.has(a.type) &&
+        !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
@@ -1432,6 +1460,15 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // The grid and restore path both exclude native runner. Keep this final
+    // guard at the mutation boundary so a stale or modified client cannot use
+    // first-run onboarding to create a native agent.
+    if (adapterType === "paperclip_runner") {
+      setAdapterType("claude_local");
+      setModel("");
+      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
+      return;
+    }
     // Guarded at the button and the Enter path too; repeated here because this
     // seeds the agent's instructions from `companyGoal`, and hiring with an
     // unhydrated mission fails silently - the agent exists, and simply never

@@ -2965,6 +2965,7 @@ describe("sandbox adapter execution targets", () => {
       incrementalSessionOutput: false,
       concurrentSyncOperations: false,
       duplexCommandStream,
+      runnerWebSocketIngress: false,
     };
   }
 
@@ -6364,6 +6365,7 @@ describe("EffectiveSandboxCapabilities deprecated alias", () => {
       incrementalSessionOutput: false,
       concurrentSyncOperations: false,
       duplexCommandStream: false,
+      runnerWebSocketIngress: false,
     };
     const aliased: EffectiveSandboxCapabilities = snapshot;
     expect(aliased).toEqual(snapshot);

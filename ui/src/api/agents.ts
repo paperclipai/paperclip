@@ -95,6 +95,7 @@ export interface AgentWakeRequest {
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
+  debug?: { providerTrace: "raw" };
 }
 
 function withCompanyScope(path: string, companyId?: string) {

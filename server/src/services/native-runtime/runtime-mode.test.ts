@@ -172,6 +172,21 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
+  it("keeps a persisted OpenCode recovery on its immutable driver", () => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+        driverKind: "opencode_server",
+      },
+    })).toEqual(expect.objectContaining({
+      profile: { mode: "native", backend: "opencode_server", protocolVersion: 1 },
+    }));
+  });
+
   it("rejects an explicit native profile outside the approved boundary", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, agent: { ...eligible.agent, adapterType: "claude_local" } }))
       .toEqual(expect.objectContaining({ kind: "legacy", reason: "direct_adapter" }));
@@ -179,16 +194,19 @@ describe("resolveNativeRuntimeMode", () => {
       .toThrow(NativeRuntimeEligibilityError);
   });
 
-  it("rejects remote targets for fresh paperclip_runner starts", () => {
-    expect(() => resolveNativeRuntimeMode({
+  it("admits remote targets only through paperclip_runner", () => {
+    expect(resolveNativeRuntimeMode({
       ...eligible,
       target: { kind: "remote" },
       runtimeConfig: {},
       adapterConfig: { provider: "codex" },
       agent: { ...eligible.agent, adapterType: "paperclip_runner" },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_environment_unsupported",
-    }));
+    })).toMatchObject({ kind: "native" });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      target: { kind: "remote" },
+      agent: { ...eligible.agent, adapterType: "codex_local" },
+    })).toMatchObject({ kind: "legacy", reason: "direct_adapter" });
   });
 
   it("allows paperclip_runner to use a transient local workspace for projectless issues", () => {

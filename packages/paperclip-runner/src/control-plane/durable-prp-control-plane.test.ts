@@ -13,7 +13,11 @@ import { describe, expect, it } from "vitest";
 
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
-import { DurablePrpControlPlane } from "./durable-prp-control-plane.js";
+import {
+  DurablePrpControlPlane,
+  spawnRunner,
+  type RunnerProcessLaunchSpec,
+} from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
 
 const identity: DurableRecoveryIdentity = {
@@ -26,6 +30,59 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("preserves an explicit OpenCode permission mode at the runner spawn boundary", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    environment: {
+      PATH: "/bin",
+      OPENROUTER_API_KEY: "provider-key",
+      PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
+      PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
+      PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
+      DATABASE_URL: "must-not-reach-runnerd",
+      PAPERCLIP_API_KEY: "must-not-reach-runnerd",
+      NODE_OPTIONS: "--require=/untrusted/bootstrap.cjs",
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  expect(launches).toHaveLength(1);
+  expect(launches[0]!.environment).toMatchObject({
+    PATH: "/bin",
+    OPENROUTER_API_KEY: "provider-key",
+    PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
+    PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
+    PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
+  });
+  expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
+  expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
+});
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
   const digest = createHash("sha256")

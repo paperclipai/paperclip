@@ -80,6 +80,7 @@ import {
 } from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
+import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -145,6 +146,8 @@ export interface EffectiveExecutionCapabilities {
   readonly incrementalSessionOutput: boolean;
   readonly concurrentSyncOperations: boolean;
   readonly duplexCommandStream: boolean;
+  /** Provider can expose a private authenticated WebSocket endpoint for runnerd. */
+  readonly runnerWebSocketIngress: boolean;
 }
 
 /**
@@ -152,6 +155,13 @@ export interface EffectiveExecutionCapabilities {
  * be removed in a later major release.
  */
 export interface EffectiveSandboxCapabilities extends EffectiveExecutionCapabilities {}
+
+export interface SandboxLeaseAcquisition {
+  outcome: "created" | "resumed" | "replacement";
+  providerLeaseId: string;
+  previousProviderLeaseId?: string;
+  reason?: "not_found" | "expired" | "identity_mismatch" | "resume_failed";
+}
 
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
@@ -171,12 +181,27 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * environment. Absent means no grant.
    */
   readonly enableSandboxDuplexBridge?: boolean;
+  /** Host-owned lifecycle override for paperclip_runner in this environment. */
+  readonly runnerLifecyclePolicy?:
+    | { mode: "per_turn"; idleTimeoutMs: null }
+    | { mode: "warm"; idleTimeoutMs: number }
+    | null;
+  /** Whether this environment is configured to reuse its provider lease. */
+  readonly reusableLeaseConfigured?: boolean;
+  /** Host-observed provenance for this exact sandbox acquisition. */
+  readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
+  /** Host-only provider operation. It is never serialized into the sandbox. */
+  getRunnerIngressEndpoint?: (input: {
+    leaseId: string;
+    port: number;
+    path: string;
+  }) => Promise<RunnerIngressEndpoint>;
   /**
    * Sandbox-backed adapter runs stream the agent CLI's stdout/stderr
    * incrementally via a log-tail loop beside the callback bridge instead of
@@ -346,6 +371,7 @@ function parseEffectiveExecutionCapabilities(value: unknown): EffectiveExecution
     incrementalSessionOutput: parsed.incrementalSessionOutput === true,
     concurrentSyncOperations: parsed.concurrentSyncOperations === true,
     duplexCommandStream: parsed.duplexCommandStream === true,
+    runnerWebSocketIngress: parsed.runnerWebSocketIngress === true,
   };
 }
 

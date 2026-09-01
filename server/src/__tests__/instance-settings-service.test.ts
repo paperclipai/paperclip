@@ -19,6 +19,7 @@ describe("instance settings service", () => {
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
@@ -48,6 +49,7 @@ describe("instance settings service", () => {
       enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -55,6 +57,7 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableOwnerInstanceAdmin: false,
       enableSandboxDuplexBridge: false,
+      enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
@@ -125,6 +128,15 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
     expect(
       normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
+  it("defaults enablePaperclipDeveloperMode to false for empty and legacy settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enablePaperclipDeveloperMode).toBe(false);
+    expect(normalizeExperimentalSettings({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableServerInfoDebugView: true })
+        .enablePaperclipDeveloperMode,
     ).toBe(false);
   });
 

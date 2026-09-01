@@ -1118,6 +1118,7 @@ describe("Capability live runnerd and Codex session", () => {
       ]));
       await resumedService.shutdown(resumed.id, "test complete");
     },
-    15_000,
+    // CI exercises two real process generations here and can exceed the unit default under load.
+    30_000,
   );
 });

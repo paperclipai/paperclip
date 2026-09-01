@@ -851,6 +851,32 @@ describe.sequential("agent skill routes", () => {
     expect(mockAdapter.syncSkills).not.toHaveBeenCalled();
   });
 
+  it("allows paperclip_runner to remove a pre-existing legacy Paperclip skill", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("paperclip_runner"),
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "remove" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: { desiredSkills: ["company-1/keep"] },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("syncs skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
       env: {
@@ -1212,6 +1238,33 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
       expect.anything(),
+    );
+  });
+
+  it("omits the legacy operational skill from paperclip_runner CEO defaults", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableBetaSkills: false,
+      enableNativeRunner: true,
+    });
+
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Native Lead",
+        role: "ceo",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as {
+      adapterConfig: { paperclipSkillSync: { desiredSkills: string[] } };
+    };
+    expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).not.toContain(
+      "paperclipai/paperclip/paperclip",
+    );
+    expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).toContain(
+      "paperclipai/paperclip/paperclip-board",
     );
   });
 

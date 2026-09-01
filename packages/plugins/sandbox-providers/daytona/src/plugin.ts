@@ -23,6 +23,8 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginEnvironmentGetInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
@@ -1304,6 +1306,34 @@ const sandboxHandleCache = (() => {
   return { get, seed, clear, reset, markFresh, findByProviderLeaseId };
 })();
 
+// Preview credentials can rotate without a sandbox restart, so they must not
+// define endpoint generation. Daytona's lifecycle revision does: refreshData
+// updates `updatedAt` after stop/start. When Daytona does not expose a
+// lifecycle revision, the in-memory generation remains stable for the worker.
+const runnerIngressGenerationStore = (() => {
+  const entries = new Map<
+    string,
+    { revision: string | null; generation: string }
+  >();
+
+  function get(sandbox: Sandbox): string {
+    const revision = sandbox.updatedAt ?? sandbox.createdAt ?? null;
+    const current = entries.get(sandbox.id);
+    if (current && current.revision === revision) return current.generation;
+    const generation = createHash("sha256")
+      .update(`${sandbox.id}\0${revision ?? randomUUID()}`)
+      .digest("hex");
+    entries.set(sandbox.id, { revision, generation });
+    return generation;
+  }
+
+  function reset(): void {
+    entries.clear();
+  }
+
+  return { get, reset };
+})();
+
 // Advisory writable-set store. It holds, per lease scope, the sandbox
 // directories that a sync operation declared read-write (`access: "rw"`). The
 // store is advisory and best-effort in-memory state: it adds no security (the
@@ -1422,6 +1452,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
   sandboxHandleSessionStore.reset();
+  runnerIngressGenerationStore.reset();
 }
 
 /**
@@ -2204,7 +2235,10 @@ const plugin = definePlugin({
       };
       } catch (error) {
         evictSandboxHandle(scope);
-        await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+        // A timeout, rate limit, or provider 5xx does not prove this sandbox is
+        // lost. Preserve the exact resource and let the host retry its recorded
+        // lease; replacement is permitted only after an explicit not-found or
+        // an immutable workspace identity mismatch.
         throw error;
       }
     }, { allowClosed: true });
@@ -2632,7 +2666,6 @@ const plugin = definePlugin({
         },
       });
       const getDurationMs = timingNow() - getStart;
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       const scope: SandboxScope = {
         driverKey: params.driverKey,
         companyId: params.companyId,
@@ -2640,6 +2673,13 @@ const plugin = definePlugin({
         providerLeaseId,
         config,
       };
+      if (sandbox.state !== "started") {
+        // A provider restart destroys Daytona process sessions. Drop the stale
+        // session id before starting the sandbox so runnerd recovery opens a
+        // new session instead of retrying a dead one for its whole grace.
+        sandboxHandleSessionStore.clear(scope);
+      }
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       // Dispatch the command. A normal command runs in the persistent session:
       // the provider opens the one session on a cache miss and runs every command
       // in it. The provider never falls back to a one-shot command to open a
@@ -2666,6 +2706,70 @@ const plugin = definePlugin({
         metadata: { ...(result.metadata ?? {}), getDurationMs, cacheHit },
       };
     });
+  },
+
+  async onEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ): Promise<PluginEnvironmentRunnerIngressEndpoint> {
+    if (params.port !== 43_127) {
+      throw new Error("Daytona runner ingress must use fixed port 43127.");
+    }
+    if (!/^\/api\/runner\/v1\/connect\/[^/?#]+$/.test(params.path)) {
+      throw new Error("Daytona runner ingress path is invalid.");
+    }
+    const providerLeaseId = params.lease.providerLeaseId;
+    if (!providerLeaseId) {
+      throw new Error("Daytona runner ingress requires a provider lease id.");
+    }
+    const config = parseDriverConfig(params.config);
+    return await withSandboxActivityGate(
+      {
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId,
+        config,
+      },
+      async () => {
+        const sandbox = await getSandbox({
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId,
+          config,
+        });
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await withLivenessTimeout(
+          "sandbox.refreshData",
+          config.livenessTimeoutMs,
+          () => sandbox.refreshData(),
+        );
+        const preview = await sandbox.getPreviewLink(params.port);
+        if (typeof preview.url !== "string" || typeof preview.token !== "string") {
+          throw new Error("Daytona returned an incomplete private preview endpoint.");
+        }
+        const url = new URL(preview.url);
+        if (
+          url.protocol !== "https:" ||
+          url.username ||
+          url.password ||
+          url.search ||
+          url.hash
+        ) {
+          throw new Error("Daytona returned an invalid private preview URL.");
+        }
+        url.protocol = "wss:";
+        url.pathname = `${url.pathname.replace(/\/$/, "")}${params.path}`;
+        return {
+          kind: "authenticated_websocket",
+          websocketUrl: url.toString(),
+          secretHeaders: [
+            { name: "X-Daytona-Preview-Token", value: preview.token },
+          ],
+          generation: runnerIngressGenerationStore.get(sandbox),
+        };
+      },
+    );
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
@@ -2915,6 +3019,7 @@ const plugin = definePlugin({
       await entry.session.close().catch(() => undefined);
     }
     sandboxHandleCache.reset();
+    runnerIngressGenerationStore.reset();
   },
 });
 

@@ -665,6 +665,9 @@ export interface CLIAdapterModule {
 
 export interface CreateConfigValues {
   adapterType: string;
+  codexPermissionMode?: "never" | "on-request" | "untrusted";
+  paperclipRunnerLifecycleMode?: "per_turn" | "warm";
+  paperclipRunnerIdleTimeoutMs?: number;
   cwd: string;
   instructionsFilePath?: string;
   promptTemplate: string;

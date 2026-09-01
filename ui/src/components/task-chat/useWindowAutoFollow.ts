@@ -43,6 +43,25 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
     return () => window.removeEventListener("scroll", onScroll);
   }, [enabled]);
 
+  useLayoutEffect(() => {
+    if (!enabled || typeof ResizeObserver === "undefined") return;
+    const observed = document.body;
+    let previousScrollHeight = scrollingElement()?.scrollHeight ?? null;
+    const observer = new ResizeObserver(() => {
+      const nextScrollHeight = scrollingElement()?.scrollHeight ?? null;
+      if (
+        nextScrollHeight == null ||
+        nextScrollHeight === previousScrollHeight
+      ) {
+        return;
+      }
+      previousScrollHeight = nextScrollHeight;
+      if (pinnedRef.current) scrollWindowToBottom();
+    });
+    observer.observe(observed);
+    return () => observer.disconnect();
+  }, [enabled]);
+
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
     if (!enabled) return;
