@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -378,6 +378,31 @@ export function activityService(db: Db) {
 
     runsForIssue: async (companyId: string, issueId: string) => {
       scheduleRunLivenessBackfill(companyId, issueId);
+      // Run ids linked to this issue via activity_log, fetched up front (indexed lookup)
+      // so the main query below can use `issueId = X OR id IN (...)` — a BitmapOr of two
+      // index scans — instead of `issueId = X OR EXISTS (correlated activity_log subquery)`,
+      // which forced a full scan of the company's heartbeat_runs (~2.5s -> ~sub-ms).
+      const activityRunRows = await db
+        .select({ runId: activityLog.runId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            isNotNull(activityLog.runId),
+          ),
+        );
+      const activityRunIds = activityRunRows
+        .map((row) => row.runId)
+        .filter((runId): runId is string => runId !== null);
+      const issueRunCondition =
+        activityRunIds.length > 0
+          ? or(
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              inArray(heartbeatRuns.id, activityRunIds),
+            )
+          : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`;
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
@@ -418,17 +443,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            issueRunCondition,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
