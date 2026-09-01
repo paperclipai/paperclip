@@ -25,6 +25,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { HttpError } from "../errors.js";
 import { formalQaCheckoutService } from "../services/formal-qa-checkouts.js";
+import { formalQaPreparationService } from "../services/formal-qa-preparations.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -54,11 +55,9 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.execute(sql`truncate table formal_qa_preparations cascade`);
     await db.delete(activityLog);
-    await db.delete(formalQaCheckouts);
-    await db.delete(formalQaIssuances);
     await db.delete(formalQaPolicies);
-    await db.delete(formalQaPreparations);
     await db.delete(agents);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -126,6 +125,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       repository: "vivus-tech/music-tracker", requiredWorkflowId: "99", requiredCheckName: "PR Policy",
       requiredCheckAppId: 15368, enabled: true, createdByUserId: "admin", updatedByUserId: "admin",
     });
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
     await db.insert(formalQaPreparations).values({
       id: preparationId,
       companyId,
@@ -133,20 +133,34 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       projectWorkspaceId,
       repository: "vivus-tech/music-tracker",
       prNumber: 1902,
+      headSha: "0".repeat(40),
+      baseRef: "pending",
+      baseSha: "0".repeat(40),
+      treeSha: "0".repeat(40),
+      evidenceSha256: "0".repeat(64),
+      issuerReceiptSha256: "0".repeat(64),
+      issuerOperationId: `request:${policyId}:v1`,
+      issuedByUserId: "board-user",
+      idempotencyKey: "sealed-operation-1902",
+      requestSha256: "c".repeat(64),
+      expiresAt,
+      status: "prepared",
+    });
+    const evidenceJson = JSON.stringify({ schema: "test", headSha: input.headSha });
+    const snapshotSha256 = createHash("sha256").update(evidenceJson).digest("hex");
+    await db.update(formalQaPreparations).set({
       headSha: input.headSha,
       baseRef: "main",
       baseSha: input.headSha,
       treeSha: input.treeSha,
-      evidenceSha256: "a".repeat(64),
-      issuerReceiptSha256: "b".repeat(64),
-      issuerOperationId: "operation-1902",
-      issuedByUserId: "board-user",
-      idempotencyKey: "sealed-operation-1902",
-      requestSha256: "c".repeat(64),
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      evidenceSha256: snapshotSha256,
+      issuerReceiptSha256: snapshotSha256,
+      issuerOperationId: `github-pr:vivus-tech/music-tracker#1902@${input.headSha}:policy:${policyId}:v1`,
+      requestSha256: "d".repeat(64),
+      expiresAt,
       status: "issued",
-    });
-    const evidenceJson = JSON.stringify({ schema: "test", headSha: input.headSha });
+      updatedAt: new Date(Date.now() + 1),
+    }).where(eq(formalQaPreparations.id, preparationId));
     await db.insert(formalQaIssuances).values({
       preparationId,
       policyId,
@@ -167,7 +181,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       workflowRunId: "3001",
       workflowId: "99",
       evidenceJson,
-      snapshotSha256: createHash("sha256").update(evidenceJson).digest("hex"),
+      snapshotSha256,
     });
     return { companyId, projectId, projectWorkspaceId, preparationId };
   }
@@ -235,16 +249,21 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     const { preparationId } = await seed({ ...fixture, cwd: fixture.root });
     const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
 
-    await db.update(formalQaPreparations).set({ status: "prepared" })
-      .where(eq(formalQaPreparations.id, preparationId));
-    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
+    const [issued] = await db.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, preparationId));
+    const prepared = await formalQaPreparationService(db).create({
+      companyId: issued!.companyId,
+      projectId: issued!.projectId,
+      projectWorkspaceId: issued!.projectWorkspaceId,
+      prNumber: 1903,
+      idempotencyKey: "board-prepared-only",
+      issuedByUserId: "board-user",
+    });
+    await expect(service.materialize({ preparationId: prepared.preparation.id })).rejects.toMatchObject<HttpError>({
       status: 409,
       details: { code: "formal_qa_checkout_issuance_missing" },
     });
     expect(await db.select().from(formalQaCheckouts)).toEqual([]);
 
-    await db.update(formalQaPreparations).set({ status: "issued" })
-      .where(eq(formalQaPreparations.id, preparationId));
     await db.delete(formalQaIssuances);
     await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
       status: 409,
@@ -324,21 +343,21 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
 
   it("fails closed for an absent object and a tree mismatch while ignoring the untrusted workspace origin", async () => {
     const fixture = await makeRepository();
-    const missing = await seed({ ...fixture, cwd: fixture.root, headSha: "0".repeat(40) });
+    const missing = await seed({ ...fixture, cwd: fixture.root, headSha: "f".repeat(40) });
     const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
     await expect(service.materialize({ preparationId: missing.preparationId })).rejects.toMatchObject<HttpError>({
       status: 409,
       details: { code: "formal_qa_checkout_verification_failed" },
     });
 
-    await db.delete(formalQaPreparations);
+    await db.execute(sql`truncate table formal_qa_preparations cascade`);
     const treeMismatch = await seed({ ...fixture, cwd: fixture.root, treeSha: "f".repeat(40) });
     await expect(service.materialize({ preparationId: treeMismatch.preparationId })).rejects.toMatchObject<HttpError>({
       status: 409,
       details: { code: "formal_qa_checkout_source_mismatch" },
     });
 
-    await db.delete(formalQaPreparations);
+    await db.execute(sql`truncate table formal_qa_preparations cascade`);
     const originMismatch = await seed({ ...fixture, cwd: fixture.root });
     await expect(service.materialize({ preparationId: originMismatch.preparationId })).resolves.toMatchObject({
       checkout: { headSha: fixture.headSha },
