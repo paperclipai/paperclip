@@ -2595,6 +2595,51 @@ describeEmbeddedPostgres("secretService", () => {
     expect(stored?.latestVersion).toBe(1);
   });
 
+  it("stamps revokedAt on the version it demotes without rewriting older revocations", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const readVersions = async (secretId: string) =>
+      db
+        .select({
+          version: companySecretVersions.version,
+          status: companySecretVersions.status,
+          revokedAt: companySecretVersions.revokedAt,
+        })
+        .from(companySecretVersions)
+        .where(eq(companySecretVersions.secretId, secretId))
+        .then((rows) => [...rows].sort((a, b) => a.version - b.version));
+
+    const secret = await svc.create(companyId, {
+      name: `rotation-revoked-at-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret-v1",
+    });
+
+    await svc.rotate(secret.id, { value: "runtime-secret-v2" });
+
+    const afterFirst = await readVersions(secret.id);
+    expect(afterFirst.map((row) => row.version)).toEqual([1, 2]);
+    expect(afterFirst[0]?.status).toBe("previous");
+    expect(afterFirst[0]?.revokedAt).toBeInstanceOf(Date);
+    expect(afterFirst[1]?.status).toBe("current");
+    expect(afterFirst[1]?.revokedAt).toBeNull();
+
+    const firstRevokedAt = afterFirst[0]?.revokedAt;
+
+    await svc.rotate(secret.id, { value: "runtime-secret-v3" });
+
+    const afterSecond = await readVersions(secret.id);
+    expect(afterSecond.map((row) => row.version)).toEqual([1, 2, 3]);
+    // v1 must keep the revocation time the first rotation recorded. An update that is not
+    // scoped to status='current' would re-stamp it here and destroy the audit trail.
+    expect(afterSecond[0]?.status).toBe("previous");
+    expect(afterSecond[0]?.revokedAt).toEqual(firstRevokedAt);
+    expect(afterSecond[1]?.status).toBe("previous");
+    expect(afterSecond[1]?.revokedAt).toBeInstanceOf(Date);
+    expect(afterSecond[2]?.status).toBe("current");
+    expect(afterSecond[2]?.revokedAt).toBeNull();
+  });
+
   it("previews AWS remote import candidates with duplicate and collision enrichment", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
