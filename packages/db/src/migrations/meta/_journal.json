@@ -1688,6 +1688,13 @@
       "when": 1788303347270,
       "tag": "0242_petite_lucky_pierre",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1788304748782,
+      "tag": "0243_windy_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }

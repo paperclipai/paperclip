@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -14,12 +14,14 @@ import {
   formalQaPolicies,
   formalQaPreparations,
   formalQaReviews,
+  formalQaSchedulerStates,
   heartbeatRuns,
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { formalQaCheckoutService } from "./formal-qa-checkouts.js";
+import { FORMAL_QA_STAGE, formalQaSchedulerStateService } from "./formal-qa-scheduler-state.js";
 
 export const FORMAL_QA_REVIEW_CONTEXT_SCHEMA = "paperclip.formal-qa-review-context/v1";
 export const FORMAL_QA_REVIEW_CONTRACT_SCHEMA = "paperclip.formal-qa-review-contract/v1";
@@ -468,6 +470,7 @@ export function formalQaReviewService(db: Db, options?: {
     testOnlyRemoteUrl: options?.checkoutTestOnlyRemoteUrl,
     testOnlyAllowFileProtocol: options?.checkoutTestOnlyAllowFileProtocol,
   });
+  const schedulerState = formalQaSchedulerStateService(db);
 
   const queue = async ({ preparationId }: { preparationId: string }) => {
     const authority = await checkouts.verifyForDispatch({ preparationId });
@@ -1098,25 +1101,40 @@ export function formalQaReviewService(db: Db, options?: {
   };
 
   const reconcileVerified = async (input: { companyId?: string; limit?: number } = {}) => {
-    const candidates = await db.select({ preparationId: formalQaPreparations.id })
+    const now = new Date();
+    const candidates = await db.select({
+      preparationId: formalQaPreparations.id,
+      checkoutId: formalQaCheckouts.id,
+      companyId: formalQaPreparations.companyId,
+    })
       .from(formalQaCheckouts)
       .innerJoin(formalQaPreparations, eq(formalQaPreparations.id, formalQaCheckouts.preparationId))
       .leftJoin(formalQaReviews, eq(formalQaReviews.checkoutId, formalQaCheckouts.id))
+      .leftJoin(formalQaSchedulerStates, and(
+        eq(formalQaSchedulerStates.stage, FORMAL_QA_STAGE.reviewQueue),
+        eq(formalQaSchedulerStates.subjectId, formalQaCheckouts.id),
+      ))
       .where(and(
         eq(formalQaCheckouts.status, "verified"),
         eq(formalQaPreparations.status, "issued"),
         isNull(formalQaReviews.id),
+        or(isNull(formalQaSchedulerStates.subjectId), lte(formalQaSchedulerStates.nextEligibleAt, now)),
         input.companyId ? eq(formalQaPreparations.companyId, input.companyId) : undefined,
       ))
-      .orderBy(asc(formalQaCheckouts.createdAt))
+      .orderBy(
+        asc(sql`coalesce(${formalQaSchedulerStates.nextEligibleAt}, 'epoch'::timestamptz)`),
+        asc(formalQaCheckouts.createdAt),
+      )
       .limit(Math.max(1, Math.min(input.limit ?? 25, 100)));
     let queued = 0;
     let deferred = 0;
     for (const candidate of candidates) {
       try {
         await queue({ preparationId: candidate.preparationId });
+        await schedulerState.clear(FORMAL_QA_STAGE.reviewQueue, candidate.checkoutId);
         queued += 1;
       } catch {
+        await schedulerState.record({ companyId: candidate.companyId, stage: FORMAL_QA_STAGE.reviewQueue, subjectId: candidate.checkoutId, delayMs: 2 * 60 * 1000, failed: true });
         deferred += 1;
       }
     }

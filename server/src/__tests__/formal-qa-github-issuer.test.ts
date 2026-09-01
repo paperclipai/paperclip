@@ -71,6 +71,7 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
         evidenceSha256: "0".repeat(64), issuerReceiptSha256: "0".repeat(64),
         issuerOperationId: `request:${policy!.id}:v1`, issuedByUserId: "board-user",
         idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902", requestSha256: "a".repeat(64),
+        requestKey: "formal-qa:vivus-tech/music-tracker#1902", generation: 1, predecessorPreparationId: null,
         expiresAt: new Date(Date.now() - 1_000), status: "prepared",
       }).returning().then((rows) => ({ preparation: rows[0]! }))
       : await formalQaPreparationService(db).create({ companyId, projectId, projectWorkspaceId, prNumber: 1902, idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902", issuedByUserId: "board-user" });
@@ -154,6 +155,32 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
       .resolves.toEqual([expect.objectContaining({ status: "superseded", canonicalPreparationId: canonical.preparation.id })]);
   });
 
+  it("issues a fresh immutable receipt for an expired same-head successor generation", async () => {
+    const f = await fixture();
+    const fake = fakeGitHub(f);
+    const issuer = service(f, fake.fetch);
+    const first = await issuer.issue({ preparationId: f.preparationId });
+    await db.execute(sql`set session_replication_role = replica`);
+    try {
+      await db.execute(sql`update formal_qa_preparations set status = 'expired', expires_at = now() - interval '1 second', updated_at = now() where id = ${first.preparation.id}`);
+    } finally {
+      await db.execute(sql`set session_replication_role = origin`);
+    }
+    const successor = await formalQaPreparationService(db).create({
+      companyId: f.companyId,
+      projectId: f.projectId,
+      projectWorkspaceId: f.projectWorkspaceId,
+      prNumber: 1902,
+      idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902",
+      issuedByUserId: "system:formal-qa-discovery",
+    });
+    expect(successor.preparation).toMatchObject({ generation: 2, predecessorPreparationId: first.preparation.id });
+    const second = await issuer.issue({ preparationId: successor.preparation.id });
+    expect(second).toMatchObject({ replayed: false, preparation: { id: successor.preparation.id, status: "issued" } });
+    expect(second.issuance.id).not.toBe(first.issuance.id);
+    expect(await db.select().from(formalQaIssuances)).toHaveLength(2);
+  });
+
   it("reconciles an issued request after checkout materialization failed", async () => {
     const f = await fixture();
     const unavailableRemote = `${f.remote}.unavailable`;
@@ -191,6 +218,90 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
     expect((await db.select().from(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId)))[0]?.status).toBe("verified");
     expect(fake.calls).toHaveLength(6);
     expect(await db.select().from(formalQaIssuances)).toHaveLength(1);
+  });
+
+  it("backs off 25 poison preparations so the next preparation becomes reachable", async () => {
+    const f = await fixture();
+    const preparations = formalQaPreparationService(db);
+    for (let index = 1; index < 26; index += 1) {
+      await preparations.create({
+        companyId: f.companyId,
+        projectId: f.projectId,
+        projectWorkspaceId: f.projectWorkspaceId,
+        prNumber: 1902 + index,
+        idempotencyKey: `poison-fairness-${index}`,
+        issuedByUserId: "system:formal-qa-discovery",
+      });
+    }
+    const issuer = formalQaGitHubIssuerService(db, {
+      fetch: async () => { throw new Error("must not fetch without a token"); },
+      tokenProvider: async () => null,
+      checkoutInstanceRoot: f.instanceRoot,
+      checkoutTestOnlyRemoteUrl: f.remote,
+      checkoutTestOnlyAllowFileProtocol: true,
+    });
+    await expect(issuer.reconcilePrepared()).resolves.toEqual({ scanned: 25, issued: 0, deferred: 25 });
+    await expect(issuer.reconcilePrepared()).resolves.toEqual({ scanned: 1, issued: 0, deferred: 1 });
+  });
+
+  it("does not let 25 verified issuances monopolize the reconciliation window", async () => {
+    const f = await fixture();
+    const createdAt = new Date(Date.now() - 60_000);
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      for (let index = 0; index < 25; index += 1) {
+        const preparationId = randomUUID();
+        const requestKey = `verified-fairness-${index}`;
+        await tx.insert(formalQaPreparations).values({
+          id: preparationId,
+          companyId: f.companyId,
+          projectId: f.projectId,
+          projectWorkspaceId: f.projectWorkspaceId,
+          repository: "vivus-tech/music-tracker",
+          prNumber: 2000 + index,
+          headSha: f.headSha,
+          baseRef: "main",
+          baseSha: f.headSha,
+          treeSha: f.treeSha,
+          evidenceSha256: "b".repeat(64),
+          issuerReceiptSha256: "b".repeat(64),
+          issuerOperationId: `github-pr:vivus-tech/music-tracker#${2000 + index}@${f.headSha}:policy:00000000-0000-0000-0000-000000000001:v1`,
+          issuedByUserId: "system:formal-qa-discovery",
+          idempotencyKey: requestKey,
+          requestSha256: "c".repeat(64),
+          requestKey,
+          generation: 1,
+          predecessorPreparationId: null,
+          status: "issued",
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          createdAt,
+          updatedAt: createdAt,
+        });
+        await tx.insert(formalQaCheckouts).values({
+          preparationId,
+          companyId: f.companyId,
+          projectId: f.projectId,
+          projectWorkspaceId: f.projectWorkspaceId,
+          repository: "vivus-tech/music-tracker",
+          repoRoot: `/tmp/formal-qa-verified-${index}.git`,
+          checkoutPath: `/tmp/formal-qa-verified-${index}`,
+          headSha: f.headSha,
+          treeSha: f.treeSha,
+          checkoutSha256: "d".repeat(64),
+          status: "verified",
+          createdAt,
+        });
+      }
+    });
+    const issuer = formalQaGitHubIssuerService(db, {
+      fetch: async () => { throw new Error("must not fetch without a token"); },
+      tokenProvider: async () => null,
+      checkoutInstanceRoot: f.instanceRoot,
+      checkoutTestOnlyRemoteUrl: f.remote,
+      checkoutTestOnlyAllowFileProtocol: true,
+    });
+
+    await expect(issuer.reconcilePrepared()).resolves.toEqual({ scanned: 1, issued: 0, deferred: 1 });
   });
 
   it("rejects a changed pull request, check rerun failure, lookalike app, and foreign workflow identity", async () => {

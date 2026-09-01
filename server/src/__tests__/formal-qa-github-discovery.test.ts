@@ -137,4 +137,39 @@ describeEmbeddedPostgres("formal-QA GitHub discovery", () => {
       db.select().from(formalQaPreparations).where(eq(formalQaPreparations.companyId, companyId)),
     ).resolves.toEqual([]);
   });
+
+  it("durably rotates beyond the first 25 enabled policies", async () => {
+    for (let index = 0; index < 26; index += 1) await seed();
+    let calls = 0;
+    const service = formalQaGitHubDiscoveryService(db, {
+      fetch: async () => { calls += 1; return new Response("[]", { status: 200 }); },
+      tokenProvider: async () => "token",
+      discoveryIntervalMs: 60_000,
+    });
+
+    await expect(service.reconcileOpenPulls()).resolves.toMatchObject({ policiesScanned: 25 });
+    await expect(service.reconcileOpenPulls()).resolves.toMatchObject({ policiesScanned: 1 });
+    expect(calls).toBe(26);
+  });
+
+  it("continues after the first ten GitHub pages instead of replaying page one", async () => {
+    const { companyId } = await seed();
+    const pages: number[] = [];
+    const service = formalQaGitHubDiscoveryService(db, {
+      fetch: async (url) => {
+        const page = Number(new URL(url).searchParams.get("page"));
+        pages.push(page);
+        return new Response("[]", {
+          status: 200,
+          headers: page <= 10 ? { link: `<https://api.github.com/example?page=${page + 1}>; rel="next"` } : {},
+        });
+      },
+      tokenProvider: async () => "token",
+      discoveryIntervalMs: 60_000,
+    });
+
+    await expect(service.reconcileOpenPulls({ companyId })).resolves.toMatchObject({ policiesScanned: 1, deferred: 0 });
+    await expect(service.reconcileOpenPulls({ companyId })).resolves.toMatchObject({ policiesScanned: 1, deferred: 0 });
+    expect(pages).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
 });

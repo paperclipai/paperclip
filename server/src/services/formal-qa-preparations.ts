@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { formalQaCheckouts, formalQaPolicies, formalQaPreparations, projectWorkspaces } from "@paperclipai/db";
 import type { CreateFormalQaPreparation } from "@paperclipai/shared";
@@ -58,12 +58,19 @@ export function formalQaPreparationService(db: Db) {
       const digest = requestSha256({ ...input, policyId: policy.id, policyVersion: policy.version });
       const [existing] = await tx.select().from(formalQaPreparations).where(and(
         eq(formalQaPreparations.companyId, input.companyId),
-        eq(formalQaPreparations.idempotencyKey, input.idempotencyKey),
-      )).limit(1);
-      if (existing) {
-        if (existing.requestSha256 !== digest) throw conflict("Formal-QA request idempotency key is already bound to different request data", { code: "formal_qa_preparation_idempotency_conflict" });
+        eq(formalQaPreparations.requestKey, input.idempotencyKey),
+      )).orderBy(desc(formalQaPreparations.generation)).limit(1);
+      if (existing && existing.status !== "expired") {
+        if (existing.projectId !== input.projectId || existing.projectWorkspaceId !== input.projectWorkspaceId ||
+          existing.prNumber !== input.prNumber) {
+          throw conflict("Formal-QA request idempotency key is already bound to different request data", { code: "formal_qa_preparation_idempotency_conflict" });
+        }
         return { preparation: existing, replayed: true };
       }
+      const generation = existing ? existing.generation + 1 : 1;
+      const idempotencyKey = generation === 1
+        ? input.idempotencyKey
+        : `${input.idempotencyKey.slice(0, 150)}:g:${generation}:${createHash("sha256").update(`${input.idempotencyKey}:${generation}`).digest("hex").slice(0, 16)}`;
       const [preparation] = await tx.insert(formalQaPreparations).values({
         companyId: input.companyId,
         projectId: input.projectId,
@@ -78,7 +85,10 @@ export function formalQaPreparationService(db: Db) {
         issuerReceiptSha256: ZERO_SHA256,
         issuerOperationId: `request:${policy.id}:v${policy.version}`,
         issuedByUserId: input.issuedByUserId,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey,
+        requestKey: input.idempotencyKey,
+        generation,
+        predecessorPreparationId: existing?.id ?? null,
         requestSha256: digest,
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
         status: "prepared",

@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { formalQaIssuances, formalQaPolicies, formalQaPreparations, projectWorkspaces } from "@paperclipai/db";
+import { formalQaCheckouts, formalQaIssuances, formalQaPolicies, formalQaPreparations, formalQaSchedulerStates, projectWorkspaces } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { formalQaCheckoutService } from "./formal-qa-checkouts.js";
 import { formalQaPreparationService } from "./formal-qa-preparations.js";
+import { FORMAL_QA_STAGE, formalQaSchedulerStateService } from "./formal-qa-scheduler-state.js";
 import { secretService } from "./secrets.js";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -155,6 +156,7 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
     testOnlyAllowFileProtocol: options?.checkoutTestOnlyAllowFileProtocol,
   });
   const preparations = formalQaPreparationService(db);
+  const schedulerState = formalQaSchedulerStateService(db);
   const resolveToken = options?.tokenProvider ?? ((input: { companyId: string; responsibleUserId: string }) => resolveFormalQaGitHubToken(db, input));
   const issue = async ({ preparationId }: FormalQaGitHubIssuerInput) => {
     const initial = await loadRequestAndPolicy(db, preparationId);
@@ -210,10 +212,23 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
       }
       if (preparation.status !== "prepared" && preparation.status !== "issuing") issuerFailure("Formal-QA request changed during issuance", "formal_qa_request_not_eligible");
       if (preparation.expiresAt.getTime() <= Date.now()) issuerFailure("Formal-QA request expired during issuance", "formal_qa_request_expired");
-      const [prior] = await tx.select().from(formalQaIssuances).where(and(eq(formalQaIssuances.companyId, preparation.companyId), eq(formalQaIssuances.policyId, policy.id), eq(formalQaIssuances.repository, repository), eq(formalQaIssuances.prNumber, String(preparation.prNumber)), eq(formalQaIssuances.headSha, pullFirst.headSha))).limit(1);
-      if (prior) {
-        const [priorPreparation] = await tx.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, prior.preparationId)).limit(1);
-        if (!priorPreparation) issuerFailure("Formal-QA semantic replay lacks its request", "formal_qa_issuance_missing");
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_semantic:${preparation.companyId}:${policy.id}:${repository}:${preparation.prNumber}:${pullFirst.headSha}`}, 0))`);
+      const [priorRow] = await tx.select({ issuance: formalQaIssuances, preparation: formalQaPreparations })
+        .from(formalQaIssuances)
+        .innerJoin(formalQaPreparations, eq(formalQaPreparations.id, formalQaIssuances.preparationId))
+        .where(and(
+          eq(formalQaIssuances.companyId, preparation.companyId),
+          eq(formalQaIssuances.policyId, policy.id),
+          eq(formalQaIssuances.policyVersion, policy.version),
+          eq(formalQaIssuances.repository, repository),
+          eq(formalQaIssuances.prNumber, String(preparation.prNumber)),
+          eq(formalQaIssuances.headSha, pullFirst.headSha),
+          eq(formalQaPreparations.status, "issued"),
+          gt(formalQaPreparations.expiresAt, new Date()),
+        )).limit(1);
+      if (priorRow) {
+        const prior = priorRow.issuance;
+        const priorPreparation = priorRow.preparation;
         const [superseded] = await tx.update(formalQaPreparations).set({
           status: "superseded",
           canonicalPreparationId: priorPreparation.id,
@@ -245,24 +260,42 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
    */
   const reconcilePrepared = async (input: { companyId?: string; limit?: number } = {}) => {
     await preparations.expireStale(input);
-    const candidates = await db.select({ id: formalQaPreparations.id }).from(formalQaPreparations)
+    const now = new Date();
+    const candidates = await db.select({ id: formalQaPreparations.id, companyId: formalQaPreparations.companyId }).from(formalQaPreparations)
+      .leftJoin(formalQaCheckouts, eq(formalQaCheckouts.preparationId, formalQaPreparations.id))
+      .leftJoin(formalQaSchedulerStates, and(
+        eq(formalQaSchedulerStates.stage, FORMAL_QA_STAGE.issuance),
+        eq(formalQaSchedulerStates.subjectId, formalQaPreparations.id),
+      ))
       .where(and(
-        inArray(formalQaPreparations.status, ["prepared", "issuing", "issued"]),
-        gt(formalQaPreparations.expiresAt, new Date()),
+        or(
+          inArray(formalQaPreparations.status, ["prepared", "issuing"]),
+          and(
+            eq(formalQaPreparations.status, "issued"),
+            or(isNull(formalQaCheckouts.id), eq(formalQaCheckouts.status, "creating")),
+          ),
+        ),
+        gt(formalQaPreparations.expiresAt, now),
+        or(isNull(formalQaSchedulerStates.subjectId), lte(formalQaSchedulerStates.nextEligibleAt, now)),
         input.companyId ? eq(formalQaPreparations.companyId, input.companyId) : undefined,
       ))
-      .orderBy(asc(formalQaPreparations.createdAt))
+      .orderBy(
+        asc(sql`coalesce(${formalQaSchedulerStates.nextEligibleAt}, 'epoch'::timestamptz)`),
+        asc(formalQaPreparations.createdAt),
+      )
       .limit(Math.max(1, Math.min(input.limit ?? 25, 100)));
     let issued = 0;
     let deferred = 0;
     for (const candidate of candidates) {
       try {
         await issue({ preparationId: candidate.id });
+        await schedulerState.clear(FORMAL_QA_STAGE.issuance, candidate.id);
         issued += 1;
       } catch {
         // The exact failure remains discoverable through the request's next
         // controlled attempt and server logs. Do not write caller-visible or
         // mutable error authority into the preparation receipt.
+        await schedulerState.record({ companyId: candidate.companyId, stage: FORMAL_QA_STAGE.issuance, subjectId: candidate.id, delayMs: 2 * 60 * 1000, failed: true });
         deferred += 1;
       }
     }

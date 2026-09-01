@@ -53,8 +53,6 @@ export const formalQaIssuances = pgTable(
   },
   (table) => ({
     preparationUq: uniqueIndex("formal_qa_issuances_preparation_uq").on(table.preparationId),
-    semanticIssuanceUq: uniqueIndex("formal_qa_issuances_semantic_uq")
-      .on(table.companyId, table.policyId, table.repository, table.prNumber, table.headSha),
     companyProjectCreatedIdx: index("formal_qa_issuances_company_project_created_idx")
       .on(table.companyId, table.projectId, table.createdAt),
   }),

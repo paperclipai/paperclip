@@ -203,7 +203,7 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     });
   });
 
-  it("terminalizes expired inert authority without refreshing it", async () => {
+  it("terminalizes expired authority and creates one immutable successor generation", async () => {
     const { companyId, projectId, workspaceId, policyId } = await seed();
     const [prepared] = await db.insert(formalQaPreparations).values({
       companyId,
@@ -220,6 +220,9 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       issuerOperationId: `request:${policyId}:v1`,
       issuedByUserId: "system:formal-qa-discovery",
       idempotencyKey: "expired-inert-authority",
+      requestKey: "expired-inert-authority",
+      generation: 1,
+      predecessorPreparationId: null,
       requestSha256: "a".repeat(64),
       expiresAt: new Date(Date.now() - 1_000),
       status: "prepared",
@@ -235,6 +238,28 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       expiresAt: prepared!.expiresAt,
       canonicalPreparationId: null,
     });
+    const successor = await formalQaPreparationService(db).create({
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      prNumber: 1903,
+      idempotencyKey: "expired-inert-authority",
+      issuedByUserId: "system:formal-qa-discovery",
+    });
+    const replay = await formalQaPreparationService(db).create({
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      prNumber: 1903,
+      idempotencyKey: "expired-inert-authority",
+      issuedByUserId: "system:formal-qa-discovery",
+    });
+    expect(successor).toMatchObject({ replayed: false, preparation: { generation: 2, predecessorPreparationId: prepared!.id, status: "prepared" } });
+    expect(replay).toMatchObject({ replayed: true, preparation: { id: successor.preparation.id } });
+    await db.execute(sql`update formal_qa_preparations set generation = 3, updated_at = now() where id = ${successor.preparation.id}`).then(
+      () => { throw new Error("preparation generation mutation unexpectedly succeeded"); },
+      (error) => expect(`${String(error)}\n${String((error as { cause?: unknown }).cause ?? "")}`).toMatch(/formal_qa_preparation_generation_immutable/),
+    );
   });
 
   it("rejects a workspace from another company and agent issuance", async () => {

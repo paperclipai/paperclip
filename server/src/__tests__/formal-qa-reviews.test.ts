@@ -179,6 +179,9 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       issuerOperationId: `request:${preparationId}:v1`,
       issuedByUserId: "board-user",
       idempotencyKey: `formal-review-${preparationId}`,
+      requestKey: `formal-review-${preparationId}`,
+      generation: 1,
+      predecessorPreparationId: null,
       requestSha256: "c".repeat(64),
       expiresAt,
       status: "prepared",
@@ -353,6 +356,40 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       wakeupRequestId: review.wakeupRequestId,
       contextSnapshot: { schema: "paperclip.formal-qa-review-context/v1", formalQaReviewId: review.id },
     });
+  });
+
+  it("backs off 25 poison checkout candidates so the next candidate becomes reachable", async () => {
+    const f = await fixture();
+    const [basePreparation] = await db.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, f.preparationId));
+    const [baseIssuance] = await db.select().from(formalQaIssuances).where(eq(formalQaIssuances.preparationId, f.preparationId));
+    const [baseCheckout] = await db.select().from(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(formalQaCheckouts).set({ checkoutPath: "/missing/formal-qa-poison-0" }).where(eq(formalQaCheckouts.id, baseCheckout!.id));
+      for (let index = 1; index < 26; index += 1) {
+        const preparationId = randomUUID();
+        const issuanceId = randomUUID();
+        const checkoutId = randomUUID();
+        await tx.insert(formalQaPreparations).values({
+          ...basePreparation!, id: preparationId, prNumber: basePreparation!.prNumber + index,
+          idempotencyKey: `review-poison-${index}`, requestKey: `review-poison-${index}`,
+          issuerOperationId: `${basePreparation!.issuerOperationId}:poison:${index}`,
+          createdAt: new Date(Date.now() + index), updatedAt: new Date(Date.now() + index),
+        });
+        await tx.insert(formalQaIssuances).values({
+          ...baseIssuance!, id: issuanceId, preparationId, prNumber: String(basePreparation!.prNumber + index),
+          createdAt: new Date(Date.now() + index),
+        });
+        await tx.insert(formalQaCheckouts).values({
+          ...baseCheckout!, id: checkoutId, preparationId,
+          checkoutPath: `/missing/formal-qa-poison-${index}`,
+          createdAt: new Date(Date.now() + index),
+        });
+      }
+    });
+
+    await expect(f.reviews.reconcileVerified()).resolves.toEqual({ scanned: 25, queued: 0, deferred: 25 });
+    await expect(f.reviews.reconcileVerified()).resolves.toEqual({ scanned: 1, queued: 0, deferred: 1 });
   });
 
   it("seals repositories larger than 32 MiB and exposes tracked symlinks only as inert Git blobs", async () => {

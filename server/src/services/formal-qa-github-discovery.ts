@@ -1,9 +1,10 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { formalQaPolicies } from "@paperclipai/db";
+import { formalQaPolicies, formalQaSchedulerStates } from "@paperclipai/db";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { resolveFormalQaGitHubToken } from "./formal-qa-github-issuer.js";
 import { formalQaPreparationService } from "./formal-qa-preparations.js";
+import { FORMAL_QA_STAGE, formalQaSchedulerStateService } from "./formal-qa-scheduler-state.js";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 type TokenProvider = (input: { companyId: string; responsibleUserId: string }) => Promise<string | null>;
@@ -62,20 +63,31 @@ export function formalQaGitHubDiscoveryService(db: Db, options?: {
   const resolveToken = options?.tokenProvider
     ?? ((input: { companyId: string; responsibleUserId: string }) => resolveFormalQaGitHubToken(db, input));
   const preparations = formalQaPreparationService(db);
-  const attemptedAt = new Map<string, number>();
   const discoveryIntervalMs = Math.max(0, options?.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS);
+  const schedulerState = formalQaSchedulerStateService(db);
 
   const reconcileOpenPulls = async (input: {
     companyId?: string;
     policyLimit?: number;
     maxPagesPerPolicy?: number;
   } = {}) => {
-    const policies = await db.select().from(formalQaPolicies).where(and(
-      eq(formalQaPolicies.enabled, true),
-      input.companyId ? eq(formalQaPolicies.companyId, input.companyId) : undefined,
-    )).orderBy(asc(formalQaPolicies.createdAt)).limit(
+    const now = new Date();
+    const policyRows = await db.select({ policy: formalQaPolicies, state: formalQaSchedulerStates })
+      .from(formalQaPolicies)
+      .leftJoin(formalQaSchedulerStates, and(
+        eq(formalQaSchedulerStates.stage, FORMAL_QA_STAGE.discovery),
+        eq(formalQaSchedulerStates.subjectId, formalQaPolicies.id),
+      )).where(and(
+        eq(formalQaPolicies.enabled, true),
+        or(isNull(formalQaSchedulerStates.subjectId), lte(formalQaSchedulerStates.nextEligibleAt, now)),
+        input.companyId ? eq(formalQaPolicies.companyId, input.companyId) : undefined,
+      )).orderBy(
+        asc(sql`coalesce(${formalQaSchedulerStates.nextEligibleAt}, 'epoch'::timestamptz)`),
+        asc(formalQaPolicies.createdAt),
+      ).limit(
       Math.max(1, Math.min(input.policyLimit ?? 25, MAX_POLICIES_PER_TICK)),
     );
+    const policies = policyRows.map((row) => ({ ...row.policy, discoveryState: row.state }));
     const result = {
       policiesMatched: policies.length,
       policiesScanned: 0,
@@ -88,14 +100,8 @@ export function formalQaGitHubDiscoveryService(db: Db, options?: {
     };
 
     for (const policy of policies) {
-      const now = Date.now();
-      const previousAttempt = attemptedAt.get(policy.id) ?? 0;
-      if (now - previousAttempt < discoveryIntervalMs) {
-        result.policiesThrottled += 1;
-        continue;
-      }
-      attemptedAt.set(policy.id, now);
       result.policiesScanned += 1;
+      let cursor = Math.max(1, policy.discoveryState?.cursor ?? 1);
       try {
         const token = await resolveToken({
           companyId: policy.companyId,
@@ -107,7 +113,8 @@ export function formalQaGitHubDiscoveryService(db: Db, options?: {
         const apiBase = gitHubApiBase("github.com");
         const maxPages = Math.max(1, Math.min(input.maxPagesPerPolicy ?? MAX_PAGES_PER_POLICY, MAX_PAGES_PER_POLICY));
 
-        for (let page = 1; page <= maxPages; page += 1) {
+        for (let scannedPages = 0; scannedPages < maxPages; scannedPages += 1) {
+          const page = cursor;
           const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`;
           const response = await fetchImpl(url, {
             headers: {
@@ -150,10 +157,27 @@ export function formalQaGitHubDiscoveryService(db: Db, options?: {
           }
 
           const next = hasNextPage(response.headers.get("link"));
+          cursor = next ? page + 1 : 1;
+          if (!Number.isSafeInteger(cursor) || cursor > 10_000) throw new Error("formal_qa_github_discovery_page_bound");
+          await schedulerState.record({
+            companyId: policy.companyId,
+            stage: FORMAL_QA_STAGE.discovery,
+            subjectId: policy.id,
+            cursor,
+            delayMs: next && scannedPages + 1 === maxPages ? 0 : discoveryIntervalMs,
+            failed: false,
+          });
           if (!next) break;
-          if (page === maxPages) throw new Error("formal_qa_github_discovery_page_bound");
         }
       } catch {
+        await schedulerState.record({
+          companyId: policy.companyId,
+          stage: FORMAL_QA_STAGE.discovery,
+          subjectId: policy.id,
+          cursor,
+          delayMs: discoveryIntervalMs,
+          failed: true,
+        });
         result.deferred += 1;
       }
     }

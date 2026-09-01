@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { projectWorkspaces } from "./project_workspaces.js";
@@ -43,6 +44,10 @@ export const formalQaPreparations = pgTable(
     requestSha256: text("request_sha256").notNull(),
     canonicalPreparationId: uuid("canonical_preparation_id")
       .references((): AnyPgColumn => formalQaPreparations.id),
+    requestKey: text("request_key").notNull(),
+    generation: integer("generation").notNull().default(1),
+    predecessorPreparationId: uuid("predecessor_preparation_id")
+      .references((): AnyPgColumn => formalQaPreparations.id),
     status: text("status").notNull().default("prepared"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -55,5 +60,10 @@ export const formalQaPreparations = pgTable(
       .on(table.companyId, table.projectId, table.createdAt),
     companyPrHeadIdx: index("formal_qa_preparations_company_pr_head_idx")
       .on(table.companyId, table.repository, table.prNumber, table.headSha),
+    companyRequestGenerationUq: uniqueIndex("formal_qa_preparations_company_request_generation_uq")
+      .on(table.companyId, table.requestKey, table.generation),
+    companyRequestLiveUq: uniqueIndex("formal_qa_preparations_company_request_live_uq")
+      .on(table.companyId, table.requestKey)
+      .where(sql`${table.status} in ('prepared', 'issuing', 'issued')`),
   }),
 );
