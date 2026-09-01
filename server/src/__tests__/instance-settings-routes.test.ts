@@ -12,8 +12,6 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
-  buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
-  reconcileIssueGraphLiveness: vi.fn(),
   computeTaskDrain: vi.fn(),
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
@@ -84,8 +82,6 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.updateGeneral.mockReset();
     mockInstanceSettingsService.updateExperimental.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
-    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
-    mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
     mockHeartbeatService.computeTaskDrain.mockReset();
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
@@ -122,13 +118,11 @@ describe("instance settings routes", () => {
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
-        enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
         enableWorktreeRunExecution: false,
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
-        issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
       updatedAt: "2026-06-20T00:00:00.000Z",
@@ -143,20 +137,17 @@ describe("instance settings routes", () => {
       enableIsolatedWorkspaces: false,
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
-      enableTaskWatchdogs: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
       enableBetaSkills: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: true,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
     mockInstanceSettingsService.update.mockResolvedValue({
       id: "instance-settings-1",
@@ -177,13 +168,11 @@ describe("instance settings routes", () => {
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
-        enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
         enableWorktreeRunExecution: false,
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
-        issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
       updatedAt: "2026-06-20T01:00:00.000Z",
@@ -203,43 +192,19 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: true,
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
-        enableTaskWatchdogs: true,
         enableExternalObjects: false,
         enableBuiltInAgents: true,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: true,
         autoRestartDevServerWhenIdle: false,
-        enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
         enableWorktreeRunExecution: false,
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
-        issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
-    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
-      lookbackHours: 24,
-      cutoff: "2026-04-26T12:00:00.000Z",
-      generatedAt: "2026-04-27T12:00:00.000Z",
-      findings: 1,
-      recoverableFindings: 1,
-      skippedOutsideLookback: 0,
-      items: [],
-    });
-    mockHeartbeatService.reconcileIssueGraphLiveness.mockResolvedValue({
-      findings: 1,
-      autoRecoveryEnabled: true,
-      lookbackHours: 24,
-      cutoff: "2026-04-26T12:00:00.000Z",
-      escalationsCreated: 1,
-      existingEscalations: 0,
-      skipped: 0,
-      skippedAutoRecoveryDisabled: 0,
-      skippedOutsideLookback: 0,
-      escalationIssueIds: ["issue-2"],
-    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
       driver: "local",
@@ -263,20 +228,17 @@ describe("instance settings routes", () => {
       enableIsolatedWorkspaces: false,
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
-      enableTaskWatchdogs: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
       enableBetaSkills: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: true,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
 
     const patchRes = await request(app)
@@ -289,6 +251,24 @@ describe("instance settings routes", () => {
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   }, 10_000);
+
+  it("does not expose the retired liveness auto-recovery endpoints", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview")
+      .send({ lookbackHours: 24 })
+      .expect(404);
+    await request(app)
+      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run")
+      .send({ lookbackHours: 24 })
+      .expect(404);
+  });
 
   it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
     const app = await createApp({
@@ -514,68 +494,6 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows local board users to update issue graph liveness auto-recovery", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app)
-      .patch("/api/instance/settings/experimental")
-      .send({
-        enableIssueGraphLivenessAutoRecovery: true,
-        issueGraphLivenessAutoRecoveryLookbackHours: 12,
-      })
-      .expect(200);
-
-    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
-      enableIssueGraphLivenessAutoRecovery: true,
-      issueGraphLivenessAutoRecoveryLookbackHours: 12,
-    });
-  });
-
-  it("previews issue graph liveness recovery candidates before enabling", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview")
-      .send({ lookbackHours: 12 })
-      .expect(200);
-
-    expect(res.body).toMatchObject({ lookbackHours: 24, recoverableFindings: 1 });
-    expect(mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview).toHaveBeenCalledWith({
-      lookbackHours: 12,
-    });
-  });
-
-  it("kicks off issue graph liveness recovery on demand", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app)
-      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run")
-      .send({ lookbackHours: 12 })
-      .expect(200);
-
-    expect(mockHeartbeatService.reconcileIssueGraphLiveness).toHaveBeenCalledWith({
-      runId: null,
-      force: true,
-      lookbackHours: 12,
-    });
-    expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
-
   it("allows local board users to update environment controls", async () => {
     const app = await createApp({
       type: "board",
@@ -594,24 +512,6 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows local board users to update task watchdog controls", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app)
-      .patch("/api/instance/settings/experimental")
-      .send({ enableTaskWatchdogs: true })
-      .expect(200);
-
-    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
-      enableTaskWatchdogs: true,
-    });
-  });
-
   it("allows non-admin board users with company access to read but not update experimental settings", async () => {
     const app = await createApp({
       type: "board",
@@ -625,7 +525,7 @@ describe("instance settings routes", () => {
 
     await request(app)
       .patch("/api/instance/settings/experimental")
-      .send({ enableTaskWatchdogs: true })
+      .send({ enableEnvironments: true })
       .expect(403);
 
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();

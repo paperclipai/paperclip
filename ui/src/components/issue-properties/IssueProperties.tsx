@@ -191,7 +191,6 @@ export function IssueProperties({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   // Managed-sandbox-only policy: the workspace folder is a host filesystem
   // path, so the Folder row disappears. The Branch row above it stays. The gate
   // fails closed whenever the policy is unknown — in flight and also on a failed
@@ -2419,32 +2418,30 @@ export function IssueProperties({
           {monitorContent}
         </PropertyPicker>
 
-        {taskWatchdogsEnabled ? (
-          <PropertyPicker
-            inline={inline}
-            label="Watchdog"
-            open={watchdogOpen}
-            onOpenChange={setWatchdogOpen}
-            triggerContent={watchdogTrigger}
-            triggerClassName="min-w-0 max-w-full"
-            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
-            extra={
-              watchdogIssueRef ? (
-                <Link
-                  to={`/issues/${watchdogIssueRef.id}`}
-                  className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                  title="Open watchdog task"
-                  aria-label="Open watchdog task"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ArrowUpRight className="h-3 w-3" />
-                </Link>
-              ) : undefined
-            }
-          >
-            {watchdogContent}
-          </PropertyPicker>
-        ) : null}
+        <PropertyPicker
+          inline={inline}
+          label="Watchdog"
+          open={watchdogOpen}
+          onOpenChange={setWatchdogOpen}
+          triggerContent={watchdogTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
+          extra={
+            watchdogIssueRef ? (
+              <Link
+                to={`/issues/${watchdogIssueRef.id}`}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                title="Open watchdog task"
+                aria-label="Open watchdog task"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            ) : undefined
+          }
+        >
+          {watchdogContent}
+        </PropertyPicker>
       </PropertySection>
 
       {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (

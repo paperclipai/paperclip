@@ -17067,24 +17067,11 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function buildIssueGraphLivenessAutoRecoveryPreview(opts?: {
-    lookbackHours?: number;
-    now?: Date;
-  }) {
-    return recovery.buildIssueGraphLivenessAutoRecoveryPreview(opts);
-  }
-
-  async function reconcileIssueGraphLiveness(opts?: {
+  async function reconcileResolvedDependencyWakes(opts?: {
     runId?: string | null;
-    force?: boolean;
-    lookbackHours?: number;
-    now?: Date;
-    reescalationCooldownMs?: number;
+    companyId?: string | null;
   }) {
-    return recovery.reconcileIssueGraphLiveness({
-      ...opts,
-      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
-    });
+    return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 
   async function updateRuntimeState(
@@ -25489,9 +25476,7 @@ export function heartbeatService(
 
     sweepStaleIssueLocks,
 
-    buildIssueGraphLivenessAutoRecoveryPreview,
-
-    reconcileIssueGraphLiveness,
+    reconcileResolvedDependencyWakes,
 
     scanSilentActiveRuns,
 
