@@ -6,6 +6,7 @@ import { conflict, notFound } from "../errors.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { formalQaCheckoutService } from "./formal-qa-checkouts.js";
+import { formalQaPreparationService } from "./formal-qa-preparations.js";
 import { secretService } from "./secrets.js";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -153,9 +154,22 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
     testOnlyRemoteUrl: options?.checkoutTestOnlyRemoteUrl,
     testOnlyAllowFileProtocol: options?.checkoutTestOnlyAllowFileProtocol,
   });
+  const preparations = formalQaPreparationService(db);
   const resolveToken = options?.tokenProvider ?? ((input: { companyId: string; responsibleUserId: string }) => resolveFormalQaGitHubToken(db, input));
   const issue = async ({ preparationId }: FormalQaGitHubIssuerInput) => {
     const initial = await loadRequestAndPolicy(db, preparationId);
+    if (initial.preparation.status === "superseded") {
+      if (!initial.preparation.canonicalPreparationId || initial.preparation.canonicalPreparationId === initial.preparation.id) {
+        issuerFailure("Formal-QA superseded request lacks its canonical issuance", "formal_qa_issuance_missing");
+      }
+      const canonical = await loadRequestAndPolicy(db, initial.preparation.canonicalPreparationId);
+      if (canonical.preparation.status !== "issued") issuerFailure("Formal-QA canonical request is not issued", "formal_qa_issuance_missing");
+      const [issuance] = await db.select().from(formalQaIssuances)
+        .where(eq(formalQaIssuances.preparationId, canonical.preparation.id)).limit(1);
+      if (!issuance) issuerFailure("Formal-QA canonical request lacks immutable evidence", "formal_qa_issuance_missing");
+      const checkout = await checkouts.materialize({ preparationId: canonical.preparation.id });
+      return { preparation: canonical.preparation, issuance, checkout: checkout.checkout, replayed: true };
+    }
     if (initial.preparation.status === "issued") {
       const [issuance] = await db.select().from(formalQaIssuances).where(eq(formalQaIssuances.preparationId, preparationId)).limit(1);
       if (!issuance) issuerFailure("Formal-QA issued request lacks immutable evidence", "formal_qa_issuance_missing");
@@ -200,6 +214,15 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
       if (prior) {
         const [priorPreparation] = await tx.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, prior.preparationId)).limit(1);
         if (!priorPreparation) issuerFailure("Formal-QA semantic replay lacks its request", "formal_qa_issuance_missing");
+        const [superseded] = await tx.update(formalQaPreparations).set({
+          status: "superseded",
+          canonicalPreparationId: priorPreparation.id,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(formalQaPreparations.id, preparation.id),
+          eq(formalQaPreparations.status, preparation.status),
+        )).returning();
+        if (!superseded) issuerFailure("Formal-QA semantic replay changed during convergence", "formal_qa_request_not_eligible");
         return { preparation: priorPreparation, issuance: prior, replayed: true };
       }
       const expiresAt = new Date(Date.now() + MAX_EXPIRY_MS);
@@ -221,6 +244,7 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
    * No browser retry or agent-side input can widen the authority.
    */
   const reconcilePrepared = async (input: { companyId?: string; limit?: number } = {}) => {
+    await preparations.expireStale(input);
     const candidates = await db.select({ id: formalQaPreparations.id }).from(formalQaPreparations)
       .where(and(
         inArray(formalQaPreparations.status, ["prepared", "issuing", "issued"]),

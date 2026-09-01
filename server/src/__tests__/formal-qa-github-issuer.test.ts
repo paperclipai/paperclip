@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -45,12 +45,12 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
 
   beforeAll(async () => { tempDb = await startEmbeddedPostgresTestDatabase("paperclip-formal-qa-issuer-"); db = createDb(tempDb.connectionString); }, 20_000);
   afterEach(async () => {
-    await db.delete(activityLog); await db.delete(formalQaCheckouts); await db.delete(formalQaIssuances); await db.delete(formalQaPolicies); await db.delete(formalQaPreparations); await db.delete(heartbeatRuns); await db.delete(executionWorkspaces); await db.delete(agents); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies);
+    await db.execute(sql`truncate table formal_qa_preparations cascade`); await db.delete(activityLog); await db.delete(formalQaPolicies); await db.delete(heartbeatRuns); await db.delete(executionWorkspaces); await db.delete(agents); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies);
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
   afterAll(async () => { await tempDb?.cleanup(); });
 
-  async function fixture() {
+  async function fixture(input: { expired?: boolean } = {}) {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-issuer-repo-"));
     const source = path.join(root, "source"); const remote = path.join(root, "origin.git");
     const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-issuer-home-"));
@@ -63,8 +63,17 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
     await db.insert(projects).values({ id: projectId, companyId, name: "Music Tracker", status: "in_progress" });
     await db.insert(agents).values({ id: reviewerAgentId, companyId, name: "Formal QA", adapterType: "process" });
     await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Source checkout", sourceType: "local_path", cwd: source, repoUrl: "https://github.com/vivus-tech/music-tracker.git", isPrimary: true });
-    await db.insert(formalQaPolicies).values({ companyId, projectId, projectWorkspaceId, reviewerAgentId, repository: "vivus-tech/music-tracker", requiredWorkflowId: "99", requiredCheckName: "PR Policy", requiredCheckAppId: 15368, enabled: true, createdByUserId: "admin", updatedByUserId: "admin" });
-    const request = await formalQaPreparationService(db).create({ companyId, projectId, projectWorkspaceId, prNumber: 1902, idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902", issuedByUserId: "board-user" });
+    const [policy] = await db.insert(formalQaPolicies).values({ companyId, projectId, projectWorkspaceId, reviewerAgentId, repository: "vivus-tech/music-tracker", requiredWorkflowId: "99", requiredCheckName: "PR Policy", requiredCheckAppId: 15368, enabled: true, createdByUserId: "admin", updatedByUserId: "admin" }).returning();
+    const request = input.expired
+      ? await db.insert(formalQaPreparations).values({
+        companyId, projectId, projectWorkspaceId, repository: "vivus-tech/music-tracker", prNumber: 1902,
+        headSha: "0".repeat(40), baseRef: "pending", baseSha: "0".repeat(40), treeSha: "0".repeat(40),
+        evidenceSha256: "0".repeat(64), issuerReceiptSha256: "0".repeat(64),
+        issuerOperationId: `request:${policy!.id}:v1`, issuedByUserId: "board-user",
+        idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902", requestSha256: "a".repeat(64),
+        expiresAt: new Date(Date.now() - 1_000), status: "prepared",
+      }).returning().then((rows) => ({ preparation: rows[0]! }))
+      : await formalQaPreparationService(db).create({ companyId, projectId, projectWorkspaceId, prNumber: 1902, idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902", issuedByUserId: "board-user" });
     return { root, source, remote, instanceRoot, companyId, projectId, projectWorkspaceId, headSha, treeSha, preparationId: request.preparation.id };
   }
 
@@ -85,7 +94,7 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
     return { calls, fetch };
   }
   function service(f: Awaited<ReturnType<typeof fixture>>, fetch: typeof globalThis.fetch) {
-    return formalQaGitHubIssuerService(db, { fetch, tokenProvider: async (input) => { expect(input).toMatchObject({ companyId: f.companyId, responsibleUserId: "board-user" }); return "scoped-token"; }, checkoutInstanceRoot: f.instanceRoot, checkoutTestOnlyRemoteUrl: f.remote, checkoutTestOnlyAllowFileProtocol: true });
+    return formalQaGitHubIssuerService(db, { fetch, tokenProvider: async (input) => { expect(input).toMatchObject({ companyId: f.companyId }); expect(input.responsibleUserId).toMatch(/^(board-user|system:formal-qa-discovery)$/); return "scoped-token"; }, checkoutInstanceRoot: f.instanceRoot, checkoutTestOnlyRemoteUrl: f.remote, checkoutTestOnlyAllowFileProtocol: true });
   }
 
   it("derives the exact authority from the server policy and persists canonical evidence before a clean-mirror checkout", async () => {
@@ -112,13 +121,37 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
   });
 
   it("never refreshes an expired inert request into a new issuance", async () => {
-    const f = await fixture();
-    await db.update(formalQaPreparations).set({ expiresAt: new Date(Date.now() - 1_000) })
-      .where(eq(formalQaPreparations.id, f.preparationId));
+    const f = await fixture({ expired: true });
     const fake = fakeGitHub(f);
     await expect(service(f, fake.fetch).issue({ preparationId: f.preparationId })).rejects.toMatchObject<HttpError>({ status: 409, details: { code: "formal_qa_request_expired" } });
     expect(fake.calls).toEqual([]);
     await expect(service(f, fake.fetch).reconcilePrepared()).resolves.toEqual({ scanned: 0, issued: 0, deferred: 0 });
+    await expect(db.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, f.preparationId)))
+      .resolves.toEqual([expect.objectContaining({ status: "expired" })]);
+  });
+
+  it("terminalizes a semantic duplicate onto its canonical issuance", async () => {
+    const f = await fixture();
+    const fake = fakeGitHub(f);
+    const issuer = service(f, fake.fetch);
+    const canonical = await issuer.issue({ preparationId: f.preparationId });
+    const duplicate = await formalQaPreparationService(db).create({
+      companyId: f.companyId,
+      projectId: f.projectId,
+      projectWorkspaceId: f.projectWorkspaceId,
+      prNumber: 1902,
+      idempotencyKey: "formal-qa:vivus-tech/music-tracker#1902:second-controller",
+      issuedByUserId: "system:formal-qa-discovery",
+    });
+    const replay = await issuer.issue({ preparationId: duplicate.preparation.id });
+    const callsAfterConvergence = fake.calls.length;
+    const replayAgain = await issuer.issue({ preparationId: duplicate.preparation.id });
+
+    expect(replay).toMatchObject({ replayed: true, preparation: { id: canonical.preparation.id }, issuance: { id: canonical.issuance.id } });
+    expect(replayAgain).toMatchObject({ replayed: true, preparation: { id: canonical.preparation.id }, issuance: { id: canonical.issuance.id } });
+    expect(fake.calls).toHaveLength(callsAfterConvergence);
+    await expect(db.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, duplicate.preparation.id)))
+      .resolves.toEqual([expect.objectContaining({ status: "superseded", canonicalPreparationId: canonical.preparation.id })]);
   });
 
   it("reconciles an issued request after checkout materialization failed", async () => {
@@ -170,7 +203,7 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
       const f = await fixture(); const fake = fakeGitHub({ ...f, ...mutation });
       await expect(service(f, fake.fetch).issue({ preparationId: f.preparationId })).rejects.toMatchObject<HttpError>({ status: 409, details: { code: mutation.code } });
       expect(await db.select().from(formalQaIssuances)).toEqual([]);
-      await db.delete(activityLog); await db.delete(formalQaCheckouts); await db.delete(formalQaIssuances); await db.delete(formalQaPolicies); await db.delete(formalQaPreparations); await db.delete(agents); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies); await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+      await db.execute(sql`truncate table formal_qa_preparations cascade`); await db.delete(activityLog); await db.delete(formalQaPolicies); await db.delete(agents); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies); await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
     }
   });
 });
