@@ -142,7 +142,7 @@ export function buildNativeExecutionInput(input: {
         : {
             kind: "codex",
             model: input.model ?? null,
-            approvalPolicy: input.codexApprovalPolicy ?? "never",
+            approvalPolicy: input.codexApprovalPolicy ?? "untrusted",
           },
     completionContract: input.completionContract,
     interactionResponses: input.interactionResponses ?? [],

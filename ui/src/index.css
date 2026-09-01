@@ -2367,6 +2367,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-70px: 70px; /* Extracted from ui/src/pages/Secrets.tsx (min-h-[70px]). */
   --sz-calc-41: min(520px,calc(100vw - 2rem)); /* Extracted from ui/src/pages/Secrets.tsx (w-[min(520px,calc(100vw-2rem))]). */
   --sz-calc-42: min(80vh,34rem); /* Extracted from ui/src/pages/Secrets.tsx (max-h-[min(80vh,34rem)]). */
+  --sz-calc-43: min(98vw,90rem); /* RunnerInspector sheet width. */
   --sz-14rem: 14rem; /* Extracted from ui/src/pages/TeamCatalog.tsx (max-w-[14rem]). */
   --rad-3: 3px; /* Extracted from ui/src/components/ExternalObjectPill.tsx (ring-[3px]). */
   --rad-4: 4px; /* Extracted from ui/src/components/IssueChatThread.tsx (rounded-br-[4px]). */

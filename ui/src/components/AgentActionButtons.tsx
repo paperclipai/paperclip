@@ -381,7 +381,7 @@ export function AgentActionButtons({
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>
       {persistentProviderTrace ? (
         <span
-          className="hidden items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-800 dark:text-amber-200 lg:inline-flex"
+          className="hidden items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary lg:inline-flex"
           title="Exact provider traffic will be captured for future runs and retained for up to 24 hours."
         >
           <Bug className="h-3.5 w-3.5" />

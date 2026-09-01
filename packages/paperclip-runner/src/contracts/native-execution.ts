@@ -7,6 +7,7 @@ export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-inpu
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v4" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.v1" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v2" as const;
+export const NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 
 export type NativeExecutionMode = "default" | "plan";
 
@@ -368,8 +369,14 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     }
     lifecyclePolicy = { mode: "per_turn", idleTimeoutMs: null };
   } else if (lifecyclePolicyValue.mode === "warm") {
-    if (!Number.isSafeInteger(lifecyclePolicyValue.idleTimeoutMs) || Number(lifecyclePolicyValue.idleTimeoutMs) <= 0) {
-      throw new NativeExecutionInputError("input.session.lifecyclePolicy.idleTimeoutMs must be a positive integer for warm");
+    if (
+      !Number.isSafeInteger(lifecyclePolicyValue.idleTimeoutMs)
+      || Number(lifecyclePolicyValue.idleTimeoutMs) <= 0
+      || Number(lifecyclePolicyValue.idleTimeoutMs) > NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS
+    ) {
+      throw new NativeExecutionInputError(
+        `input.session.lifecyclePolicy.idleTimeoutMs must be a positive integer no greater than ${NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS} for warm`,
+      );
     }
     lifecyclePolicy = { mode: "warm", idleTimeoutMs: Number(lifecyclePolicyValue.idleTimeoutMs) };
   } else {

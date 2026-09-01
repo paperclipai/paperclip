@@ -1,5 +1,6 @@
 import {
   buildAdapterEnvConfig,
+  resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
@@ -91,11 +92,9 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
   const configuredIdleTimeoutMs =
     v.paperclipRunnerIdleTimeoutMs ?? schemaValues.idleTimeoutMs;
-  const idleTimeoutMs = typeof configuredIdleTimeoutMs === "number"
-    && Number.isSafeInteger(configuredIdleTimeoutMs)
-    && configuredIdleTimeoutMs > 0
-    ? configuredIdleTimeoutMs
-    : 300_000;
+  const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
+    configuredIdleTimeoutMs,
+  );
   return {
     ...config,
     provider: "codex",

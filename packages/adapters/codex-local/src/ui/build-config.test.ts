@@ -87,7 +87,7 @@ describe("buildPaperclipRunnerConfig", () => {
 
     expect(config).toMatchObject({
       provider: "codex",
-      codexPermissionMode: "never",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
       model: "gpt-5.4",
       timeoutSec: 0,
@@ -135,8 +135,18 @@ describe("buildPaperclipRunnerConfig", () => {
       },
     }))).toMatchObject({
       provider: "codex",
-      codexPermissionMode: "never",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
+    });
+  });
+
+  it("bounds warm lifecycle values to the shared safe default", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      paperclipRunnerLifecycleMode: "warm",
+      paperclipRunnerIdleTimeoutMs: 86_400_001,
+    }))).toMatchObject({
+      lifecycleMode: "warm",
+      idleTimeoutMs: 300_000,
     });
   });
 

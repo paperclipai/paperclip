@@ -115,8 +115,11 @@ export type {
   LoginRunnerRaceResult,
 } from "./login-runner-lifecycle.js";
 export {
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   isPaperclipRunnerProvider,
+  resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
 } from "./paperclip-runner-permissions.js";
 export {

@@ -14,7 +14,10 @@ import {
   isCodexLocalManualModel,
 } from "@paperclipai/adapter-codex-local";
 import {
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CodexPermissionMode,
 } from "@paperclipai/adapter-utils";
@@ -23,14 +26,6 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
-const runnerIdleTimeoutDefaultMs = 300_000;
-
-function positiveInteger(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : fallback;
-}
-
 export function CodexLocalConfigFields({
   mode,
   isCreate,
@@ -73,7 +68,7 @@ export function CodexLocalConfigFields({
         )
     : "per_turn";
   const runnerIdleTimeoutMs = runnerManaged
-    ? positiveInteger(
+    ? resolvePaperclipRunnerIdleTimeoutMs(
         isCreate
           ? values!.paperclipRunnerIdleTimeoutMs
           : eff(
@@ -81,9 +76,8 @@ export function CodexLocalConfigFields({
               "idleTimeoutMs",
               config.idleTimeoutMs,
             ),
-        runnerIdleTimeoutDefaultMs,
       )
-    : runnerIdleTimeoutDefaultMs;
+    : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
   const rawEngine = runnerManaged ? "cli" : isCreate
     ? values!.codexEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -180,19 +174,19 @@ export function CodexLocalConfigFields({
       {runnerManaged && runnerLifecycleMode === "warm" && (
         <Field
           label="Warm idle timeout (ms)"
-          hint="After this much inactivity, runnerd checkpoints and suspends the Codex session."
+          hint="After this much inactivity, runnerd checkpoints and suspends the Codex session. The maximum is 24 hours."
         >
           {isCreate ? (
             <input
               type="number"
               min={1}
+              max={PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS}
               className={inputClass}
               value={runnerIdleTimeoutMs}
               onChange={(event) =>
                 set!({
-                  paperclipRunnerIdleTimeoutMs: positiveInteger(
+                  paperclipRunnerIdleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(
                     Number(event.target.value),
-                    runnerIdleTimeoutDefaultMs,
                   ),
                 })
               }
@@ -200,11 +194,13 @@ export function CodexLocalConfigFields({
           ) : (
             <DraftNumberInput
               value={runnerIdleTimeoutMs}
+              min={1}
+              max={PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS}
               onCommit={(value) =>
                 mark(
                   "adapterConfig",
                   "idleTimeoutMs",
-                  positiveInteger(value, runnerIdleTimeoutDefaultMs),
+                  resolvePaperclipRunnerIdleTimeoutMs(value),
                 )
               }
               immediate

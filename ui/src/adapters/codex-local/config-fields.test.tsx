@@ -42,7 +42,7 @@ describe("Paperclip Runner Codex configuration", () => {
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 
-    expect(html).toContain('<option value="never" selected="">Full auto (never ask)</option>');
+    expect(html).toContain('<option value="untrusted" selected="">Ask for untrusted operations</option>');
   });
 
   it("shows a bounded idle timeout only for warm sessions", () => {
@@ -57,6 +57,7 @@ describe("Paperclip Runner Codex configuration", () => {
 
     expect(warmHtml).toContain("Warm idle timeout (ms)");
     expect(warmHtml).toContain('value="45000"');
+    expect(warmHtml).toContain('max="86400000"');
     expect(turnHtml).not.toContain("Warm idle timeout (ms)");
   });
 });
