@@ -491,11 +491,23 @@ function OnboardingWizardInner({
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
     restoreOnboardingAdapterType(saved?.adapterType),
   );
+  const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  const [model, setModel] = useState((saved?.model as string) ?? "");
-  const [command, setCommand] = useState((saved?.command as string) ?? "");
-  const [args, setArgs] = useState((saved?.args as string) ?? "");
-  const [url, setUrl] = useState((saved?.url as string) ?? "");
+  // Native drafts may carry provider-specific configuration that is invalid
+  // for the legacy adapter selected above. Keep the portable working
+  // directory, but clear runner-specific execution fields while restoring.
+  const [model, setModel] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+  );
+  const [command, setCommand] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
+  );
+  const [args, setArgs] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.args as string) ?? "",
+  );
+  const [url, setUrl] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.url as string) ?? "",
+  );
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
