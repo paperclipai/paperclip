@@ -254,7 +254,6 @@ export function connectRunnerPrpIngress(input: {
   const loop = (async () => {
     let attempt = 0;
     let recoveryDeadline = startupDeadline;
-    let refreshedGeneration: string | null = null;
     while (!abort.signal.aborted) {
       try {
         input.onStateChange?.(attempt === 0 ? "connecting" : "reconnecting");
@@ -280,7 +279,6 @@ export function connectRunnerPrpIngress(input: {
         }
         input.onStateChange?.("authenticated");
         attempt = 0;
-        refreshedGeneration = null;
         await socketClosed(opened.wire);
         activeWire = null;
         recoveryDeadline = Date.now() + recoveryGraceMs;
@@ -298,12 +296,17 @@ export function connectRunnerPrpIngress(input: {
             : null;
         if (
           (statusCode === 401 || statusCode === 403) &&
-          refreshedGeneration !== endpoint.generation
+          Date.now() < recoveryDeadline
         ) {
-          refreshedGeneration = endpoint.generation;
           try {
-            endpoint = await endpoint.refresh();
-            continue;
+            const refreshedEndpoint = await endpoint.refresh();
+            // Preview credentials can rotate without changing the sandbox
+            // generation. Refresh every rejected credential, but never let a
+            // successful refresh reset or step past the fixed recovery budget.
+            if (Date.now() < recoveryDeadline) {
+              endpoint = refreshedEndpoint;
+              continue;
+            }
           } catch (refreshError) {
             failure = refreshError;
           }

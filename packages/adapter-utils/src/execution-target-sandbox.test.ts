@@ -6365,6 +6365,7 @@ describe("EffectiveSandboxCapabilities deprecated alias", () => {
       incrementalSessionOutput: false,
       concurrentSyncOperations: false,
       duplexCommandStream: false,
+      runnerWebSocketIngress: false,
     };
     const aliased: EffectiveSandboxCapabilities = snapshot;
     expect(aliased).toEqual(snapshot);
