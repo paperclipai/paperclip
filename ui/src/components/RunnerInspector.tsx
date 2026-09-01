@@ -793,7 +793,7 @@ export function RunnerInspector({
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
-        className="w-(--sz-calc-43) max-w-none gap-0 p-0"
+        className="w-(--sz-calc-43) max-w-none gap-0 p-0 sm:max-w-none"
         aria-describedby="runner-inspector-description"
       >
         <SheetHeader className="border-b border-border pr-12">
