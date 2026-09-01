@@ -310,7 +310,6 @@ function declarationsIn(masked: string) {
     [FUNCTION_DECLARATION_PATTERN, true],
     [ARROW_DECLARATION_PATTERN, false],
   ] as const) {
-    pattern.lastIndex = 0;
     for (const match of masked.matchAll(pattern)) {
       declarations.push({ name: match[1], index: match.index, isNamedFunction });
     }
@@ -335,8 +334,6 @@ function boardAssertCallPattern(names: ReadonlySet<string>) {
  * because a return-type annotation sits between the two — `function
  * requireBoardUserId(req, res): string | null {` in `sidebar-preferences.ts` is
  * exactly the shape that a `)\s*{` search misses, which hid four board-only routes.
- * Returns -1 when the return type itself is an object literal, so an unreadable
- * declaration is skipped rather than analyzed from the wrong brace.
  */
 function namedFunctionBodyStart(source: string) {
   const open = source.indexOf("(");
@@ -344,11 +341,48 @@ function namedFunctionBodyStart(source: string) {
   let depth = 0;
   for (let i = open; i < source.length; i++) {
     if (source[i] === "(") depth++;
-    else if (source[i] === ")" && --depth === 0) {
-      const afterParams = source.slice(i + 1);
-      const body = afterParams.match(/^\s*(?::[^{;=]*)?\{/);
-      return body ? i + 1 + body[0].length - 1 : -1;
+    else if (source[i] === ")" && --depth === 0) return bodyBraceAfterParams(source, i + 1);
+  }
+  return -1;
+}
+
+/**
+ * Index of the body's `{` after a parameter list, skipping a return-type
+ * annotation. The type can itself contain braces — `: { ok: boolean }`,
+ * `Promise<{ id: string }>` — so a `{` inside angle/paren nesting, or one whose
+ * preceding character can only start a type construct (`:`, `|`, `&`, `,`), is
+ * part of the type: its group is balanced over and the walk continues. `;` and
+ * `=` end the declaration without a body (an overload signature, an alias), and
+ * a function-type annotation's `=>` lands on the `=` case — both return -1, so
+ * an unreadable declaration is skipped rather than analyzed from the wrong brace.
+ */
+function bodyBraceAfterParams(source: string, from: number) {
+  let j = from;
+  while (j < source.length && /\s/.test(source[j])) j++;
+  if (source[j] === "{") return j;
+  if (source[j] !== ":") return -1;
+  let angles = 0;
+  let parens = 0;
+  let previous = ":";
+  for (let i = j + 1; i < source.length; i++) {
+    const char = source[i];
+    if (/\s/.test(char)) continue;
+    if (char === ";" || char === "=") return -1;
+    if (char === "<") angles++;
+    else if (char === ">") angles = Math.max(0, angles - 1);
+    else if (char === "(") parens++;
+    else if (char === ")") parens = Math.max(0, parens - 1);
+    else if (char === "{") {
+      if (angles === 0 && parens === 0 && !":|&,<(".includes(previous)) return i;
+      let braceDepth = 0;
+      for (; i < source.length; i++) {
+        if (source[i] === "{") braceDepth++;
+        else if (source[i] === "}" && --braceDepth === 0) break;
+      }
+      previous = "}";
+      continue;
     }
+    previous = char;
   }
   return -1;
 }
@@ -385,7 +419,9 @@ function assertsBoardUnconditionally(
   assertNames: ReadonlySet<string>,
   isNamedFunction = false,
 ) {
-  const bodyStart = isNamedFunction ? namedFunctionBodyStart(handlerSource) : handlerSource.search(/=>\s*\{/);
+  const bodyStart = isNamedFunction
+    ? namedFunctionBodyStart(handlerSource)
+    : nextTopLevelArrowBodyStart(handlerSource, 0);
   if (bodyStart < 0) return false;
   const callPattern = boardAssertCallPattern(assertNames);
   const blocks: string[] = [];
@@ -401,10 +437,10 @@ function assertsBoardUnconditionally(
         // A function argument closed without asserting. In a registration span
         // that can be an inline middleware sitting before the real handler, and
         // every function argument runs unconditionally, so move on to the next
-        // arrow body in the span instead of concluding the route is unguarded.
-        const next = handlerSource.slice(i + 1).search(/=>\s*\{/);
+        // top-level arrow body instead of concluding the route is unguarded.
+        const next = nextTopLevelArrowBodyStart(handlerSource, i + 1);
         if (next < 0) return false;
-        i += next; // land on the arrow; only `=>` and whitespace precede its `{`
+        i = next - 1; // the loop's increment lands on the body's `{`
       }
       continue;
     }
@@ -463,7 +499,10 @@ function isUnconditionalStatement(source: string, at: number) {
   let start = j - 1;
   while (start >= 0 && !";{}".includes(source[start])) start--;
   const target = source.slice(start + 1, j);
-  return !/[(?]|&&|\|\|/.test(target);
+  // A braceless `else y = assertBoard(req)` reaches the back-scan with a clean
+  // target (the `if` block's `}` stops it before the condition's parens), so
+  // control-flow keywords in the target disqualify it explicitly.
+  return !/[(?]|&&|\|\||\b(?:else|case|default|do)\b/.test(target);
 }
 
 /**
@@ -510,6 +549,32 @@ function declarationBody(masked: string, declaration: { index: number; isNamedFu
   return null;
 }
 
+/**
+ * Index of the `{` opening the next function body that is an argument at the top
+ * level of `source` from `from`. An arrow nested inside another argument's
+ * parentheses or object literal — a middleware factory's options callback, say —
+ * is conditional machinery, not a function argument, and scanning it would let
+ * `limiter({ onLimit: (req) => { assertBoard(req); } })` mark a route as
+ * board-guarded. A concise arrow (no brace body) is walked past.
+ */
+function nextTopLevelArrowBodyStart(source: string, from: number) {
+  let parens = 0;
+  let braces = 0;
+  for (let i = from; i < source.length; i++) {
+    const char = source[i];
+    if (char === "(") parens++;
+    else if (char === ")") parens--;
+    else if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "=" && source[i + 1] === ">" && parens === 0 && braces === 0) {
+      const body = source.slice(i + 2).match(/^\s*\{/);
+      if (body) return i + 2 + body[0].length - 1;
+      i++;
+    }
+  }
+  return -1;
+}
+
 // Offset of the brace opening a `const name = (...) => { ... }` body, requiring the
 // arrow to belong to this declaration's own parameter list.
 function arrowFunctionBodyStart(source: string) {
@@ -531,7 +596,14 @@ function arrowFunctionBodyStart(source: string) {
 function namedHandlerAssertsBoard(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
   const args = registrationArguments(masked, registrationIndex);
   if (args === null || args.includes("=>")) return false;
-  const handlerName = args.split(",").pop()?.trim() ?? "";
+  // A prettier-wrapped registration carries a trailing comma, leaving an empty
+  // final segment; the handler is the last non-empty one.
+  const handlerName =
+    args
+      .split(",")
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .pop() ?? "";
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(handlerName)) return false;
   const declaration = declarationsIn(masked).find((entry) => entry.name === handlerName);
   if (!declaration) return false;
@@ -629,11 +701,17 @@ function computeActualRoutes() {
 
     for (const { file: constantFile, marker, route } of constantPathRoutes) {
       if (file !== constantFile) continue;
-      const at = source.indexOf(marker);
+      // Search the masked source: a comment mentioning the marker is blanked
+      // there, so the offset can only anchor on the real registration.
+      const at = masked.indexOf(marker);
       if (at < 0) continue;
       routes.add(route);
-      const handlerSource = registrationArguments(masked, at) ?? "";
-      if (assertsBoardUnconditionally(handlerSource, assertNames)) boardGuardedRoutes.add(route);
+      if (
+        assertsBoardUnconditionally(registrationArguments(masked, at) ?? "", assertNames) ||
+        namedHandlerAssertsBoard(masked, at, assertNames)
+      ) {
+        boardGuardedRoutes.add(route);
+      }
     }
   }
 
@@ -645,7 +723,14 @@ function computeActualRoutes() {
   };
 }
 
+// Memoized for the same reason as the route scan: building the document is
+// deterministic and several tests consume it.
+let cachedSpecRoutes: ReturnType<typeof computeSpecRoutes> | undefined;
 function loadSpecRoutes() {
+  return (cachedSpecRoutes ??= computeSpecRoutes());
+}
+
+function computeSpecRoutes() {
   const spec = buildOpenApiSpec();
   const routes = new Set<string>();
 
@@ -783,9 +868,15 @@ describe("openapi routes", () => {
     `);
     expect([...chained].sort()).toEqual(["assertBoard", "inner", "outer"]);
 
-    // A return-type annotation between the parameter list and the body.
+    // A return-type annotation between the parameter list and the body — plain,
+    // object-literal, and generic-wrapped: the type's own braces are balanced
+    // over rather than mistaken for the body.
     expect([...closure("function gate(req: Request, res: Response): string | null { assertBoard(req); }")])
       .toContain("gate");
+    expect([...closure("function typed(req: Request): { ok: boolean } { assertBoard(req); }")])
+      .toContain("typed");
+    expect([...closure("async function generic(req: Request): Promise<{ id: string }> { assertBoard(req); }")])
+      .toContain("generic");
 
     // Conditional assertions do not make a wrapper an assertion. The braceless
     // cases matter most: a condition containing its own parentheses, and the
@@ -799,6 +890,10 @@ describe("openapi routes", () => {
     expect([...closure("function andForm(req: Request) { x && assertBoard(req); }")]).not.toContain("andForm");
     expect([...closure("function ternary(req: Request) { flag ? assertBoard(req) : null; }")])
       .not.toContain("ternary");
+    // A braceless-else assignment: the back-scan stops at the if-block's `}`,
+    // so the `else` keyword itself must disqualify the declarator form.
+    expect([...closure("function elseAssign(req: Request) { if (x) { serve(); } else y = assertBoard(req); }")])
+      .not.toContain("elseAssign");
     // ...but a plain declarator initializer is unconditional.
     expect([...closure("function viaConst(req: Request) { const id = assertBoard(req); return id; }")])
       .toContain("viaConst");
@@ -854,6 +949,25 @@ describe("openapi routes", () => {
         names,
       ),
     ).toBe(false);
+    // An arrow nested inside another argument's object literal is a conditional
+    // callback, not a function argument — its assertion must not count.
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", limiter({ onLimit: (req, res) => { assertBoard(req); } }), realHandler',
+        names,
+      ),
+    ).toBe(false);
+
+    // A prettier-wrapped named-handler registration carries a trailing comma;
+    // the handler is still resolved and its body still analyzed.
+    const wrapped = maskLiterals(`
+      router.get(
+        "/wrapped",
+        wrappedHandler,
+      );
+      function wrappedHandler(req: Request, res: Response) { assertBoard(req); res.json({}); }
+    `);
+    expect(namedHandlerAssertsBoard(wrapped, wrapped.indexOf("router.get"), names)).toBe(true);
 
     // The neighbouring-helper mis-attribution. `/thing` runs `namedHandler`, which
     // asserts nothing; the arrow-bodied `helper` below it does assert. Scanning from

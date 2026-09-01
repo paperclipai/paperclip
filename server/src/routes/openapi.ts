@@ -8386,6 +8386,8 @@ export const buildOpenApiSpec = buildOpenApiDocument;
 // path or a typo would downgrade the published authorization without any test
 // noticing. The guard asserts every entry still keys into the spec.
 export const AUTH_TABLE_OPERATIONS = {
+  public: PUBLIC_OPERATIONS,
+  runtimeTools: RUNTIME_TOOLS_OPERATIONS,
   board: BOARD_ONLY_OPERATIONS,
   instanceAdmin: INSTANCE_ADMIN_OPERATIONS,
 } as const;
