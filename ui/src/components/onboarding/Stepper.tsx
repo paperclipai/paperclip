@@ -108,7 +108,7 @@ export function Stepper({
   onJumpToStep?: (target: number) => void;
 }) {
   return (
-    <div className="mb-7 flex items-center justify-center gap-2">
+    <div className="mb-11 flex items-center justify-center gap-2">
       {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
         const jumpable = Boolean(canJumpToStep?.(segment) && onJumpToStep);
         return (

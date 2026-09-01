@@ -2005,7 +2005,12 @@ function OnboardingWizardInner({
                 // edge competed with the tiles' own strokes. The two branches
                 // now differ only in measure. One element styled two ways, not
                 // two wrappers, so the step content below renders exactly once.
-                isAgentArcStep
+                // Step 1 takes the arc's measure too. Its footer is now the
+                // same pair, and a pair styled identically but sitting 96px
+                // narrower than the next screen's makes the whole frame jump on
+                // Continue — which is the thing that read as "off" to begin
+                // with, and is more obvious once the buttons match.
+                isAgentArcStep || step === 1
                   ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
@@ -2067,7 +2072,14 @@ function OnboardingWizardInner({
                   {/* mb-6 continues the prototype's single rhythm past this
                       block: it groups the hero and heading, and the step's own
                       controls sit a step below on the same spacing. */}
-                  <div className="mb-6 space-y-6">
+                  {/* The gap under the agent — its name to the step's title —
+                      is tighter than the step's other rows on purpose. The name
+                      labels the character directly above it, so the two read as
+                      one object; at the full row rhythm the name floated between
+                      the character and the title and belonged to neither. 24px
+                      against the 36px used elsewhere, a little over a third
+                      less. `mb-9` still holds the block off the step content. */}
+                  <div className="mb-9 space-y-6">
                     <motion.div
                       initial={capsuleHeroMotion.initial}
                       animate={capsuleHeroMotion.animate}
@@ -2119,7 +2131,7 @@ function OnboardingWizardInner({
 
               {/* Step content */}
               {step === 2 && onboardingPath === "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Sparkles className="h-5 w-5 text-muted-foreground" />
@@ -2204,18 +2216,29 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: name the organization (both paths). One question, one
-                  design: this mirrors the funnel's naming screen — same
-                  question, same sub, same left-aligned heading in a centered
-                  column — so a customer creating their second organization
-                  in-app is asked exactly what their first one asked them. */}
+              {/* Step 1: name the organization (both paths).
+                  Dressed as the arc steps that follow it — centred heading, no
+                  lede, and the same footer pair — because a customer walks
+                  straight from here into them, and one screen reading as a
+                  different product is more jarring than this one no longer
+                  matching the funnel's naming screen exactly. The question
+                  itself is still the funnel's, so the ask has not changed.
+
+                  The lede went because it said what the field already says: a
+                  labelled "Name" under "What is the name of your organization?"
+                  does not need a sentence explaining that it names the
+                  organization. */}
               {step === 1 && (
-                <div className="mx-auto w-full max-w-md space-y-6">
+                <div className="mx-auto w-full space-y-9">
                   <OnboardingHeading
+                    center
                     title="What is the name of your organization?"
-                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
                   />
-                  <div className="group">
+                  {/* The field takes the agent step's measure rather than the
+                      column's, so the two questions the wizard asks — name the
+                      organization, name the agent — present the same target.
+                      The heading stays full width above it, as it does there. */}
+                  <div className="group mx-auto w-full max-w-(--sz-320px)">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -2241,18 +2264,12 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => { setOnboardingPath(null); setStep(0); }}
-                  >
-                    ← Back to start
-                  </button>
                 </div>
               )}
 
               {/* Step 2: Define your mission */}
               {step === 2 && onboardingPath !== "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
@@ -2448,7 +2465,7 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
+                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Name</Label>
                     <Input
@@ -2464,7 +2481,7 @@ function OnboardingWizardInner({
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   {/* The two cards are self-describing; an "Adapter type"
                       eyebrow above them named the mechanism rather than the
                       choice. */}
@@ -2755,37 +2772,67 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {isAgentArcStep && (
+              {/* Step 1 shares the arc's footer so the pair keeps its shape and
+                  position from the first screen onward. Its Back is the only one
+                  that leaves the wizard's steps rather than walking them: step 1
+                  is where a company is named, and behind it is the path chooser,
+                  so `canGoBackFromOnboardingStep` — which bounds a run to the
+                  steps it entered on — does not decide this one. */}
+              {(isAgentArcStep || step === 1) && (
                 <FooterNav
                   onBack={
-                    canGoBackFromOnboardingStep({ currentStep: step, entryStep })
-                      ? () => setStep(backStepFrom(step))
-                      : undefined
+                    step === 1
+                      ? () => {
+                          setOnboardingPath(null);
+                          setStep(0);
+                        }
+                      : canGoBackFromOnboardingStep({ currentStep: step, entryStep })
+                        ? () => setStep(backStepFrom(step))
+                        : undefined
                   }
                   // The prototype's cloud flow hires on this step and calls the
                   // action "Create". Here the model step sits between, so this
                   // one advances — which is exactly the distinction the
                   // prototype's own local flow draws with "Next".
-                  primaryLabel={step === 3 ? "Next" : step === 4 ? "Connect" : "Get started"}
-                  loadingLabel={step === 4 ? "Connecting..." : "Launching..."}
+                  primaryLabel={
+                    step === 1
+                      ? "Continue"
+                      : step === 3
+                        ? "Next"
+                        : step === 4
+                          ? "Connect"
+                          : "Get started"
+                  }
+                  loadingLabel={
+                    step === 1
+                      ? "Creating..."
+                      : step === 4
+                        ? "Connecting..."
+                        : "Launching..."
+                  }
                   loading={step === 3 ? false : loading}
                   primaryDisabled={
-                    step === 3
-                      ? !agentName.trim()
-                      : step === 4
-                        ? loading || adapterEnvLoading || missionUnresolvedForHire
-                        : loading || launchStateIncomplete
+                    step === 1
+                      ? !companyName.trim() || loading
+                      : step === 3
+                        ? !agentName.trim()
+                        : step === 4
+                          ? loading || adapterEnvLoading || missionUnresolvedForHire
+                          : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
-                    if (step === 3) setStep(4);
+                    if (step === 1) {
+                      if (skipsMissionStep) void handleCreateCompany();
+                      else setStep(2);
+                    } else if (step === 3) setStep(4);
                     else if (step === 4) handleGiveHeartbeat();
                     else handleLaunchToDashboard();
                   }}
                 />
               )}
 
-              {/* Footer navigation */}
-              {!isAgentArcStep && (
+              {/* Footer navigation for the steps that still use the old pair. */}
+              {!isAgentArcStep && step !== 1 && (
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
@@ -2801,22 +2848,6 @@ function OnboardingWizardInner({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (
-                    <Button
-                      size="sm"
-                      disabled={!companyName.trim() || loading}
-                      onClick={() => {
-                        if (skipsMissionStep) void handleCreateCompany();
-                        else setStep(2);
-                      }}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : null}
-                      Continue
-                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                    </Button>
-                  )}
                   {step === 2 && (
                     <Button
                       size="sm"

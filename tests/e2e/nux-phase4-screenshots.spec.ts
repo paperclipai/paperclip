@@ -93,9 +93,17 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.evaluate(() => window.localStorage.clear());
     await openWizard(page);
     // Reach the full-screen front door (step 0): either it shows directly or
-    // "← Back to start" returns to it from the create step.
+    // the naming step's Back returns to it.
+    //
+    // That control used to be a "← Back to start" text link. The naming step now
+    // wears the same footer pair as the steps after it, so its Back is labelled
+    // like theirs — it still lands on the front door, because the front door is
+    // what sits behind step 1.
+    //
+    // Exact, because the progress strip's segments are buttons with their own
+    // labels and an unanchored /Back/ would match more than one.
     if (!(await page.getByRole("heading", { name: "Welcome to Paperclip" }).count())) {
-      await page.getByRole("button", { name: /Back to start/ }).click();
+      await page.getByRole("button", { name: "Back", exact: true }).click();
     }
     await expect(
       page.getByRole("heading", { name: "Welcome to Paperclip" }),

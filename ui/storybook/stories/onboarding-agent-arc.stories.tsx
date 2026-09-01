@@ -139,6 +139,36 @@ async function advance(from: string, to: string) {
 }
 
 /**
+ * Naming the organization — the step before the arc, and the one a self-hosted
+ * run starts on. It carries no draft and no company: this is where a company is
+ * created, so seeding either would be describing a run that had already been
+ * here.
+ *
+ * Worth a story because it is dressed as the arc steps that follow it, and that
+ * only holds if the three are looked at together. Its Back leaves the wizard's
+ * steps for the front door rather than walking back through them, so it is the
+ * one Back on the flow that `canGoBackFromOnboardingStep` does not decide.
+ */
+function NamingStep() {
+  useEffect(() => clearOnboardingDraft, []);
+  const companies = useCompanyListQuery();
+  const ready = companies.isSuccess && companies.data !== undefined;
+  const { openOnboarding } = useDialog();
+  useEffect(() => {
+    if (!ready) return;
+    // No `companyId`: this step is where one is created, and naming the run's
+    // company here would be handing it the thing it exists to ask for.
+    openOnboarding({ initialStep: 1 });
+  }, [ready, openOnboarding]);
+  if (!ready) return null;
+  return <OnboardingWizard />;
+}
+
+export const NameYourOrganization: StoryObj = {
+  render: () => <NamingStep />,
+};
+
+/**
  * The arc's first step, and the one place Back is correctly absent: a run
  * entering here has nowhere behind it that belongs to it — step 1 creates a
  * company, and this run already holds one.

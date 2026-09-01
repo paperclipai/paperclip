@@ -25,7 +25,7 @@ export function FooterNav({
   onPrimary: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between pt-6">
+    <div className="flex items-center justify-between pt-9">
       {onBack ? (
         // Same size as the primary, not a tier down. Back is ghost until you
         // point at it, and a shorter pill made the hover surface read as a

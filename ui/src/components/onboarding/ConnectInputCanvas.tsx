@@ -62,7 +62,7 @@ export function ConnectInputCanvas({
   */
   return (
     <div
-      className="mt-3 flex items-center"
+      className="mt-5 flex items-center"
       style={{ minHeight: MIN_CONTENT_HEIGHT }}
     >
       {/*
