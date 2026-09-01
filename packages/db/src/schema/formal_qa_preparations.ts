@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   index,
   integer,
   pgTable,
@@ -40,6 +41,8 @@ export const formalQaPreparations = pgTable(
     issuedByUserId: text("issued_by_user_id").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     requestSha256: text("request_sha256").notNull(),
+    canonicalPreparationId: uuid("canonical_preparation_id")
+      .references((): AnyPgColumn => formalQaPreparations.id),
     status: text("status").notNull().default("prepared"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { formalQaPolicies, formalQaPreparations, projectWorkspaces } from "@paperclipai/db";
+import { formalQaCheckouts, formalQaPolicies, formalQaPreparations, projectWorkspaces } from "@paperclipai/db";
 import type { CreateFormalQaPreparation } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 
@@ -84,6 +84,47 @@ export function formalQaPreparationService(db: Db) {
         status: "prepared",
       }).returning();
       return { preparation: preparation!, replayed: false };
+    }),
+    /**
+     * Bounded lifecycle convergence for authorities whose fixed expiry passed.
+     * This never refreshes or rewrites authority. It only marks an inert or
+     * issued envelope terminal and closes a checkout that was interrupted
+     * before verification. Review/run convergence is owned by the review
+     * reconciler because it must atomically project onto scheduler rows.
+     */
+    expireStale: async (input: { companyId?: string; limit?: number } = {}) => db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('formal_qa_preparation_expiry', 0))`);
+      const now = new Date();
+      const candidates = await tx.select({ id: formalQaPreparations.id })
+        .from(formalQaPreparations)
+        .where(and(
+          inArray(formalQaPreparations.status, ["prepared", "issuing", "issued"]),
+          lte(formalQaPreparations.expiresAt, now),
+          input.companyId ? eq(formalQaPreparations.companyId, input.companyId) : undefined,
+        ))
+        .orderBy(asc(formalQaPreparations.expiresAt), asc(formalQaPreparations.createdAt))
+        .limit(Math.max(1, Math.min(input.limit ?? 25, 100)));
+      let expired = 0;
+      let checkoutsExpired = 0;
+      for (const candidate of candidates) {
+        const [terminal] = await tx.update(formalQaPreparations).set({
+          status: "expired",
+          updatedAt: new Date(),
+        }).where(and(
+          eq(formalQaPreparations.id, candidate.id),
+          inArray(formalQaPreparations.status, ["prepared", "issuing", "issued"]),
+          lte(formalQaPreparations.expiresAt, now),
+        )).returning({ id: formalQaPreparations.id });
+        if (!terminal) continue;
+        expired += 1;
+        const terminalCheckouts = await tx.update(formalQaCheckouts).set({ status: "expired" })
+          .where(and(
+            eq(formalQaCheckouts.preparationId, terminal.id),
+            eq(formalQaCheckouts.status, "creating"),
+          )).returning({ id: formalQaCheckouts.id });
+        checkoutsExpired += terminalCheckouts.length;
+      }
+      return { scanned: candidates.length, expired, checkoutsExpired };
     }),
   };
 }

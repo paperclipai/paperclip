@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -21,6 +22,7 @@ import { errorHandler } from "../middleware/index.js";
 import { formalQaPreparationRoutes } from "../routes/formal-qa-preparations.js";
 import { formalQaPolicyRoutes } from "../routes/formal-qa-policies.js";
 import { formalQaReviewRoutes } from "../routes/formal-qa-reviews.js";
+import { formalQaPreparationService } from "../services/formal-qa-preparations.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -70,9 +72,9 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.execute(sql`truncate table formal_qa_preparations cascade`);
     await db.delete(activityLog);
     await db.delete(formalQaPolicies);
-    await db.delete(formalQaPreparations);
     await db.delete(agents);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -111,7 +113,7 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       status: "idle",
       adapterType: "codex_local",
     });
-    await db.insert(formalQaPolicies).values({
+    const [policy] = await db.insert(formalQaPolicies).values({
       companyId,
       projectId,
       projectWorkspaceId: workspaceId,
@@ -123,8 +125,8 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       enabled: true,
       createdByUserId: "board-user",
       updatedByUserId: "board-user",
-    });
-    return { companyId, projectId, workspaceId, reviewerAgentId };
+    }).returning({ id: formalQaPolicies.id });
+    return { companyId, projectId, workspaceId, reviewerAgentId, policyId: policy!.id };
   }
 
   function payload(projectId: string, workspaceId: string, idempotencyKey = "operation-1") {
@@ -170,6 +172,69 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     expect(replayed.body.preparation.id).toBe(created.body.preparation.id);
     expect(changed.status).toBe(409);
     expect(changed.body.details.code).toBe("formal_qa_preparation_idempotency_conflict");
+  });
+
+  it("database-rejects direct authority mutation and deletion", async () => {
+    const { companyId, projectId, workspaceId } = await seed();
+    const created = await formalQaPreparationService(db).create({
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      prNumber: 1902,
+      idempotencyKey: "immutable-authority",
+      issuedByUserId: "board-user",
+    });
+
+    for (const operation of [
+      () => db.execute(sql`update formal_qa_preparations set repository = 'attacker/other', updated_at = now() where id = ${created.preparation.id}`),
+      () => db.execute(sql`update formal_qa_preparations set status = 'issued', updated_at = now() where id = ${created.preparation.id}`),
+      () => db.execute(sql`delete from formal_qa_preparations where id = ${created.preparation.id}`),
+    ]) {
+      await operation().then(
+        () => { throw new Error("preparation authority mutation unexpectedly succeeded"); },
+        (error: { cause?: { message?: string } }) => {
+          expect(error.cause?.message).toMatch(/formal_qa_preparation_(authority_immutable|issue_invalid|transition_invalid|immutable)/);
+        },
+      );
+    }
+    await expect(formalQaPreparationService(db).getById(created.preparation.id)).resolves.toMatchObject({
+      status: "prepared",
+      repository: "vivus-tech/music-tracker",
+    });
+  });
+
+  it("terminalizes expired inert authority without refreshing it", async () => {
+    const { companyId, projectId, workspaceId, policyId } = await seed();
+    const [prepared] = await db.insert(formalQaPreparations).values({
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      repository: "vivus-tech/music-tracker",
+      prNumber: 1903,
+      headSha: "0".repeat(40),
+      baseRef: "pending",
+      baseSha: "0".repeat(40),
+      treeSha: "0".repeat(40),
+      evidenceSha256: "0".repeat(64),
+      issuerReceiptSha256: "0".repeat(64),
+      issuerOperationId: `request:${policyId}:v1`,
+      issuedByUserId: "system:formal-qa-discovery",
+      idempotencyKey: "expired-inert-authority",
+      requestSha256: "a".repeat(64),
+      expiresAt: new Date(Date.now() - 1_000),
+      status: "prepared",
+    }).returning();
+
+    await expect(formalQaPreparationService(db).expireStale()).resolves.toEqual({
+      scanned: 1,
+      expired: 1,
+      checkoutsExpired: 0,
+    });
+    await expect(formalQaPreparationService(db).getById(prepared!.id)).resolves.toMatchObject({
+      status: "expired",
+      expiresAt: prepared!.expiresAt,
+      canonicalPreparationId: null,
+    });
   });
 
   it("rejects a workspace from another company and agent issuance", async () => {

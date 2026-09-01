@@ -1681,6 +1681,13 @@
       "when": 1788299973587,
       "tag": "0241_bumpy_callisto",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1788303347270,
+      "tag": "0242_petite_lucky_pierre",
+      "breakpoints": true
     }
   ]
 }
