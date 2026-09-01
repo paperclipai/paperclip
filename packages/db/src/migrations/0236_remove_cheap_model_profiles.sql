@@ -96,8 +96,7 @@ BEGIN
 		SET "assignee_adapter_overrides" = NULLIF(
 			issue."assignee_adapter_overrides" - 'modelProfile',
 			'{}'::jsonb
-		),
-			"updated_at" = now()
+		)
 		FROM batch
 		WHERE issue."id" = batch."id";
 
