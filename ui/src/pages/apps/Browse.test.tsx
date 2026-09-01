@@ -10,6 +10,8 @@ const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
@@ -17,6 +19,8 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
+      archiveConnectionMock(connectionId, options),
   },
 }));
 
@@ -42,6 +46,10 @@ vi.mock("@/context/CompanyContext", () => ({
 
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -135,6 +143,7 @@ describe("Connectors landing page", () => {
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     listUserDirectoryMock.mockResolvedValue({ users: [] });
+    archiveConnectionMock.mockResolvedValue(connection({ status: "archived" }));
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -253,8 +262,12 @@ describe("Connectors landing page", () => {
     expect(notion.textContent).toContain("Dotta");
     expect(notion.textContent).toContain("The saved sign-in expired.");
     expect(notion.querySelector('button[aria-label="Add account Notion"]')).toBeTruthy();
-    expect(notion.querySelector('button[aria-label="Edit devinfoley@gmail.com"]')).toBeTruthy();
-    expect(notion.querySelector('button[aria-label="Edit ops@example.com"]')).toBeTruthy();
+    expect(
+      notion.querySelector('button[aria-label="Manage devinfoley@gmail.com connection"]'),
+    ).toBeTruthy();
+    expect(
+      notion.querySelector('button[aria-label="Manage ops@example.com connection"]'),
+    ).toBeTruthy();
 
     await act(async () => {
       notion
@@ -281,6 +294,58 @@ describe("Connectors landing page", () => {
       reconnect?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/setup");
+  });
+
+  it("removes a connection from the overflow menu only after destructive confirmation", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection()] });
+
+    await renderBrowse();
+
+    const menuTrigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Manage devinfoley@gmail.com connection"]',
+    );
+    expect(menuTrigger).toBeTruthy();
+
+    await act(async () => {
+      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    await flushReact();
+
+    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>("[role=\"menuitem\"]"))
+      .find((item) => item.textContent?.trim() === "Remove connection");
+    expect(removeItem).toBeTruthy();
+    expect(removeItem?.getAttribute("data-variant")).toBe("destructive");
+
+    await act(async () => {
+      removeItem?.dispatchEvent(new Event("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Remove devinfoley@gmail.com connection?",
+    );
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Remove connection",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion", {
+      confirmComposioChildren: false,
+    });
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Connection removed",
+        tone: "success",
+      }),
+    );
   });
 
   it("keeps an interrupted account visible and resumes setup from its account row", async () => {

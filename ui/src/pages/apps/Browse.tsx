@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Check,
@@ -7,10 +7,12 @@ import {
   ClipboardPaste,
   Clock3,
   Link2,
+  Loader2,
   MoreHorizontal,
   PauseCircle,
   Search,
   ServerCog,
+  Trash2,
 } from "lucide-react";
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import {
@@ -22,14 +24,26 @@ import {
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { accessApi } from "@/api/access";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -46,6 +60,7 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { appSourceConnectHref, appSourceResumeHref } from "./app-connect-policy";
+import { composioChildParentConnectionId } from "./composio-services";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -70,6 +85,14 @@ type ConnectionState = {
   kind: "connected" | "attention" | "paused" | "draft";
   label: string;
   message: string | null;
+};
+
+type ConnectionRemovalTarget = {
+  id: string;
+  accountName: string;
+  providerName: string;
+  remainingConnectionCount: number;
+  childConnectionCount: number;
 };
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
@@ -178,9 +201,12 @@ function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): 
  */
 export function Browse() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
+  const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -209,6 +235,31 @@ export function Browse() {
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+  const removeConnection = useMutation({
+    mutationFn: (target: ConnectionRemovalTarget) =>
+      toolsApi.archiveConnection(target.id, {
+        confirmComposioChildren: target.childConnectionCount > 0,
+      }),
+    onSuccess: (_connection, target) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: "Connection removed",
+        body: target.remainingConnectionCount > 0
+          ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+          : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        tone: "success",
+      });
+      setConnectionToRemove(null);
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't remove the connection",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
   });
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
@@ -408,8 +459,10 @@ export function Browse() {
             <ConnectorCard
               key={row.key}
               row={row}
+              allConnections={connectionsQuery.data?.connections ?? []}
               userProfileById={userProfileById}
               onNavigate={navigate}
+              onRequestRemove={setConnectionToRemove}
             />
           ))}
           {showCustomConnector ? (
@@ -417,18 +470,58 @@ export function Browse() {
           ) : null}
         </div>
       )}
+
+      <AlertDialog
+        open={connectionToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open && !removeConnection.isPending) setConnectionToRemove(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {connectionToRemove?.accountName ?? "this"} connection?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {connectionToRemove && connectionToRemove.childConnectionCount > 0
+                ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
+                : connectionToRemove && connectionToRemove.remainingConnectionCount > 0
+                ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
+                : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removeConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={!connectionToRemove || removeConnection.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (connectionToRemove) removeConnection.mutate(connectionToRemove);
+              }}
+            >
+              {removeConnection.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 />}
+              {removeConnection.isPending ? "Removing…" : "Remove connection"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
 function ConnectorCard({
   row,
+  allConnections,
   userProfileById,
   onNavigate,
+  onRequestRemove,
 }: {
   row: ConnectorRowModel;
+  allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   onNavigate: (href: string) => void;
+  onRequestRemove: (target: ConnectionRemovalTarget) => void;
 }) {
   const action = connectorAction(row);
   return (
@@ -474,6 +567,27 @@ function ConnectorCard({
               connection={connection}
               owner={connectionOwnerProfile(connection, userProfileById)}
               onNavigate={onNavigate}
+              onRemove={() => {
+                const accountName = connectionDisplayNameForOwner(
+                  connection,
+                  row.name,
+                  connectionOwnerProfile(connection, userProfileById),
+                );
+                onRequestRemove({
+                  id: connection.id,
+                  accountName,
+                  providerName: row.name,
+                  remainingConnectionCount: row.connections.filter(
+                    (candidate) =>
+                      candidate.id !== connection.id &&
+                      candidate.status === "active" &&
+                      candidate.enabled,
+                  ).length,
+                  childConnectionCount: allConnections.filter(
+                    (candidate) => composioChildParentConnectionId(candidate) === connection.id,
+                  ).length,
+                });
+              }}
             />
           ))}
         </div>
@@ -487,11 +601,13 @@ function ConnectionAccountRow({
   connection,
   owner,
   onNavigate,
+  onRemove,
 }: {
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
   onNavigate: (href: string) => void;
+  onRemove: () => void;
 }) {
   const state = connectionState(connection);
   const actionHref = accountActionHref(row, connection);
@@ -545,7 +661,7 @@ function ConnectionAccountRow({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`Edit ${accountName}`}
+              aria-label={`Manage ${accountName} connection`}
             >
               <MoreHorizontal className="h-4 w-4" />
             </Button>
@@ -553,6 +669,11 @@ function ConnectionAccountRow({
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/setup`)}>
               Edit connection
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+              <Trash2 />
+              Remove connection
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
