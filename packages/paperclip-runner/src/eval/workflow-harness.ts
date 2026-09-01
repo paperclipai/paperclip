@@ -66,6 +66,12 @@ function includesOrdered(actual: readonly string[], expected: readonly string[])
   return cursor === expected.length;
 }
 
+function activityFamily(eventType: string): string {
+  return eventType.startsWith("tool.execution.")
+    ? "tool_execution"
+    : eventType.split(".")[0] ?? eventType;
+}
+
 function deterministicObservation(
   evalCase: RunnerWorkflowEvalCase,
   candidateId: string,
@@ -74,105 +80,144 @@ function deterministicObservation(
   const applicable = evalCase.providers.includes(provider);
   const expectedCalls = evalCase.assertions.requiredOperationIds ?? [];
   const providerEvents = providerFixtureEvents(provider, evalCase.id);
-  const providerEventTypes = providerEvents.map((event) => event.eventType);
+  const providerEventTypes: string[] = providerEvents.map((event) => event.eventType);
+  const evidenceIds = [...new Set(providerEvents.map((event) => event.itemId))];
+  const observedActivityFamilies = [...new Set(providerEventTypes.map(activityFamily))];
   const requiredPrp = evalCase.assertions.requiredPrpEventTypes ?? [];
-  const observedPrpEventTypes = [...new Set([...providerEventTypes, ...requiredPrp])];
-  const orderedMarkers = evalCase.assertions.orderedMarkers ?? ["activity", "final"];
-  const traceExpectation = evalCase.assertions.trace;
-  const traceCapture = traceExpectation?.capture === "off" ? "off" : "on";
-  const attempts = evalCase.assertions.maxAttempts ?? 1;
-  const runs = evalCase.assertions.maxRuns ?? 1;
+  const missingPrp = requiredPrp.filter((eventType) => !providerEventTypes.includes(eventType));
+  const forbiddenPrp = (evalCase.assertions.forbiddenPrpEventTypes ?? [])
+    .filter((eventType) => providerEventTypes.includes(eventType));
+  const missingCalls = expectedCalls;
+  const requiredActivityFamilies = evalCase.assertions.requiredActivityFamilies ?? [];
+  const missingActivityFamilies = requiredActivityFamilies
+    .filter((family) => !observedActivityFamilies.includes(family));
+  const expectedMarkers = evalCase.assertions.orderedMarkers ?? [];
+  const terminalPresent = providerEventTypes.includes("run.terminal");
+  const traceCapture = providerEvents.length === 0 ? "off" : "on";
+  const lifecycleChecks = [
+    check(
+      "required-prp-events",
+      missingPrp.length === 0,
+      `fixture is missing required PRP event(s): ${missingPrp.join(", ")}`,
+      evidenceIds,
+    ),
+    check(
+      "forbidden-prp-events",
+      forbiddenPrp.length === 0,
+      `fixture contains forbidden PRP event(s): ${forbiddenPrp.join(", ")}`,
+      evidenceIds,
+    ),
+    check("terminal-authority", terminalPresent, "fixture contains no terminal authority evidence", evidenceIds),
+    check("lifecycle-state", false, "fixture contains no issue, run, or semantic lifecycle evidence"),
+    check("attempt-bound", false, "fixture contains no attempt-count evidence"),
+    check("run-bound", false, "fixture contains no run-count evidence"),
+    check("owned-recovery", false, "fixture contains no recovery-owner evidence"),
+  ];
+  const continuationChecks = [
+    check(
+      "causal-order",
+      expectedMarkers.length > 0 && includesOrdered(providerEventTypes, expectedMarkers),
+      "fixture provider events do not establish the expected conversation-marker order",
+      evidenceIds,
+    ),
+    check("no-repeated-work", false, "fixture contains no repeated-work evidence"),
+    check("single-owned-wake", false, "fixture contains no continuation-wake ownership evidence"),
+  ];
+  const presentationChecks = [
+    check("response-source", false, "fixture contains no response-resolution evidence"),
+    check("comment-count", false, "fixture contains no conversation comment evidence"),
+    check("ordered-presentation", false, "fixture contains no rendered presentation order"),
+    check("no-stuck-running", terminalPresent, "fixture contains no terminal presentation evidence", evidenceIds),
+    check(
+      "required-activity-families",
+      missingActivityFamilies.length === 0,
+      `fixture is missing required activity family/families: ${missingActivityFamilies.join(", ")}`,
+      evidenceIds,
+    ),
+  ];
+  const evidenceComplete = [
+    ...lifecycleChecks,
+    ...continuationChecks,
+    ...presentationChecks,
+  ].every((entry) => entry.passed)
+    && missingCalls.length === 0;
+  const classification = !applicable
+    ? "skipped"
+    : evidenceComplete
+      ? "completed"
+      : "candidate_failure";
   const base: EvalObservation = {
     caseId: evalCase.id,
     provenance: { source: "fixture", behavior: evalCase.id },
     controlPlaneOwned: expectedCalls.length === 0,
     expectedCalls,
-    observedCalls: expectedCalls,
+    observedCalls: [],
     forbiddenCalls: [],
-    finalState: { expected: "mutated", observed: "mutated" },
-    authorization: { expected: "allowed", observed: "allowed" },
-    trace: {
-      runId: `run-${evalCase.id}`,
-      sessionId: `session-${provider}`,
-      turnId: `turn-${evalCase.id}`,
-      itemId: `item-${evalCase.id}`,
-      receiptIds: expectedCalls.map((operation, index) => `receipt-${operation}-${index + 1}`),
-      terminalPresent: true,
+    finalState: {
+      expected: expectedCalls.length === 0 ? "unchanged" : "mutated",
+      observed: "unchanged",
     },
-    efficiency: { latencyMs: 100, totalTokens: 100, costUsd: 0, attempts },
-    budget: { maxLatencyMs: 1_000, maxTotalTokens: 1_000, maxCostUsd: 0, maxAttempts: attempts },
+    authorization: {
+      expected: expectedCalls.length === 0 ? "absent" : "allowed",
+      observed: "absent",
+    },
+    trace: {
+      ...(providerEvents[0] === undefined ? {} : { itemId: providerEvents[0].itemId }),
+      receiptIds: [],
+      terminalPresent,
+    },
   };
-  const failure = applicable ? undefined : {
-    code: "provider_not_applicable",
-    category: "qualification" as const,
-    retryable: false,
-    message: `${provider} is not applicable to ${evalCase.id}`,
-  };
+  const failure = classification === "completed"
+    ? undefined
+    : classification === "skipped"
+      ? {
+          code: "provider_not_applicable",
+          category: "qualification" as const,
+          retryable: false,
+          message: `${provider} is not applicable to ${evalCase.id}`,
+        }
+      : {
+          code: "fixture_evidence_incomplete",
+          category: "candidate" as const,
+          retryable: false,
+          message: `Sanitized provider fixture lacks workflow evidence${missingCalls.length === 0 ? "" : ` and semantic receipt(s) for ${missingCalls.join(", ")}`}`,
+        };
   const observation: RunnerWorkflowObservation = {
     schema: RUNNER_WORKFLOW_OBSERVATION_SCHEMA,
     caseId: evalCase.id,
     candidateId,
     provider,
-    classification: applicable ? "completed" : "skipped",
+    classification,
     base,
     lifecycle: {
-      issueStatus: evalCase.assertions.issueStatus,
-      runStatus: evalCase.assertions.runStatus,
-      semanticDisposition: evalCase.assertions.semanticDisposition,
-      attempts,
-      runs,
-      recoveryOwner: evalCase.assertions.recoveryOwner,
-      checks: [
-        check("terminal-authority", true, "terminal authority diverged", [`terminal-${evalCase.id}`]),
-        check("attempt-bound", attempts <= (evalCase.assertions.maxAttempts ?? attempts), "attempt limit exceeded"),
-        check("run-bound", runs <= (evalCase.assertions.maxRuns ?? runs), "run limit exceeded"),
-        check("owned-recovery", evalCase.assertions.recoveryOwner !== "agent" || evalCase.id !== "completion-robustness", "terminal recovery is not actionable"),
-      ],
+      checks: lifecycleChecks,
     },
     continuation: {
-      wakeReasons: evalCase.steps.flatMap((step) => step.kind === "child_completion" ? ["issue_children_completed"] : step.kind === "interaction_response" ? ["interaction_resolved"] : []),
-      consumedInputIds: evalCase.steps.flatMap((step, index) => step.kind === "interaction_response" || step.kind === "steer" ? [`input-${index + 1}`] : []),
-      sessionPolicy: provider === "acpx" && evalCase.id === "governed-interaction" ? "approved_replacement" : "same_session",
+      wakeReasons: [],
+      consumedInputIds: [],
       repeatedWorkSignals: [],
-      checks: [
-        check("causal-order", includesOrdered(orderedMarkers, evalCase.assertions.orderedMarkers ?? orderedMarkers), "conversation markers are out of order"),
-        check("no-repeated-work", true, "continuation repeated completed work"),
-        check("single-owned-wake", true, "duplicate or unowned continuation wake"),
-      ],
+      checks: continuationChecks,
     },
     presentation: {
-      responseSource: evalCase.assertions.responseSource,
-      commentCount: evalCase.assertions.commentCount,
-      orderedMarkers,
-      visibleActivityFamilies: evalCase.assertions.requiredActivityFamilies ?? providerEvents.map((event) => event.eventType.split(".")[0]!),
-      terminalLabel: evalCase.assertions.runStatus === "cancelled" ? "Stopped" : evalCase.assertions.runStatus === "failed" ? "Needs attention" : "Completed",
-      checks: [
-        check("response-source", true, "response resolver selected the wrong source"),
-        check("comment-count", true, "conversation materialized the wrong comment count"),
-        check("ordered-presentation", true, "visible presentation order diverged"),
-        check("no-stuck-running", true, "terminal activity remained running"),
-      ],
+      orderedMarkers: providerEventTypes,
+      visibleActivityFamilies: observedActivityFamilies,
+      checks: presentationChecks,
     },
     traceLineage: {
       capture: traceCapture,
-      frameCount: traceCapture === "on" ? Math.max(2, providerEvents.length * 2) : 0,
-      byteCount: traceCapture === "on" ? Math.max(256, providerEvents.length * 256) : 0,
-      digestVerified: traceCapture === "on",
-      ordered: true,
-      dispositions: traceExpectation?.dispositions ?? ["mapped"],
-      lineage: traceExpectation?.lineage ?? ["one_to_one"],
-      ...(traceCapture === "on" ? { traceRef: `trace:${provider}:${evalCase.id}` } : {}),
+      frameCount: providerEvents.length,
+      byteCount: Buffer.byteLength(JSON.stringify(providerEvents)),
+      digestVerified: false,
+      ordered: false,
+      dispositions: [],
+      lineage: [],
     },
     metrics: {
-      timeToFirstVisibleProgressMs: 25,
-      settlementMs: 100,
-      attempts,
+      attempts: 0,
       toolCount: providerEvents.filter((event) => event.eventType.startsWith("tool.")).length,
-      totalTokens: 100,
-      costUsd: 0,
     },
-    observedPrpEventTypes,
-    artifactDigests: evalCase.assertions.artifactDigests ?? [],
+    observedPrpEventTypes: [...new Set(providerEventTypes)],
+    artifactDigests: [],
     ...(failure === undefined ? {} : { failure }),
   };
   assertRunnerWorkflowObservation(observation);

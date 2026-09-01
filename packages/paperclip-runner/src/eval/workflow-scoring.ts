@@ -121,20 +121,26 @@ export function scoreRunnerWorkflow(
     const workflow = dimension in workflowScores
       ? workflowScores[dimension as keyof typeof workflowScores]
       : undefined;
-    const score = dimension === "trace_completeness" && legacy !== undefined
+    const observedScore = dimension === "trace_completeness" && legacy !== undefined
       ? Math.min(legacy.score, lineageTrace.score)
       : legacy?.score ?? workflow?.score ?? 0;
+    const candidateFailed = observation.classification === "candidate_failure"
+      && dimension === "lifecycle_integrity";
+    const score = candidateFailed ? 0 : observedScore;
     const gate = dimension === "hard_invariants" || dimension === "lifecycle_integrity";
     const threshold = options.thresholds?.[dimension] ?? 1;
+    const reasons = dimension === "trace_completeness" && legacy !== undefined
+      ? [...legacy.reasons, ...lineageTrace.reasons]
+      : legacy?.reasons ?? workflow?.reasons ?? [];
     dimensions[dimension] = {
       dimension,
       score,
       passed: score >= threshold,
       gate,
       weight: gate ? 0 : weights[dimension],
-      reasons: dimension === "trace_completeness" && legacy !== undefined
-        ? [...legacy.reasons, ...lineageTrace.reasons]
-        : legacy?.reasons ?? workflow?.reasons ?? [],
+      reasons: candidateFailed
+        ? [...reasons, "candidate execution failed"]
+        : reasons,
     };
   }
 

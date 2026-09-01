@@ -114,6 +114,47 @@ describe("paperclip-runner/native-execution/v1", () => {
     })).toThrow(/no matching call|tool-input event .* is not indexed/);
   });
 
+  it("rejects a non-interrupted terminal bundle with an unresolved semantic call", async () => {
+    const bundle = await loadPaperclipNativeExecutionFixture();
+    const unresolved = structuredClone(bundle);
+    unresolved.semanticTools.results = [];
+    unresolved.semanticTools.denials = [];
+    unresolved.events = unresolved.events.filter(
+      (event) => event.eventType !== "mcp_app.tool_result",
+    );
+    unresolved.transcript.eventCount = unresolved.events.length;
+
+    expect(() => parsePaperclipNativeExecution(unresolved))
+      .toThrow(/requires exactly one result for every semantic call/);
+  });
+
+  it("allows an unresolved semantic call only for interrupted or cancelled states", async () => {
+    for (const terminalState of [
+      { turnTerminalState: "interrupted", runTerminalState: "failed" },
+      { turnTerminalState: "cancelled", runTerminalState: "cancelled" },
+    ] as const) {
+      const bundle = await loadPaperclipNativeExecutionFixture();
+      const unfinished = structuredClone(bundle);
+      unfinished.semanticTools.results = [];
+      unfinished.semanticTools.denials = [];
+      unfinished.events = unfinished.events.filter(
+        (event) => event.eventType !== "mcp_app.tool_result",
+      );
+      unfinished.transcript.eventCount = unfinished.events.length;
+      unfinished.terminal = { ...unfinished.terminal, ...terminalState };
+      const terminalEvent = unfinished.events.find(
+        (event) => event.eventType === "run.terminal",
+      );
+      if (terminalEvent === undefined) throw new Error("fixture is missing its terminal event");
+      terminalEvent.payload = structuredClone(unfinished.terminal);
+
+      expect(parsePaperclipNativeExecution(unfinished)).toMatchObject({
+        semanticTools: { calls: [expect.any(Object)], results: [] },
+        terminal: terminalState,
+      });
+    }
+  });
+
   it("rejects unordered native events", async () => {
     const bundle = await loadPaperclipNativeExecutionFixture();
     const events = structuredClone(bundle.events);

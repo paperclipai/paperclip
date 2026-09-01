@@ -385,6 +385,20 @@ export function parsePaperclipNativeExecution(
       fail("bundle.semanticTools.denials", `denied result ${result.callId} needs a denial receipt`);
     }
   }
+  const permitsUnresolvedCalls =
+    terminal.turnTerminalState === "interrupted"
+    || terminal.turnTerminalState === "cancelled"
+    || terminal.runTerminalState === "cancelled";
+  if (!permitsUnresolvedCalls) {
+    for (const call of calls) {
+      if (!resultByCallId.has(call.callId)) {
+        fail(
+          "bundle.semanticTools.results",
+          "a non-interrupted terminal state requires exactly one result for every semantic call",
+        );
+      }
+    }
+  }
   for (const event of events) {
     if (event.eventType === "mcp_app.tool_input" && !referencedCallEventIds.has(event.sourceEventId)) {
       fail("bundle.semanticTools.calls", `tool-input event ${event.sourceEventId} is not indexed`);
