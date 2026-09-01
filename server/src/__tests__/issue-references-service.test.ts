@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
@@ -240,5 +240,81 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     expect(summary.outbound[0]?.issue.identifier).toBe("PAP-20");
     expect(summary.outbound[0]?.mentionCount).toBe(2);
     expect(summary.outbound[0]?.sources.map((source) => source.label)).toEqual(["plan", "comment"]);
+  });
+
+  it("rolls back comment reference replacement when insertion fails", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const firstTargetId = randomUUID();
+    const secondTargetId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Transaction",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "todo",
+        priority: "medium",
+        identifier: "PAP-1",
+      },
+      {
+        id: firstTargetId,
+        companyId,
+        title: "First target",
+        status: "todo",
+        priority: "medium",
+        identifier: "PAP-2",
+      },
+      {
+        id: secondTargetId,
+        companyId,
+        title: "Second target",
+        status: "todo",
+        priority: "medium",
+        identifier: "PAP-3",
+      },
+    ]);
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: sourceIssueId,
+      body: "Initial reference to PAP-2.",
+    });
+    await refs.syncComment(commentId);
+    await db.update(issueComments).set({ body: "Replacement reference to PAP-3." }).where(eq(issueComments.id, commentId));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION fail_issue_reference_insert() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'forced issue reference insert failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_issue_reference_insert
+        BEFORE INSERT ON "issue_reference_mentions"
+        FOR EACH ROW EXECUTE FUNCTION fail_issue_reference_insert();
+    `));
+    try {
+      await expect(refs.syncComment(commentId)).rejects.toThrow();
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS fail_issue_reference_insert ON "issue_reference_mentions";
+        DROP FUNCTION IF EXISTS fail_issue_reference_insert();
+      `));
+    }
+
+    const mentions = await db.select().from(issueReferenceMentions);
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0]?.targetIssueId).toBe(firstTargetId);
+  });
+
+  it("suppresses comment reference sync failures through the safe wrapper", async () => {
+    await expect(refs.syncCommentSafely(randomUUID())).resolves.toBeUndefined();
   });
 });
