@@ -60,6 +60,15 @@ export interface CodexAppServerDriverOptions {
     goals: boolean;
     threadLineage: boolean;
   }>;
+  /** Provider-neutral goal metadata for transports exposing a compatible goal lifecycle. */
+  goalCapability?: {
+    actions: readonly ("set" | "pause" | "resume" | "clear")[];
+    autonomousUpdates: boolean;
+    persistentAcrossResume: boolean;
+    maxObjectiveChars: number;
+    tokenBudgetControl: boolean;
+    usageReporting: boolean;
+  };
   /** Provider-specific identity retained when the Codex protocol facade is backed by runnerd. */
   driverIdentity?: {
     kind: string;
@@ -73,6 +82,11 @@ export interface CodexAppServerDriverOptions {
 export type CodexCapabilities = Required<
   NonNullable<CodexAppServerDriverOptions["capabilities"]>
 >;
+
+export type CodexGoalAvailability =
+  | "available"
+  | "unsupported"
+  | "policy_disabled";
 
 export type SemanticResultAdmission = "committed" | "identical" | "conflict";
 

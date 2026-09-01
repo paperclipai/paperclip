@@ -14,12 +14,15 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
+import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 
 import {
   createCapabilityRunnerdCodexTransport,
   createCapabilityRunnerdProviderEnvironment,
   defaultCapabilityRunnerdBinary,
   expandRunnerdCanonicalNotifications,
+  latestRunnerdSessionReadiness,
+  rehydrateRunnerdGoalNotification,
   rehydrateRunnerdItemNotification,
   rehydrateRunnerdPlanNotification,
   rehydrateRunnerdResultNotification,
@@ -27,9 +30,11 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  runnerdCanonicalNotificationMethod,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
   trustedRuntimeReadOnlyRoots,
+  unseenRunnerdCommittedEvents,
   unwrapRunnerdProviderNotification,
   unwrapRunnerdProviderNotifications,
   withCodexCollaborationRuntimeInstructions,
@@ -468,6 +473,73 @@ it("rehydrates canonical workspace changes without reconstructing the diff", () 
   });
 });
 
+it("rehydrates canonical session goals into Codex goal notifications", () => {
+  expect(
+    rehydrateRunnerdGoalNotification(
+      {
+        goal: {
+          objective: "Finish the browser lifecycle",
+          status: "complete",
+          tokenBudget: 20_000,
+          tokensUsed: 12_345,
+          elapsedSeconds: 42,
+        },
+        workingNow: false,
+      },
+      "thread-1",
+      "thread/goal/updated",
+    ),
+  ).toEqual({
+    threadId: "thread-1",
+    goal: {
+      threadId: "thread-1",
+      objective: "Finish the browser lifecycle",
+      status: "complete",
+      tokenBudget: 20_000,
+      tokensUsed: 12_345,
+      timeUsedSeconds: 42,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    workingNow: false,
+  });
+  expect(
+    rehydrateRunnerdGoalNotification(
+      { revision: 7, workingNow: false },
+      "thread-1",
+      "thread/goal/cleared",
+    ),
+  ).toEqual({ revision: 7, threadId: "thread-1", workingNow: false });
+});
+
+it("routes canonical session goals back through the Codex notification facade", () => {
+  expect(
+    runnerdCanonicalNotificationMethod("session.goal.updated", {
+      goal: { status: "complete" },
+    }),
+  ).toBe("thread/goal/updated");
+  expect(
+    runnerdCanonicalNotificationMethod("session.goal.snapshot", { goal: null }),
+  ).toBeUndefined();
+  expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
+    "thread/goal/cleared",
+  );
+});
+
+it("continues consuming after the durable committed-event window rolls", () => {
+  const rollingWindow = Array.from({ length: 64 }, (_, index) => ({
+    sourceSeq: index + 65,
+    eventType: index === 62 ? "session.goal.updated" : "item.delta",
+  }));
+  expect(unseenRunnerdCommittedEvents(rollingWindow, 64)).toEqual(
+    rollingWindow,
+  );
+  expect(unseenRunnerdCommittedEvents(rollingWindow, 128)).toEqual([]);
+  expect(() => unseenRunnerdCommittedEvents(rollingWindow, 63)).toThrow(
+    "provider_notification_window_exceeded",
+  );
+});
+
 it("resolves canonical and legacy durable session identities", () => {
   expect(
     resolveRunnerdSessionIdentity({
@@ -492,6 +564,36 @@ it("resolves canonical and legacy durable session identities", () => {
     threadId: "legacy-thread-1",
     sessionId: "legacy-session-1",
   });
+});
+
+it("recovers provider readiness from an already-committed journal without replay", () => {
+  const persistedReady = {
+    provider: "codex",
+    providerSessionId: "provider-thread-persisted",
+    providerAccountSessionId: "provider-account-persisted",
+    processId: 4242,
+    runtimeIdentity: { executionKind: "local_process" },
+    providerDescriptor: {
+      driver: "codex_app_server",
+      providerVersion: "persisted-version",
+    },
+    providerIdentity: {
+      kind: "codex_thread",
+      threadId: "provider-thread-persisted",
+    },
+  };
+  expect(
+    latestRunnerdSessionReadiness([
+      {
+        eventType: "harness.ready",
+        envelope: { payload: { payload: persistedReady } },
+      },
+      {
+        eventType: "session.goal.snapshot",
+        envelope: { payload: { payload: { goal: { status: "paused" } } } },
+      },
+    ]),
+  ).toEqual(persistedReady);
 });
 
 const fakeCodex = resolve(
@@ -658,6 +760,199 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
       "runnerd authenticated to the durable PRP control plane",
     );
   } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+  expect(bundle.evidence()).toMatchObject({
+    runnerExited: true,
+    runnerExitCode: 0,
+  });
+}, 30_000);
+
+it("controls a Codex session goal end to end through durable PRP v2", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-goal-provider-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--goal-autostart"),
+    stateDirectory,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    await bundle.transport.request("initialize", {});
+    const opened = await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [
+        {
+          name: "get_task_context",
+          description: "Read the active task.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+    });
+    const threadId = opened.thread.id;
+
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+        tokenBudget: 12_000,
+      }),
+    ).resolves.toMatchObject({
+      goal: {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+        tokenBudget: 12_000,
+      },
+    });
+    let durableGoalEvent: Record<string, unknown> | null = null;
+    let durableTurnStarted = false;
+    const deliveryDeadline = Date.now() + 5_000;
+    while (Date.now() < deliveryDeadline) {
+      const controlState = JSON.parse(
+        await readFile(
+          join(stateDirectory, "control-plane", "control-plane-state.json"),
+          "utf8",
+        ),
+      ) as {
+        committedEvents?: Array<Record<string, unknown>>;
+      };
+      durableGoalEvent =
+        controlState.committedEvents?.find(
+          (event) => event.eventType === "session.goal.updated",
+        ) ?? null;
+      durableTurnStarted =
+        controlState.committedEvents?.some(
+          (event) => event.eventType === "turn.started",
+        ) ?? false;
+      if (durableGoalEvent !== null && durableTurnStarted) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    }
+    expect(durableGoalEvent).not.toBeNull();
+    expect(durableTurnStarted).toBe(true);
+    expect(durableGoalEvent).toMatchObject({
+      envelope: {
+        payload: {
+          payload: {
+            goal: { lastReason: null },
+          },
+        },
+      },
+    });
+    await expect(
+      bundle.transport.request("thread/goal/get", { threadId }),
+    ).resolves.toMatchObject({
+      goal: {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+      },
+    });
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        status: "paused",
+      }),
+    ).resolves.toMatchObject({ goal: { status: "paused" } });
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        status: "active",
+      }),
+    ).resolves.toMatchObject({ goal: { status: "active" } });
+    await expect(
+      bundle.transport.request("thread/goal/clear", { threadId }),
+    ).resolves.toEqual({});
+    await expect(
+      bundle.transport.request("thread/goal/get", { threadId }),
+    ).resolves.toEqual({ goal: null });
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+  expect(bundle.evidence()).toMatchObject({
+    runnerExited: true,
+    runnerExitCode: 0,
+  });
+}, 30_000);
+
+it("binds an idle goal-autostarted turn through the full Codex harness", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-goal-harness-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--goal-autostart"),
+    stateDirectory,
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: {
+      schema: "paperclip.skillless_task.v1",
+      objective: "Finish the durable goal harness test.",
+      completionContract: {
+        revision: "goal-harness-v1",
+        criteria: [{ id: "goal", requirement: "The goal turn starts." }],
+      },
+      constraints: [],
+      expectedResultSchema: "paperclip.run_result.v1",
+    },
+    approvalPolicy: "never",
+    includeCollaborationModeInstructions: false,
+    environment: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: "/isolated/home",
+      CODEX_HOME: "/isolated/codex-home",
+      LANG: "C.UTF-8",
+    },
+    transportFactory: () => bundle.transport,
+    requireProviderSessionIdentity: true,
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | null = null;
+  try {
+    session = await driver.openSession({
+      runId: "run-goal-harness-autostart",
+      normalizedSessionId: "normalized-goal-harness-autostart",
+      workingDirectory: tmpdir(),
+    });
+    const observed: Array<{ eventType: string }> = [];
+    const turnStarted = Promise.race([
+      (async () => {
+        for await (const event of session!.events()) {
+          observed.push(event);
+          if (event.eventType === "turn.started") return event;
+          if (event.eventType === "session.failed") {
+            throw new Error(`goal autostart failed: ${JSON.stringify(event.payload)}`);
+          }
+        }
+        throw new Error("goal autostart event stream closed");
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("goal autostart timed out")), 5_000);
+      }),
+    ]);
+    await expect(
+      session.goal?.({
+        action: "set",
+        objective: "Finish the durable goal harness test.",
+        status: "active",
+        requestId: "goal-harness-autostart",
+      }),
+    ).resolves.toMatchObject({ status: "active" });
+    await expect(turnStarted).resolves.toMatchObject({
+      eventType: "turn.started",
+      turnId: "provider-goal-turn-1",
+    });
+    expect(observed.some((event) => event.eventType === "session.failed")).toBe(false);
+  } finally {
+    await session?.close();
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
@@ -1069,7 +1364,7 @@ it("does not expose cross-run attachment before PRP authority can rotate atomica
   }
 }, 30_000);
 
-it("cold-restores a suspended provider session under its durable run binding", async () => {
+it("cold-restores a paused goal for a successor run without replacing its provider session", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const skillRoot = join(stateDirectory, "runtime-skill");
   const instructionRoot = join(stateDirectory, "runtime-instructions");
@@ -1091,10 +1386,12 @@ it("cold-restores a suspended provider session under its durable run binding", a
       stateDirectory,
       "--include-skill-instructions",
       "--durable-turn-ids",
+      "--goal-autostart",
     ),
     stateDirectory,
     lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
     runtimeContext: assignedRuntimeContext(skillRoot, instructionRoot),
+    resumeWorkingDirectory: stateDirectory,
   };
   const dynamicTools = [
     {
@@ -1117,17 +1414,17 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }));
   try {
     await first.transport.request("thread/start", {
-      cwd: tmpdir(),
+      cwd: stateDirectory,
       dynamicTools,
     });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
-    await first.transport.request("turn/start", {
-      input: [{ type: "text", text: "first process" }],
-    });
-    for await (const event of first.transport.notifications()) {
-      if (event.method === "turn/completed") break;
-    }
+    await expect(
+      first.transport.request("thread/goal/set", {
+        objective: "Resume this goal in the successor run.",
+        status: "paused",
+      }),
+    ).resolves.toMatchObject({ goal: { status: "paused" } });
   } finally {
     await first.transport.close();
   }
@@ -1150,32 +1447,84 @@ it("cold-restores a suspended provider session under its durable run binding", a
         "utf8",
       ),
     ) as Record<string, unknown>;
-  const mismatched = createCapabilityRunnerdCodexTransport({
-    ...options,
-    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
-    readRunnerState,
-    resumeDynamicTools: dynamicTools,
-    prpIdentity: { ...baseIdentity, runId: "run-cold-other" },
-  });
-  await expect(
-    mismatched.transport.request("thread/read", {}),
-  ).rejects.toThrow("native_runner_prp_run_rotation_unavailable");
-  await mismatched.transport.close();
-
+  const restoredEvidenceSnapshots: Array<ReturnType<typeof first.evidence>> = [];
   const restored = createCapabilityRunnerdCodexTransport({
     ...options,
+    onEvidence: (evidence) => {
+      restoredEvidenceSnapshots.push(structuredClone(evidence));
+    },
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: baseIdentity,
+    prpIdentity: {
+      ...baseIdentity,
+      runId: "run-cold-successor",
+      turnId: "turn-cold-successor",
+      itemId: "item-cold-successor",
+    },
   });
   restored.transport.setServerRequestHandler(async () => ({
     success: true,
     contentItems: [],
   }));
   try {
+    expect(
+      JSON.parse(
+        await readFile(
+          join(stateDirectory, "control-plane", "control-plane-state.json"),
+          "utf8",
+        ),
+      ).identity,
+    ).toEqual(baseIdentity);
     const read = await restored.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject({ id: "codex-thread-1" });
+    expect(read.thread).toMatchObject({
+      id: "codex-thread-1",
+      cwd: stateDirectory,
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(stateDirectory, "control-plane", "control-plane-state.json"),
+          "utf8",
+        ),
+      ).identity,
+    ).toEqual({
+      ...baseIdentity,
+      runId: "run-cold-successor",
+      turnId: "turn-cold-successor",
+      itemId: "item-cold-successor",
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+          "utf8",
+        ),
+      ).runId,
+    ).toBe("run-cold-successor");
+    await expect(
+      stat(
+        join(
+          externallyOwnedRunnerStateDirectory,
+          "run-history",
+          "runner-state-run-cold-first-to-run-cold-successor.json",
+        ),
+      ),
+    ).resolves.toBeTruthy();
+    expect(restoredEvidenceSnapshots[0]).toMatchObject({
+      providerPid: null,
+      codexPid: null,
+      sidecarPid: null,
+      agentPid: null,
+    });
+    await expect(
+      restored.transport.request("thread/goal/get", {}),
+    ).resolves.toMatchObject({
+      goal: {
+        objective: "Resume this goal in the successor run.",
+        status: "paused",
+      },
+    });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
     const providerState = JSON.parse(
@@ -1187,12 +1536,16 @@ it("cold-restores a suspended provider session under its durable run binding", a
     expect(Object.keys(providerState.toolBridge?.authorized ?? {})).toEqual(
       ["get_task_context"],
     );
-    await restored.transport.request("turn/start", {
-      input: [{ type: "text", text: "restored process" }],
-    });
+    await expect(
+      restored.transport.request("thread/goal/set", { status: "active" }),
+    ).resolves.toMatchObject({ goal: { status: "active" } });
+    let resumedGoalTurnId: string | null = null;
     for await (const event of restored.transport.notifications()) {
-      if (event.method === "turn/completed") break;
+      if (event.method !== "turn/started") continue;
+      resumedGoalTurnId = String(event.params.turnId ?? event.params.turn?.id ?? "");
+      break;
     }
+    expect(resumedGoalTurnId).toBe("provider-goal-turn-1");
     expect(restored.evidence()).toMatchObject({
       runnerExited: false,
       codexPid: expect.any(Number),

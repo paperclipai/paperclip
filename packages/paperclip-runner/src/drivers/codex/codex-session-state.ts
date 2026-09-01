@@ -24,6 +24,7 @@ import { safeCodexRequestResponse as safeRequestResponse } from "./codex-thread-
 import type {
   CodexAppServerDriverOptions,
   CodexCapabilities,
+  CodexGoalAvailability,
   OpenedCodexThread,
   PendingRuntimeRequest,
 } from "./codex-driver-types.js";
@@ -71,6 +72,12 @@ export class CodexSessionState {
   readonly runnerInstanceId: string;
   readonly driverKind: string;
   readonly capabilities: CodexCapabilities;
+  readonly goalCapability: NonNullable<
+    CodexAppServerDriverOptions["goalCapability"]
+  >;
+  readonly goalAvailability: CodexGoalAvailability;
+  readonly goalReasonCode: string | null;
+  readonly goalReason: string | null;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
   readonly eventQueue = new AsyncQueue<PrpEvent>();
@@ -126,6 +133,10 @@ export class CodexSessionState {
     runnerInstanceId: string;
     driverKind: string;
     capabilities: CodexCapabilities;
+    goalCapability: NonNullable<CodexAppServerDriverOptions["goalCapability"]>;
+    goalAvailability: CodexGoalAvailability;
+    goalReasonCode: string | null;
+    goalReason: string | null;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
   }) {
@@ -142,6 +153,10 @@ export class CodexSessionState {
     this.runnerInstanceId = input.runnerInstanceId;
     this.driverKind = input.driverKind;
     this.capabilities = input.capabilities;
+    this.goalCapability = input.goalCapability;
+    this.goalAvailability = input.goalAvailability;
+    this.goalReasonCode = input.goalReasonCode;
+    this.goalReason = input.goalReason;
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.currentGoal = input.goal === undefined ? null : structuredClone(input.goal);
@@ -358,6 +373,111 @@ export class CodexSessionState {
       payload,
     });
   }
+
+  emitGoalCapabilities(): void {
+    this.emitV2("session.capabilities.updated", {
+      sessionGoals:
+        this.goalAvailability === "available" && this.capabilities.goals
+          ? {
+              availability: "available",
+              actions: [...this.goalCapability.actions],
+              autonomousUpdates: this.goalCapability.autonomousUpdates,
+              persistentAcrossResume:
+                this.goalCapability.persistentAcrossResume,
+              maxObjectiveChars: this.goalCapability.maxObjectiveChars,
+              tokenBudgetControl: this.goalCapability.tokenBudgetControl,
+              usageReporting: this.goalCapability.usageReporting,
+            }
+          : {
+              availability: this.goalAvailability,
+              actions: [],
+              autonomousUpdates: false,
+              persistentAcrossResume: false,
+              maxObjectiveChars: 4_000,
+              tokenBudgetControl: false,
+              usageReporting: false,
+              reasonCode:
+                this.goalReasonCode ?? "codex_goal_api_unavailable",
+              reason:
+                this.goalReason
+                ?? "This Codex app-server does not expose thread goals.",
+            },
+    });
+  }
+
+  emitGoalEvent(
+    eventType:
+      | "session.goal.snapshot"
+      | "session.goal.updated"
+      | "session.goal.cleared",
+    goal: HarnessThreadGoal | null,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.emitV2(eventType, {
+      goal:
+        goal === null
+          ? null
+          : normalizedGoalSnapshot(goal, this.activeTurnId !== null),
+      ...extra,
+    });
+  }
+
+  private emitV2(
+    eventType:
+      | "session.capabilities.updated"
+      | "session.goal.snapshot"
+      | "session.goal.updated"
+      | "session.goal.cleared",
+    payload: Record<string, unknown>,
+  ): void {
+    const sourceSeq = ++this.sourceSequence;
+    this.eventQueue.push({
+      schema: "paperclip.prp.event.v2",
+      sourceEventId: `${this.runnerInstanceId}:${this.runId}:${sourceSeq}`,
+      sourceSeq,
+      sourceInstanceId: this.runnerInstanceId,
+      sourceKind: "runner",
+      runId: this.runId,
+      normalizedSessionId: this.normalizedSessionId,
+      ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
+      eventType,
+      schemaVersion: 2,
+      priority: 0,
+      emittedAt: this.now().toISOString(),
+      payload,
+    } as PrpEvent);
+  }
+}
+
+function normalizedGoalSnapshot(
+  goal: HarnessThreadGoal,
+  workingNow: boolean,
+): Record<string, unknown> {
+  const isoTimestamp = (value: number): string | null => {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  };
+  const status =
+    goal.status === "usageLimited"
+      ? "usage_limited"
+      : goal.status === "budgetLimited"
+        ? "budget_limited"
+        : goal.status;
+  return {
+    objective: goal.objective,
+    status,
+    tokenBudget: goal.tokenBudget,
+    tokensUsed: goal.tokensUsed,
+    elapsedSeconds: goal.timeUsedSeconds,
+    iterations: 0,
+    lastReason: null,
+    createdAt: isoTimestamp(goal.createdAt),
+    updatedAt: isoTimestamp(goal.updatedAt),
+    completedAt: goal.status === "complete" ? isoTimestamp(goal.updatedAt) : null,
+    workingNow,
+  };
 }
 
 export type CodexSessionStateInput = ConstructorParameters<typeof CodexSessionState>[0];
@@ -370,6 +490,10 @@ export function initializeCodexSessionEvents(
       driverSessionId: input.opened.threadId,
       providerSessionId: input.opened.providerSessionId,
       context: input.opened.context,
+    });
+    state.emitGoalCapabilities();
+    state.emitGoalEvent("session.goal.snapshot", state.currentGoal, {
+      workingNow: state.activeTurnId !== null,
     });
     for (const stale of input.stalePendingRuntimeRequests ?? []) {
       state.emit(

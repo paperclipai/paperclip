@@ -22,6 +22,7 @@ import {
 } from "../../contracts/codex.js";
 import { providerFamilyCapabilities } from "../../provider-events.js";
 import {
+  CodexRpcError,
   ProcessCodexAppServerTransport,
   createSanitizedCodexEnvironment,
   isCodexMethodUnavailable,
@@ -50,6 +51,7 @@ import { CodexHarnessSession } from "./codex-harness-session.js";
 import type {
   CodexAppServerDriverOptions,
   CodexCapabilities,
+  CodexGoalAvailability,
   OpenedCodexThread,
 } from "./codex-driver-types.js";
 import {
@@ -118,6 +120,12 @@ function bootstrapCancellation(
 export class CodexAppServerDriver implements HarnessDriver {
   readonly #options: CodexAppServerDriverOptions;
   readonly #caps: CodexCapabilities;
+  #goalAvailability: CodexGoalAvailability;
+  #goalReasonCode: string | null = null;
+  #goalReason: string | null = null;
+  readonly #goalCapability: NonNullable<
+    CodexAppServerDriverOptions["goalCapability"]
+  >;
 
   constructor(options: CodexAppServerDriverOptions) {
     this.#options = options;
@@ -134,6 +142,19 @@ export class CodexAppServerDriver implements HarnessDriver {
       threadLineage: true,
       ...options.capabilities,
     };
+    this.#goalAvailability = this.#caps.goals ? "available" : "unsupported";
+    this.#goalCapability = options.goalCapability ?? {
+      actions: ["set", "pause", "resume", "clear"],
+      autonomousUpdates: true,
+      persistentAcrossResume: true,
+      maxObjectiveChars: 4_000,
+      tokenBudgetControl: true,
+      usageReporting: true,
+    };
+    if (!this.#caps.goals) {
+      this.#goalReasonCode = "codex_goal_api_unavailable";
+      this.#goalReason = "This Codex app-server does not expose thread goals.";
+    }
     if (!this.#caps.read) this.#caps.reconciliation = false;
   }
 
@@ -262,6 +283,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         normalizedSessionId: input.normalizedSessionId,
         opened,
         goal,
+        goalAvailability: this.#goalAvailability,
+        goalReasonCode: this.#goalReasonCode,
+        goalReason: this.#goalReason,
         resumed: false,
         sourceSequence: 0,
       });
@@ -493,6 +517,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         normalizedSessionId: snapshot.normalizedSessionId,
         opened,
         goal,
+        goalAvailability: this.#goalAvailability,
+        goalReasonCode: this.#goalReasonCode,
+        goalReason: this.#goalReason,
         resumed: true,
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
@@ -608,10 +635,25 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/goal/get", { threadId });
       return parseThreadGoal(response.goal);
     } catch (error) {
-      if (isCodexMethodUnavailable(error)) {
+      const policyDisabled =
+        error instanceof CodexRpcError
+        && (error.message.toLowerCase().includes("policy")
+          || error.message.toLowerCase().includes("disabled"));
+      if (policyDisabled || isCodexMethodUnavailable(error)) {
         // The provider answered, and its answer is that this build has no goal
         // API. That is the only evidence that retires the capability.
         this.#caps.goals = false;
+        if (policyDisabled) {
+          this.#goalAvailability = "policy_disabled";
+          this.#goalReasonCode = "codex_goal_policy_disabled";
+          this.#goalReason =
+            "Session goals are disabled by the Codex provider policy.";
+        } else {
+          this.#goalAvailability = "unsupported";
+          this.#goalReasonCode = "codex_goal_api_unavailable";
+          this.#goalReason =
+            "This Codex app-server does not expose thread goals.";
+        }
         this.#options.onDiagnostic?.(
           redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
         );
@@ -743,6 +785,9 @@ export class CodexAppServerDriver implements HarnessDriver {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     goal?: HarnessThreadGoal | null;
+    goalAvailability: CodexGoalAvailability;
+    goalReasonCode: string | null;
+    goalReason: string | null;
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
@@ -761,6 +806,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       runnerInstanceId: this.#options.runnerInstanceId ?? "runner-codex",
       driverKind: this.#options.driverIdentity?.kind ?? DRIVER_KIND,
       capabilities: this.#caps,
+      goalCapability: this.#goalCapability,
       dynamicTools: this.#options.dynamicTools ?? [],
       dynamicToolHandler: this.#options.dynamicToolHandler,
     });

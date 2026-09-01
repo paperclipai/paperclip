@@ -253,7 +253,7 @@ try {
       claude:
         "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       codex:
-        "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+        "sha256:74999e26456cc36912afc7c95bd70f6113df75dde26eb5adf5dcd3b1259154fc",
     },
     artifacts: {
       nodeCommand: {

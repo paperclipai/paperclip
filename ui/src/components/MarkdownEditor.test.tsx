@@ -14,6 +14,7 @@ import {
   type MarkdownEditorRef,
   type MentionOption,
   placeCaretAfterMentionAnchor,
+  placeCaretAtEditableEnd,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
@@ -1187,6 +1188,21 @@ describe("MarkdownEditor", () => {
 
     const selection = window.getSelection();
     expect(selection?.anchorNode).toBe(trailingSpace);
+    expect(selection?.anchorOffset).toBe(1);
+
+    editable.remove();
+  });
+
+  it("places the caret after a plain action command", () => {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    editable.textContent = "/goal\u00a0";
+    document.body.appendChild(editable);
+
+    expect(placeCaretAtEditableEnd(editable)).toBe(true);
+
+    const selection = window.getSelection();
+    expect(selection?.anchorNode).toBe(editable);
     expect(selection?.anchorOffset).toBe(1);
 
     editable.remove();

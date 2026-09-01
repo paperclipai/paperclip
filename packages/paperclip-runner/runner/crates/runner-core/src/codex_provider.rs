@@ -791,6 +791,98 @@ impl CodexProvider {
         self.restart_idle_identity_epoch()
     }
 
+    pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
+        self.request("thread/goal/get", json!({"threadId": self.thread_id}))
+    }
+
+    pub fn set_goal(
+        &mut self,
+        objective: Option<&str>,
+        status: Option<&str>,
+        token_budget: Option<Option<u64>>,
+    ) -> Result<Value, LocalRunnerError> {
+        let starts_idle_turn = self.active_provider_turn_id.is_none()
+            && (status == Some("active") || (status.is_none() && objective.is_some()));
+        let prior_reconciliation_pending = self.completion_reconciliation_pending;
+        let prior_buffered_message_count = self.pending_messages.len();
+        if starts_idle_turn {
+            if self.quarantined {
+                return Err(LocalRunnerError::invalid(
+                    "Codex provider is quarantined after unsafe recovered work",
+                ));
+            }
+            if self.ambiguous_turn_start_pending {
+                return Err(LocalRunnerError::invalid(
+                    "Codex has an unresolved ambiguous provider turn start",
+                ));
+            }
+            self.rollover_settled_turn_epoch_if_needed()?;
+            // Activating an idle Codex goal starts a provider turn without a
+            // turn/start response. Arm the same identity reconciliation used
+            // by an ambiguous turn/start before sending the request because
+            // turn/started may be buffered ahead of the goal response.
+            self.completion_reconciliation_pending = false;
+            self.ambiguous_turn_start_pending = true;
+        }
+        let mut params = json!({"threadId": self.thread_id});
+        let params = params
+            .as_object_mut()
+            .expect("Codex goal parameters are an object");
+        if let Some(objective) = objective {
+            params.insert("objective".to_owned(), json!(objective));
+        }
+        if let Some(status) = status {
+            params.insert("status".to_owned(), json!(status));
+        }
+        if let Some(token_budget) = token_budget {
+            params.insert("tokenBudget".to_owned(), json!(token_budget));
+        }
+        match self.request_classified("thread/goal/set", Value::Object(params.clone())) {
+            Ok(result) => {
+                let effective_status = result
+                    .pointer("/goal/status")
+                    .or_else(|| result.get("status"))
+                    .and_then(Value::as_str);
+                if starts_idle_turn && effective_status.is_some_and(|value| value != "active") {
+                    // Objective-only updates preserve the provider's current
+                    // goal status. If that status is paused or otherwise
+                    // inactive, no autonomous turn starts. Restore the prior
+                    // reconciliation state unless the response raced with
+                    // contradictory provider-work evidence.
+                    let no_turn_evidence = self
+                        .pending_messages
+                        .iter()
+                        .skip(prior_buffered_message_count)
+                        .all(|buffered| is_non_active_goal_set_diagnostic(&buffered.value));
+                    if no_turn_evidence {
+                        self.ambiguous_turn_start_pending = false;
+                        self.completion_reconciliation_pending = prior_reconciliation_pending;
+                    }
+                }
+                Ok(result)
+            }
+            Err(ProviderRequestError::Rejected(error)) => {
+                if starts_idle_turn {
+                    let definite_rejection = self
+                        .pending_messages
+                        .iter()
+                        .skip(prior_buffered_message_count)
+                        .all(|buffered| is_unbound_rejected_turn_diagnostic(&buffered.value));
+                    if definite_rejection {
+                        self.ambiguous_turn_start_pending = false;
+                        self.completion_reconciliation_pending = prior_reconciliation_pending;
+                    }
+                }
+                Err(error)
+            }
+            Err(ProviderRequestError::Ambiguous(error)) => Err(error),
+        }
+    }
+
+    pub fn clear_goal(&mut self) -> Result<Value, LocalRunnerError> {
+        self.request("thread/goal/clear", json!({"threadId": self.thread_id}))
+    }
+
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
@@ -1933,6 +2025,34 @@ fn is_unbound_rejected_turn_diagnostic(message: &Value) -> bool {
         && message
             .get("params")
             .is_none_or(|params| !contains_provider_work_binding(params))
+}
+
+fn is_non_active_goal_set_diagnostic(message: &Value) -> bool {
+    if message.get("id").is_some() {
+        return false;
+    }
+    match message.get("method").and_then(Value::as_str) {
+        Some("thread/goal/updated") => message
+            .get("params")
+            .is_none_or(|params| !contains_provider_turn_binding(params)),
+        Some("warning") => message
+            .get("params")
+            .is_none_or(|params| !contains_provider_work_binding(params)),
+        _ => false,
+    }
+}
+
+fn contains_provider_turn_binding(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_provider_turn_binding),
+        Value::Object(fields) => fields.iter().any(|(key, child)| {
+            (matches!(key.as_str(), "turnId" | "itemId" | "requestId") && !child.is_null())
+                || (matches!(key.as_str(), "turn" | "item" | "request")
+                    && child.get("id").is_some_and(|id| !id.is_null()))
+                || contains_provider_turn_binding(child)
+        }),
+        _ => false,
+    }
 }
 
 fn contains_provider_work_binding(value: &Value) -> bool {

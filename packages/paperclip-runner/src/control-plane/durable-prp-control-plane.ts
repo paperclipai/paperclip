@@ -40,7 +40,8 @@ import {
 } from "./prp-transport-types.js";
 
 const protocol = "paperclip.runner";
-const protocolVersion = 1;
+const protocolMinVersion = 1;
+const protocolVersion = 2;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
@@ -64,6 +65,9 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "session.snapshot",
+  "session.goal.get",
+  "session.goal.set",
+  "session.goal.clear",
   "session.close",
   "session.budget.increase",
   "session.destroy",
@@ -177,6 +181,7 @@ interface PendingChallenge {
   serverProof: string;
   clientNonce: string;
   serverNonce: string;
+  selectedVersion: number;
 }
 
 interface SecureChannel {
@@ -371,7 +376,8 @@ function isStoredCoreState(
     !commands.every(
       (command, index) =>
         isRecord(command) &&
-        command.schema === "paperclip.prp.command.v1" &&
+        (command.schema === "paperclip.prp.command.v1" ||
+          command.schema === "paperclip.prp.command.v2") &&
         typeof command.commandId === "string" &&
         stableIdPattern.test(command.commandId) &&
         command.commandId.length <= 160 &&
@@ -1087,7 +1093,9 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: "paperclip.prp.command.v1",
+      schema: type.startsWith("session.goal.")
+        ? "paperclip.prp.command.v2"
+        : "paperclip.prp.command.v1",
       commandId:
         commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
       controllerSeq,
@@ -1113,6 +1121,23 @@ export class DurablePrpControlPlane {
       }
     }
     return command;
+  }
+
+  commandOutcome(commandId: string): {
+    status: DurableRecoveryCoreCommand["status"];
+    result: Record<string, unknown> | null;
+  } | null {
+    const command = this.#store.state.commands.find(
+      (candidate) => candidate.commandId === commandId,
+    );
+    if (!command) return null;
+    return {
+      status: command.status,
+      result:
+        command.result && typeof command.result === "object"
+          ? structuredClone(command.result as Record<string, unknown>)
+          : null,
+    };
   }
 
   /** Attach one HTTP upgrade to this run-bound authority. */
@@ -1198,9 +1223,18 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    const envelopeVersion = envelope.version;
+    const expectedVersion =
+      connection.lease?.protocolVersion ??
+      connection.pendingChallenge?.selectedVersion ??
+      null;
     if (
       envelope.protocol !== protocol ||
-      envelope.version !== protocolVersion
+      !Number.isInteger(envelopeVersion) ||
+      (expectedVersion === null
+        ? (envelopeVersion as number) < protocolMinVersion ||
+          (envelopeVersion as number) > protocolVersion
+        : envelopeVersion !== expectedVersion)
     ) {
       connection.close();
       return;
@@ -1292,13 +1326,17 @@ export class DurablePrpControlPlane {
       payload.itemId !== identity.itemId ||
       payload.runnerVersion !== this.#expectedRunnerVersion ||
       payload.runnerDigest !== this.#expectedRunnerDigest ||
-      payload.protocolMin !== 1 ||
-      payload.protocolMax !== 1 ||
+      !Number.isInteger(payload.protocolMin) ||
+      !Number.isInteger(payload.protocolMax) ||
+      (payload.protocolMin as number) > protocolVersion ||
+      (payload.protocolMax as number) < protocolMinVersion ||
+      (payload.protocolMin as number) > (payload.protocolMax as number) ||
       (authorization.kind === "bootstrap" &&
         (authorization.runnerVersion !== this.#expectedRunnerVersion ||
           authorization.runnerDigest !== this.#expectedRunnerDigest)) ||
       (authorization.kind === "lease" &&
-        authorization.protocolVersion !== protocolVersion)
+        (authorization.protocolVersion < (payload.protocolMin as number) ||
+          authorization.protocolVersion > (payload.protocolMax as number)))
     ) {
       return null;
     }
@@ -1385,6 +1423,10 @@ export class DurablePrpControlPlane {
       return;
     }
     const serverNonce = randomUUID();
+    const selectedVersion =
+      authorization.kind === "lease"
+        ? authorization.protocolVersion
+        : Math.min(protocolVersion, payload.protocolMax as number);
     const challengePayload: Record<string, unknown> = {
       credentialId: authorization.credentialId,
       credentialKind: authorization.kind,
@@ -1398,7 +1440,7 @@ export class DurablePrpControlPlane {
       itemId: payload.itemId,
       runnerVersion: payload.runnerVersion,
       runnerDigest: payload.runnerDigest,
-      selectedVersion: protocolVersion,
+      selectedVersion,
       credentialLeaseId:
         authorization.kind === "lease" ? authorization.leaseId : null,
       credentialExpiresAt: authorization.expiresAt,
@@ -1422,10 +1464,11 @@ export class DurablePrpControlPlane {
       serverProof,
       clientNonce: payload.clientNonce,
       serverNonce,
+      selectedVersion,
     };
     connection.sendJson({
       protocol,
-      version: protocolVersion,
+      version: selectedVersion,
       kind: "auth_challenge",
       payload: { ...challengePayload, serverProof },
     });
@@ -1484,7 +1527,7 @@ export class DurablePrpControlPlane {
         authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
         leaseId: `connection_lease_${randomUUID()}`,
         identity: structuredClone(this.#identity),
-        protocolVersion,
+        protocolVersion: pending.selectedVersion,
         expiresAt: new Date(expiresAtUnixMs).toISOString(),
         expiresAtUnixMs,
         revocationEpoch: 0,
@@ -1533,7 +1576,7 @@ export class DurablePrpControlPlane {
     this.#store.save();
     connection.sendJson({
       protocol,
-      version: protocolVersion,
+      version: lease.protocolVersion,
       envelopeId: `welcome_${this.#store.state.connectionCount}`,
       kind: "welcome",
       runnerInstanceId: this.#identity.runnerInstanceId,
@@ -1546,7 +1589,7 @@ export class DurablePrpControlPlane {
       connectionLeaseId: lease.leaseId,
       sentAt: new Date().toISOString(),
       payload: {
-        selectedVersion: 1,
+        selectedVersion: lease.protocolVersion,
         heartbeatIntervalMs: 250,
         connectionLeaseId: lease.leaseId,
         ...(leaseToken === null ? {} : { connectionLeaseToken: leaseToken }),
@@ -1558,7 +1601,7 @@ export class DurablePrpControlPlane {
           environmentLeaseId: this.#identity.environmentLeaseId,
           runId: this.#identity.runId,
           normalizedSessionId: this.#identity.normalizedSessionId,
-          protocolVersion,
+          protocolVersion: lease.protocolVersion,
         },
         maxFrameBytes,
         maxBatchEvents: 100,
@@ -1595,7 +1638,7 @@ export class DurablePrpControlPlane {
     }
     return {
       protocol,
-      version: protocolVersion,
+      version: connection.lease.protocolVersion,
       envelopeId,
       kind,
       runnerInstanceId: this.#identity.runnerInstanceId,
@@ -1941,6 +1984,8 @@ export function spawnRunner(options: {
   runnerBinaryPath?: string;
   runnerVersion: string;
   runnerDigest: string;
+  /** Rotate a completed durable run journal while preserving provider state. */
+  rotateFromRunId?: string;
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
 }): RunnerProcessHandle {
@@ -1984,6 +2029,9 @@ export function spawnRunner(options: {
     options.runnerVersion,
     "--runner-digest",
     options.runnerDigest,
+    ...(options.rotateFromRunId === undefined
+      ? []
+      : ["--rotate-from-run-id", options.rotateFromRunId]),
     "--fake-harness",
     fakeHarnessBinary,
     "--fake-harness-script",

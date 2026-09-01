@@ -246,6 +246,11 @@ async function dispatch(
           tools: params.tools,
           handler: waitForTool,
         },
+        onGoalUpdate: (goal) =>
+          emit("runtime.goal", {
+            goal,
+            capability: host?.goalCapability() ?? null,
+          }),
       },
       {
         retainAdmissionCleanup: retainFailedAdmissionCleanup,
@@ -405,6 +410,33 @@ async function dispatch(
       pendingToolCount: tools.size,
       pendingInputCount: inputs.size,
     };
+  }
+  if (request.command === "session.goal.get") {
+    const activeHost = requireHost();
+    return {
+      capability: activeHost.goalCapability(),
+      goal: activeHost.goalSnapshot(),
+    };
+  }
+  if (request.command === "session.goal.set") {
+    const activeHost = requireHost();
+    const objective = text(request.params.objective).trim();
+    const status = text(request.params.status).trim();
+    const action = objective
+      ? "set"
+      : status === "paused"
+        ? "pause"
+        : status === "active"
+          ? "resume"
+          : null;
+    if (!action) throw new Error("session.goal.set requires an objective or active/paused status");
+    const goal = await activeHost.controlGoal(action, objective || undefined);
+    return { capability: activeHost.goalCapability(), goal };
+  }
+  if (request.command === "session.goal.clear") {
+    const activeHost = requireHost();
+    await activeHost.controlGoal("clear");
+    return { capability: activeHost.goalCapability(), goal: null };
   }
   if (request.command === "session.suspend") {
     if (turnId || tools.size > 0 || inputs.size > 0) {

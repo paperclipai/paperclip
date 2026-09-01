@@ -256,7 +256,7 @@ describe("remote provider pack manifest", () => {
         claude:
           "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
         codex:
-          "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+          "sha256:74999e26456cc36912afc7c95bd70f6113df75dde26eb5adf5dcd3b1259154fc",
       },
       artifacts: {
         nodeCommand: {
@@ -2725,6 +2725,80 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.createTransport.mock.calls[1]![0].stateDirectory).not.toBe(
         legacyRoot,
       );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a scoped durable runner binding for a successor goal run", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-successor-runner-state-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const successorExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-successor-state",
+        runId: "run-successor-state",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-successor-state",
+      },
+    } as NativeExecutionInputV1;
+    const scopedRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(JSON.stringify(["company-successor-state", "session-successor-state"]))
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify({
+          identity: {
+            runId: "run-original-state",
+            normalizedSessionId: "session-successor-state",
+            runnerInstanceId: "runner-original-state",
+            environmentLeaseId: "lease-original-state",
+          },
+        }),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.execute.mockReset().mockResolvedValue({
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn",
+        normalizedSessionId: "session-successor-state",
+        providerSessionId: "provider-original-state",
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(successorExecution),
+        execution: successorExecution,
+        runnerInstanceId: "runner-successor-state",
+        useRunnerd: true,
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      expect(state.createTransport.mock.calls[0]![0]).toMatchObject({
+        stateDirectory: scopedRoot,
+        prpIdentity: {
+          runId: "run-successor-state",
+          normalizedSessionId: "session-successor-state",
+          runnerInstanceId: "runner-original-state",
+          environmentLeaseId: "lease-original-state",
+        },
+      });
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;

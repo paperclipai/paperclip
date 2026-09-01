@@ -235,13 +235,26 @@ fn semantic_result_event(
     }
 }
 
-fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<NormalizedProviderEvent> {
+fn terminal_events(
+    state: &CodexProviderState,
+    event_type: &str,
+    goal_status: Option<&str>,
+) -> Vec<NormalizedProviderEvent> {
+    if goal_status == Some("active") {
+        return Vec::new();
+    }
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
-    let succeeded = event_type == "turn.completed";
+    let succeeded = goal_status == Some("complete")
+        || (goal_status.is_none() && event_type == "turn.completed");
     let cancelled = matches!(event_type, "turn.cancelled" | "turn.interrupted");
-    let disposition = if succeeded { "done" } else { "needs_review" };
+    let disposition = match goal_status {
+        Some("blocked") => "blocked",
+        Some("paused" | "limited" | "usage_limited" | "budget_limited") => "yielded",
+        _ if succeeded => "done",
+        _ => "needs_review",
+    };
     let summary = state.last_agent_message.clone().unwrap_or_else(|| {
         if succeeded {
             "Codex completed the requested work.".to_owned()
@@ -272,7 +285,13 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
             "objectiveSatisfied": succeeded,
             "criteria": criteria,
             "remainingWork": if succeeded { Vec::<Value>::new() } else { vec![json!({
-                "description": "Review the stopped Codex run and continue the task.",
+                "description": if disposition == "yielded" {
+                    "Resume the durable Codex goal when execution can continue."
+                } else if disposition == "blocked" {
+                    "Resolve the blocker before resuming the durable Codex goal."
+                } else {
+                    "Review the stopped Codex run and continue the task."
+                },
                 "blocksCompletion": true,
             })] },
         },
@@ -297,7 +316,7 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
     let terminal = json!({
         "schema": "paperclip.prp.terminal.v1",
         "turnTerminalState": turn_terminal_state,
-        "runTerminalState": if succeeded { "succeeded" } else if cancelled { "cancelled" } else { "failed" },
+        "runTerminalState": if succeeded { "succeeded" } else if cancelled || disposition == "yielded" { "cancelled" } else { "failed" },
         "reportedWorkDisposition": disposition,
     });
     vec![
@@ -312,6 +331,182 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
             payload: terminal,
         },
     ]
+}
+
+fn default_goal_revision() -> u64 {
+    0
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct SessionGoalCapability {
+    availability: String,
+    actions: Vec<String>,
+    autonomous_updates: bool,
+    persistent_across_resume: bool,
+    max_objective_chars: u64,
+    token_budget_control: bool,
+    usage_reporting: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+impl SessionGoalCapability {
+    fn codex_available() -> Self {
+        Self {
+            availability: "available".to_owned(),
+            actions: vec![
+                "set".to_owned(),
+                "pause".to_owned(),
+                "resume".to_owned(),
+                "clear".to_owned(),
+            ],
+            autonomous_updates: true,
+            persistent_across_resume: true,
+            max_objective_chars: 4_000,
+            token_budget_control: true,
+            usage_reporting: true,
+            reason_code: None,
+            reason: None,
+        }
+    }
+
+    fn unavailable(availability: &str, reason_code: &str) -> Self {
+        Self {
+            availability: availability.to_owned(),
+            actions: Vec::new(),
+            autonomous_updates: false,
+            persistent_across_resume: false,
+            max_objective_chars: 4_000,
+            token_budget_control: false,
+            usage_reporting: false,
+            reason_code: Some(reason_code.to_owned()),
+            reason: Some(
+                match availability {
+                    "policy_disabled" => "Session goals are disabled by the Codex provider policy.",
+                    _ => "This Codex app-server does not expose session goals.",
+                }
+                .to_owned(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct SessionGoalSnapshot {
+    objective: String,
+    status: String,
+    token_budget: Option<u64>,
+    tokens_used: u64,
+    elapsed_seconds: u64,
+    iterations: u64,
+    #[serde(default)]
+    last_reason: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    working_now: bool,
+}
+
+fn normalize_goal_status(status: &str) -> Option<&'static str> {
+    match status {
+        "active" => Some("active"),
+        "paused" => Some("paused"),
+        "blocked" => Some("blocked"),
+        "limited" => Some("limited"),
+        "usageLimited" | "usage_limited" => Some("usage_limited"),
+        "budgetLimited" | "budget_limited" => Some("budget_limited"),
+        "complete" => Some("complete"),
+        _ => None,
+    }
+}
+
+fn codex_goal_status(status: &str) -> Option<&'static str> {
+    match status {
+        "active" => Some("active"),
+        "paused" => Some("paused"),
+        "blocked" => Some("blocked"),
+        "usage_limited" => Some("usageLimited"),
+        "budget_limited" => Some("budgetLimited"),
+        "complete" => Some("complete"),
+        _ => None,
+    }
+}
+
+fn normalize_codex_goal(value: &Value, working_now: bool) -> Option<SessionGoalSnapshot> {
+    let goal = value.get("goal").unwrap_or(value);
+    if goal.is_null() {
+        return None;
+    }
+    let objective = goal.get("objective")?.as_str()?.trim();
+    let status = normalize_goal_status(goal.get("status")?.as_str()?)?;
+    if objective.is_empty() || objective.chars().count() > 4_000 {
+        return None;
+    }
+    Some(SessionGoalSnapshot {
+        objective: objective.to_owned(),
+        status: status.to_owned(),
+        token_budget: goal.get("tokenBudget").and_then(Value::as_u64),
+        tokens_used: goal.get("tokensUsed").and_then(Value::as_u64).unwrap_or(0),
+        elapsed_seconds: goal
+            .get("timeUsedSeconds")
+            .or_else(|| goal.get("elapsedSeconds"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        iterations: goal.get("iterations").and_then(Value::as_u64).unwrap_or(0),
+        last_reason: goal
+            .get("lastReason")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.chars().take(1_000).collect()),
+        created_at: goal
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        updated_at: goal
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        completed_at: goal
+            .get("completedAt")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        working_now,
+    })
+}
+
+fn goal_event_payload(
+    goal: Option<&SessionGoalSnapshot>,
+    capability: Option<&SessionGoalCapability>,
+    revision: u64,
+) -> Value {
+    json!({
+        "schema": "paperclip.session_goal.snapshot.v1",
+        "goal": goal,
+        "sessionGoals": capability,
+        "workingNow": goal.is_some_and(|goal| goal.working_now),
+        "revision": revision,
+    })
+}
+
+fn goal_control_event_payload(
+    goal: Option<&SessionGoalSnapshot>,
+    capability: Option<&SessionGoalCapability>,
+    revision: u64,
+    request_id: Option<&str>,
+) -> Value {
+    let mut payload = goal_event_payload(goal, capability, revision);
+    if let Some(request_id) = request_id.filter(|value| !value.is_empty()) {
+        payload["requestId"] = json!(request_id);
+    }
+    payload
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -358,6 +553,12 @@ struct CodexProviderState {
     #[serde(default)]
     receipt_limit_interrupt_deadline_unix_ms: Option<u64>,
     last_agent_message: Option<String>,
+    #[serde(default)]
+    goal_capability: Option<SessionGoalCapability>,
+    #[serde(default)]
+    goal: Option<SessionGoalSnapshot>,
+    #[serde(default = "default_goal_revision")]
+    goal_revision: u64,
     #[serde(default)]
     pending_events: VecDeque<PolledEvent>,
     #[serde(default)]
@@ -427,6 +628,9 @@ impl CodexProviderState {
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
             last_agent_message: None,
+            goal_capability: None,
+            goal: None,
+            goal_revision: default_goal_revision(),
             pending_events: VecDeque::new(),
             queued_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
@@ -477,6 +681,11 @@ impl CodexProviderState {
                 .last_agent_message
                 .as_ref()
                 .is_some_and(|value| value.is_empty() || value.len() > 1_000_000)
+            || self.goal.as_ref().is_some_and(|goal| {
+                goal.objective.trim().is_empty()
+                    || goal.objective.chars().count() > 4_000
+                    || normalize_goal_status(&goal.status).is_none()
+            })
             || (self.thread_id.is_none()
                 && (self.provider_session_id.is_some()
                     || self.active_provider_turn_id.is_some()
@@ -1127,7 +1336,7 @@ impl CodexCommandExecutor {
                         "providerTerminalObserved": false,
                     }),
                 })?;
-                state.extend_terminal_events(terminal_events(state, "turn.failed"))?;
+                state.extend_terminal_events(terminal_events(state, "turn.failed", None))?;
             } else {
                 state.push_event(reconciled)?;
             }
@@ -1353,29 +1562,71 @@ impl CodexCommandExecutor {
             .as_ref()
             .and_then(|state| state.thread_id.as_ref())
             .is_some();
-        let (thread_id, provider_session_id, process_id) = {
+        let (thread_id, provider_session_id, process_id, active_provider_turn_id, goal_probe) = {
             let provider = self.ensure_provider()?;
             (
                 provider.thread_id().to_owned(),
                 provider.provider_session_id().map(str::to_owned),
                 provider.process_id(),
+                provider.active_provider_turn_id().map(str::to_owned),
+                provider.get_goal(),
             )
         };
-        let provider_version = {
+        let (goal_capability, goal) = match goal_probe {
+            Ok(snapshot) => (
+                SessionGoalCapability::codex_available(),
+                normalize_codex_goal(&snapshot, active_provider_turn_id.is_some()),
+            ),
+            Err(error) => {
+                let message = error.to_string().to_ascii_lowercase();
+                if message.contains("policy")
+                    || message.contains("disabled")
+                    || message.contains("feature")
+                {
+                    (
+                        SessionGoalCapability::unavailable(
+                            "policy_disabled",
+                            "codex_goal_policy_disabled",
+                        ),
+                        None,
+                    )
+                } else {
+                    (
+                        SessionGoalCapability::unavailable(
+                            "unsupported",
+                            if message.contains("-32601") || message.contains("unknown method") {
+                                "codex_goal_unknown_method"
+                            } else {
+                                "codex_goal_probe_failed"
+                            },
+                        ),
+                        None,
+                    )
+                }
+            }
+        };
+        let (provider_version, goal_revision) = {
             let state = self
                 .state
                 .as_mut()
                 .expect("Codex state exists after provider start");
             state.thread_id = Some(thread_id.clone());
             state.provider_session_id = provider_session_id.clone();
-            state.active_provider_turn_id = None;
+            state.active_provider_turn_id = active_provider_turn_id.clone();
             state.receipt_limit_diagnostic_emitted = false;
             state.receipt_limit_interrupt_pending = false;
             state.receipt_limit_interrupt_accepted = false;
             state.receipt_limit_interrupt_attempts = 0;
             state.receipt_limit_interrupt_deadline_unix_ms = None;
-            state.lifecycle = "session_open".to_owned();
-            state.config.provider_version.clone()
+            state.lifecycle = if active_provider_turn_id.is_some() {
+                "turn_active".to_owned()
+            } else {
+                "session_open".to_owned()
+            };
+            state.goal_capability = Some(goal_capability.clone());
+            state.goal = goal.clone();
+            state.goal_revision = state.goal_revision.saturating_add(1);
+            (state.config.provider_version.clone(), state.goal_revision)
         };
         self.save_state()?;
         Ok(CommandExecution {
@@ -1387,21 +1638,33 @@ impl CodexCommandExecutor {
                 "providerSessionId": thread_id,
                 "processId": process_id,
             }),
-            events: vec![(
-                if resumed {
-                    "session.resumed"
-                } else {
-                    "session.started"
-                }
-                .to_owned(),
-                EventPriority::P0,
-                json!({
-                    "provider": "codex",
-                    "providerSessionId": thread_id,
-                    "providerAccountSessionId": provider_session_id,
-                    "processId": process_id,
-                }),
-            )],
+            events: vec![
+                (
+                    if resumed {
+                        "session.resumed"
+                    } else {
+                        "session.started"
+                    }
+                    .to_owned(),
+                    EventPriority::P0,
+                    json!({
+                        "provider": "codex",
+                        "providerSessionId": thread_id,
+                        "providerAccountSessionId": provider_session_id,
+                        "processId": process_id,
+                    }),
+                ),
+                (
+                    "session.capabilities.updated".to_owned(),
+                    EventPriority::P0,
+                    json!({"sessionGoals": goal_capability}),
+                ),
+                (
+                    "session.goal.snapshot".to_owned(),
+                    EventPriority::P0,
+                    goal_event_payload(goal.as_ref(), Some(&goal_capability), goal_revision),
+                ),
+            ],
         })
     }
 
@@ -1758,6 +2021,183 @@ impl CodexCommandExecutor {
         Ok(CommandExecution::result(json!({"status": "steered"})))
     }
 
+    fn ensure_goal_available(&self) -> Result<(), DurableRunnerError> {
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.goal_capability.as_ref())
+            .is_some_and(|capability| capability.availability == "available")
+        {
+            Ok(())
+        } else {
+            Err(DurableRunnerError::invalid(
+                "Codex session goals are unavailable for this provider session",
+            ))
+        }
+    }
+
+    fn get_goal(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        self.restore_provider_if_needed()?;
+        self.ensure_goal_available()?;
+        let (snapshot, working_now) = {
+            let provider = self.ensure_provider()?;
+            let snapshot = provider.get_goal().map_err(|error| {
+                DurableRunnerError::invalid(format!("Codex thread/goal/get failed: {error}"))
+            })?;
+            (snapshot, provider.active_provider_turn_id().is_some())
+        };
+        let goal = normalize_codex_goal(&snapshot, working_now);
+        let (capability, revision) = {
+            let state = self
+                .state
+                .as_mut()
+                .expect("Codex state exists while reading its goal");
+            state.goal = goal.clone();
+            state.goal_revision = state.goal_revision.saturating_add(1);
+            (state.goal_capability.clone(), state.goal_revision)
+        };
+        self.save_state()?;
+        let payload = goal_event_payload(goal.as_ref(), capability.as_ref(), revision);
+        Ok(CommandExecution {
+            result: payload.clone(),
+            events: vec![(
+                "session.goal.snapshot".to_owned(),
+                EventPriority::P0,
+                payload,
+            )],
+        })
+    }
+
+    fn set_goal(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        self.restore_provider_if_needed()?;
+        self.ensure_goal_available()?;
+        let objective = payload
+            .get("objective")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && value.chars().count() <= 4_000)
+                    .ok_or_else(|| {
+                        DurableRunnerError::invalid(
+                        "session.goal.set objective must be nonblank and at most 4000 characters",
+                    )
+                    })
+            })
+            .transpose()?;
+        let status = payload
+            .get("status")
+            .map(|value| {
+                let status = value.as_str().ok_or_else(|| {
+                    DurableRunnerError::invalid("session.goal.set status must be a string")
+                })?;
+                codex_goal_status(status).ok_or_else(|| {
+                    DurableRunnerError::invalid("session.goal.set status is not supported by Codex")
+                })
+            })
+            .transpose()?;
+        let token_budget = if let Some(value) = payload.get("tokenBudget") {
+            if value.is_null() {
+                Some(None)
+            } else {
+                Some(Some(value.as_u64().filter(|value| *value > 0).ok_or_else(
+                    || {
+                        DurableRunnerError::invalid(
+                            "session.goal.set tokenBudget must be null or a positive integer",
+                        )
+                    },
+                )?))
+            }
+        } else {
+            None
+        };
+        if objective.is_none() && status.is_none() && token_budget.is_none() {
+            return Err(DurableRunnerError::invalid(
+                "session.goal.set requires objective, status, or tokenBudget",
+            ));
+        }
+        let (result, working_now) = {
+            let provider = self.ensure_provider()?;
+            let result = provider
+                .set_goal(objective, status, token_budget)
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!("Codex thread/goal/set failed: {error}"))
+                })?;
+            (result, provider.active_provider_turn_id().is_some())
+        };
+        let snapshot = if normalize_codex_goal(&result, working_now).is_some() {
+            result
+        } else {
+            self.ensure_provider()?.get_goal().map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "Codex thread/goal/get after set failed: {error}"
+                ))
+            })?
+        };
+        let goal = normalize_codex_goal(&snapshot, working_now).ok_or_else(|| {
+            DurableRunnerError::invalid("Codex thread/goal/set omitted a valid goal snapshot")
+        })?;
+        let (capability, revision) = {
+            let state = self
+                .state
+                .as_mut()
+                .expect("Codex state exists while setting its goal");
+            state.goal = Some(goal.clone());
+            state.goal_revision = state.goal_revision.saturating_add(1);
+            (state.goal_capability.clone(), state.goal_revision)
+        };
+        self.save_state()?;
+        let event = goal_control_event_payload(
+            Some(&goal),
+            capability.as_ref(),
+            revision,
+            payload.get("requestId").and_then(Value::as_str),
+        );
+        Ok(CommandExecution {
+            result: json!({"status": "accepted", "snapshot": event}),
+            events: vec![("session.goal.updated".to_owned(), EventPriority::P0, event)],
+        })
+    }
+
+    fn clear_goal(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        self.restore_provider_if_needed()?;
+        self.ensure_goal_available()?;
+        let result = self.ensure_provider()?.clear_goal().map_err(|error| {
+            DurableRunnerError::invalid(format!("Codex thread/goal/clear failed: {error}"))
+        })?;
+        let (capability, revision, working_now) = {
+            let working_now = self
+                .provider
+                .as_ref()
+                .is_some_and(|provider| provider.active_provider_turn_id().is_some());
+            let state = self
+                .state
+                .as_mut()
+                .expect("Codex state exists while clearing its goal");
+            state.goal = None;
+            state.goal_revision = state.goal_revision.saturating_add(1);
+            (
+                state.goal_capability.clone(),
+                state.goal_revision,
+                working_now,
+            )
+        };
+        self.save_state()?;
+        let event = json!({
+            "schema": "paperclip.session_goal.snapshot.v1",
+            "goal": Value::Null,
+            "sessionGoals": capability,
+            "workingNow": working_now,
+            "revision": revision,
+            "cleared": result.get("cleared").and_then(Value::as_bool).unwrap_or(true),
+            "requestId": payload.get("requestId").and_then(Value::as_str),
+        });
+        Ok(CommandExecution {
+            result: json!({"status": "accepted", "snapshot": event}),
+            events: vec![("session.goal.cleared".to_owned(), EventPriority::P0, event)],
+        })
+    }
+
     fn resolve_request(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         let request_id = payload
             .get("requestId")
@@ -1981,7 +2421,7 @@ impl CodexCommandExecutor {
                 "providerShutdownFailed": provider_shutdown_failed,
             }),
         })?;
-        let terminal = terminal_events(state, terminal_event_type);
+        let terminal = terminal_events(state, terminal_event_type, None);
         state.extend_terminal_events(terminal)?;
         self.save_state()
     }
@@ -2204,6 +2644,9 @@ impl CodexCommandExecutor {
             "driver": "codex_app_server",
             "providerSessionId": state.thread_id,
             "activeProviderTurnId": state.active_provider_turn_id,
+            "sessionGoals": state.goal_capability,
+            "goal": state.goal,
+            "goalRevision": state.goal_revision,
         })))
     }
 
@@ -2290,6 +2733,27 @@ impl CodexCommandExecutor {
                                     | "turn.interrupted"
                             )
                         });
+                    let goal_reconciliation = if terminal_event_type.is_some()
+                        && self
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.goal_capability.as_ref())
+                            .is_some_and(|capability| capability.availability == "available")
+                    {
+                        Some(
+                            self.provider
+                                .as_mut()
+                                .expect("provider remains present during goal reconciliation")
+                                .get_goal()
+                                .map_err(|error| error.to_string()),
+                        )
+                    } else {
+                        None
+                    };
+                    let working_now = self
+                        .provider
+                        .as_ref()
+                        .is_some_and(|provider| provider.active_provider_turn_id().is_some());
                     let identity = self.event_identity.clone();
                     let state = self
                         .state
@@ -2312,6 +2776,19 @@ impl CodexCommandExecutor {
                             )
                         })?;
                         state.reconcile_active_provider_turn(Some(provider_turn_id));
+                        if let Some(goal) = state.goal.as_mut() {
+                            goal.working_now = true;
+                            state.goal_revision = state.goal_revision.saturating_add(1);
+                            state.push_event(NormalizedProviderEvent {
+                                event_type: "session.goal.updated".to_owned(),
+                                priority: EventPriority::P0,
+                                payload: goal_event_payload(
+                                    state.goal.as_ref(),
+                                    state.goal_capability.as_ref(),
+                                    state.goal_revision,
+                                ),
+                            })?;
+                        }
                     }
                     if terminal_event_type.is_some() {
                         state.settle_active_provider_turn_identity()?;
@@ -2358,6 +2835,80 @@ impl CodexCommandExecutor {
                         state.receipt_limit_interrupt_deadline_unix_ms = None;
                         state.ambiguous_turn_start_pending = false;
                         state.lifecycle = "session_open".to_owned();
+                        if let Some(goal) = state.goal.as_mut() {
+                            goal.working_now = false;
+                            state.goal_revision = state.goal_revision.saturating_add(1);
+                            state.push_event(NormalizedProviderEvent {
+                                event_type: "session.goal.updated".to_owned(),
+                                priority: EventPriority::P0,
+                                payload: goal_event_payload(
+                                    state.goal.as_ref(),
+                                    state.goal_capability.as_ref(),
+                                    state.goal_revision,
+                                ),
+                            })?;
+                        }
+                    }
+                    if method == "thread/goal/updated" {
+                        state.goal = normalize_codex_goal(&params, working_now);
+                        state.goal_revision = state.goal_revision.saturating_add(1);
+                        state.push_event(NormalizedProviderEvent {
+                            event_type: "session.goal.updated".to_owned(),
+                            priority: EventPriority::P0,
+                            payload: goal_event_payload(
+                                state.goal.as_ref(),
+                                state.goal_capability.as_ref(),
+                                state.goal_revision,
+                            ),
+                        })?;
+                    } else if method == "thread/goal/cleared" {
+                        state.goal = None;
+                        state.goal_revision = state.goal_revision.saturating_add(1);
+                        state.push_event(NormalizedProviderEvent {
+                            event_type: "session.goal.cleared".to_owned(),
+                            priority: EventPriority::P0,
+                            payload: goal_event_payload(
+                                None,
+                                state.goal_capability.as_ref(),
+                                state.goal_revision,
+                            ),
+                        })?;
+                    }
+                    if let Some(reconciliation) = goal_reconciliation {
+                        match reconciliation {
+                            Ok(snapshot) => {
+                                let next_goal = normalize_codex_goal(&snapshot, false);
+                                if next_goal != state.goal {
+                                    state.goal = next_goal;
+                                    state.goal_revision = state.goal_revision.saturating_add(1);
+                                    state.push_event(NormalizedProviderEvent {
+                                        event_type: "session.goal.snapshot".to_owned(),
+                                        priority: EventPriority::P0,
+                                        payload: goal_event_payload(
+                                            state.goal.as_ref(),
+                                            state.goal_capability.as_ref(),
+                                            state.goal_revision,
+                                        ),
+                                    })?;
+                                }
+                            }
+                            Err(_) => {
+                                state.push_event(NormalizedProviderEvent {
+                                    event_type: "provider.notice.recorded".to_owned(),
+                                    priority: EventPriority::P0,
+                                    payload: json!({
+                                        "schema": "paperclip.provider.notice.v1",
+                                        "noticeId": "codex-goal-reconcile-failed",
+                                        "severity": "warning",
+                                        "category": "goal_reconciliation",
+                                        "scope": "session",
+                                        "recoverable": true,
+                                        "userActionable": false,
+                                        "summary": "Codex goal state could not be reconciled after the turn; Paperclip retained the last durable snapshot.",
+                                    }),
+                                })?;
+                            }
+                        }
                     }
                     let trace_first_event_sequence = state.next_provider_event_seq;
                     if terminal_event_type.is_some() {
@@ -2371,7 +2922,12 @@ impl CodexCommandExecutor {
                     }
                     let trace_last_event_sequence = state.next_provider_event_seq;
                     if let Some(event_type) = terminal_event_type {
-                        state.extend_terminal_events(terminal_events(state, &event_type))?;
+                        let goal_status = state.goal.as_ref().map(|goal| goal.status.as_str());
+                        state.extend_terminal_events(terminal_events(
+                            state,
+                            &event_type,
+                            goal_status,
+                        ))?;
                     }
                     let trace_emitted_event_ids = identity
                         .as_ref()
@@ -2523,6 +3079,9 @@ impl CommandExecutor for CodexCommandExecutor {
             "session.open" => self.open_session(),
             "turn.start" => self.start_turn(&command.payload),
             "turn.steer" => self.steer_turn(&command.payload),
+            "session.goal.get" => self.get_goal(),
+            "session.goal.set" => self.set_goal(&command.payload),
+            "session.goal.clear" => self.clear_goal(&command.payload),
             "turn.interrupt" | "turn.stop" | "run.cancel" => {
                 self.interrupt_turn(&command.command_type)
             }
@@ -2588,6 +3147,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn goal_snapshot_serializes_required_nullable_fields() {
+        let goal = SessionGoalSnapshot {
+            objective: "Finish the durable goal.".to_owned(),
+            status: "active".to_owned(),
+            token_budget: None,
+            tokens_used: 0,
+            elapsed_seconds: 0,
+            iterations: 0,
+            last_reason: None,
+            created_at: None,
+            updated_at: None,
+            completed_at: None,
+            working_now: true,
+        };
+
+        let payload = goal_event_payload(Some(&goal), None, 1);
+
+        for path in [
+            "/goal/tokenBudget",
+            "/goal/lastReason",
+            "/goal/createdAt",
+            "/goal/updatedAt",
+            "/goal/completedAt",
+        ] {
+            assert_eq!(payload.pointer(path), Some(&Value::Null), "{path}");
+        }
+    }
+
+    #[test]
     fn rejects_inconsistent_provider_state() {
         let state = CodexProviderState {
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
@@ -2625,6 +3213,9 @@ mod tests {
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
             last_agent_message: None,
+            goal_capability: None,
+            goal: None,
+            goal_revision: default_goal_revision(),
             pending_events: VecDeque::new(),
             queued_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
@@ -2697,7 +3288,7 @@ mod tests {
             ProviderToolBridge::default(),
         );
         state.last_agent_message = Some("Finished the requested work.".to_owned());
-        let events = terminal_events(&state, "turn.completed");
+        let events = terminal_events(&state, "turn.completed", None);
         assert_eq!(events[0].event_type, "run.result.proposed");
         assert_eq!(events[0].payload["summary"], "Finished the requested work.");
         assert_eq!(events[1].event_type, "run.terminal");

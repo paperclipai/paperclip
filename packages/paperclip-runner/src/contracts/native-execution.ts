@@ -228,6 +228,8 @@ export interface NativeSessionExecutionResult {
   nativeEventCount: number;
   highestContiguousSourceSeq: number;
   usage: Record<string, unknown> | null;
+  /** The active durable goal reached a safe turn boundary for run rollover. */
+  goalRolloverRequired?: boolean;
 }
 
 export class NativeExecutionInputError extends Error {

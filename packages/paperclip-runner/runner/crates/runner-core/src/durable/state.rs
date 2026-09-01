@@ -19,6 +19,7 @@ const MAX_RECENT_COMMANDS: usize = 128;
 const MAX_DIAGNOSTICS: usize = 32;
 const MAX_COMMAND_RESULT_BYTES: usize = 64 * 1024;
 const MAX_EXECUTOR_EVENT_RECEIPTS: usize = 256;
+const MAX_V2_REPLAY_EVENTS: usize = 2;
 const STATE_OVERHEAD_BYTES: usize = 16 * 1024 * 1024;
 const TEMP_FILE_ATTEMPTS: usize = 32;
 
@@ -37,6 +38,16 @@ impl EventPriority {
             Self::P1 => 1,
             Self::P2 => 2,
         }
+    }
+}
+
+fn v2_replay_key(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "session.capabilities.updated" => Some("session.capabilities"),
+        "session.goal.snapshot" | "session.goal.updated" | "session.goal.cleared" => {
+            Some("session.goal")
+        }
+        _ => None,
     }
 }
 
@@ -59,9 +70,18 @@ pub struct Command {
 
 impl Command {
     pub fn validate(&self) -> Result<(), DurableRunnerError> {
-        if self.schema != "paperclip.prp.command.v1" {
+        let schema_version = match self.schema.as_str() {
+            "paperclip.prp.command.v1" => 1,
+            "paperclip.prp.command.v2" => 2,
+            _ => {
+                return Err(DurableRunnerError::invalid(
+                    "command requires a supported paperclip.prp.command schema",
+                ));
+            }
+        };
+        if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
-                "command requires the paperclip.prp.command.v1 schema",
+                "session goal commands require the paperclip.prp.command.v2 schema",
             ));
         }
         if self.command_id.is_empty()
@@ -122,10 +142,13 @@ impl Command {
                 | "runner.drain"
                 | "runner.suspend"
                 | "runner.shutdown"
+                | "session.goal.get"
+                | "session.goal.set"
+                | "session.goal.clear"
         ) {
-            return Err(DurableRunnerError::invalid(
-                "command type is not supported by PRP v1",
-            ));
+            return Err(DurableRunnerError::invalid(format!(
+                "command type is not supported by PRP v{schema_version}"
+            )));
         }
         Ok(())
     }
@@ -139,6 +162,15 @@ pub struct StoredOutboxEvent {
     pub event_type: String,
     pub envelope: Value,
     pub byte_size: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredV2ReplayEvent {
+    pub source_seq: u64,
+    pub priority: u8,
+    pub event_type: String,
+    pub payload: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -190,6 +222,10 @@ pub struct DurableState {
     pub processed_command_fingerprints: BTreeMap<String, String>,
     #[serde(default)]
     executor_event_receipts: BTreeMap<String, ExecutorEventReceipt>,
+    #[serde(default)]
+    v2_replay_events: BTreeMap<String, StoredV2ReplayEvent>,
+    #[serde(default)]
+    pub last_connection_protocol_version: Option<u64>,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
@@ -218,6 +254,8 @@ impl DurableState {
             processed_commands: BTreeMap::new(),
             processed_command_fingerprints: BTreeMap::new(),
             executor_event_receipts: BTreeMap::new(),
+            v2_replay_events: BTreeMap::new(),
+            last_connection_protocol_version: None,
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
@@ -368,6 +406,17 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
+        let schema_version = if matches!(
+            event_type.as_str(),
+            "session.capabilities.updated"
+                | "session.goal.snapshot"
+                | "session.goal.updated"
+                | "session.goal.cleared"
+        ) {
+            2
+        } else {
+            1
+        };
         let envelope = json!({
             "protocol": PROTOCOL,
             "version": PROTOCOL_VERSION,
@@ -379,7 +428,7 @@ impl DurableState {
             "turnId": self.turn_id,
             "itemId": self.item_id,
             "payload": {
-                "schema": "paperclip.prp.event.v1",
+                "schema": format!("paperclip.prp.event.v{schema_version}"),
                 "sourceEventId": source_event_id,
                 "sourceSeq": source_seq,
                 "sourceInstanceId": self.runner_instance_id,
@@ -389,7 +438,7 @@ impl DurableState {
                 "turnId": self.turn_id,
                 "itemId": self.item_id,
                 "eventType": event_type,
-                "schemaVersion": 1,
+                "schemaVersion": schema_version,
                 "priority": priority.number(),
                 "emittedAt": emitted_at,
                 "payload": sanitize_value(&payload),
@@ -431,15 +480,30 @@ impl DurableState {
         self.outbox.push(StoredOutboxEvent {
             source_seq,
             priority: priority.number(),
-            event_type,
+            event_type: event_type.clone(),
             envelope,
             byte_size,
         });
+        if let Some(replay_key) = v2_replay_key(&event_type) {
+            self.v2_replay_events.insert(
+                replay_key.to_owned(),
+                StoredV2ReplayEvent {
+                    source_seq,
+                    priority: priority.number(),
+                    event_type,
+                    payload: sanitize_value(&payload),
+                },
+            );
+        }
         self.peak_outbox_bytes = self.peak_outbox_bytes.max(projected);
         Ok(source_seq)
     }
 
-    pub fn apply_ack(&mut self, acked_source_seq: u64) -> Result<(), DurableRunnerError> {
+    pub fn apply_ack(
+        &mut self,
+        acked_source_seq: u64,
+        protocol_version: u64,
+    ) -> Result<(), DurableRunnerError> {
         if acked_source_seq < self.acked_source_seq {
             return Err(DurableRunnerError::invalid(
                 "cumulative ACK cannot move behind the durable cursor",
@@ -453,6 +517,10 @@ impl DurableState {
         self.acked_source_seq = acked_source_seq;
         self.outbox
             .retain(|event| event.source_seq > acked_source_seq);
+        if protocol_version >= 2 {
+            self.v2_replay_events
+                .retain(|_, event| event.source_seq > acked_source_seq);
+        }
         if self.backpressure
             && self.outbox_bytes() < self.max_outbox_bytes.saturating_sub(self.p0_reserve_bytes)
         {
@@ -460,6 +528,32 @@ impl DurableState {
             if self.lifecycle == "backpressure" {
                 self.lifecycle = "ready".to_owned();
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_v2_replay_events(
+        &mut self,
+        config: &DurableRunnerConfig,
+    ) -> Result<(), DurableRunnerError> {
+        let replay = self
+            .v2_replay_events
+            .values()
+            .filter(|event| event.source_seq <= self.acked_source_seq)
+            .cloned()
+            .collect::<Vec<_>>();
+        for event in replay {
+            let priority = match event.priority {
+                0 => EventPriority::P0,
+                1 => EventPriority::P1,
+                2 => EventPriority::P2,
+                _ => {
+                    return Err(DurableRunnerError::invalid(
+                        "v2 replay event priority is invalid",
+                    ));
+                }
+            };
+            self.enqueue_event(config, event.event_type, priority, event.payload)?;
         }
         Ok(())
     }
@@ -728,6 +822,100 @@ impl DurableStateStore {
         &self.path
     }
 
+    /// Starts a fresh per-run journal while retaining provider-owned state in
+    /// the surrounding directory. The caller must present the exact prior run
+    /// id and the same durable session/runner/lease binding; this is used only
+    /// after the prior Paperclip heartbeat has settled.
+    pub fn rotate_run_binding(
+        &self,
+        config: &DurableRunnerConfig,
+        previous_run_id: &str,
+    ) -> Result<bool, DurableRunnerError> {
+        config.validate()?;
+        if previous_run_id == config.run_id {
+            return Err(DurableRunnerError::invalid(
+                "durable run rotation requires a distinct prior run id",
+            ));
+        }
+        let parent = self.path.parent().ok_or_else(|| {
+            DurableRunnerError::invalid("durable state path omitted its parent directory")
+        })?;
+        let history = parent.join("run-history");
+        let archive = history.join(format!(
+            "runner-state-{previous_run_id}-to-{}.json",
+            config.run_id
+        ));
+        let mut bytes = Vec::new();
+        match open_private_regular_file(&self.path) {
+            Ok(mut file) => {
+                file.read_to_end(&mut bytes).map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to read durable state before run rotation: {error}"
+                    ))
+                })?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound && archive.exists() => {
+                return Ok(true);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(DurableRunnerError::invalid(
+                    "durable run rotation omitted the prior journal",
+                ));
+            }
+            Err(error) => {
+                return Err(DurableRunnerError::invalid(format!(
+                    "failed to open durable state before run rotation: {error}"
+                )));
+            }
+        }
+        let state: DurableState = serde_json::from_slice(&bytes).map_err(|error| {
+            DurableRunnerError::invalid(format!(
+                "durable state is malformed and cannot be rotated: {error}"
+            ))
+        })?;
+        if state.run_id == config.run_id {
+            validate_binding(&state, config, state.has_legacy_command_journal())?;
+            return Ok(false);
+        }
+        if state.run_id != previous_run_id
+            || state.runner_instance_id != config.runner_instance_id
+            || state.environment_lease_id != config.environment_lease_id
+            || state.normalized_session_id != config.normalized_session_id
+        {
+            return Err(DurableRunnerError::invalid(
+                "durable run rotation does not match the prior session binding",
+            ));
+        }
+        fs::create_dir_all(&history).map_err(|error| {
+            DurableRunnerError::invalid(format!("failed to create durable run history: {error}"))
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&history, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            DurableRunnerError::invalid(format!("failed to protect durable run history: {error}"))
+        })?;
+        if archive.exists() {
+            return Err(DurableRunnerError::invalid(
+                "durable run rotation archive already exists while the prior journal is live",
+            ));
+        }
+        fs::rename(&self.path, &archive).map_err(|error| {
+            DurableRunnerError::invalid(format!(
+                "failed to archive the prior durable run journal: {error}"
+            ))
+        })?;
+        #[cfg(unix)]
+        {
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to sync durable run rotation: {error}"
+                    ))
+                })?;
+        }
+        Ok(true)
+    }
+
     pub fn load_or_create(
         &self,
         config: &DurableRunnerConfig,
@@ -925,6 +1113,21 @@ fn validate_binding(
                     && receipt.source_seq <= state.highest_source_seq()
                     && executor_receipt_sequences.insert(receipt.source_seq)
             });
+    let v2_replay_events_are_valid = state.v2_replay_events.len() <= MAX_V2_REPLAY_EVENTS
+        && state.v2_replay_events.iter().all(|(key, replay)| {
+            v2_replay_key(&replay.event_type) == Some(key.as_str())
+                && replay.source_seq > 0
+                && replay.source_seq <= state.highest_source_seq()
+                && replay.priority <= 2
+                && replay.payload.is_object()
+                && (replay.source_seq <= state.acked_source_seq
+                    || state.outbox.iter().any(|event| {
+                        event.source_seq == replay.source_seq
+                            && event.priority == replay.priority
+                            && event.event_type == replay.event_type
+                            && event.envelope.pointer("/payload/payload") == Some(&replay.payload)
+                    }))
+        });
     command_sequences.sort_unstable();
     let command_cursors_are_valid = match (command_sequences.first(), command_sequences.last()) {
         (None, None) => state.compacted_through_controller_seq == state.last_controller_command_seq,
@@ -951,6 +1154,10 @@ fn validate_binding(
         || !command_cursors_are_valid
         || !command_fingerprints_are_valid
         || !executor_event_receipts_are_valid
+        || !v2_replay_events_are_valid
+        || state
+            .last_connection_protocol_version
+            .is_some_and(|version| !(1..=PROTOCOL_VERSION).contains(&version))
     {
         return Err(DurableRunnerError::invalid(
             "durable state cursors, bounds, or journals are inconsistent",
@@ -1061,6 +1268,9 @@ fn sensitive_key(key: &str) -> bool {
             | "cachewritetokens"
             | "pretokens"
             | "posttokens"
+            | "tokenbudgetcontrol"
+            | "tokenbudget"
+            | "tokensused"
     ) {
         return false;
     }
@@ -1229,6 +1439,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn session_goal_commands_require_and_accept_the_v2_schema() {
+        let mut goal = command("goal-command", 1);
+        goal.command_type = "session.goal.set".to_owned();
+        assert!(goal.validate().is_err());
+        goal.schema = "paperclip.prp.command.v2".to_owned();
+        assert!(goal.validate().is_ok());
+    }
+
     fn temporary_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "paperclip-runner-durable-{label}-{}",
@@ -1246,10 +1465,70 @@ mod tests {
         state
             .enqueue_event(&config, "runner.reconnected", EventPriority::P1, json!({}))
             .unwrap();
-        state.apply_ack(1).unwrap();
+        state.apply_ack(1, 2).unwrap();
         assert_eq!(state.outbox.len(), 1);
-        assert!(state.apply_ack(0).is_err());
-        assert!(state.apply_ack(3).is_err());
+        assert!(state.apply_ack(0, 2).is_err());
+        assert!(state.apply_ack(3, 2).is_err());
+    }
+
+    #[test]
+    fn session_goal_events_use_the_prp_v2_event_schema() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "session.goal.snapshot",
+                EventPriority::P0,
+                json!({"goal": null}),
+            )
+            .unwrap();
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/schema"),
+            Some(&json!("paperclip.prp.event.v2")),
+        );
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/schemaVersion"),
+            Some(&json!(2)),
+        );
+    }
+
+    #[test]
+    fn v1_acknowledgement_replays_latest_goal_state_for_v2() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "session.goal.updated",
+                EventPriority::P0,
+                json!({"goal": {"objective": "durable objective", "status": "active"}}),
+            )
+            .unwrap();
+
+        state.apply_ack(1, 1).unwrap();
+        assert!(state.outbox.is_empty());
+        assert_eq!(state.v2_replay_events["session.goal"].source_seq, 1);
+        validate_binding(&state, &config, false).unwrap();
+
+        state.restore_v2_replay_events(&config).unwrap();
+        assert_eq!(state.outbox.len(), 1);
+        assert_eq!(state.outbox[0].source_seq, 2);
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/eventType"),
+            Some(&json!("session.goal.updated")),
+        );
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/goal/objective"),
+            Some(&json!("durable objective")),
+        );
+
+        state.apply_ack(2, 2).unwrap();
+        assert!(state.outbox.is_empty());
+        assert!(state.v2_replay_events.is_empty());
+        validate_binding(&state, &config, false).unwrap();
     }
 
     #[test]
@@ -1318,6 +1597,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_run_rotation_archives_the_prior_journal_and_starts_fresh() {
+        let directory = temporary_directory("run-rotation");
+        let _ = fs::remove_dir_all(&directory);
+        let original = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&original).unwrap();
+        state
+            .enqueue_event(&original, "run.terminal", EventPriority::P0, json!({}))
+            .unwrap();
+        store.save(&state).unwrap();
+
+        let mut successor = original.clone();
+        successor.run_id = "run_2".to_owned();
+        successor.turn_id = "turn_2".to_owned();
+        successor.item_id = "item_2".to_owned();
+        successor.connect_url = "ws://127.0.0.1:3000/api/runner/v1/connect/run_2".to_owned();
+        assert!(store.rotate_run_binding(&successor, "run_1").unwrap());
+        let (rotated, recovered) = store.load_or_create(&successor).unwrap();
+        assert!(!recovered);
+        assert_eq!(rotated.run_id, "run_2");
+        assert!(rotated.outbox.is_empty());
+        assert!(directory
+            .join("run-history/runner-state-run_1-to-run_2.json")
+            .exists());
+        assert!(!store.rotate_run_binding(&successor, "run_1").unwrap());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn event_payloads_are_redacted_before_persistence() {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
@@ -1356,6 +1664,20 @@ mod tests {
             sanitized["nested"]["authorizationBoundary"],
             json!("[REDACTED]")
         );
+    }
+
+    #[test]
+    fn goal_usage_fields_are_not_mistaken_for_credentials() {
+        let sanitized = sanitize_value(&json!({
+            "tokenBudgetControl": true,
+            "tokenBudget": 4096,
+            "tokensUsed": 128,
+            "accessToken": "secret-value",
+        }));
+        assert_eq!(sanitized["tokenBudgetControl"], json!(true));
+        assert_eq!(sanitized["tokenBudget"], json!(4096));
+        assert_eq!(sanitized["tokensUsed"], json!(128));
+        assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
     }
 
     #[test]

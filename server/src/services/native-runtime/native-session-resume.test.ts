@@ -133,6 +133,44 @@ describe("rebindNativeSessionCheckpoint", () => {
     });
   });
 
+  it("requires exact provider continuity for an unfinished session goal", () => {
+    const source = previousRun();
+    const profile = source.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.goal = {
+      threadId: "provider-thread-123",
+      objective: "Keep this paused goal on its original provider session.",
+      status: "paused",
+      tokenBudget: null,
+      tokensUsed: 321,
+      timeUsedSeconds: 12,
+    };
+    checkpoint.semanticResult = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Paused at a quiescent boundary.",
+      continuation: {
+        kind: "same_agent",
+        idempotencyKey: "goal:paused:one",
+      },
+    };
+
+    expect(
+      rebindNativeSessionCheckpoint({
+        previousRun: source,
+        currentExecution: execution(currentRunId),
+      }),
+    ).toMatchObject({
+      providerRecoveryPolicy: "same_session_only",
+      semanticResult: null,
+      activeTurnId: null,
+      goal: {
+        objective: "Keep this paused goal on its original provider session.",
+        status: "paused",
+      },
+    });
+  });
+
   it("refuses to resume when the workspace changes", () => {
     expect(rebindNativeSessionCheckpoint({
       previousRun: previousRun(),

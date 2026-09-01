@@ -1029,6 +1029,17 @@ instances return `404`.
 - `GET /issues/:issueId/attachments`
 - `GET /attachments/:attachmentId/content`
 - `DELETE /attachments/:attachmentId`
+- `GET /issues/:issueId/runner-goal?agentId=...`
+- `POST /issues/:issueId/runner-goal/actions`
+
+The runner-goal endpoints control an issue-scoped durable agent-session goal,
+not a row in the company `goals` hierarchy. Reads return the effective agent,
+negotiated capability, normalized goal snapshot, active-run state, pending
+action, and revision. Mutations require a request id, assigned agent, expected
+revision, and a negotiated action; they return `202`, replay the original result
+for a duplicate request id, and return `409` with the current projection for a
+stale revision or an unconfirmed unfinished-goal replacement. These controls do
+not create issue comments.
 
 ### 10.4.1 Atomic Checkout Contract
 
@@ -1222,6 +1233,24 @@ Scheduler must skip invocation when:
 - agent is paused/terminated
 - an existing run is active
 - hard budget limit has been hit
+
+## 11.7 Durable agent session goals
+
+Runner Protocol v2 negotiates a required `sessionGoals` capability and typed
+`session.goal.*` commands and events. PRP v1 sessions remain supported and are
+goal unsupported. The Codex app-server driver maps controls to
+`thread/goal/get`, `thread/goal/set`, and `thread/goal/clear`; it observes
+provider-created goal notifications and reconciles with an authoritative get
+after each turn. An active goal suppresses premature run terminalization while
+autonomous turns continue. Persistent ACP adapters may opt in through the
+`_session/goal` extension and advertise their exact action subset; CLI,
+one-shot ACP, and providers without the structured extension remain unsupported.
+
+The board composer treats `/goal` as an action command rather than Markdown or
+comment text. It is capability-aware, and the issue thread renders durable goal
+status and controls immediately above the composer. Goal completion enters the
+normal run-result/completion arbitration path and does not directly close the
+issue.
 
 ## 12. Governance and Approval Flows
 

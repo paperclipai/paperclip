@@ -8,7 +8,7 @@ import {
   buildAgentMentionHref,
   buildSkillMentionHref,
 } from "@paperclipai/shared";
-import { TaskChatComposer } from "./TaskChatComposer";
+import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { QuestionForm } from "./QuestionForm";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 
@@ -764,6 +764,175 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+  });
+
+  describe("/goal action commands", () => {
+    const capability = {
+      availability: "available" as const,
+      verified: true,
+      actions: ["set", "pause", "resume", "clear"] as Array<
+        "set" | "pause" | "resume" | "clear"
+      >,
+      autonomousUpdates: true,
+      persistentAcrossResume: true,
+      maxObjectiveChars: 4_000,
+      tokenBudgetControl: true,
+      usageReporting: true,
+    };
+
+    it("matches only an exact first /goal token", () => {
+      expect(parseRunnerGoalCommand(" /goal Ship the feature ")).toEqual({
+        matched: true,
+        command: { action: "create", objective: "Ship the feature" },
+      });
+      expect(
+        parseRunnerGoalCommand(
+          "[/goal\u00a0](</goal Ship the feature across turns.>)",
+        ),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Ship the feature across turns.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand(
+          "[/go](</goal Return one concise confirmation, then complete.>)",
+        ),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Return one concise confirmation, then complete.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand("[/](/goal%20Confirm%20the%20goal%20state.)"),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Confirm the goal state.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand("[/goal](/goal%20pause)"),
+      ).toEqual({ matched: true, command: { action: "pause" } });
+      expect(parseRunnerGoalCommand("/goal pause extra")).toEqual({
+        matched: true,
+        error: "/goal pause does not accept extra arguments.",
+      });
+      expect(parseRunnerGoalCommand("[goal](/goal Ship it)")).toEqual({
+        matched: false,
+      });
+      expect(parseRunnerGoalCommand("\\/goal ordinary text")).toEqual({ matched: false });
+      expect(parseRunnerGoalCommand("/goalkeeper ordinary text")).toEqual({ matched: false });
+    });
+
+    it("dispatches a goal action without posting a comment", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onRunnerGoalCommand = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          runnerGoalCapability={capability}
+          onRunnerGoalCommand={onRunnerGoalCommand}
+        />,
+      );
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onRunnerGoalCommand).toHaveBeenCalledWith({
+        action: "create",
+        objective: "Ship the feature",
+      });
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("");
+    });
+
+    it("commits a pending agent reassignment before starting the goal", async () => {
+      const order: string[] = [];
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onPendingAssigneeChange = vi.fn();
+      const onRunnerGoalReassign = vi.fn().mockImplementation(async () => {
+        order.push("reassign");
+      });
+      const onRunnerGoalCommand = vi.fn().mockImplementation(async () => {
+        order.push("goal");
+      });
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          enableReassign
+          reassignOptions={[{ id: "agent:a1", label: "Clippy" }]}
+          currentAssigneeValue=""
+          onPendingAssigneeChange={onPendingAssigneeChange}
+          runnerGoalCapability={capability}
+          onRunnerGoalReassign={onRunnerGoalReassign}
+          onRunnerGoalCommand={onRunnerGoalCommand}
+        />,
+      );
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-composer-assignee"]',
+      )!;
+      flushSync(() => trigger.click());
+      await flushAsync();
+      const option = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Clippy",
+      );
+      expect(option).toBeDefined();
+      flushSync(() => option!.click());
+      await flushAsync();
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onPendingAssigneeChange).toHaveBeenCalledWith("agent:a1");
+      expect(onRunnerGoalReassign).toHaveBeenCalledWith({
+        assigneeAgentId: "a1",
+        assigneeUserId: null,
+      });
+      expect(onRunnerGoalCommand).toHaveBeenCalledWith({
+        action: "create",
+        objective: "Ship the feature",
+      });
+      expect(order).toEqual(["reassign", "goal"]);
+      expect(onAdd).not.toHaveBeenCalled();
+    });
+
+    it("preserves unsupported goal text and shows the provider reason", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          runnerGoalCapability={{
+            ...capability,
+            availability: "unsupported",
+            actions: [],
+            reason: "Unsupported by OpenCode.",
+          }}
+          onRunnerGoalCommand={vi.fn()}
+        />,
+      );
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("/goal Ship the feature");
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Unsupported by OpenCode",
+      );
+    });
   });
 
   it("shows the assignee combobox only when reassign is enabled, with the current label", () => {

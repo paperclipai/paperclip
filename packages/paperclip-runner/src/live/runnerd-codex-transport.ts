@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -97,6 +98,75 @@ function recoveredControlPlaneIdentity(
     );
   }
   return structuredClone(identity);
+}
+
+function rotateControlPlaneRunJournal(input: {
+  directory: string;
+  previousIdentity: DurableRecoveryIdentity;
+  desiredIdentity: DurableRecoveryIdentity;
+  expectedRunnerVersion: string;
+  expectedRunnerDigest: string;
+}): void {
+  const statePath = resolve(input.directory, "control-plane-state.json");
+  const previousBytes = readFileSync(statePath);
+  const previousState = record(JSON.parse(previousBytes.toString("utf8")));
+  const previousCommands = Array.isArray(previousState.commands)
+    ? previousState.commands.map(record)
+    : [];
+  const prepare = [...previousCommands]
+    .reverse()
+    .find((command) => command.type === "run.prepare");
+  if (!prepare) {
+    throw new Error("durable successor run omitted its prior prepare command");
+  }
+  const stagingDirectory = mkdtempSync(
+    resolve(input.directory, "..", "control-plane-rotation-"),
+  );
+  try {
+    const staged = new DurablePrpControlPlane({
+      stateDirectory: stagingDirectory,
+      identity: input.desiredIdentity,
+      expectedRunnerVersion: input.expectedRunnerVersion,
+      expectedRunnerDigest: input.expectedRunnerDigest,
+      connectionLeaseTtlMs: 60 * 60 * 1_000,
+    });
+    staged.queueCommand(
+      "run.prepare",
+      structuredClone(record(prepare.payload)),
+      `prepare_${input.desiredIdentity.runId}`,
+      true,
+    );
+    staged.queueCommand(
+      "session.open",
+      { reuse: "same_session" },
+      `open_${input.desiredIdentity.runId}`,
+      true,
+    );
+    const stagedBytes = readFileSync(
+      resolve(stagingDirectory, "control-plane-state.json"),
+    );
+    const historyDirectory = resolve(input.directory, "run-history");
+    mkdirSync(historyDirectory, { recursive: true, mode: 0o700 });
+    const archivePath = resolve(
+      historyDirectory,
+      `control-plane-state-${input.previousIdentity.runId}-to-${input.desiredIdentity.runId}.json`,
+    );
+    if (existsSync(archivePath)) {
+      if (!readFileSync(archivePath).equals(previousBytes)) {
+        throw new Error("durable successor run history conflicts with the live journal");
+      }
+    } else {
+      writeFileSync(archivePath, previousBytes, { flag: "wx", mode: 0o600 });
+    }
+    const replacementPath = resolve(
+      input.directory,
+      `.control-plane-state-${randomUUID()}.tmp`,
+    );
+    writeFileSync(replacementPath, stagedBytes, { flag: "wx", mode: 0o600 });
+    renameSync(replacementPath, statePath);
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
 }
 
 function bridgedCodexQuestionParams(
@@ -267,6 +337,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   runnerRuntimeContext?: NativeRuntimeContextSnapshot | null;
   /** Root path visible to runnerd when it is not on the Paperclip host. */
   runnerFilesystemRoot?: string;
+  /** Workspace cwd to retain when a local provider session is reopened. */
+  resumeWorkingDirectory?: string;
   /** Current run's authority catalog, used when a suspended session is rebound. */
   resumeDynamicTools?: readonly Readonly<Record<string, unknown>>[];
   /** Provider turn recorded by the owner checkpoint when restoring an active run. */
@@ -340,6 +412,38 @@ export function unwrapRunnerdProviderNotification(
   return notifications.at(-1) ?? record(input);
 }
 
+export function latestRunnerdSessionReadiness(
+  events: readonly unknown[],
+): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = record(events[index]);
+    if (
+      event.eventType !== "harness.ready" &&
+      event.eventType !== "session.started" &&
+      event.eventType !== "session.resumed"
+    ) continue;
+    return record(record(record(event.envelope).payload).payload);
+  }
+  return null;
+}
+
+export function unseenRunnerdCommittedEvents<
+  T extends { sourceSeq: number },
+>(events: readonly T[], lastSourceSeq: number): T[] {
+  const unseen = events.filter((event) => event.sourceSeq > lastSourceSeq);
+  if (unseen.length === 0) return [];
+  let expectedSourceSeq = lastSourceSeq + 1;
+  for (const event of unseen) {
+    if (event.sourceSeq !== expectedSourceSeq) {
+      throw new Error(
+        `provider_notification_window_exceeded: expected source sequence ${expectedSourceSeq}, received ${event.sourceSeq}`,
+      );
+    }
+    expectedSourceSeq += 1;
+  }
+  return unseen;
+}
+
 export function expandRunnerdCanonicalNotifications(
   method: string,
   input: unknown,
@@ -347,6 +451,41 @@ export function expandRunnerdCanonicalNotifications(
   const payload = record(input);
   if (!Array.isArray(payload.events)) return [{ method, params: payload }];
   return payload.events.map((event) => ({ method, params: record(event) }));
+}
+
+export function runnerdCanonicalNotificationMethod(
+  eventType: string,
+  payload: Record<string, unknown>,
+): string | undefined {
+  // An empty open/resume snapshot is already returned by thread/goal/get and
+  // is not a provider-side clear transition. Do not insert a synthetic clear
+  // ahead of the first real turn notification.
+  if (eventType === "session.goal.snapshot" && payload.goal === null) {
+    return undefined;
+  }
+  return (
+    {
+      "turn.started": "turn/started",
+      "item.started": "item/started",
+      "item.delta": "item/agentMessage/delta",
+      "item.completed": "item/completed",
+      "turn.completed": "turn/completed",
+      "turn.failed": "turn/completed",
+      "turn.interrupted": "turn/completed",
+      "turn.cancelled": "turn/completed",
+      "usage.reported": "thread/tokenUsage/updated",
+      "plan.updated": "turn/plan/updated",
+      "workspace.change.updated": "paperclip/workspaceChange/updated",
+      "run.result.proposed": "paperclip/runResult",
+      "session.goal.snapshot": "thread/goal/updated",
+      "session.goal.updated": "thread/goal/updated",
+      "session.goal.cleared": "thread/goal/cleared",
+      "session.updated":
+        payload.status === "budget_reached"
+          ? "provider/budgetReached"
+          : "provider/sessionUpdated",
+    } as Record<string, string>
+  )[eventType];
 }
 
 export function resolveRunnerdSessionIdentity(input: unknown): {
@@ -436,6 +575,60 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function appServerThreadGoal(
+  value: unknown,
+  threadId: string,
+): Record<string, unknown> | null {
+  const goal = record(value);
+  const objective = typeof goal.objective === "string"
+    ? goal.objective.trim()
+    : "";
+  const rawStatus = typeof goal.status === "string" ? goal.status : "";
+  const status = rawStatus === "usage_limited"
+    ? "usageLimited"
+    : rawStatus === "budget_limited"
+      ? "budgetLimited"
+      : rawStatus;
+  if (
+    objective.length === 0 ||
+    ![
+      "active",
+      "paused",
+      "blocked",
+      "limited",
+      "usageLimited",
+      "budgetLimited",
+      "complete",
+    ].includes(status)
+  ) return null;
+
+  const epochSeconds = (timestamp: unknown): number => {
+    if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+      return timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp;
+    }
+    if (typeof timestamp !== "string") return 0;
+    const milliseconds = Date.parse(timestamp);
+    return Number.isFinite(milliseconds) ? milliseconds / 1_000 : 0;
+  };
+
+  return {
+    threadId,
+    objective,
+    status,
+    tokenBudget:
+      typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
+    tokensUsed: typeof goal.tokensUsed === "number" ? goal.tokensUsed : 0,
+    timeUsedSeconds:
+      typeof goal.timeUsedSeconds === "number"
+        ? goal.timeUsedSeconds
+        : typeof goal.elapsedSeconds === "number"
+          ? goal.elapsedSeconds
+          : 0,
+    createdAt: epochSeconds(goal.createdAt),
+    updatedAt: epochSeconds(goal.updatedAt),
+  };
 }
 
 type PendingTraceRehydration = {
@@ -753,6 +946,21 @@ export function rehydrateRunnerdWorkspaceChangeNotification(
   };
 }
 
+export function rehydrateRunnerdGoalNotification(
+  rawParams: Record<string, unknown>,
+  openedThreadId: string,
+  method: "thread/goal/updated" | "thread/goal/cleared",
+): Record<string, unknown> {
+  if (method === "thread/goal/cleared") {
+    return { ...rawParams, threadId: openedThreadId };
+  }
+  return {
+    ...rawParams,
+    threadId: openedThreadId,
+    goal: appServerThreadGoal(rawParams.goal, openedThreadId),
+  };
+}
+
 function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
@@ -985,10 +1193,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #pump: NodeJS.Timeout | null = null;
-  #eventIndex = 0;
+  #lastEventSourceSeq = 0;
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
+  #persistedProviderReadinessAdopted = false;
   #turnId = "";
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
@@ -1191,10 +1400,33 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#providerIdentity === null
             ? {}
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
-          cwd: this.options.runnerFilesystemRoot ?? tmpdir(),
+          cwd:
+            this.options.runnerFilesystemRoot ??
+            this.options.resumeWorkingDirectory ??
+            tmpdir(),
           turns: recoveredTurns,
         },
       };
+    }
+    if (method === "thread/goal/get") {
+      const result = await this.#commandResult("session.goal.get", params);
+      return {
+        goal: appServerThreadGoal(result.goal, this.#threadId),
+      };
+    }
+    if (method === "thread/goal/set") {
+      const result = await this.#commandResult("session.goal.set", params);
+      const snapshot = record(result.snapshot);
+      return {
+        goal: appServerThreadGoal(
+          snapshot.goal ?? result.goal,
+          this.#threadId,
+        ),
+      };
+    }
+    if (method === "thread/goal/clear") {
+      await this.#commandResult("session.goal.clear", params);
+      return {};
     }
     if (method === "session/budget/increase") {
       await this.#command("session.budget.increase", params);
@@ -1696,24 +1928,37 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("PRP provider resume state is unavailable");
     }
     const controlPlaneDirectory = resolve(this.#root, "control-plane");
-    const identity = recoveredControlPlaneIdentity(
+    const previousIdentity = recoveredControlPlaneIdentity(
       controlPlaneDirectory,
       desiredIdentity,
     );
-    if (
-      identity.runId !== desiredIdentity.runId ||
-      identity.turnId !== desiredIdentity.turnId ||
-      identity.itemId !== desiredIdentity.itemId
-    ) {
-      // PRP identity is the authorization boundary for every command, event,
-      // and semantic receipt. Reusing a provider process for another run needs
-      // a crash-safe credential and durable-state rotation on both peers; do
-      // not pretend that a provider-only attachment changed that authority.
-      throw new Error("native_runner_prp_run_rotation_unavailable");
+    const runnerStateBeforeResume = await this.#readDurableRunnerState();
+    const previousRunnerRunId = runnerStateBeforeResume.runId;
+    if (typeof previousRunnerRunId !== "string" || previousRunnerRunId.length === 0) {
+      throw new Error("PRP provider resume state omitted its durable run identity");
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? defaultCapabilityRunnerdBinary();
     const runnerArtifact = approvedRunnerArtifact(runnerBinaryPath);
+    const rotatesControlPlaneBinding =
+      previousIdentity.runId !== desiredIdentity.runId ||
+      previousIdentity.turnId !== desiredIdentity.turnId ||
+      previousIdentity.itemId !== desiredIdentity.itemId;
+    const rotatesRunnerBinding = previousRunnerRunId !== desiredIdentity.runId;
+    if (rotatesControlPlaneBinding) {
+      // PRP terminality is per heartbeat run. Preserve the provider-owned
+      // checkpoint, but start a fresh command/event journal so the successor
+      // cannot replay the prior run's terminal boundary or emit under stale
+      // authority. Both journals are archived before the atomic replacement.
+      rotateControlPlaneRunJournal({
+        directory: controlPlaneDirectory,
+        previousIdentity,
+        desiredIdentity,
+        expectedRunnerVersion: runnerArtifact.version,
+        expectedRunnerDigest: runnerArtifact.digest,
+      });
+    }
+    const identity = rotatesControlPlaneBinding ? desiredIdentity : previousIdentity;
     this.#durableTurnId = identity.turnId;
     const provider = this.options.provider ?? "codex";
     const sourceRuntimeContext = this.options.runtimeContext ?? null;
@@ -1781,7 +2026,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
-    this.#eventIndex = core.store.state.committedEvents.length;
+    const persistedReadiness = rotatesControlPlaneBinding
+      ? null
+      : latestRunnerdSessionReadiness(core.store.state.committedEvents);
+    if (persistedReadiness !== null) {
+      // Fully acknowledged durable journals do not necessarily emit another
+      // ready event when runnerd reconnects. Adopt the last committed provider
+      // identity before advancing the live cursor, without replaying old
+      // notifications into the outer run authority.
+      this.#adoptProviderReadiness(persistedReadiness, { persisted: true });
+    }
+    this.#lastEventSourceSeq = core.store.state.committedEvents.reduce(
+      (highest, event) => Math.max(highest, event.sourceSeq),
+      0,
+    );
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
       : null;
@@ -1803,6 +2061,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       maxRuntimeMs: 60 * 60 * 1_000,
       reconnectGraceMs: this.options.runnerReconnectGraceMs,
       lifecyclePolicy: this.options.lifecyclePolicy,
+      ...(rotatesRunnerBinding
+        ? { rotateFromRunId: previousRunnerRunId }
+        : {}),
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
       runnerDigest: runnerArtifact.digest,
@@ -1837,6 +2098,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#evidence.runnerProcessGroupId = null;
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
+    if (rotatesControlPlaneBinding) {
+      await this.#waitCommand("run.prepare");
+      await this.#waitCommand("session.open");
+    }
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
     this.#diagnostic(
@@ -1928,7 +2193,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pumpEvents();
       if (
         this.#threadId.length > 0 &&
-        (this.#evidence.providerExecutionKind === "remote_service" ||
+        (this.#persistedProviderReadinessAdopted ||
+          this.#evidence.providerExecutionKind === "remote_service" ||
           this.#evidence.providerPid !== null)
       )
         return;
@@ -1963,68 +2229,80 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+  #adoptProviderReadiness(
+    started: Record<string, unknown>,
+    options: { persisted?: boolean } = {},
+  ): void {
+    const runtimeIdentity = record(started.runtimeIdentity);
+    const descriptor = record(started.providerDescriptor);
+    const {
+      processId: pid,
+      threadId,
+      sessionId,
+    } = resolveRunnerdSessionIdentity(started);
+    const providerIdentity = record(started.providerIdentity);
+    if (!options.persisted && pid !== null) {
+      this.#evidence.providerPid = pid;
+      if (descriptor.driver === "acpx_runtime")
+        this.#evidence.sidecarPid = pid;
+      else this.#evidence.codexPid = pid;
+    }
+    if (typeof descriptor.driver === "string")
+      this.#evidence.providerDriver = descriptor.driver;
+    if (typeof descriptor.providerVersion === "string")
+      this.#evidence.providerVersion = descriptor.providerVersion;
+    if (
+      descriptor.agent === "pi" ||
+      descriptor.agent === "claude" ||
+      descriptor.agent === "codex"
+    )
+      this.#evidence.acpxAgent = descriptor.agent;
+    if (typeof descriptor.agentServerVersion === "string")
+      this.#evidence.agentServerVersion = descriptor.agentServerVersion;
+    if (typeof descriptor.agentRuntimeVersion === "string")
+      this.#evidence.agentRuntimeVersion = descriptor.agentRuntimeVersion;
+    if (typeof descriptor.acpProtocolVersion === "number")
+      this.#evidence.acpProtocolVersion = descriptor.acpProtocolVersion;
+    if (!options.persisted && typeof descriptor.agentProcessId === "number")
+      this.#evidence.agentPid = descriptor.agentProcessId;
+    if (
+      runtimeIdentity.executionKind === "local_process" ||
+      runtimeIdentity.executionKind === "remote_service"
+    ) {
+      this.#evidence.providerExecutionKind = runtimeIdentity.executionKind;
+    }
+    if (runtimeIdentity.service === "anthropic_managed_agents") {
+      this.#evidence.providerService = "anthropic_managed_agents";
+    } else if (
+      runtimeIdentity.service === "aws_bedrock_agentcore_harness"
+    ) {
+      this.#evidence.providerService = "aws_bedrock_agentcore_harness";
+    }
+    if (threadId !== null) this.#threadId = threadId;
+    if (sessionId !== null) this.#sessionId = sessionId;
+    if (typeof providerIdentity.kind === "string") {
+      this.#providerIdentity = structuredClone(providerIdentity);
+    }
+    this.#persistedProviderReadinessAdopted = options.persisted === true;
+    this.#publish();
+  }
+
   #pumpEvents(): void {
     this.#flushPendingTraceRehydrations();
     const events = this.#core?.store.state.committedEvents ?? [];
-    while (this.#eventIndex < events.length) {
-      const event = events[this.#eventIndex++];
+    const unseenEvents = unseenRunnerdCommittedEvents(
+      events,
+      this.#lastEventSourceSeq,
+    );
+    for (const event of unseenEvents) {
+      this.#lastEventSourceSeq = event.sourceSeq;
       if (
         event.eventType === "harness.ready" ||
         event.eventType === "session.started" ||
         event.eventType === "session.resumed"
       ) {
         const started = record(record(event.envelope.payload).payload);
-        const runtimeIdentity = record(started.runtimeIdentity);
-        const descriptor = record(started.providerDescriptor);
-        const {
-          processId: pid,
-          threadId,
-          sessionId,
-        } = resolveRunnerdSessionIdentity(started);
-        const providerIdentity = record(started.providerIdentity);
-        if (pid !== null) {
-          this.#evidence.providerPid = pid;
-          if (descriptor.driver === "acpx_runtime")
-            this.#evidence.sidecarPid = pid;
-          else this.#evidence.codexPid = pid;
-        }
-        if (typeof descriptor.driver === "string")
-          this.#evidence.providerDriver = descriptor.driver;
-        if (typeof descriptor.providerVersion === "string")
-          this.#evidence.providerVersion = descriptor.providerVersion;
-        if (
-          descriptor.agent === "pi" ||
-          descriptor.agent === "claude" ||
-          descriptor.agent === "codex"
-        )
-          this.#evidence.acpxAgent = descriptor.agent;
-        if (typeof descriptor.agentServerVersion === "string")
-          this.#evidence.agentServerVersion = descriptor.agentServerVersion;
-        if (typeof descriptor.agentRuntimeVersion === "string")
-          this.#evidence.agentRuntimeVersion = descriptor.agentRuntimeVersion;
-        if (typeof descriptor.acpProtocolVersion === "number")
-          this.#evidence.acpProtocolVersion = descriptor.acpProtocolVersion;
-        if (typeof descriptor.agentProcessId === "number")
-          this.#evidence.agentPid = descriptor.agentProcessId;
-        if (
-          runtimeIdentity.executionKind === "local_process" ||
-          runtimeIdentity.executionKind === "remote_service"
-        ) {
-          this.#evidence.providerExecutionKind = runtimeIdentity.executionKind;
-        }
-        if (runtimeIdentity.service === "anthropic_managed_agents") {
-          this.#evidence.providerService = "anthropic_managed_agents";
-        } else if (
-          runtimeIdentity.service === "aws_bedrock_agentcore_harness"
-        ) {
-          this.#evidence.providerService = "aws_bedrock_agentcore_harness";
-        }
-        if (threadId !== null) this.#threadId = threadId;
-        if (sessionId !== null) this.#sessionId = sessionId;
-        if (typeof providerIdentity.kind === "string") {
-          this.#providerIdentity = structuredClone(providerIdentity);
-        }
-        this.#publish();
+        this.#adoptProviderReadiness(started);
         continue;
       }
       if (event.eventType === "harness.diagnostic") {
@@ -2085,26 +2363,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       const eventPayload = record(event.envelope.payload).payload;
       const sessionUpdatePayload = record(eventPayload);
-      const canonicalMethod = (
-        {
-          "turn.started": "turn/started",
-          "item.started": "item/started",
-          "item.delta": "item/agentMessage/delta",
-          "item.completed": "item/completed",
-          "turn.completed": "turn/completed",
-          "turn.failed": "turn/completed",
-          "turn.interrupted": "turn/completed",
-          "turn.cancelled": "turn/completed",
-          "usage.reported": "thread/tokenUsage/updated",
-          "plan.updated": "turn/plan/updated",
-          "workspace.change.updated": "paperclip/workspaceChange/updated",
-          "run.result.proposed": "paperclip/runResult",
-          "session.updated":
-            sessionUpdatePayload.status === "budget_reached"
-              ? "provider/budgetReached"
-              : "provider/sessionUpdated",
-        } as Record<string, string>
-      )[event.eventType];
+      const canonicalMethod = runnerdCanonicalNotificationMethod(
+        event.eventType,
+        sessionUpdatePayload,
+      );
       const notifications =
         event.eventType === "provider.event"
           ? unwrapRunnerdProviderNotifications(eventPayload)
@@ -2142,6 +2404,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   typeof event.envelope.itemId === "string"
                     ? event.envelope.itemId
                     : "semantic-result",
+                )
+            : method === "thread/goal/updated" ||
+                method === "thread/goal/cleared"
+              ? rehydrateRunnerdGoalNotification(
+                  rawParams,
+                  this.#threadId,
+                  method,
                 )
             : event.eventType !== "provider.event" &&
                 (method === "item/started" || method === "item/completed")

@@ -79,11 +79,16 @@ export function rebindNativeSessionCheckpoint(input: {
 
   const priorSemanticResult = record(rawCheckpoint.semanticResult);
   const priorContinuation = record(priorSemanticResult.continuation);
-  const providerRecoveryPolicy =
-    priorSemanticResult.reportedWorkDisposition === "yielded"
-    && priorContinuation.kind === "response_wake"
-      ? "allow_replacement_after_governed_wait" as const
-      : "allow_replacement_after_resume_failure" as const;
+  const rawGoal = rawCheckpoint.goal;
+  const hasUnfinishedGoal = rawGoal !== null
+    && rawGoal !== undefined
+    && record(rawGoal).status !== "complete";
+  const providerRecoveryPolicy = hasUnfinishedGoal
+    ? "same_session_only" as const
+    : priorSemanticResult.reportedWorkDisposition === "yielded"
+      && priorContinuation.kind === "response_wake"
+        ? "allow_replacement_after_governed_wait" as const
+        : "allow_replacement_after_resume_failure" as const;
 
   return {
     ...(structuredClone(rawCheckpoint) as unknown as PersistedNativeSession),

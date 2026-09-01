@@ -8,7 +8,7 @@ export interface DurableRecoveryIdentity {
 }
 
 export interface DurableRecoveryCoreCommand {
-  schema: "paperclip.prp.command.v1";
+  schema: "paperclip.prp.command.v1" | "paperclip.prp.command.v2";
   commandId: string;
   controllerSeq: number;
   type: string;

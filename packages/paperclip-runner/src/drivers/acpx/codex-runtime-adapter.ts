@@ -14,6 +14,8 @@ import {
 } from "acpx/runtime";
 
 import type {
+  AcpxRuntimeGoalCapability,
+  AcpxRuntimeGoalSnapshot,
   AcpxRuntimePort,
   AcpxRuntimePortIdentity,
   AcpxRuntimePortOpenOptions,
@@ -51,6 +53,27 @@ export const DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS =
 const activeRuntimeCleanupOwners = new Set<Promise<unknown>>();
 const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 const SESSION_HANDSHAKE_TIMEOUT_MS = 8_000;
+
+interface GoalAwareAcpRuntime extends AcpRuntime {
+  requestExtension?(input: {
+    handle: AcpRuntimeHandle;
+    method: string;
+    params: Record<string, unknown>;
+    sessionMode?: "persistent" | "oneshot";
+  }): Promise<Record<string, unknown>>;
+}
+
+type GoalAwareAcpRuntimeOptions = AcpRuntimeOptions & {
+  onAgentInitialize?: (result: unknown) => void;
+  onSessionNotification?: (notification: unknown) => void;
+};
+
+interface AcpxRuntimeGoalState {
+  capability: AcpxRuntimeGoalCapability | null;
+  snapshot: AcpxRuntimeGoalSnapshot | null;
+  revision: number;
+  observedSnapshot: boolean;
+}
 
 class AcpxRuntimeCloseTimeoutError extends Error {
   constructor() {
@@ -215,7 +238,27 @@ export async function openQualifiedAcpxRuntime(
       .filter((server) => server.runnerOwned)
       .map((server) => server.name),
   );
-  const runtime = createRuntime({
+  const goalState: AcpxRuntimeGoalState = {
+    capability: null,
+    snapshot: null,
+    revision: 0,
+    observedSnapshot: false,
+  };
+  const acceptGoalNotification = (message: unknown): void => {
+    const update = goalSnapshotFromAcpMessage(message);
+    if (!update.seen) return;
+    const unchanged =
+      goalState.observedSnapshot &&
+      JSON.stringify(goalState.snapshot) === JSON.stringify(update.goal);
+    goalState.observedSnapshot = true;
+    goalState.snapshot = update.goal;
+    if (unchanged) return;
+    goalState.revision += 1;
+    options.onGoalUpdate?.(
+      update.goal === null ? null : structuredClone(update.goal),
+    );
+  };
+  const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
     sessionStore,
     agentRegistry: createRegistry({
@@ -255,6 +298,11 @@ export async function openQualifiedAcpxRuntime(
       );
       return disposition === "delegate" ? undefined : { outcome: disposition };
     },
+    onAgentInitialize: (result) => {
+      const capability = goalCapabilityFromAcpMessage({ result });
+      if (capability) goalState.capability = capability;
+    },
+    onSessionNotification: acceptGoalNotification,
     spawnEnvironment: () => ({
       ...definedEnvironment(options.launchEnvironment),
       ...(options.profile.agent === "claude"
@@ -275,7 +323,8 @@ export async function openQualifiedAcpxRuntime(
         }) as ChildProcess,
       );
     },
-  });
+  };
+  const runtime = createRuntime(runtimeOptions) as GoalAwareAcpRuntime;
   admissionCleanup = new RuntimeAdmissionCleanup(
     runtime,
     children,
@@ -363,6 +412,7 @@ export async function openQualifiedAcpxRuntime(
       requireIdentity(handle),
       children,
       runtimeCloseTimeoutMs,
+      goalState,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -766,11 +816,12 @@ function lateHandshakeCleanup(
 }
 
 function runtimePort(
-  runtime: AcpRuntime,
+  runtime: GoalAwareAcpRuntime,
   handle: AcpRuntimeHandle,
   identity: AcpxRuntimePortIdentity,
   children: SpawnedChildSet,
   runtimeCloseTimeoutMs: number,
+  goalState: AcpxRuntimeGoalState,
 ): AcpxRuntimePort {
   type RuntimeCloseAttempt = {
     readonly outcome: Promise<unknown | null>;
@@ -1003,6 +1054,72 @@ function runtimePort(
         throw new Error("The pinned ACPX runtime cannot report session status");
       }
       return structuredClone(await runtime.getStatus({ handle }));
+    },
+    goalCapability() {
+      return goalState.capability === null
+        ? null
+        : structuredClone(goalState.capability);
+    },
+    goalSnapshot() {
+      return goalState.snapshot === null
+        ? null
+        : structuredClone(goalState.snapshot);
+    },
+    async controlGoal(action, objective) {
+      const capability = goalState.capability;
+      if (!capability || !capability.actions.includes(action)) {
+        throw new Error(`ACPX session goal action ${action} is unavailable`);
+      }
+      if (!runtime.requestExtension) {
+        throw new Error("ACPX runtime does not expose extension requests");
+      }
+      const revisionBeforeControl = goalState.revision;
+      await runtime.requestExtension({
+        handle,
+        method: capability.controlMethod,
+        params: {
+          sessionId: identity.agentSessionId,
+          action,
+          ...(action === "set" ? { objective } : {}),
+        },
+        sessionMode: "persistent",
+      });
+      const shouldRepairMissingSetSnapshot =
+        action === "set" &&
+        Boolean(objective?.trim()) &&
+        goalState.snapshot === null;
+      const shouldRepairStaleClearSnapshot =
+        action === "clear" && goalState.snapshot !== null;
+      if (
+        goalState.revision === revisionBeforeControl ||
+        shouldRepairMissingSetSnapshot ||
+        shouldRepairStaleClearSnapshot
+      ) {
+        const now = Date.now();
+        if (action === "set" && objective?.trim()) {
+          goalState.snapshot = {
+            objective: objective.trim(),
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          };
+        } else if (
+          (action === "pause" || action === "resume") &&
+          goalState.snapshot
+        ) {
+          goalState.snapshot = {
+            ...goalState.snapshot,
+            status: action === "pause" ? "paused" : "active",
+            updatedAt: now,
+          };
+        } else if (action === "clear") {
+          goalState.snapshot = null;
+        }
+        goalState.revision += 1;
+      }
+      return goalState.snapshot === null
+        ? null
+        : structuredClone(goalState.snapshot);
     },
     ...(runtime.setConfigOption
       ? {
@@ -1439,6 +1556,101 @@ async function signalAndWaitForExit(
 
 function pushUnique(errors: unknown[], error: unknown): void {
   if (!errors.includes(error)) errors.push(error);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function goalCapabilityFromAcpMessage(
+  message: unknown,
+): AcpxRuntimeGoalCapability | null {
+  const result = objectRecord(objectRecord(message).result);
+  const goal = objectRecord(objectRecord(result._meta).goal);
+  const actions = Array.isArray(goal.actions)
+    ? goal.actions.filter(
+        (action): action is "set" | "pause" | "resume" | "clear" =>
+          action === "set" ||
+          action === "pause" ||
+          action === "resume" ||
+          action === "clear",
+      )
+    : [];
+  if (
+    goal.version !== 1 ||
+    typeof goal.controlMethod !== "string" ||
+    goal.controlMethod.length === 0 ||
+    actions.length === 0
+  ) {
+    return null;
+  }
+  return { version: 1, controlMethod: goal.controlMethod, actions };
+}
+
+function goalSnapshotFromAcpMessage(message: unknown): {
+  seen: boolean;
+  goal: AcpxRuntimeGoalSnapshot | null;
+} {
+  const envelope = objectRecord(message);
+  const update =
+    envelope.method === "session/update"
+      ? objectRecord(objectRecord(envelope.params).update ?? envelope.params)
+      : Object.prototype.hasOwnProperty.call(envelope, "update")
+        ? objectRecord(envelope.update)
+        : envelope.sessionUpdate === "session_info_update"
+          ? envelope
+          : null;
+  if (update === null) return { seen: false, goal: null };
+  const meta = objectRecord(update._meta);
+  if (!Object.prototype.hasOwnProperty.call(meta, "goal")) {
+    return { seen: false, goal: null };
+  }
+  if (meta.goal === null) return { seen: true, goal: null };
+  const goal = objectRecord(meta.goal);
+  const objective =
+    typeof goal.objective === "string" ? goal.objective.trim() : "";
+  const status = goal.status;
+  if (
+    objective.length === 0 ||
+    objective.length > 4_000 ||
+    (status !== "active" &&
+      status !== "paused" &&
+      status !== "blocked" &&
+      status !== "limited" &&
+      status !== "complete")
+  ) {
+    return { seen: false, goal: null };
+  }
+  const optionalNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  const optionalTimestamp = (
+    value: unknown,
+  ): number | string | null | undefined =>
+    value === null || typeof value === "string" || typeof value === "number"
+      ? value
+      : undefined;
+  return {
+    seen: true,
+    goal: {
+      objective,
+      status,
+      tokenBudget:
+        goal.tokenBudget === null ? null : optionalNumber(goal.tokenBudget),
+      tokensUsed: optionalNumber(goal.tokensUsed),
+      timeUsedSeconds: optionalNumber(goal.timeUsedSeconds),
+      iterations: optionalNumber(goal.iterations),
+      lastReason:
+        goal.lastReason === null || typeof goal.lastReason === "string"
+          ? goal.lastReason
+          : undefined,
+      createdAt: optionalTimestamp(goal.createdAt),
+      updatedAt: optionalTimestamp(goal.updatedAt),
+    },
+  };
 }
 
 function requireIdentity(handle: AcpRuntimeHandle): AcpxRuntimePortIdentity {

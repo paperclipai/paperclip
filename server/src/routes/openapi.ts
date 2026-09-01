@@ -37,6 +37,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  runnerGoalActionRequestSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -2366,6 +2367,43 @@ registry.registerPath({
   summary: "Get issue heartbeat context",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/runner-goal",
+  tags: ["issues"],
+  summary: "Get the effective agent session goal for an issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ agentId: z.string().optional() }),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/runner-goal/actions",
+  tags: ["issues"],
+  summary: "Queue a control action for an agent session goal",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(runnerGoalActionRequestSchema),
+  },
+  responses: {
+    202: { description: "Goal control accepted" },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

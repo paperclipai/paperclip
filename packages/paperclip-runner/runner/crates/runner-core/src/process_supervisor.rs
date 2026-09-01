@@ -14,6 +14,26 @@ use serde::Serialize;
 use crate::local_runner::LocalRunnerError;
 
 const PROCESS_OUTPUT_QUEUE_CAPACITY: usize = 256;
+const TRUSTED_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "WINDIR",
+    "HOME",
+    // runnerd receives only the controller-selected provider environment.
+    // Preserve Codex's isolated credential/config root and the two explicitly
+    // supported API-key fallbacks when the trusted app-server child is spawned.
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "USERPROFILE",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "TZ",
+];
 
 pub(crate) enum ProcessOutput {
     Stdout(String),
@@ -209,20 +229,7 @@ impl SupervisedProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for key in [
-            "PATH",
-            "PATHEXT",
-            "SystemRoot",
-            "WINDIR",
-            "HOME",
-            "USERPROFILE",
-            "LANG",
-            "LC_ALL",
-            "TMPDIR",
-            "TEMP",
-            "TMP",
-            "TZ",
-        ] {
+        for key in TRUSTED_PROVIDER_ENVIRONMENT_KEYS {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -410,5 +417,22 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
             success: status.success(),
             signal: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TRUSTED_PROVIDER_ENVIRONMENT_KEYS;
+
+    #[test]
+    fn trusted_provider_environment_includes_codex_authentication() {
+        for key in ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"] {
+            assert!(
+                TRUSTED_PROVIDER_ENVIRONMENT_KEYS.contains(&key),
+                "trusted provider environment omitted {key}"
+            );
+        }
+        assert!(!TRUSTED_PROVIDER_ENVIRONMENT_KEYS.contains(&"DATABASE_URL"));
+        assert!(!TRUSTED_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_API_KEY"));
     }
 }

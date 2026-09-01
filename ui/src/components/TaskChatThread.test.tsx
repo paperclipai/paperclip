@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
 import type {
   IssueDocument,
@@ -75,6 +76,7 @@ vi.mock("@/components/MarkdownEditor", () => ({
 
 let container: HTMLDivElement;
 let root: Root | null = null;
+let queryClient: QueryClient;
 
 beforeEach(() => {
   localStorage.clear();
@@ -87,10 +89,17 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
 });
 
 afterEach(() => {
   flushSync(() => root?.unmount());
+  queryClient.clear();
   root = null;
   container.remove();
   localStorage.clear();
@@ -98,7 +107,13 @@ afterEach(() => {
 });
 
 function render(ui: ReactElement) {
-  flushSync(() => root!.render(<ThemeProvider>{ui}</ThemeProvider>));
+  flushSync(() =>
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>{ui}</ThemeProvider>
+      </QueryClientProvider>,
+    ),
+  );
 }
 
 function fakeScrollGeometry(

@@ -32,11 +32,21 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockRunnerGoalService = vi.hoisted(() => ({
+  projection: vi.fn(async () => null),
+  act: vi.fn(),
+}));
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
   nativeQuestionRunToCancel: vi.fn(async () => null),
   validateNativeQuestionResponseInput: vi.fn(),
+}));
+
+vi.mock("../services/runner-goals.js", () => ({
+  runnerGoalService: () => mockRunnerGoalService,
+  RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+  RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
 }));
 
 vi.mock("../services/index.js", () => ({

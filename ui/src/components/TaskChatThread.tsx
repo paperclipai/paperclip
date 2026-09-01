@@ -77,6 +77,10 @@ import {
   taskChatContentKey,
 } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import {
+  RunnerGoalWidget,
+  useRunnerGoalControl,
+} from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
@@ -98,6 +102,9 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQueryClient } from "@tanstack/react-query";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -446,6 +453,36 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const queryClient = useQueryClient();
+  const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
+    string | null
+  >(null);
+  const effectiveGoalAgentId =
+    pendingComposerAssignee === null
+      ? issueAssigneeAgentId
+      : pendingComposerAssignee.startsWith("agent:")
+        ? pendingComposerAssignee.slice("agent:".length) || null
+        : null;
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+
+  useEffect(() => {
+    setPendingComposerAssignee(null);
+  }, [currentAssigneeValue, issueId]);
+
+  const reassignForRunnerGoal = useCallback(
+    async (reassignment: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    }) => {
+      if (!issueId)
+        throw new Error("The task is not available for reassignment.");
+      await issuesApi.update(issueId, reassignment);
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId),
+      });
+    },
+    [issueId, queryClient],
+  );
 
   const paperclipQueue =
     queuedCommentQueue?.protocol === "paperclip_runner_v1"
@@ -2274,6 +2311,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           {tailTurnStatus ? (
             <TaskChatTurnStatusIsland model={tailTurnStatus} />
           ) : null}
+          <RunnerGoalWidget control={runnerGoal} />
           <div
             className="relative isolate flex flex-col"
             data-testid="task-chat-composer-stack"
@@ -2315,6 +2353,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 agentMap={agentMap}
                 userProfileMap={userProfileMap}
                 currentAssigneeValue={currentAssigneeValue}
+                onPendingAssigneeChange={setPendingComposerAssignee}
                 issueStatus={issueStatus}
                 mobile={isMobile}
                 draftKey={draftKey}
@@ -2331,6 +2370,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       }
                     : null
                 }
+                runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                onRunnerGoalReassign={reassignForRunnerGoal}
               />
             </div>
           </div>

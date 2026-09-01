@@ -12,6 +12,8 @@ import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
+  HarnessGoalOperation,
+  HarnessThreadGoal,
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
   PersistedHarnessProviderIdentity,
@@ -62,6 +64,7 @@ export interface PersistedNativeSession {
   dispositionOnlyRecoveryConsumed?: boolean;
   dispositionOnlyRecoveryTurnId?: string | null;
   pendingRuntimeRequests?: HarnessRuntimeRequest[];
+  goal?: HarnessThreadGoal | null;
   lineage?: HarnessThreadLineageEntry[];
 }
 
@@ -116,6 +119,7 @@ export interface NativeSession {
      */
     signal: AbortSignal;
   }): HarnessRuntimeRequestHandoff;
+  goal?(input: HarnessGoalOperation): Promise<HarnessThreadGoal | null>;
   result(): Promise<{
     result: PrpStructuredRunResult;
     terminal: PrpTerminalState;

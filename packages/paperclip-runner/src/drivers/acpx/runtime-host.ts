@@ -64,6 +64,24 @@ export interface AcpxRuntimePortIdentity {
   agentSessionId: string;
 }
 
+export interface AcpxRuntimeGoalCapability {
+  version: number;
+  controlMethod: string;
+  actions: Array<"set" | "pause" | "resume" | "clear">;
+}
+
+export interface AcpxRuntimeGoalSnapshot {
+  objective: string;
+  status: "active" | "paused" | "blocked" | "limited" | "complete";
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  iterations?: number;
+  lastReason?: string | null;
+  createdAt?: number | string | null;
+  updatedAt?: number | string | null;
+}
+
 export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
@@ -85,6 +103,12 @@ export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
   setModel?(model: string): Promise<void>;
+  goalCapability?(): AcpxRuntimeGoalCapability | null;
+  goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  controlGoal?(
+    action: "set" | "pause" | "resume" | "clear",
+    objective?: string,
+  ): Promise<AcpxRuntimeGoalSnapshot | null>;
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn;
   close(input: { reason: string }): Promise<void>;
 }
@@ -108,6 +132,7 @@ export interface AcpxRuntimePortOpenOptions {
   /** Abort provider admission and clean any runtime that resolves too late. */
   signal?: AbortSignal;
   mcpServers: readonly AcpxMcpServerBinding[];
+  onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
   /**
    * Transfer the provider cleanup proof before a failed open settles. The host
    * keeps credentials fenced until this exact cleanup succeeds.
@@ -175,6 +200,7 @@ export interface OpenAcpxRuntimeHostOptions {
   /** Abort admission without admitting resources that resolve afterward. */
   signal?: AbortSignal;
   semanticTools?: AcpxSemanticToolSession;
+  onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
 }
 
 const RETAINED_CLEANUP_RETRY_INITIAL_DELAY_MS = 10;
@@ -413,6 +439,9 @@ export class AcpxRuntimeHost {
                   },
                 ]
               : [],
+            ...(options.onGoalUpdate === undefined
+              ? {}
+              : { onGoalUpdate: options.onGoalUpdate }),
             retainFailedAdmissionCleanup,
           });
         },
@@ -537,6 +566,24 @@ export class AcpxRuntimeHost {
 
   async status(): Promise<AcpxModelStatus> {
     return structuredClone(await this.#runtime.getStatus());
+  }
+
+  goalCapability(): AcpxRuntimeGoalCapability | null {
+    return this.#runtime.goalCapability?.() ?? null;
+  }
+
+  goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
+    return this.#runtime.goalSnapshot?.() ?? null;
+  }
+
+  async controlGoal(
+    action: "set" | "pause" | "resume" | "clear",
+    objective?: string,
+  ): Promise<AcpxRuntimeGoalSnapshot | null> {
+    if (!this.#runtime.controlGoal) {
+      throw new Error("ACPX runtime does not expose session goal controls");
+    }
+    return await this.#runtime.controlGoal(action, objective);
   }
 
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {

@@ -40,6 +40,7 @@ export type {
   NativeRuntimeContextSnapshot,
   NativeSession,
   NativeSessionBackend,
+  NativeSessionGoalControl,
   OpenControlPlaneRunInput,
   PersistedNativeSession,
   PrpEvent,
@@ -88,6 +89,8 @@ export const createRunnerdCodexTransport: (
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
 export const executeNativeSession = runner.executeNativeSession;
+export const applyNativeSessionGoalControl =
+  runner.applyNativeSessionGoalControl;
 export const nativeRuntimePromptDigest = runner.nativeRuntimePromptDigest;
 export const normalizePrpResultSignals = runner.normalizePrpResultSignals;
 export const parseCodexTurnDiff = runner.parseCodexTurnDiff;

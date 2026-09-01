@@ -28,7 +28,18 @@ export interface RoutineCommandOption {
   aliases: string[];
 }
 
-export type SlashCommandOption = SkillCommandOption | RoutineCommandOption;
+export interface ActionCommandOption {
+  id: string;
+  kind: "action";
+  command: string;
+  name: string;
+  description: string;
+  aliases: string[];
+  disabled?: boolean;
+  disabledReason?: string | null;
+}
+
+export type SlashCommandOption = SkillCommandOption | RoutineCommandOption | ActionCommandOption;
 
 interface EditorAutocompleteContextValue {
   slashCommands: SlashCommandOption[];

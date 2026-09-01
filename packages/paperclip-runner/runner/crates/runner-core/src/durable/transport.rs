@@ -20,7 +20,8 @@ use tungstenite::{accept_hdr_with_config, client_tls_with_config, Connector, Mes
 
 use super::state::{open_private_regular_file, Command, DurableState};
 use super::{
-    BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL, PROTOCOL_VERSION,
+    BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
@@ -686,6 +687,7 @@ impl LeaseCredential {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionMetadata {
+    pub(crate) protocol_version: u64,
     pub(crate) connection_id: String,
     pub(crate) lease_id: String,
     pub(crate) expires_at_unix_ms: u64,
@@ -957,7 +959,7 @@ impl AuthenticatedTransport {
                         "credentialId": credential.credential_id,
                         "credentialKind": credential_kind,
                         "clientNonce": client_nonce,
-                        "protocolMin": PROTOCOL_VERSION,
+                        "protocolMin": PROTOCOL_MIN_VERSION,
                         "protocolMax": PROTOCOL_VERSION,
                         "runnerInstanceId": state.runner_instance_id,
                         "environmentLeaseId": state.environment_lease_id,
@@ -981,7 +983,6 @@ impl AuthenticatedTransport {
             let challenge_deadline = socket.configure_auth_timeouts(connect_deadline)?;
             let challenge_value =
                 receive_plain_until(&mut socket, config.max_frame_bytes, challenge_deadline)?;
-            validate_envelope_kind(&challenge_value, "auth_challenge")?;
             let challenge: AuthChallenge = serde_json::from_value(
                 challenge_value
                     .get("payload")
@@ -991,6 +992,11 @@ impl AuthenticatedTransport {
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("invalid auth challenge: {error}"))
             })?;
+            validate_envelope_kind_version(
+                &challenge_value,
+                "auth_challenge",
+                challenge.selected_version,
+            )?;
             validate_challenge(
                 &challenge,
                 state,
@@ -1016,7 +1022,7 @@ impl AuthenticatedTransport {
                 &mut socket,
                 &json!({
                     "protocol": PROTOCOL,
-                    "version": PROTOCOL_VERSION,
+                    "version": challenge.selected_version,
                     "kind": "auth_response",
                     "payload": {
                         "credentialId": credential.credential_id,
@@ -1057,8 +1063,13 @@ impl AuthenticatedTransport {
             let mut welcome_value = transport
                 .receive_json_until(Some(welcome_deadline))?
                 .ok_or_else(|| DurableRunnerError::invalid("authenticated welcome timed out"))?;
-            let welcome =
-                validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
+            let welcome = validate_welcome(
+                &mut welcome_value,
+                state,
+                credential_kind,
+                expected_lease,
+                challenge.selected_version,
+            )?;
             // Authentication can wait longer for control-plane validation, but
             // the steady-state runner loop must return to provider polling
             // promptly when no control message is available.
@@ -1184,7 +1195,7 @@ fn validate_challenge(
         }
     }
     if challenge.server_nonce.is_empty()
-        || challenge.selected_version != PROTOCOL_VERSION
+        || !(PROTOCOL_MIN_VERSION..=PROTOCOL_VERSION).contains(&challenge.selected_version)
         || challenge.credential_expires_at_unix_ms <= current_unix_ms()?
     {
         return Err(DurableRunnerError::invalid(
@@ -1266,15 +1277,16 @@ fn validate_welcome(
     state: &DurableState,
     credential_kind: &str,
     expected_lease: Option<&LeaseCredential>,
+    selected_version: u64,
 ) -> Result<Welcome, DurableRunnerError> {
-    validate_control_identity(value, state, None)?;
-    validate_envelope_kind(value, "welcome")?;
+    validate_control_identity_version(value, state, None, selected_version)?;
+    validate_envelope_kind_version(value, "welcome", selected_version)?;
     let connection_id = required_string(value, "connectionId")?.to_owned();
     let connection_lease_id = required_string(value, "connectionLeaseId")?.to_owned();
     let payload = value
         .get_mut("payload")
         .ok_or_else(|| DurableRunnerError::invalid("welcome payload is required"))?;
-    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(selected_version)
         || payload.get("connectionLeaseId").and_then(Value::as_str)
             != Some(connection_lease_id.as_str())
     {
@@ -1340,6 +1352,7 @@ fn validate_welcome(
         .unwrap_or_default();
     Ok(Welcome {
         connection: ConnectionMetadata {
+            protocol_version: selected_version,
             connection_id,
             lease_id: connection_lease_id,
             expires_at_unix_ms,
@@ -1356,8 +1369,20 @@ pub(crate) fn validate_control_identity(
     state: &DurableState,
     connection: Option<&ConnectionMetadata>,
 ) -> Result<(), DurableRunnerError> {
+    let protocol_version = connection
+        .map(|connection| connection.protocol_version)
+        .unwrap_or(PROTOCOL_VERSION);
+    validate_control_identity_version(value, state, connection, protocol_version)
+}
+
+fn validate_control_identity_version(
+    value: &Value,
+    state: &DurableState,
+    connection: Option<&ConnectionMetadata>,
+    protocol_version: u64,
+) -> Result<(), DurableRunnerError> {
     if value.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
-        || value.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+        || value.get("version").and_then(Value::as_u64) != Some(protocol_version)
     {
         return Err(DurableRunnerError::invalid(
             "control envelope protocol identity is invalid",
@@ -1390,13 +1415,17 @@ pub(crate) fn validate_control_identity(
     Ok(())
 }
 
-fn validate_envelope_kind(value: &Value, kind: &str) -> Result<(), DurableRunnerError> {
+fn validate_envelope_kind_version(
+    value: &Value,
+    kind: &str,
+    protocol_version: u64,
+) -> Result<(), DurableRunnerError> {
     if value.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
-        || value.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+        || value.get("version").and_then(Value::as_u64) != Some(protocol_version)
         || value.get("kind").and_then(Value::as_str) != Some(kind)
     {
         return Err(DurableRunnerError::invalid(format!(
-            "expected a PRP v1 {kind} envelope"
+            "expected a PRP v{protocol_version} {kind} envelope"
         )));
     }
     Ok(())
@@ -2160,6 +2189,7 @@ mod tests {
         let state = test_state(&config);
         let mut envelope = control(&state, "connection_1", "ack", json!({"ackedSourceSeq": 0}));
         let connection = ConnectionMetadata {
+            protocol_version: PROTOCOL_VERSION,
             connection_id: "connection_1".to_owned(),
             lease_id: "lease_1".to_owned(),
             expires_at_unix_ms: current_unix_ms().unwrap() + 60_000,

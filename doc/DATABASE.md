@@ -233,6 +233,15 @@ finalization ledger, whose retry time and owner lease are checked under a row
 lock. None of these writes selects a runtime or changes a legacy run's execution
 path.
 
+Durable agent session goals are an additive projection on
+`agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
+the negotiated goal capability, normalized snapshot and status, desired state,
+provider source cursor, monotonic projection revision, and observation time.
+`agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
+is unique, so retries return the original accepted action. Provider source
+ordering fences duplicate and stale updates, and a cleared projection retains
+its revision/cursor tombstone so an older provider event cannot resurrect it.
+
 Issue `status_version` advances only when `status` changes. The JavaScript backup
 path includes user-defined functions and triggers so a restored database keeps
 that invariant. Removing or disabling a future native rollout flag must not

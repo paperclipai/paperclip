@@ -88,3 +88,13 @@ diff --git a/dist/index.js b/dist/index.js
        forceReload: true
      });
    }
+@@ -30595,6 +30614,9 @@
+               updatedGoal
+             );
+           }
++          if (this.goalPublishIsCurrent(sessionState, sessionGeneration)) {
++            await this.publishCurrentGoal(sessionState, sessionGeneration, true);
++          }
+         } else if (methodRequest.params.action === "pause") {
+           const goal = await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionState.sessionId, "paused"));
+           if (this.goalPublishIsCurrent(sessionState, sessionGeneration)) {

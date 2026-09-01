@@ -177,6 +177,45 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(row).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
+  it("does not terminalize a session-goal control run solely because its issue is done", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          resumeIntent: true,
+          goalControlRequestId: randomUUID(),
+          runnerGoalControl: { action: "clear" },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed goal awaiting clear",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(result.cleared).toBe(0);
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("running");
+  });
+
   it("does not clear when checkoutRunId is terminal but executionRunId is still running", async () => {
     const { companyId, agentId, failedRunId, runningRunId } = await seed();
     const issueId = randomUUID();

@@ -38,7 +38,10 @@ export interface PaperclipControlPlaneBinding {
 }
 
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
-  return "schema" in value && value.schema === "paperclip.prp.event.v1";
+  return "schema" in value && [
+    "paperclip.prp.event.v1",
+    "paperclip.prp.event.v2",
+  ].includes(value.schema);
 }
 
 function isCompleteInput(value: NativeRunResult | CompleteControlPlaneRunInput): value is CompleteControlPlaneRunInput {

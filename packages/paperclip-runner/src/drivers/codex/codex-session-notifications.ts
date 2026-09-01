@@ -234,6 +234,9 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
           itemId: `${threadId}:goal:update:${state.sourceSequence + 1}`,
         },
       );
+      state.emitGoalEvent("session.goal.updated", goal, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "thread/goal/cleared") {
@@ -249,6 +252,9 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
         },
         { itemId: `${threadId}:goal:clear:${state.sourceSequence + 1}` },
       );
+      state.emitGoalEvent("session.goal.cleared", null, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "serverRequest/resolved") {
@@ -356,6 +362,7 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
         return;
       }
       state.activeTurnId = turnId;
+      state.turnStartPending = false;
       state.turnStarted = true;
       state.emit(
         "turn.started",

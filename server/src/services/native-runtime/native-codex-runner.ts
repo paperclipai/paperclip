@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { and, eq } from "drizzle-orm";
 
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
+import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import { failRunnerGoalAction } from "../runner-goals.js";
 import {
   createPaperclipRunnerAuthorizedToolSet,
   type PaperclipSemanticToolDefinition,
@@ -16,6 +19,111 @@ import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const RUNNER_VERSION = "paperclip-runner-v1";
+
+interface NativeGoalControl {
+  sessionId: string;
+  requestId: string;
+  action: string;
+  payload: Record<string, unknown>;
+  currentStatus: string | null;
+  workingNow: boolean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+async function readNativeGoalControl(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  requestId: string | null;
+}): Promise<NativeGoalControl | null> {
+  if (!input.requestId) return null;
+  const [row] = await input.db
+    .select({
+      sessionId: agentTaskSessions.id,
+      requestId: agentSessionGoalActions.requestId,
+      action: agentSessionGoalActions.action,
+      payload: agentSessionGoalActions.payloadJson,
+      goal: agentTaskSessions.goalJson,
+      goalStatus: agentTaskSessions.goalStatus,
+    })
+    .from(agentSessionGoalActions)
+    .innerJoin(
+      agentTaskSessions,
+      eq(agentTaskSessions.id, agentSessionGoalActions.sessionId),
+    )
+    .where(
+      and(
+        eq(agentSessionGoalActions.companyId, input.companyId),
+        eq(agentSessionGoalActions.requestId, input.requestId),
+        eq(agentTaskSessions.agentId, input.agentId),
+        eq(agentTaskSessions.taskKey, input.issueId),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  const goal = asRecord(row.goal);
+  return {
+    sessionId: row.sessionId,
+    requestId: row.requestId,
+    action: row.action,
+    payload: asRecord(row.payload),
+    currentStatus: row.goalStatus,
+    workingNow: goal.workingNow === true,
+  };
+}
+
+function nativeGoalCommands(control: NativeGoalControl): Array<{
+  type: string;
+  payload: Record<string, unknown>;
+}> {
+  if (control.action === "clear") {
+    return [
+      {
+        type: "session.goal.clear",
+        payload: { requestId: control.requestId },
+      },
+    ];
+  }
+  if (control.action === "pause") {
+    return [
+      {
+        type: "session.goal.set",
+        payload: { requestId: control.requestId, status: "paused" },
+      },
+    ];
+  }
+  if (control.action === "resume") {
+    return [
+      {
+        type: "session.goal.set",
+        payload: { requestId: control.requestId, status: "active" },
+      },
+    ];
+  }
+  const payload = {
+    requestId: control.requestId,
+    objective: control.payload.objective,
+    ...(control.action === "edit" ? {} : { status: "active" }),
+    ...(Object.prototype.hasOwnProperty.call(control.payload, "tokenBudget")
+      ? { tokenBudget: control.payload.tokenBudget }
+      : {}),
+  };
+  return control.action === "replace"
+    ? [
+        {
+          type: "session.goal.clear",
+          payload: { requestId: control.requestId },
+        },
+        { type: "session.goal.set", payload },
+      ]
+    : [{ type: "session.goal.set", payload }];
+}
 
 interface NativeRunnerProviderLaunch {
   readonly command: string;
@@ -186,6 +294,8 @@ export async function executeNativeCodexRunner(input: {
   prompt: string;
   model: string | null;
   resumeProviderSessionId: string | null;
+  goalControlRequestId?: string | null;
+  resumeSessionGoalHeartbeat?: boolean;
   completionContract: { revision: string; criterionIds: string[] };
   timeoutMs: number;
   environment: Record<string, string>;
@@ -208,6 +318,13 @@ export async function executeNativeCodexRunner(input: {
     ? resolve(input.runtimeRoot)
     : resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner");
   const runnerStateDirectory = resolve(runtimeRoot, "runner", input.runId);
+  const goalControl = await readNativeGoalControl({
+    db: input.db,
+    companyId: input.companyId,
+    issueId: input.issueId,
+    agentId: input.agentId,
+    requestId: input.goalControlRequestId ?? null,
+  });
   privateDirectory(runtimeRoot);
   privateDirectory(resolve(runtimeRoot, "control-plane"));
   privateDirectory(resolve(runtimeRoot, "runner"));
@@ -238,7 +355,30 @@ export async function executeNativeCodexRunner(input: {
     ...(input.providerLaunch ? { providerLaunch: input.providerLaunch } : {}),
   }), `prepare_${input.runId}`);
   prepared.queueCommand("session.open", {}, `open_${input.runId}`);
-  prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`);
+  const recoveryGoalRequestId = input.resumeSessionGoalHeartbeat
+    ? `recovery_${input.runId}`
+    : null;
+  if (goalControl) {
+    const commandKey = createHash("sha256").update(goalControl.requestId).digest("hex").slice(0, 20);
+    nativeGoalCommands(goalControl).forEach((command, index) => {
+      prepared.queueCommand(command.type, command.payload, `goal_${commandKey}_${index + 1}`);
+    });
+    await input.db.update(agentSessionGoalActions).set({
+      status: "delivering",
+      updatedAt: new Date(),
+    }).where(and(
+      eq(agentSessionGoalActions.sessionId, goalControl.sessionId),
+      eq(agentSessionGoalActions.requestId, goalControl.requestId),
+    ));
+  } else if (recoveryGoalRequestId) {
+    prepared.queueCommand(
+      "session.goal.set",
+      { requestId: recoveryGoalRequestId, status: "active" },
+      `goal_${recoveryGoalRequestId}`,
+    );
+  } else {
+    prepared.queueCommand("turn.start", { text: input.prompt }, `turn_${input.runId}`);
+  }
 
   const child = spawn(binary, buildNativeRunnerArguments({
     connectUrl: prepared.connectUrl,
@@ -276,11 +416,33 @@ export async function executeNativeCodexRunner(input: {
       processGroupId: process.platform === "win32" ? null : child.pid,
       startedAt: new Date().toISOString(),
     });
+    if (goalControl) {
+      const commandKey = createHash("sha256").update(goalControl.requestId).digest("hex").slice(0, 20);
+      const commands = nativeGoalCommands(goalControl);
+      for (let index = 0; index < commands.length; index += 1) {
+        await prepared.waitForCommand(`goal_${commandKey}_${index + 1}`, Math.min(input.timeoutMs, 30_000));
+      }
+      await prepared.waitForGoalEvent(goalControl.requestId, Math.min(input.timeoutMs, 30_000));
+    } else if (recoveryGoalRequestId) {
+      await prepared.waitForCommand(`goal_${recoveryGoalRequestId}`, Math.min(input.timeoutMs, 30_000));
+      await prepared.waitForGoalEvent(recoveryGoalRequestId, Math.min(input.timeoutMs, 30_000));
+    }
+    const shouldWaitForGoalCompletion = goalControl && (
+      goalControl.workingNow ||
+      ["create", "replace", "resume"].includes(goalControl.action) ||
+      (goalControl.action === "edit" && goalControl.currentStatus === "active")
+    );
+    const completion = goalControl && !shouldWaitForGoalCompletion
+      ? Promise.resolve(null)
+      : prepared.waitForTerminal(input.timeoutMs);
     const completed = await Promise.race([
-      prepared.waitForTerminal(input.timeoutMs),
+      completion,
       exit.then(async ({ code, signal }) => {
-        const recovered = await prepared.waitForTerminal(2_000).catch(() => null);
+        const recovered = goalControl && !shouldWaitForGoalCompletion
+          ? null
+          : await prepared.waitForTerminal(2_000).catch(() => undefined);
         if (recovered) return recovered;
+        if (recovered === null && goalControl && !shouldWaitForGoalCompletion) return null;
         throw new Error(
           `paperclip_runner_process_exited: code=${code ?? "null"} signal=${signal ?? "null"}`,
         );
@@ -290,29 +452,66 @@ export async function executeNativeCodexRunner(input: {
     prepared.queueCommand("runner.shutdown", {}, `shutdown_${input.runId}`);
     await stopChild(child, exit, true);
 
-    const succeeded = completed.terminal.runTerminalState === "succeeded";
+    const succeeded = completed === null || completed.terminal.runTerminalState === "succeeded";
+    if (goalControl && completed === null) {
+      await input.db.update(agentSessionGoalActions).set({
+        status: "completed",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(agentSessionGoalActions.sessionId, goalControl.sessionId),
+        eq(agentSessionGoalActions.requestId, goalControl.requestId),
+      ));
+    }
     return {
       exitCode: succeeded ? 0 : 1,
       signal: null,
       timedOut: false,
       ...(succeeded ? {} : {
         errorCode: "paperclip_runner_provider_failed",
-        errorMessage: completed.result.summary,
+        errorMessage: completed?.result.summary,
       }),
       provider: "codex",
       model: input.model,
       sessionParams: {
-        sessionId: completed.providerSessionId ?? input.normalizedSessionId,
+        sessionId: completed?.providerSessionId ?? input.normalizedSessionId,
       },
-      sessionDisplayId: completed.providerSessionId ?? input.normalizedSessionId,
+      sessionDisplayId: completed?.providerSessionId ?? input.normalizedSessionId,
       resultJson: {
         nativeRunner: {
-          result: completed.result,
-          terminal: completed.terminal,
+          ...(completed ? { result: completed.result, terminal: completed.terminal } : {}),
+          ...(goalControl ? {
+            goalControl: {
+              requestId: goalControl.requestId,
+              action: goalControl.action,
+              status: "completed",
+            },
+          } : {}),
+          ...(recoveryGoalRequestId ? {
+            goalHeartbeat: {
+              requestId: recoveryGoalRequestId,
+              status: "settled",
+            },
+          } : {}),
         },
       },
-      summary: completed.result.summary,
+      summary: completed?.result.summary ?? "Agent session goal control applied.",
     };
+  } catch (error) {
+    if (goalControl) {
+      await failRunnerGoalAction(
+        input.db,
+        {
+          companyId: input.companyId,
+          issueId: input.issueId,
+          agentId: input.agentId,
+          adapterType: "paperclip_runner",
+        },
+        goalControl.requestId,
+        error instanceof Error ? error.message : "native_goal_control_failed",
+      ).catch(() => undefined);
+    }
+    throw error;
   } finally {
     await stopChild(child, exit).catch(() => undefined);
     await prepared.release();

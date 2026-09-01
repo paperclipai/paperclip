@@ -41,10 +41,12 @@ import {
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
   executeNativeSession,
+  applyNativeSessionGoalControl,
   parsePaperclipQuestionSet,
   resolveSourceCodexHome,
   type RunnerProcessHandle,
   type RunnerProcessLaunchSpec,
+  type NativeSessionGoalControl,
 } from "../../vendor/paperclip-runner/index.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
@@ -90,6 +92,8 @@ import {
   type NativeRunTrace,
 } from "./native-run-trace.js";
 import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
+import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -1081,23 +1085,26 @@ function readRunnerdDurableIdentity(
   root: string,
 ): Record<string, unknown> | null {
   if (!isSafeNativeStateDirectory(root)) return null;
-  const statePath = resolve(root, "control-plane", "mock-core-state.json");
-  if (!existsSync(statePath)) return null;
-  try {
-    return record(
-      record(
-        JSON.parse(
-          readBoundedNativeFile(
-            statePath,
-            NATIVE_DURABLE_IDENTITY_MAX_BYTES,
-            "runner_durable_identity_too_large",
-          ).toString("utf8"),
-        ),
-      ).identity,
-    );
-  } catch {
-    return null;
+  for (const name of ["control-plane-state.json", "mock-core-state.json"]) {
+    const statePath = resolve(root, "control-plane", name);
+    if (!existsSync(statePath)) continue;
+    try {
+      return record(
+        record(
+          JSON.parse(
+            readBoundedNativeFile(
+              statePath,
+              NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+              "runner_durable_identity_too_large",
+            ).toString("utf8"),
+          ),
+        ).identity,
+      );
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 function durableIdentityMatchesExecution(
@@ -1107,6 +1114,22 @@ function durableIdentityMatchesExecution(
   return Boolean(
     identity &&
       identity.runId === execution.binding.runId &&
+      identity.normalizedSessionId === nativeSessionKey(execution) &&
+      typeof identity.runnerInstanceId === "string" &&
+      identity.runnerInstanceId.length > 0 &&
+      typeof identity.environmentLeaseId === "string" &&
+      identity.environmentLeaseId.length > 0,
+  );
+}
+
+function durableSessionIdentityMatchesExecution(
+  identity: Record<string, unknown> | null,
+  execution: NativeExecutionInput,
+): identity is RunnerdDurableIdentity {
+  return Boolean(
+    identity &&
+      typeof identity.runId === "string" &&
+      identity.runId.length > 0 &&
       identity.normalizedSessionId === nativeSessionKey(execution) &&
       typeof identity.runnerInstanceId === "string" &&
       identity.runnerInstanceId.length > 0 &&
@@ -1143,7 +1166,7 @@ function loadRunnerdDurableBinding(execution: NativeExecutionInput): {
   environmentLeaseId: string;
 } | null {
   const identity = readRunnerdDurableIdentity(runnerdStateRoot(execution));
-  if (!durableIdentityMatchesExecution(identity, execution)) return null;
+  if (!durableSessionIdentityMatchesExecution(identity, execution)) return null;
   return {
     runnerInstanceId: identity.runnerInstanceId,
     environmentLeaseId: identity.environmentLeaseId,
@@ -2722,8 +2745,14 @@ export async function executePaperclipNativeSession(input: {
   /** Test seam at the provider boundary; production always uses the package Codex backend. */
   backend?: NativeSessionBackend;
   useRunnerd?: boolean;
+  /** Paperclip adapter identity used to scope the durable goal projection. */
+  adapterType?: string;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  sessionGoalControl?: NativeSessionGoalControl | null;
+  resumeSessionGoalHeartbeat?: boolean;
+  /** Internal test seam; production rolls over five minutes before runnerd's one-hour lease. */
+  goalRolloverAtMs?: number;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
@@ -3025,6 +3054,25 @@ export async function executePaperclipNativeSession(input: {
   const governedWaitObservation = createGovernedWaitEventObservation(
     resolvePendingGovernedWait,
   );
+  const projectSessionGoalEvent = (event: PrpEvent) =>
+    applyRunnerGoalPrpEvent(
+      input.db,
+      {
+        companyId: input.execution.binding.companyId,
+        issueId: input.execution.binding.issueId,
+        agentId: input.execution.binding.agentId,
+        adapterType:
+          input.adapterType ??
+          (input.useRunnerd ? "paperclip_runner" : "codex_local"),
+      },
+      {
+        eventType: event.eventType,
+        sourceInstanceId: event.sourceInstanceId,
+        sourceRunId: event.runId,
+        sourceSeq: event.sourceSeq,
+        payload: event.payload,
+      },
+    );
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
     {
@@ -3040,6 +3088,7 @@ export async function executePaperclipNativeSession(input: {
     },
     {
       onCommittedEvent: async (event) => {
+        await projectSessionGoalEvent(event);
         const eventAtMs = Date.parse(event.emittedAt);
         const milestoneAtMs = Number.isFinite(eventAtMs)
           ? eventAtMs
@@ -3176,6 +3225,31 @@ export async function executePaperclipNativeSession(input: {
             "stdout",
             `${JSON.stringify({ type: "paperclip.prp.event", event })}\n`,
           );
+        if (
+          input.onEvent &&
+          [
+            "session.capabilities.updated",
+            "session.goal.snapshot",
+            "session.goal.updated",
+            "session.goal.cleared",
+            "turn.started",
+            "turn.completed",
+            "turn.failed",
+            "turn.interrupted",
+            "turn.cancelled",
+          ].includes(event.eventType)
+        ) {
+          await input.onEvent({
+            eventType: event.eventType,
+            stream: "system",
+            level: event.eventType.includes("failed") ? "error" : "info",
+            payload: {
+              ...(event.payload as Record<string, unknown>),
+              prpSourceSeq: event.sourceSeq,
+              prpSourceInstanceId: event.sourceInstanceId,
+            },
+          });
+        }
         const inputMetric = runtimeInputLifecycleMetric(event);
         if (inputMetric && input.onLog) {
           await input.onLog(
@@ -3229,6 +3303,7 @@ export async function executePaperclipNativeSession(input: {
         // A crash can happen after the event commit but before its callback
         // finishes. Recover only idempotent durable projections here; activity,
         // publication, logging, trace, and metric effects remain committed-only.
+        await projectSessionGoalEvent(event);
         const questionFallback = await materializeRuntimeQuestionFallback({
           db: input.db,
           binding: input.execution.binding,
@@ -3255,6 +3330,15 @@ export async function executePaperclipNativeSession(input: {
     },
   );
   let native: Awaited<ReturnType<typeof executeNativeSession>>;
+  let releaseGoalController: (() => void) | null = null;
+  const releaseRegisteredGoalController = () => {
+    // The controller is assigned from the asynchronous onSession callback.
+    // Keep release idempotent without relying on TypeScript's synchronous
+    // control-flow model for that callback assignment.
+    const release: unknown = releaseGoalController;
+    if (typeof release === "function") release();
+    releaseGoalController = null;
+  };
   const lifecyclePolicy = input.execution.session?.lifecyclePolicy ?? {
     mode: "per_turn" as const,
     idleTimeoutMs: null,
@@ -3418,6 +3502,8 @@ export async function executePaperclipNativeSession(input: {
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,
             keepSessionOpen: warmSessionId !== null,
+            sessionGoalControl: input.sessionGoalControl,
+            resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
             onCheckpoint:
               warmSessionId !== null && warmConfigDigest !== null
                 ? async (snapshot) =>
@@ -3452,6 +3538,22 @@ export async function executePaperclipNativeSession(input: {
               );
             },
             onSession: (session) => {
+              releaseRegisteredGoalController();
+              if (session?.goal) {
+                releaseGoalController = registerLiveRunnerGoalController(
+                  {
+                    companyId: input.execution.binding.companyId,
+                    issueId: input.execution.binding.issueId,
+                    agentId: input.execution.binding.agentId,
+                    runId: input.execution.binding.runId,
+                  },
+                  {
+                    control: async (control) => {
+                      await applyNativeSessionGoalControl(session, control);
+                    },
+                  },
+                );
+              }
               if (
                 session &&
                 warmSessionId !== null &&
@@ -3784,6 +3886,7 @@ export async function executePaperclipNativeSession(input: {
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
       nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
     summary: native.result.summary,
@@ -3948,7 +4051,7 @@ const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
   claude:
     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
   codex:
-    "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+    "sha256:74999e26456cc36912afc7c95bd70f6113df75dde26eb5adf5dcd3b1259154fc",
 } as const;
 
 type RemoteProviderPackManifest = {
@@ -6070,6 +6173,7 @@ export async function createRunnerdBackend(input: {
             : null,
         runnerRuntimeContext: remoteRuntimeContext,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
+        resumeWorkingDirectory: runnerExecution.workspace.cwd,
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,
@@ -6119,6 +6223,8 @@ export async function createRunnerdBackend(input: {
                   () =>
                     registerRunnerPrpAuthority({
                       companyId: input.execution.binding.companyId,
+                      issueId: input.execution.binding.issueId,
+                      agentId: input.execution.binding.agentId,
                       runId: input.execution.binding.runId,
                       authority,
                     }),
@@ -6215,6 +6321,8 @@ export async function createRunnerdBackend(input: {
                   () =>
                     registerRunnerPrpAuthority({
                       companyId: input.execution.binding.companyId,
+                      issueId: input.execution.binding.issueId,
+                      agentId: input.execution.binding.agentId,
                       runId: input.execution.binding.runId,
                       authority,
                     }),

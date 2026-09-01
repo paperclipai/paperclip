@@ -237,6 +237,24 @@ pub fn project_acpx_state_event(
                 "details": details,
             }),
         ),
+        AcpxProviderStateEvent::Goal(details) => {
+            let goal = details.get("goal").cloned().unwrap_or(Value::Null);
+            let capability = details.get("capability").cloned().unwrap_or(Value::Null);
+            one(
+                if goal.is_null() {
+                    "session.goal.cleared"
+                } else {
+                    "session.goal.updated"
+                },
+                EventPriority::P0,
+                json!({
+                    "schema": "paperclip.session_goal.snapshot.v1",
+                    "goal": goal,
+                    "sessionGoals": capability,
+                    "workingNow": context.turn_id.len() > 0,
+                }),
+            )
+        }
         AcpxProviderStateEvent::Diagnostic { code, message } => one(
             "harness.diagnostic",
             EventPriority::P1,

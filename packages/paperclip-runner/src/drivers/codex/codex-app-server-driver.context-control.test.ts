@@ -475,7 +475,9 @@ describe("Codex app-server Codex driver", () => {
     ).rejects.toBeInstanceOf(HarnessStaleTurnError);
     const events = session.events()[Symbol.asyncIterator]();
     const observed: PrpEvent[] = [];
-    for (let index = 0; index < 9; index += 1) {
+    // PRP v2 adds a capability and authoritative goal snapshot immediately
+    // after session start, so include those two events in this bounded read.
+    for (let index = 0; index < 11; index += 1) {
       const next = await events.next();
       if (next.done) break;
       observed.push(next.value);

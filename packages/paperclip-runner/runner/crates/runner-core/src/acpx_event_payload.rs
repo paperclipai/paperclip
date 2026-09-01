@@ -69,6 +69,9 @@ pub enum AcpxEventPayload {
     Process {
         details: Value,
     },
+    Goal {
+        details: Value,
+    },
     Diagnostic {
         code: String,
         message: String,
@@ -155,6 +158,9 @@ pub fn decode_acpx_event(
             })
         }
         GeneratedAcpxSidecarEventType::RuntimeProcess => Ok(AcpxEventPayload::Process {
+            details: sanitize_value(&event.payload),
+        }),
+        GeneratedAcpxSidecarEventType::RuntimeGoal => Ok(AcpxEventPayload::Goal {
             details: sanitize_value(&event.payload),
         }),
         GeneratedAcpxSidecarEventType::RuntimeDiagnostic => {

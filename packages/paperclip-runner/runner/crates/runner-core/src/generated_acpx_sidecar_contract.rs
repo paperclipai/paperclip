@@ -37,6 +37,9 @@ pub enum GeneratedAcpxSidecarCommand {
     ToolResolve,
     SessionRead,
     SessionSnapshot,
+    SessionGoalGet,
+    SessionGoalSet,
+    SessionGoalClear,
     SessionSuspend,
     SessionClose,
 }
@@ -54,6 +57,9 @@ impl GeneratedAcpxSidecarCommand {
             Self::ToolResolve => "tool.resolve",
             Self::SessionRead => "session.read",
             Self::SessionSnapshot => "session.snapshot",
+            Self::SessionGoalGet => "session.goal.get",
+            Self::SessionGoalSet => "session.goal.set",
+            Self::SessionGoalClear => "session.goal.clear",
             Self::SessionSuspend => "session.suspend",
             Self::SessionClose => "session.close",
         }
@@ -76,4 +82,6 @@ pub enum GeneratedAcpxSidecarEventType {
     RuntimeProcess,
     #[serde(rename = "runtime.diagnostic")]
     RuntimeDiagnostic,
+    #[serde(rename = "runtime.goal")]
+    RuntimeGoal,
 }

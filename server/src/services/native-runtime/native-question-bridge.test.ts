@@ -49,6 +49,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("native question bridge", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
   let companyId: string;
   let issueId: string;
   let agentId: string;
@@ -59,9 +60,11 @@ describeEmbeddedPostgres("native question bridge", () => {
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-question-");
     db = createDb(temporary.connectionString);
+    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
     nativeQuestionBridgeInternals.resetForTests();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -76,7 +79,10 @@ describeEmbeddedPostgres("native question bridge", () => {
     `));
   });
 
-  afterAll(async () => temporary?.cleanup());
+  afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
+    await temporary?.cleanup();
+  });
 
   async function seed() {
     companyId = randomUUID();
@@ -382,7 +388,7 @@ describeEmbeddedPostgres("native question bridge", () => {
     });
 
     // Simulate process exit before executeIssuePostCommitActions can run.
-    await heartbeatService(db).reapOrphanedRuns();
+    await heartbeat.reapOrphanedRuns();
 
     const [persistedRun] = await db.select({
       status: heartbeatRuns.status,
@@ -431,7 +437,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       },
     });
 
-    await heartbeatService(db).reapOrphanedRuns();
+    await heartbeat.reapOrphanedRuns();
 
     const [cancelledRun] = await db.select({
       status: heartbeatRuns.status,
