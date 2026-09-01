@@ -142,6 +142,9 @@ pub trait Provider {
             "provider does not support remote session deletion",
         ))
     }
+    fn preflight_turn(&mut self) -> Result<(), LocalRunnerError> {
+        Ok(())
+    }
     fn start_turn(
         &mut self,
         message: &str,

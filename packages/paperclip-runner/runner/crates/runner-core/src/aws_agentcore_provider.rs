@@ -57,8 +57,12 @@ const AGENTCORE_INTERRUPT_USAGE_RECONCILIATION_TIMEOUT: Duration = Duration::fro
 pub(crate) const AGENTCORE_USAGE_RECONCILIATION_OBSERVED: &str = "authoritative_metadata_observed";
 pub(crate) const AGENTCORE_USAGE_RECONCILIATION_PENDING: &str =
     "latest_cumulative_estimate_pending_metadata";
+pub(crate) const AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE: &str =
+    "interrupted_invocation_charged_to_session_ceiling";
 pub(crate) const AGENTCORE_USAGE_RECONCILIATION_FIELD: &str = "usageReconciliation";
 pub(crate) const AGENTCORE_PENDING_INVOCATION_FIELD: &str = "pendingInvocationId";
+pub(crate) const AGENTCORE_PENDING_CEILING_FIELD: &str = "pendingEstimatedCeilingUsd";
+pub(crate) const AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD: &str = "conservativeCostFloorUsd";
 #[cfg(test)]
 const AGENTCORE_INLINE_TOOL_ALLOWLIST: &str = "@*/pc_*";
 #[derive(Clone, Debug)]
@@ -110,14 +114,49 @@ fn restored_usage_snapshot(snapshot: Option<&Value>) -> Result<Value, LocalRunne
             "AgentCore durable usage snapshot has invalid costSource",
         ));
     }
+    let pending_ceiling = match object.get(AGENTCORE_PENDING_CEILING_FIELD) {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "AgentCore durable usage snapshot has invalid pending estimated ceiling",
+                    )
+                })?,
+        ),
+    };
+    let conservative_floor = match object.get(AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD) {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "AgentCore durable usage snapshot has invalid conservative cost floor",
+                    )
+                })?,
+        ),
+    };
+    if conservative_floor.is_some_and(|floor| estimated < floor) {
+        return Err(LocalRunnerError::invalid(
+            "AgentCore durable usage snapshot undercuts its conservative cost floor",
+        ));
+    }
     match (
         object.get(AGENTCORE_USAGE_RECONCILIATION_FIELD),
         object.get(AGENTCORE_PENDING_INVOCATION_FIELD),
+        pending_ceiling,
     ) {
-        (None, None) => {}
-        (Some(reconciliation), None)
+        (None, None, None) if conservative_floor.is_none() => {}
+        (Some(reconciliation), None, None)
             if reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_OBSERVED) => {}
-        (Some(reconciliation), Some(invocation_id))
+        (Some(reconciliation), None, None)
+            if reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE)
+                && conservative_floor.is_some() => {}
+        (Some(reconciliation), Some(invocation_id), _)
             if reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
                 && invocation_id.as_str().is_some_and(|invocation_id| {
                     !invocation_id.is_empty()
@@ -1107,15 +1146,7 @@ impl AwsAgentCoreHarnessProvider {
             ));
         }
         self.require_reconciled_interrupt_usage()?;
-        if self
-            .usage
-            .get("estimatedCostUsd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0)
-            >= self.max_estimated_cost_usd
-        {
-            return Err(LocalRunnerError::invalid("AgentCore estimated session spend ceiling reached; raise it explicitly before continuing"));
-        }
+        self.require_available_budget()?;
         self.invocation_counter = self.invocation_counter.saturating_add(1);
         self.invocation_usage_observed = false;
         self.invocation_budget_reached = false;
@@ -1183,14 +1214,24 @@ impl AwsAgentCoreHarnessProvider {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             .saturating_add(1);
-        let estimate = estimate_model_token_cost_usd(
+        let model_estimate = estimate_model_token_cost_usd(
             &self.config.model,
             total_input,
             total_output,
             total_cache_read,
             total_cache_write,
         );
-        self.usage = json!({
+        let conservative_floor = self
+            .usage
+            .get(AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD)
+            .and_then(Value::as_f64);
+        let estimate = match (model_estimate, conservative_floor) {
+            (Some(estimate), Some(floor)) => Some(estimate.max(floor)),
+            (Some(estimate), None) => Some(estimate),
+            (None, Some(floor)) => Some(floor),
+            (None, None) => None,
+        };
+        let mut usage = json!({
             "inputTokens": total_input,
             "outputTokens": total_output,
             "cacheReadInputTokens": total_cache_read,
@@ -1202,6 +1243,13 @@ impl AwsAgentCoreHarnessProvider {
             "costSource": "paperclip_estimate",
             "estimatedCeilingUsd": self.max_estimated_cost_usd,
         });
+        if let Some(floor) = conservative_floor {
+            usage[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(floor);
+            usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+                json!(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE);
+            usage["tokenCountsLowerBound"] = json!(true);
+        }
+        self.usage = usage;
         if enforce_budget && estimate.is_some_and(|value| value >= self.max_estimated_cost_usd) {
             self.invocation_budget_reached = true;
             self.queue.push_back(ProviderEvent::Notification {
@@ -1234,6 +1282,7 @@ impl AwsAgentCoreHarnessProvider {
         self.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
             json!(AGENTCORE_USAGE_RECONCILIATION_PENDING);
         self.usage[AGENTCORE_PENDING_INVOCATION_FIELD] = json!(invocation_id);
+        self.usage[AGENTCORE_PENDING_CEILING_FIELD] = json!(self.max_estimated_cost_usd);
     }
 
     fn mark_usage_reconciliation_observed(&mut self) {
@@ -1241,14 +1290,72 @@ impl AwsAgentCoreHarnessProvider {
             json!(AGENTCORE_USAGE_RECONCILIATION_OBSERVED);
         if let Some(usage) = self.usage.as_object_mut() {
             usage.remove(AGENTCORE_PENDING_INVOCATION_FIELD);
+            usage.remove(AGENTCORE_PENDING_CEILING_FIELD);
         }
     }
 
-    fn require_reconciled_interrupt_usage(&mut self) -> Result<(), LocalRunnerError> {
+    fn reconcile_pending_usage_to_ceiling(&mut self) {
+        if self.pending_usage_reconciliation_invocation_id().is_none() {
+            return;
+        }
+        let pending_ceiling = self
+            .usage
+            .get(AGENTCORE_PENDING_CEILING_FIELD)
+            .and_then(Value::as_f64)
+            // Snapshots from the brief fail-closed-only implementation did
+            // not persist the ceiling. Charging the current ceiling is the
+            // safe backward-compatible fallback.
+            .unwrap_or(self.max_estimated_cost_usd);
+        let existing_estimate = self
+            .usage
+            .get("estimatedCostUsd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let existing_floor = self
+            .usage
+            .get(AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD)
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let conservative_floor = pending_ceiling.max(existing_estimate).max(existing_floor);
+        let request_count = self
+            .usage
+            .get("requestCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.usage["requestCount"] = json!(request_count);
+        self.usage["estimatedCostUsd"] = json!(conservative_floor);
+        self.usage["estimatedCeilingUsd"] = json!(self.max_estimated_cost_usd);
+        self.usage["estimateScope"] =
+            json!("bedrock_model_tokens_with_interrupted_invocation_cost_floor");
+        self.usage["tokenCountsLowerBound"] = json!(true);
+        self.usage[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(conservative_floor);
+        self.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE);
+        if let Some(usage) = self.usage.as_object_mut() {
+            usage.remove(AGENTCORE_PENDING_INVOCATION_FIELD);
+            usage.remove(AGENTCORE_PENDING_CEILING_FIELD);
+        }
+    }
+
+    fn require_reconciled_interrupt_usage(&self) -> Result<(), LocalRunnerError> {
         if self.pending_usage_reconciliation_invocation_id().is_some() {
             return Err(LocalRunnerError::invalid(
                 "AgentCore usage reconciliation remains pending after an interrupted invocation",
             ));
+        }
+        Ok(())
+    }
+
+    fn require_available_budget(&self) -> Result<(), LocalRunnerError> {
+        if self
+            .usage
+            .get("estimatedCostUsd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= self.max_estimated_cost_usd
+        {
+            return Err(LocalRunnerError::invalid("AgentCore estimated session spend ceiling reached; raise it explicitly before continuing"));
         }
         Ok(())
     }
@@ -1357,6 +1464,10 @@ impl Provider for AwsAgentCoreHarnessProvider {
         self.durable_cursor.as_deref()
     }
 
+    fn model_request_count(&self) -> Option<u64> {
+        self.usage.get("requestCount").and_then(Value::as_u64)
+    }
+
     fn usage_snapshot(&self) -> Option<Value> {
         Some(self.usage.clone())
     }
@@ -1444,6 +1555,15 @@ impl Provider for AwsAgentCoreHarnessProvider {
         Ok(())
     }
 
+    fn preflight_turn(&mut self) -> Result<(), LocalRunnerError> {
+        // Reconciliation is an idempotent next-turn boundary operation. It
+        // never drains or publishes the prior EventStream after its terminal;
+        // the durable cost floor is checkpointed before admission instead.
+        self.reconcile_pending_usage_to_ceiling();
+        self.require_reconciled_interrupt_usage()?;
+        self.require_available_budget()
+    }
+
     fn start_turn(
         &mut self,
         message: &str,
@@ -1453,7 +1573,7 @@ impl Provider for AwsAgentCoreHarnessProvider {
         if self.current_turn_id.is_some() {
             return Err(LocalRunnerError::invalid("AgentCore turn already active"));
         }
-        self.require_reconciled_interrupt_usage()?;
+        self.preflight_turn()?;
         self.current_turn_id = Some(turn_id.to_owned());
         self.current_text.clear();
         self.queue.push_back(ProviderEvent::Notification {
@@ -2245,6 +2365,14 @@ mod tests {
             "estimateScope": "bedrock_model_tokens_only"
         });
         assert_eq!(restored_usage_snapshot(Some(&usage)).unwrap(), usage);
+        let mut conservative = usage.clone();
+        conservative[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE);
+        conservative[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(0.73);
+        assert_eq!(
+            restored_usage_snapshot(Some(&conservative)).unwrap(),
+            conservative
+        );
     }
 
     #[test]
@@ -2257,6 +2385,29 @@ mod tests {
             "requestCount": 4,
             "estimatedCostUsd": -1.0,
             "costSource": "paperclip_estimate"
+        })))
+        .is_err());
+        assert!(restored_usage_snapshot(Some(&json!({
+            "inputTokens": 123,
+            "outputTokens": 45,
+            "cacheReadInputTokens": 67,
+            "cacheWriteInputTokens": 8,
+            "requestCount": 4,
+            "estimatedCostUsd": 0.73,
+            "costSource": "paperclip_estimate",
+            "pendingEstimatedCeilingUsd": 1.0
+        })))
+        .is_err());
+        assert!(restored_usage_snapshot(Some(&json!({
+            "inputTokens": 123,
+            "outputTokens": 45,
+            "cacheReadInputTokens": 67,
+            "cacheWriteInputTokens": 8,
+            "requestCount": 4,
+            "estimatedCostUsd": 0.73,
+            "costSource": "paperclip_estimate",
+            "usageReconciliation": AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE,
+            "conservativeCostFloorUsd": 0.74
         })))
         .is_err());
         assert!(restored_usage_snapshot(Some(&json!({
@@ -2394,7 +2545,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_usage_timeout_is_durable_and_blocks_future_invocations() {
+    fn interrupt_usage_timeout_is_durably_charged_before_next_turn_admission() {
         let mut provider = provider_with_interrupt_stream(
             Vec::new(),
             false,
@@ -2408,6 +2559,7 @@ mod tests {
             AGENTCORE_USAGE_RECONCILIATION_PENDING
         );
         assert_eq!(snapshot[AGENTCORE_PENDING_INVOCATION_FIELD], "invocation-1");
+        assert_eq!(snapshot[AGENTCORE_PENDING_CEILING_FIELD], 1.0);
         assert_eq!(restored_usage_snapshot(Some(&snapshot)).unwrap(), snapshot);
 
         match provider.poll().unwrap().unwrap() {
@@ -2422,27 +2574,49 @@ mod tests {
             ProviderEvent::Notification { ref method, .. } if method == "turn/completed"
         ));
 
-        let error = provider.invoke(Vec::new()).unwrap_err();
+        let error = provider.preflight_turn().unwrap_err();
         assert!(error
             .to_string()
-            .contains("usage reconciliation remains pending"));
+            .contains("estimated session spend ceiling reached"));
         assert!(provider.active_invocation_id.is_none());
         assert!(provider.current_turn_id.is_none());
-
-        provider.increase_budget(2.0).unwrap();
+        assert_eq!(provider.usage["requestCount"], 1);
+        assert_eq!(provider.usage["estimatedCostUsd"], 1.0);
+        assert_eq!(provider.usage[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD], 1.0);
         assert_eq!(
             provider.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD],
-            AGENTCORE_USAGE_RECONCILIATION_PENDING
+            AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE
         );
-        assert!(provider.invoke(Vec::new()).is_err());
+        assert!(provider
+            .usage
+            .get(AGENTCORE_PENDING_INVOCATION_FIELD)
+            .is_none());
+        assert!(provider.poll().unwrap().is_none());
+        let settled = provider.usage_snapshot().unwrap();
+        assert_eq!(restored_usage_snapshot(Some(&settled)).unwrap(), settled);
+
+        assert!(provider.preflight_turn().is_err());
+        assert_eq!(provider.usage["requestCount"], 1);
+
+        provider.increase_budget(2.0).unwrap();
+        provider.preflight_turn().unwrap();
+        assert_eq!(provider.usage["estimatedCostUsd"], 1.0);
+        provider.record_usage(10, 5, 0, 0, 3, true);
+        assert_eq!(provider.usage["requestCount"], 2);
+        assert_eq!(provider.usage["estimatedCostUsd"], 1.0);
+        assert_eq!(provider.usage[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD], 1.0);
 
         let mut recovered = provider_with_events(Vec::new(), snapshot);
         recovered.active_invocation_id = None;
         recovered.current_turn_id = None;
-        let error = recovered.invoke(Vec::new()).unwrap_err();
+        let error = recovered.preflight_turn().unwrap_err();
         assert!(error
             .to_string()
-            .contains("usage reconciliation remains pending"));
+            .contains("estimated session spend ceiling reached"));
+        assert_eq!(recovered.usage["requestCount"], 1);
+        assert_eq!(recovered.usage["estimatedCostUsd"], 1.0);
+        recovered.increase_budget(2.0).unwrap();
+        recovered.preflight_turn().unwrap();
     }
 
     #[test]
@@ -2483,14 +2657,19 @@ mod tests {
         let mut recovered = provider_with_events(Vec::new(), restored);
         recovered.active_invocation_id = None;
         recovered.current_turn_id = None;
-        let error = recovered.invoke(Vec::new()).unwrap_err();
+        let error = recovered.preflight_turn().unwrap_err();
         assert!(error
             .to_string()
-            .contains("usage reconciliation remains pending"));
+            .contains("estimated session spend ceiling reached"));
+        assert_eq!(
+            recovered.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE
+        );
+        assert_eq!(recovered.usage["requestCount"], 1);
     }
 
     #[test]
-    fn usage_arriving_after_interrupted_terminal_is_suppressed_and_remains_fail_closed() {
+    fn late_usage_is_suppressed_then_next_turn_boundary_charges_the_ceiling() {
         let mut provider = provider_with_delayed_interrupt_stream(
             vec![
                 invocation_event(NetworkEventKind::Usage {
@@ -2530,15 +2709,24 @@ mod tests {
         assert_eq!(provider.usage["requestCount"], 0);
         assert_eq!(provider.usage["inputTokens"], 0);
 
-        let error = provider.invoke(Vec::new()).unwrap_err();
+        let error = provider.preflight_turn().unwrap_err();
         assert!(error
             .to_string()
-            .contains("usage reconciliation remains pending"));
+            .contains("estimated session spend ceiling reached"));
+        assert_eq!(provider.usage["requestCount"], 1);
+        assert_eq!(provider.usage["estimatedCostUsd"], 1.0);
+        assert_eq!(
+            provider.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE
+        );
+        assert!(provider.poll().unwrap().is_none());
         let restored = restored_usage_snapshot(Some(&pending_snapshot)).unwrap();
         let mut recovered = provider_with_events(Vec::new(), restored);
         recovered.active_invocation_id = None;
         recovered.current_turn_id = None;
-        assert!(recovered.invoke(Vec::new()).is_err());
+        assert!(recovered.preflight_turn().is_err());
+        assert_eq!(recovered.usage["requestCount"], 1);
+        assert_eq!(recovered.usage["estimatedCostUsd"], 1.0);
     }
 
     #[test]

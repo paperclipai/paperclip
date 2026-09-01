@@ -13,9 +13,10 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::aws_agentcore_provider::{
-    AwsAgentCoreHarnessProvider, AGENTCORE_PENDING_INVOCATION_FIELD,
-    AGENTCORE_USAGE_RECONCILIATION_FIELD, AGENTCORE_USAGE_RECONCILIATION_OBSERVED,
-    AGENTCORE_USAGE_RECONCILIATION_PENDING,
+    AwsAgentCoreHarnessProvider, AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD,
+    AGENTCORE_PENDING_CEILING_FIELD, AGENTCORE_PENDING_INVOCATION_FIELD,
+    AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE, AGENTCORE_USAGE_RECONCILIATION_FIELD,
+    AGENTCORE_USAGE_RECONCILIATION_OBSERVED, AGENTCORE_USAGE_RECONCILIATION_PENDING,
 };
 use crate::claude_managed_provider::ClaudeManagedProvider;
 use crate::durable::{
@@ -385,15 +386,38 @@ fn valid_agentcore_usage_snapshot(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
+    let pending_ceiling = match object.get(AGENTCORE_PENDING_CEILING_FIELD) {
+        None => None,
+        Some(value) => match value
+            .as_f64()
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            Some(value) => Some(value),
+            None => return false,
+        },
+    };
+    let conservative_floor = match object.get(AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD) {
+        None => None,
+        Some(value) => match value
+            .as_f64()
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            Some(value) => Some(value),
+            None => return false,
+        },
+    };
     let reconciliation_valid = match (
         object.get(AGENTCORE_USAGE_RECONCILIATION_FIELD),
         object.get(AGENTCORE_PENDING_INVOCATION_FIELD),
+        pending_ceiling,
     ) {
-        (None, None) => true,
-        (Some(reconciliation), None) => {
+        (None, None, None) => conservative_floor.is_none(),
+        (Some(reconciliation), None, None) => {
             reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_OBSERVED)
+                || (reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE)
+                    && conservative_floor.is_some())
         }
-        (Some(reconciliation), Some(invocation_id)) => {
+        (Some(reconciliation), Some(invocation_id), _) => {
             reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
                 && invocation_id.as_str().is_some_and(|invocation_id| {
                     !invocation_id.is_empty()
@@ -403,6 +427,10 @@ fn valid_agentcore_usage_snapshot(value: &Value) -> bool {
         }
         _ => false,
     };
+    let estimated_cost = object
+        .get("estimatedCostUsd")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0);
     reconciliation_valid
         && [
             "inputTokens",
@@ -413,18 +441,11 @@ fn valid_agentcore_usage_snapshot(value: &Value) -> bool {
         ]
         .iter()
         .all(|field| object.get(*field).and_then(Value::as_u64).is_some())
-        && object
-            .get("estimatedCostUsd")
-            .and_then(Value::as_f64)
-            .is_some_and(|value| value.is_finite() && value >= 0.0)
+        && estimated_cost.is_some()
+        && conservative_floor
+            .zip(estimated_cost)
+            .is_none_or(|(floor, estimated)| estimated >= floor)
         && object.get("costSource").and_then(Value::as_str) == Some("paperclip_estimate")
-}
-
-fn agentcore_usage_reconciliation_pending(value: &Value) -> bool {
-    value
-        .get(AGENTCORE_USAGE_RECONCILIATION_FIELD)
-        .and_then(Value::as_str)
-        == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
 }
 
 fn valid_claude_managed_skill_ref(value: &ClaudeManagedSkillRef) -> bool {
@@ -1096,23 +1117,12 @@ impl ManagedProviderCommandExecutor {
             .ok_or_else(|| {
                 DurableRunnerError::invalid("turn.start payload.text is required and bounded")
             })?;
-        if self.state.as_ref().is_some_and(|state| {
-            state.descriptor.kind() == ManagedProviderKind::AwsAgentcore
-                && state
-                    .provider_usage
-                    .as_ref()
-                    .is_some_and(agentcore_usage_reconciliation_pending)
-        }) {
-            return Err(DurableRunnerError::invalid(
-                "AgentCore usage reconciliation remains pending after an interrupted invocation",
-            ));
-        }
         if self.provider.is_none() {
             self.open_session()?;
         }
         let state = self
             .state
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("managed provider is not prepared"))?;
         if state.lifecycle != "session_open"
             || !state.pending_tool_calls.is_empty()
@@ -1122,6 +1132,23 @@ impl ManagedProviderCommandExecutor {
                 "managed provider cannot start a turn while prior work is unsettled",
             ));
         }
+        let preflight = self
+            .provider
+            .as_mut()
+            .expect("managed provider exists before turn preflight")
+            .preflight_turn();
+        // A conservative AgentCore reconciliation must become durable even
+        // when the resulting ceiling gate rejects this turn. It emits no
+        // event after the prior terminal and is idempotent across restart.
+        self.refresh_provider_checkpoint();
+        self.save_state()?;
+        preflight.map_err(|error| {
+            DurableRunnerError::invalid(format!("managed turn preflight failed: {error}"))
+        })?;
+        let state = self
+            .state
+            .as_mut()
+            .expect("managed state exists after turn preflight");
         let turn_id = self.config.turn_id.clone();
         state.lifecycle = "turn_starting".to_owned();
         state.active_turn_id = Some(turn_id.clone());
@@ -1977,6 +2004,7 @@ mod tests {
     struct FakeProvider {
         session_id: String,
         usage: Value,
+        max_estimated_cost_usd: f64,
     }
 
     impl Provider for FakeProvider {
@@ -2000,8 +2028,73 @@ mod tests {
             Some(&self.session_id)
         }
 
+        fn model_request_count(&self) -> Option<u64> {
+            self.usage.get("requestCount").and_then(Value::as_u64)
+        }
+
         fn usage_snapshot(&self) -> Option<Value> {
             Some(self.usage.clone())
+        }
+
+        fn increase_budget(
+            &mut self,
+            maximum_cost_usd: f64,
+        ) -> Result<Value, crate::local_runner::LocalRunnerError> {
+            if maximum_cost_usd <= self.max_estimated_cost_usd {
+                return Err(crate::local_runner::LocalRunnerError::invalid(
+                    "fake AgentCore budget must increase",
+                ));
+            }
+            self.max_estimated_cost_usd = maximum_cost_usd;
+            Ok(json!({ "maxEstimatedSessionCostUsd": maximum_cost_usd }))
+        }
+
+        fn preflight_turn(&mut self) -> Result<(), crate::local_runner::LocalRunnerError> {
+            if self
+                .usage
+                .get(AGENTCORE_USAGE_RECONCILIATION_FIELD)
+                .and_then(Value::as_str)
+                == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
+            {
+                let floor = self
+                    .usage
+                    .get(AGENTCORE_PENDING_CEILING_FIELD)
+                    .and_then(Value::as_f64)
+                    .unwrap_or(self.max_estimated_cost_usd)
+                    .max(
+                        self.usage
+                            .get("estimatedCostUsd")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0),
+                    );
+                let requests = self
+                    .usage
+                    .get("requestCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                self.usage["requestCount"] = json!(requests);
+                self.usage["estimatedCostUsd"] = json!(floor);
+                self.usage[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(floor);
+                self.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+                    json!(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE);
+                if let Some(usage) = self.usage.as_object_mut() {
+                    usage.remove(AGENTCORE_PENDING_INVOCATION_FIELD);
+                    usage.remove(AGENTCORE_PENDING_CEILING_FIELD);
+                }
+            }
+            if self
+                .usage
+                .get("estimatedCostUsd")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                >= self.max_estimated_cost_usd
+            {
+                return Err(crate::local_runner::LocalRunnerError::invalid(
+                    "AgentCore estimated session spend ceiling reached; raise it explicitly before continuing",
+                ));
+            }
+            Ok(())
         }
 
         fn start_turn(
@@ -2048,7 +2141,7 @@ mod tests {
     impl ManagedProviderFactory for FakeFactory {
         fn start(
             &self,
-            _descriptor: &ManagedProviderDescriptor,
+            descriptor: &ManagedProviderDescriptor,
             _tools: Vec<AuthorizedTool>,
             _ownership_scope: &str,
             resume_session_id: Option<&str>,
@@ -2067,6 +2160,12 @@ mod tests {
                     .unwrap_or("managed-test-session")
                     .to_owned(),
                 usage: resume_usage.cloned().unwrap_or_else(|| self.usage.clone()),
+                max_estimated_cost_usd: match descriptor {
+                    ManagedProviderDescriptor::AwsAgentcore(config) => {
+                        config.max_estimated_session_cost_usd
+                    }
+                    ManagedProviderDescriptor::ClaudeManaged(_) => 1.0,
+                },
             }))
         }
     }
@@ -2387,7 +2486,31 @@ mod tests {
         pending[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
             json!(AGENTCORE_USAGE_RECONCILIATION_PENDING);
         pending[AGENTCORE_PENDING_INVOCATION_FIELD] = json!("invocation-1");
+        pending[AGENTCORE_PENDING_CEILING_FIELD] = json!(1.0);
         assert!(valid_agentcore_usage_snapshot(&pending));
+
+        let mut conservative = usage.clone();
+        conservative[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE);
+        conservative[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(0.75);
+        assert!(valid_agentcore_usage_snapshot(&conservative));
+
+        let mut orphan_pending_ceiling = usage.clone();
+        orphan_pending_ceiling[AGENTCORE_PENDING_CEILING_FIELD] = json!(1.0);
+        assert!(!valid_agentcore_usage_snapshot(&orphan_pending_ceiling));
+
+        let mut orphan_floor = usage.clone();
+        orphan_floor[AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD] = json!(0.75);
+        assert!(!valid_agentcore_usage_snapshot(&orphan_floor));
+
+        conservative["estimatedCostUsd"] = json!(0.74);
+        assert!(!valid_agentcore_usage_snapshot(&conservative));
+        conservative["estimatedCostUsd"] = json!(0.75);
+        conservative
+            .as_object_mut()
+            .unwrap()
+            .remove(AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD);
+        assert!(!valid_agentcore_usage_snapshot(&conservative));
 
         pending[AGENTCORE_USAGE_RECONCILIATION_FIELD] = json!("unknown");
         assert!(!valid_agentcore_usage_snapshot(&pending));
@@ -2401,7 +2524,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_pending_agentcore_usage_is_restored_and_blocks_turn_start_preflight() {
+    fn durable_pending_agentcore_usage_is_charged_once_before_turn_admission() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-managed-provider-test-{}",
             Uuid::new_v4()
@@ -2419,7 +2542,8 @@ mod tests {
             "estimatedCostUsd": 0.75,
             "costSource": "paperclip_estimate",
             "usageReconciliation": AGENTCORE_USAGE_RECONCILIATION_PENDING,
-            "pendingInvocationId": "invocation-before-restart"
+            "pendingInvocationId": "invocation-before-restart",
+            "pendingEstimatedCeilingUsd": 1.0
         });
         let first_observed = Arc::new(Mutex::new(Vec::new()));
         let mut first = ManagedProviderCommandExecutor::with_factory(
@@ -2457,20 +2581,94 @@ mod tests {
             recovered_observed.lock().unwrap().as_slice(),
             &[Some(usage)]
         );
+        let before_preflight: Value =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
         let error = recovered
             .execute(&test_command(
                 5,
                 "turn.start",
-                json!({ "text": "must remain fail closed" }),
+                json!({ "text": "blocked until an explicit budget raise" }),
             ))
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("usage reconciliation remains pending"));
+            .contains("estimated session spend ceiling reached"));
         let persisted: Value =
             serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
         assert_eq!(persisted["lifecycle"], "session_open");
         assert_eq!(persisted["activeTurnId"], Value::Null);
+        assert_eq!(
+            persisted["nextEventSequence"],
+            before_preflight["nextEventSequence"]
+        );
+        assert_eq!(
+            persisted["pendingEvents"],
+            before_preflight["pendingEvents"]
+        );
+        assert_eq!(persisted["modelRequestCount"], 3);
+        assert_eq!(persisted["providerUsage"]["requestCount"], 3);
+        assert_eq!(persisted["providerUsage"]["estimatedCostUsd"], 1.0);
+        assert_eq!(
+            persisted["providerUsage"][AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE
+        );
+        assert_eq!(
+            persisted["providerUsage"][AGENTCORE_CONSERVATIVE_COST_FLOOR_FIELD],
+            1.0
+        );
+        assert_eq!(
+            persisted["providerUsage"][AGENTCORE_PENDING_INVOCATION_FIELD],
+            Value::Null
+        );
+
+        recovered
+            .execute(&test_command(
+                6,
+                "turn.start",
+                json!({ "text": "the same old cap still blocks" }),
+            ))
+            .unwrap_err();
+        let persisted_again: Value =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(persisted_again["providerUsage"]["requestCount"], 3);
+        assert_eq!(persisted_again["modelRequestCount"], 3);
+        assert_eq!(persisted_again["providerUsage"], persisted["providerUsage"]);
+        drop(recovered);
+
+        let raised_observed = Arc::new(Mutex::new(Vec::new()));
+        let mut raised = ManagedProviderCommandExecutor::with_factory(
+            &directory,
+            &config,
+            Box::new(FakeFactory {
+                observed_resume_usage: Arc::clone(&raised_observed),
+                usage: json!({}),
+            }),
+        );
+        raised
+            .execute(&test_command(
+                7,
+                "provider.budget.raise",
+                json!({ "maximumCostUsd": 2.0 }),
+            ))
+            .unwrap();
+        assert_eq!(
+            raised_observed.lock().unwrap().as_slice(),
+            &[Some(persisted["providerUsage"].clone())]
+        );
+        raised
+            .execute(&test_command(
+                8,
+                "turn.start",
+                json!({ "text": "explicitly raised budget permits this turn" }),
+            ))
+            .unwrap();
+        let admitted: Value =
+            serde_json::from_slice(&fs::read(raised.state_path()).unwrap()).unwrap();
+        assert_eq!(admitted["lifecycle"], "turn_active");
+        assert_eq!(admitted["activeTurnId"], "turn-1");
+        assert_eq!(admitted["modelRequestCount"], 3);
+        assert_eq!(admitted["providerUsage"]["requestCount"], 3);
+        assert_eq!(admitted["providerUsage"]["estimatedCostUsd"], 1.0);
         fs::remove_dir_all(directory).unwrap();
     }
 
