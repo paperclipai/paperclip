@@ -778,7 +778,9 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     decodedFrames.find((frame) => frame.method === "thread/start"),
   ).toMatchObject({
     params: {
-      config: { include_collaboration_mode_instructions: true },
+      baseInstructions: withCodexCollaborationRuntimeInstructions(
+        "You are a Paperclip agent.",
+      ),
     },
   });
   const stages = new Set(
@@ -913,7 +915,7 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it("attaches a second governed run to one warm runner and provider process", async () => {
+it("does not expose cross-run attachment before PRP authority can rotate atomically", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-attach-"));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
@@ -968,15 +970,7 @@ it("attaches a second governed run to one warm runner and provider process", asy
     });
     await waitForCompletion("first run");
 
-    await bundle.transport.attachRun?.({
-      runId: "run-warm-second",
-      turnId: "turn-binding-second",
-      itemId: "item-binding-second",
-    });
-    await bundle.transport.request("turn/start", {
-      input: [{ type: "text", text: "second run" }],
-    });
-    await waitForCompletion("second run");
+    expect(bundle.transport.attachRun).toBeUndefined();
 
     expect(bundle.evidence()).toMatchObject({
       runnerPid,
@@ -989,7 +983,7 @@ it("attaches a second governed run to one warm runner and provider process", asy
   }
 }, 30_000);
 
-it("cold-restores a suspended provider session under a new run binding", async () => {
+it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const skillRoot = join(stateDirectory, "runtime-skill");
   const instructionRoot = join(stateDirectory, "runtime-instructions");
@@ -1063,23 +1057,31 @@ it("cold-restores a suspended provider session under a new run binding", async (
     join(stateDirectory, "runner"),
     externallyOwnedRunnerStateDirectory,
   );
+  const readRunnerState = async () =>
+    JSON.parse(
+      await readFile(
+        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+  const mismatched = createCapabilityRunnerdCodexTransport({
+    ...options,
+    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
+    readRunnerState,
+    resumeDynamicTools: dynamicTools,
+    prpIdentity: { ...baseIdentity, runId: "run-cold-other" },
+  });
+  await expect(
+    mismatched.transport.request("thread/read", {}),
+  ).rejects.toThrow("native_runner_prp_run_rotation_unavailable");
+  await mismatched.transport.close();
+
   const restored = createCapabilityRunnerdCodexTransport({
     ...options,
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
-    readRunnerState: async () =>
-      JSON.parse(
-        await readFile(
-          join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
-          "utf8",
-        ),
-      ) as Record<string, unknown>,
+    readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: {
-      ...baseIdentity,
-      runId: "run-cold-restored",
-      turnId: "turn-cold-restored",
-      itemId: "item-cold-restored",
-    },
+    prpIdentity: baseIdentity,
   });
   restored.transport.setServerRequestHandler(async () => ({
     success: true,

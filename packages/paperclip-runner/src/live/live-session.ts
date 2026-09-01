@@ -1358,18 +1358,20 @@ export class CapabilityLiveSession {
       throw new Error("Capability live session already has an active turn");
     }
     if (this.#terminalTurns.length > 0) {
-      if (this.#transport.attachRun === undefined) {
-        throw new Error("capability_live_multi_run_attachment_unavailable");
+      if (this.#transport.attachRun !== undefined) {
+        const bindingId = randomUUID().replaceAll("-", "");
+        const binding = {
+          runId: `run_lab_${bindingId}`,
+          turnId: `turn_lab_${bindingId}`,
+          itemId: `item_lab_${bindingId}`,
+        };
+        await this.#transport.attachRun(binding);
+        this.#providerRunBinding = binding;
+        await this.#persist();
       }
-      const bindingId = randomUUID().replaceAll("-", "");
-      const binding = {
-        runId: `run_lab_${bindingId}`,
-        turnId: `turn_lab_${bindingId}`,
-        itemId: `item_lab_${bindingId}`,
-      };
-      await this.#transport.attachRun(binding);
-      this.#providerRunBinding = binding;
-      await this.#persist();
+      // A transport without cross-run attachment keeps subsequent provider
+      // turns inside this capability session's existing governed run. This is
+      // distinct from reusing the provider under a different PRP authority.
     }
     this.#status = "running";
     this.#clearIdleTimer();
@@ -1709,16 +1711,18 @@ export class CapabilityLiveSession {
       // transient store error. Its serialization queue is repaired, so a
       // suspend/shutdown boundary must retry the latest snapshot without
       // changing the authoritative failed status.
+      // The first retry repairs as much state as possible before teardown, but
+      // it is best effort: cleanup may append evidence that needs a newer save,
+      // and a transient failure here must not skip that final attempt.
+      await this.#persist().catch(() => undefined);
+      let disconnectError: unknown = null;
       try {
-        await this.#persist();
-      } finally {
-        // A failed session is still holding the live provider transport until
-        // this boundary closes it. Always stop the notification pump and the
-        // transport-owned runner/control-plane resources, even when the final
-        // durability retry also fails.
         await this.#disconnect(reason);
+      } catch (error) {
+        disconnectError = error;
       }
       await this.#persist();
+      if (disconnectError !== null) throw disconnectError;
       return;
     }
     this.#status = "suspending";

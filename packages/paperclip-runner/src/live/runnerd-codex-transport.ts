@@ -1052,24 +1052,60 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (method === "thread/read") {
       if (this.#core === null) await this.#resume();
       // An authenticated recovered runner has already restarted the provider
-      // and emitted harness.ready with its exact durable thread identity. Use
-      // that durable evidence for the driver's safety read instead of adding a
-      // private command/event pair outside the versioned PRP schema. The local
-      // provider configuration supplies the original, sandbox-local cwd that
-      // Codex used to create the thread.
-      const durable = await this.#readDurableRunnerState();
-      const providerConfig = record(durable.providerConfig);
-      const cwd =
-        typeof providerConfig.cwd === "string"
-          ? providerConfig.cwd
-          : this.options.runnerFilesystemRoot ?? tmpdir();
-      const tokenUsage = rehydrateRunnerdThreadTokenUsage(
-        durable.providerUsageCumulative,
-      );
-      const recoveredTurns =
-        durable.activeTurn === true && this.#turnId.length > 0
-          ? [{ id: this.#turnId, status: "inProgress" }]
-          : [];
+      // and emitted harness.ready with its exact durable thread identity. Ask
+      // runnerd for its provider snapshot rather than reading its filesystem:
+      // remote process owners need the same recovery contract as local ones.
+      const snapshot = await this.#commandResult("session.snapshot", {});
+      const activeProviderTurnId =
+        typeof snapshot.activeProviderTurnId === "string" &&
+        snapshot.activeProviderTurnId.length > 0
+          ? snapshot.activeProviderTurnId
+          : null;
+      const recoveredTurns: Array<Record<string, unknown>> =
+        activeProviderTurnId === null
+          ? []
+          : [{ id: activeProviderTurnId, status: "inProgress" }];
+      if (activeProviderTurnId === null && this.#turnId.length > 0) {
+        const recoveryDeadline = Date.now() + 5_000;
+        let terminal = (
+          this.#core?.store.state.committedEvents ?? []
+        ).find(() => false);
+        while (Date.now() < recoveryDeadline) {
+          this.#throwIfFailed();
+          this.#pumpEvents();
+          terminal = [...(this.#core?.store.state.committedEvents ?? [])]
+            .reverse()
+            .find((event) => {
+              if (
+                event.eventType !== "turn.completed" &&
+                event.eventType !== "turn.failed" &&
+                event.eventType !== "turn.interrupted" &&
+                event.eventType !== "turn.cancelled"
+              ) return false;
+              const payload = record(record(event.envelope.payload).payload);
+              const providerTurnId =
+                payload.providerTurnId ??
+                payload.turnId ??
+                record(payload.turn).id;
+              return providerTurnId === this.#turnId;
+            });
+          if (terminal !== undefined) break;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+        }
+        if (terminal !== undefined) {
+          recoveredTurns.push({
+            id: this.#turnId,
+            status:
+              terminal.eventType === "turn.completed"
+                ? "completed"
+                : terminal.eventType === "turn.interrupted"
+                  ? "interrupted"
+                  : terminal.eventType === "turn.cancelled"
+                    ? "cancelled"
+                    : "failed",
+          });
+        }
+      }
       return {
         thread: {
           id: this.#threadId,
@@ -1077,9 +1113,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#providerIdentity === null
             ? {}
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
-          cwd,
+          cwd: this.options.runnerFilesystemRoot ?? tmpdir(),
           turns: recoveredTurns,
-          ...(tokenUsage === null ? {} : { tokenUsage }),
         },
       };
     }
@@ -1172,61 +1207,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       exitCode: this.#evidence.runnerExitCode,
       signal: this.#evidence.runnerSignal,
     };
-  }
-
-  async attachRun(input: {
-    runId: string;
-    turnId: string;
-    itemId: string;
-  }): Promise<void> {
-    if (this.#closed || this.#core === null)
-      throw new Error("PRP provider session is not attachable");
-    await this.#command("run.attach", {
-      runId: input.runId,
-      turnId: input.turnId,
-      itemId: input.itemId,
-      ...(this.#authorizedTools === null
-        ? {}
-        : { authorizedTools: this.#authorizedTools }),
-    });
-    await this.#waitForAttachment(input.runId);
-    this.#durableTurnId = input.turnId;
-    this.#turnId = input.turnId;
-  }
-
-  async #waitForAttachment(runId: string): Promise<void> {
-    const core = this.#core;
-    // run.attach deliberately rotates the immutable PRP run binding. The
-    // authority closes the old authenticated socket after acknowledging the
-    // command, then runnerd reconnects and replays the durable run.attached
-    // event under the new binding. Provider-ingress reconnects can include the
-    // provider proxy and sandbox listener, so they must receive the same
-    // recovery budget as the transport instead of an unrelated 10 second cap.
-    const attachmentGraceMs = Math.max(
-      10_000,
-      this.options.runnerReconnectGraceMs ?? 0,
-    );
-    const attachDeadline = Date.now() + attachmentGraceMs;
-    let attachmentDrained = false;
-    while (core !== null && Date.now() < attachDeadline) {
-      const durable = await this.#readDurableRunnerState();
-      const attached = core.store.state.committedEvents.find(
-        (event) =>
-          event.eventType === "run.attached" &&
-          record(record(event.envelope.payload).payload).runId === runId,
-      );
-      if (
-        attached &&
-        Number(durable.ackedSourceSeq ?? 0) >= attached.sourceSeq
-      ) {
-        attachmentDrained = true;
-        break;
-      }
-      this.#throwIfFailed();
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-    }
-    if (!attachmentDrained)
-      throw new Error("runnerd did not durably acknowledge the run attachment");
   }
 
   async #readDurableRunnerState(): Promise<Record<string, unknown>> {
@@ -1642,11 +1622,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       controlPlaneDirectory,
       desiredIdentity,
     );
+    if (
+      identity.runId !== desiredIdentity.runId ||
+      identity.turnId !== desiredIdentity.turnId ||
+      identity.itemId !== desiredIdentity.itemId
+    ) {
+      // PRP identity is the authorization boundary for every command, event,
+      // and semantic receipt. Reusing a provider process for another run needs
+      // a crash-safe credential and durable-state rotation on both peers; do
+      // not pretend that a provider-only attachment changed that authority.
+      throw new Error("native_runner_prp_run_rotation_unavailable");
+    }
     const runnerBinaryPath =
       this.options.runnerBinary ?? defaultCapabilityRunnerdBinary();
     const runnerArtifact = approvedRunnerArtifact(runnerBinaryPath);
     this.#durableTurnId = identity.turnId;
-    const attachingNewRun = identity.runId !== desiredIdentity.runId;
     const provider = this.options.provider ?? "codex";
     const sourceRuntimeContext = this.options.runtimeContext ?? null;
     const runtimeContext =
@@ -1771,31 +1761,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
-    if (
-      attachingNewRun ||
-      identity.turnId !== desiredIdentity.turnId ||
-      identity.itemId !== desiredIdentity.itemId
-    ) {
-      const priorEvidenceSeq = core.store.state.ackedSourceSeq;
-      const drainDeadline = Date.now() + 10_000;
-      while (Date.now() < drainDeadline) {
-        const durable = await this.#readDurableRunnerState();
-        if (Number(durable.ackedSourceSeq ?? 0) >= priorEvidenceSeq) break;
-        this.#throwIfFailed();
-        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-      }
-      const drained = await this.#readDurableRunnerState();
-      if (Number(drained.ackedSourceSeq ?? 0) < priorEvidenceSeq) {
-        throw new Error(
-          "runnerd did not drain prior-run evidence before attachment",
-        );
-      }
-      await this.attachRun({
-        runId: desiredIdentity.runId,
-        turnId: desiredIdentity.turnId,
-        itemId: desiredIdentity.itemId,
-      });
-    }
     this.#diagnostic(
       "runnerd restored its durable PRP session and provider thread",
     );
@@ -1869,23 +1834,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const commandId = `command_lab_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(type, payload, commandId, true);
     await this.#waitCommand(type, commandId);
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      this.#throwIfFailed();
-      const event = core.store.state.committedEvents.find((candidate) => {
-        if (candidate.eventType !== "provider.rpc_result") return false;
-        return (
-          record(record(candidate.envelope.payload).payload).commandId ===
-          commandId
-        );
-      });
-      const result = record(
-        record(record(event?.envelope.payload).payload).result,
-      );
-      if (event !== undefined) return result;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    const command = core.store.state.commands.find(
+      (candidate) => candidate.commandId === commandId,
+    );
+    if (command?.status !== "completed") {
+      throw new Error(`PRP command ${type} omitted its durable result`);
     }
-    throw new Error(`PRP command ${type} omitted its provider result`);
+    return record(record(command.result).result);
   }
 
   async #waitForProviderIdentity(): Promise<void> {

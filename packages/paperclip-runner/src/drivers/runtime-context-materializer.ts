@@ -176,9 +176,9 @@ async function unprotectMaterializedTree(root: string): Promise<void> {
   }
 }
 
-/** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
-export async function releaseMaterializedNativeRuntimeSkills(
+async function removeMaterializedTree(
   skillsHome: string,
+  removeTree: (path: string) => Promise<void>,
 ): Promise<void> {
   const exists = await lstat(skillsHome).then(
     () => true,
@@ -189,7 +189,17 @@ export async function releaseMaterializedNativeRuntimeSkills(
   );
   if (!exists) return;
   await unprotectMaterializedTree(skillsHome);
-  await rm(skillsHome, { recursive: true, force: true });
+  await removeTree(skillsHome);
+}
+
+/** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
+export async function releaseMaterializedNativeRuntimeSkills(
+  skillsHome: string,
+): Promise<void> {
+  await removeMaterializedTree(
+    skillsHome,
+    (path) => rm(path, { recursive: true, force: true }),
+  );
 }
 
 export async function materializeNativeRuntimeSkills(
@@ -268,7 +278,9 @@ export async function materializeNativeRuntimeSkills(
     // filesystem. Publication therefore targets only a fresh destination.
     await renameTree(stagingHome, skillsHome);
   } catch (error) {
-    await removeTree(stagingHome).catch(() => undefined);
+    // Cleanup is best effort and must not replace the publication failure that
+    // explains why no runtime snapshot was installed.
+    await removeMaterializedTree(stagingHome, removeTree).catch(() => undefined);
     throw error;
   }
 }

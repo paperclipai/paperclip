@@ -437,6 +437,9 @@ describe("Capability live runnerd and Codex session", () => {
     });
 
     store.allowTerminalSaves();
+    // The first explicit shutdown retry may still race one transient store
+    // failure. Cleanup and the final retry must nevertheless complete.
+    store.failNextSave();
     await expect(service.shutdown(session.id)).resolves.toBeUndefined();
     expect(await store.load(session.id)).toMatchObject({
       status: "failed",
