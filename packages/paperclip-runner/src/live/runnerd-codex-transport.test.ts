@@ -168,6 +168,90 @@ it("passes the configured Codex API key only through the provider process enviro
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
 });
 
+it("passes only the Anthropic credential to Claude Managed runnerd", () => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "claude_managed",
+    options: {
+      provider: "claude_managed",
+      environment: {
+        PATH: "/bin",
+        ANTHROPIC_API_KEY: "anthropic-canary",
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "must-not-reach-provider",
+        PAPERCLIP_API_KEY: "must-not-reach-provider",
+        DATABASE_URL: "must-not-reach-provider",
+      },
+    },
+    identity: {
+      runnerInstanceId: "runner-1",
+      environmentLeaseId: "lease-1",
+      runId: "run-1",
+      normalizedSessionId: "session-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+  });
+  expect(environment).toMatchObject({
+    PATH: "/bin",
+    ANTHROPIC_API_KEY: "anthropic-canary",
+    PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
+    PAPERCLIP_RUN_ID: "run-1",
+    PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
+  });
+  expect(environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+  expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(environment.DATABASE_URL).toBeUndefined();
+});
+
+it("uses file-backed AWS workload identity without forwarding access keys or Paperclip tokens", () => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "aws_agentcore",
+    options: {
+      provider: "aws_agentcore",
+      environment: {
+        PATH: "/bin",
+        AWS_REGION: "us-east-1",
+        AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
+        AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+        AWS_ACCESS_KEY_ID: "must-not-reach-provider",
+        AWS_SECRET_ACCESS_KEY: "must-not-reach-provider",
+        AWS_SESSION_TOKEN: "must-not-reach-provider",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "must-not-reach-provider",
+      },
+    },
+    identity: {
+      runnerInstanceId: "runner-1",
+      environmentLeaseId: "lease-1",
+      runId: "run-1",
+      normalizedSessionId: "session-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: false,
+  });
+  expect(environment).toMatchObject({
+    AWS_REGION: "us-east-1",
+    AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
+    AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+  });
+  expect(environment.AWS_ACCESS_KEY_ID).toBeUndefined();
+  expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  expect(environment.AWS_SESSION_TOKEN).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+});
+
 it.each([
   {
     agent: "pi" as const,

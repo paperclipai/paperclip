@@ -370,9 +370,13 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       errorCode: "paperclip_runner_coordinator_required",
       provider: ctx.config.provider === "opencode"
         ? "opencode"
+        : ctx.config.provider === "claude_managed"
+          ? "anthropic"
+          : ctx.config.provider === "aws_agentcore"
+            ? "amazon-bedrock"
         : ctx.config.provider === "acpx"
-          ? "acpx"
-          : "codex",
+            ? "acpx"
+            : "codex",
       summary: message,
     };
   },
@@ -410,6 +414,38 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
+    if (profile.provider === "claude_managed") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "warn" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "claude_managed_profile_selected",
+          level: "info" as const,
+          message: `Claude Managed profile ${profile.managedProfileId} is selected with retention acknowledged. Its stored qualification, API-key binding, and spend ceiling are verified before the first turn.`,
+        }, {
+          code: "claude_managed_retention_notice",
+          level: "warn" as const,
+          message: "Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes.",
+        }],
+      };
+    }
+    if (profile.provider === "aws_agentcore") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "warn" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "aws_agentcore_profile_selected",
+          level: "info" as const,
+          message: `AWS AgentCore profile ${profile.agentCoreProfileId} is selected with retention acknowledged. Its stored qualification, invocation limits, and estimated spend ceiling are verified before the first turn.`,
+        }, {
+          code: "aws_agentcore_retention_notice",
+          level: "warn" as const,
+          message: "AgentCore Memory retains short-term events for 90 days; the spend ceiling is an estimate, not an AWS currency hard stop.",
+        }],
+      };
+    }
     const result = profile.provider === "opencode"
       ? await openCodeTestEnvironment(context)
       : await codexTestEnvironment(context);
@@ -422,22 +458,27 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     ...codexModels,
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
     { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   listModels: async () => [
     ...await listCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
     { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   refreshModels: async () => [
     ...await refreshCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
     { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   supportsLocalAgentJwt: false,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => config.provider === "acpx"
+  getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
+    || config.provider === "aws_agentcore"
+    || config.provider === "acpx"
     ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
     : config.provider === "opencode"
       ? buildNpmRuntimeCommandSpec(
@@ -447,7 +488,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.148.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, or a qualified Claude/Codex ACP agent through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or a qualified Claude/Codex ACP agent through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -458,9 +499,11 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         options: [
           { value: "codex", label: "Codex" },
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
+          { value: "claude_managed", label: "Claude Managed" },
+          { value: "aws_agentcore", label: "AWS AgentCore" },
           { value: "acpx", label: "ACPX" },
         ],
-        hint: "Select Codex, qualified OpenCode, or a qualified Claude/Codex ACPX profile.",
+        hint: "Select a local provider, company-qualified managed provider, or qualified Claude/Codex ACPX profile.",
       },
       {
         key: "codexPermissionMode",
@@ -515,6 +558,78 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         placeholder: DEFAULT_OPENCODE_RUNNER_MODEL,
         hint: "OpenCode uses provider/model form. ACPX models are pinned by the selected qualified agent profile.",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "managedProfileId",
+        label: "Managed Agent profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "maxSessionListCostUsd",
+        label: "Session spend ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Hard ceiling for one Claude Managed session.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "managedAgentsRetentionAcknowledged",
+        label: "Acknowledge managed retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "Claude Managed is stateful beta and is not eligible for ZDR or HIPAA modes.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "agentCoreProfileId",
+        label: "AgentCore profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified AgentCore profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxEstimatedSessionCostUsd",
+        label: "Estimated session ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxIterations",
+        label: "Maximum iterations",
+        type: "number" as const,
+        default: 8,
+        hint: "Must be between 1 and the qualified maximum of 8.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxOutputTokens",
+        label: "Maximum output tokens",
+        type: "number" as const,
+        default: 4_096,
+        hint: "Must be between 1 and the qualified maximum of 4096.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "timeoutSeconds",
+        label: "Invocation timeout (seconds)",
+        type: "number" as const,
+        default: 300,
+        hint: "Must be between 1 and the qualified maximum of 300 seconds.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "agentCoreRetentionAcknowledged",
+        label: "Acknowledge 90-day Memory retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "The qualified AgentCore profile retains short-term Memory events for 90 days.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
       },
       {
         key: "lifecycleMode",

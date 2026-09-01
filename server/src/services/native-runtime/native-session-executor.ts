@@ -2753,6 +2753,8 @@ export async function executePaperclipNativeSession(input: {
   if (
     input.execution.provider.kind !== "codex"
     && input.execution.provider.kind !== "opencode"
+    && input.execution.provider.kind !== "claude_managed"
+    && input.execution.provider.kind !== "aws_agentcore"
     && input.execution.provider.kind !== "acpx"
   ) {
     throw new Error("paperclip_runner_provider_unsupported");
@@ -6010,9 +6012,13 @@ export async function createRunnerdBackend(input: {
             ? "codex"
             : input.execution.provider.kind === "opencode"
               ? "opencode"
-              : input.execution.provider.kind === "acpx"
-                ? "acpx"
-                : undefined,
+              : input.execution.provider.kind === "claude_managed"
+                ? "claude_managed"
+                : input.execution.provider.kind === "aws_agentcore"
+                  ? "aws_agentcore"
+                  : input.execution.provider.kind === "acpx"
+                    ? "acpx"
+                    : undefined,
         ...(input.execution.provider.kind === "acpx"
           ? {
               acpxAgent: input.execution.provider.agent,
@@ -6033,6 +6039,32 @@ export async function createRunnerdBackend(input: {
         ...(input.execution.provider.kind === "opencode"
           ? {
               opencodePermissionMode: input.execution.provider.permissionMode,
+            }
+          : {}),
+        ...(input.execution.provider.kind === "claude_managed"
+          ? {
+              managedProfile: {
+                ...input.execution.provider.managedProfile,
+                maxSessionListCostUsd:
+                  input.execution.provider.maxSessionListCostUsd,
+                model: input.execution.provider.model,
+              },
+            }
+          : {}),
+        ...(input.execution.provider.kind === "aws_agentcore"
+          ? {
+              agentCoreProfile: {
+                ...input.execution.provider.agentCoreProfile,
+                maxEstimatedSessionCostUsd:
+                  input.execution.provider.maxEstimatedSessionCostUsd,
+                maxIterations:
+                  input.execution.provider.invocationLimits.maxIterations,
+                maxOutputTokens:
+                  input.execution.provider.invocationLimits.maxOutputTokens,
+                timeoutSeconds:
+                  input.execution.provider.invocationLimits.timeoutSeconds,
+                model: input.execution.provider.model,
+              },
             }
           : {}),
         ...(expectedProviderPackManifest && stagedRemoteProviderPackRoot

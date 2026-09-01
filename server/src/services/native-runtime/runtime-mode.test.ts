@@ -63,13 +63,35 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("admits fresh OpenCode and qualified ACPX profiles", () => {
+  it("admits fresh local, managed, and qualified ACPX profiles", () => {
     expect(resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
     })).toMatchObject({
       kind: "native",
       profile: { backend: "opencode_server" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+        managedAgentsRetentionAcknowledged: true,
+      },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "claude_managed_agents_api" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+      },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "aws_agentcore_harness_api" },
     });
     expect(resolveNativeRuntimeMode({
       ...eligible,
@@ -109,6 +131,27 @@ describe("resolveNativeRuntimeMode", () => {
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_acpx_model_unqualified",
+    }));
+  });
+
+  it("rejects incomplete managed-provider selections before a run is persisted", () => {
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+      },
+    })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_claude_managed_retention_required",
+    }));
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "aws_agentcore",
+        agentCoreRetentionAcknowledged: true,
+      },
+    })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_aws_agentcore_profile_required",
     }));
   });
 
@@ -266,6 +309,24 @@ describe("resolveNativeRuntimeMode", () => {
       },
     })).toEqual(expect.objectContaining({
       profile: { mode: "native", backend: "opencode_server", protocolVersion: 1 },
+    }));
+  });
+
+  it.each([
+    "claude_managed_agents_api",
+    "aws_agentcore_harness_api",
+  ] as const)("keeps a persisted %s recovery on its immutable driver", (driverKind) => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+        driverKind,
+      },
+    })).toEqual(expect.objectContaining({
+      profile: { mode: "native", backend: driverKind, protocolVersion: 1 },
     }));
   });
 

@@ -295,9 +295,11 @@ export interface CapabilityLiveSessionSnapshot {
 export interface CreateCapabilityLiveSessionInput {
   seed?: CapabilityFixtureSeed | CapabilityFixtureState;
   workingDirectory?: string;
-  provider?: "codex" | "opencode" | "acpx";
+  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: QualifiedAcpxAgent;
   requestedModel?: string;
+  managedProfile?: CapabilityLiveSessionConfigSnapshot["managedProfile"];
+  agentCoreProfile?: CapabilityLiveSessionConfigSnapshot["agentCoreProfile"];
   scenario?: CapabilitySemanticScenarioPolicy;
   capabilities?: string[];
   explicitClaims?: string[];
@@ -798,6 +800,18 @@ export class CapabilityLiveSessionService {
     if (input.provider === "acpx" && input.acpxAgent === "pi") {
       throw new Error("The Pi ACPX profile is not available");
     }
+    if (input.provider === "claude_managed" && !input.managedProfile) {
+      throw new Error("Claude Managed live sessions require a qualified managed profile");
+    }
+    if (input.provider === "aws_agentcore" && !input.agentCoreProfile) {
+      throw new Error("AWS AgentCore live sessions require a qualified AgentCore profile");
+    }
+    if (
+      (input.provider === "claude_managed" || input.provider === "aws_agentcore") &&
+      !input.requestedModel?.trim()
+    ) {
+      throw new Error("Managed live sessions require an explicit qualified model");
+    }
     const port = new CapabilityMockControlPlaneAdapter(input.seed);
     const seedState = port.serialize();
     await port.start();
@@ -840,14 +854,28 @@ export class CapabilityLiveSessionService {
         provider: input.provider ?? "codex",
         driver: input.provider === "opencode"
           ? "opencode_server"
+          : input.provider === "claude_managed"
+            ? "claude_managed_agents_api"
+            : input.provider === "aws_agentcore"
+              ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
           ? "1.18.17"
+          : input.provider === "claude_managed"
+            ? input.managedProfile!.betaVersion
+            : input.provider === "aws_agentcore"
+              ? input.agentCoreProfile!.qualificationRevision
           : input.provider === "acpx" ? acpxProfile!.acpxVersion : null,
         ...(acpxProfile === null ? {} : {
           acpxAgent: acpxProfile.agent,
           acpxProfile: structuredClone(acpxProfile),
         }),
+        ...(input.managedProfile === undefined
+          ? {}
+          : { managedProfile: structuredClone(input.managedProfile) }),
+        ...(input.agentCoreProfile === undefined
+          ? {}
+          : { agentCoreProfile: structuredClone(input.agentCoreProfile) }),
         ...(input.requestedModel === undefined
           ? {}
           : { requestedModel: requireNonEmpty(input.requestedModel, "requested_model") }),
@@ -988,15 +1016,18 @@ export class CapabilityLiveSessionService {
     // not disposable state.  Suspending preserves its provider checkpoint and
     // authority binding so selecting it from history can restore it safely.
     await session.suspend("reset archived prior session");
-    if (config.provider === "claude_managed" || config.provider === "aws_agentcore") {
-      throw new Error("managed provider sessions are readable but cannot start a replacement session in this release");
-    }
     const seedPort = CapabilityMockControlPlaneAdapter.restore(config.seedState);
     return this.create({
       seed: seedPort.snapshot(),
       workingDirectory: config.workingDirectory,
       provider: config.provider ?? "codex",
       ...(config.requestedModel === undefined ? {} : { requestedModel: config.requestedModel }),
+      ...(config.managedProfile === undefined
+        ? {}
+        : { managedProfile: config.managedProfile }),
+      ...(config.agentCoreProfile === undefined
+        ? {}
+        : { agentCoreProfile: config.agentCoreProfile }),
       scenario: config.scenario,
       capabilities: config.capabilities,
       explicitClaims: config.explicitClaims,
@@ -1787,9 +1818,6 @@ export class CapabilityLiveSession {
 
   async #connect(resume: boolean): Promise<void> {
     const provider = this.#config.provider ?? this.#transportOptions.provider ?? "codex";
-    if (provider === "claude_managed" || provider === "aws_agentcore") {
-      throw new Error("managed provider sessions are readable but execution is deferred in this release");
-    }
     this.#status = resume ? "restoring" : "starting";
     const identityDigest = createHash("sha256").update(this.id).digest("hex").slice(0, 20);
     const providerRunBinding = this.#providerRunBinding ?? {
@@ -1804,6 +1832,24 @@ export class CapabilityLiveSession {
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
       } : {}),
+      ...(provider === "claude_managed" && this.#config.managedProfile
+        ? {
+            managedProfile: {
+              ...this.#config.managedProfile,
+              model: this.#config.requestedModel ?? "claude-sonnet-5",
+            },
+          }
+        : {}),
+      ...(provider === "aws_agentcore" && this.#config.agentCoreProfile
+        ? {
+            agentCoreProfile: {
+              ...this.#config.agentCoreProfile,
+              model:
+                this.#config.requestedModel ??
+                "global.anthropic.claude-sonnet-4-6",
+            },
+          }
+        : {}),
       lifecyclePolicy: this.#config.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
       resumeActiveTurnId: resume ? this.#activeTurnId : null,
       stateDirectory: resolve(this.#config.workingDirectory, ".paperclip-runner-prp", identityDigest),

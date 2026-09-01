@@ -35,6 +35,8 @@ const acpxRunnerModels = {
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
+const defaultClaudeManagedModel = "claude-sonnet-5";
+const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
 
 export function CodexLocalConfigFields({
   mode,
@@ -67,7 +69,7 @@ export function CodexLocalConfigFields({
     : "codex";
   const runnerPermissionCapability =
     PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider];
-  const runnerPermissionMode = runnerManaged
+  const runnerPermissionMode = runnerManaged && runnerPermissionCapability.configurable
     ? resolvePaperclipRunnerPermissionMode(
         runnerProvider,
         isCreate
@@ -84,6 +86,22 @@ export function CodexLocalConfigFields({
             ),
       )
     : runnerPermissionCapability.defaultMode;
+  const runnerSchemaValue = (key: string, fallback: unknown): unknown =>
+    isCreate
+      ? values!.adapterSchemaValues?.[key] ?? fallback
+      : eff("adapterConfig", key, config[key] ?? fallback);
+  const updateRunnerSchemaValue = (key: string, value: unknown): void => {
+    if (isCreate) {
+      set!({
+        adapterSchemaValues: {
+          ...values!.adapterSchemaValues,
+          [key]: value,
+        },
+      });
+    } else {
+      mark("adapterConfig", key, value);
+    }
+  };
   const configuredAcpxAgent = runnerManaged && runnerProvider === "acpx"
     ? isCreate
       ? values!.adapterSchemaValues?.acpxAgent
@@ -164,9 +182,13 @@ export function CodexLocalConfigFields({
                 : "codex";
               const model = provider === "opencode"
                 ? defaultOpenCodeRunnerModel
-                : provider === "acpx"
-                  ? acpxRunnerModels.claude
-                  : DEFAULT_CODEX_LOCAL_MODEL;
+                : provider === "claude_managed"
+                  ? defaultClaudeManagedModel
+                  : provider === "aws_agentcore"
+                    ? defaultAwsAgentCoreModel
+                    : provider === "acpx"
+                    ? acpxRunnerModels.claude
+                    : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
                   model,
@@ -187,9 +209,128 @@ export function CodexLocalConfigFields({
           >
             <option value="codex">Codex</option>
             <option value="opencode">OpenCode 1.18.17</option>
+            <option value="claude_managed">Claude Managed</option>
+            <option value="aws_agentcore">AWS AgentCore</option>
             <option value="acpx">ACPX</option>
           </select>
         </Field>
+      )}
+      {runnerManaged && !runnerPermissionCapability.configurable && (
+        <Field
+          label="Permission mode"
+          hint={runnerPermissionCapability.description}
+        >
+          <div className={`${inputClass} text-muted-foreground`}>
+            Provider-managed
+          </div>
+        </Field>
+      )}
+      {runnerManaged && runnerProvider === "claude_managed" && (
+        <>
+          <Field
+            label="Managed Agent profile"
+            hint="Company-scoped qualified profile ID or key. Remote resource identity is loaded from the stored profile, not this agent config."
+          >
+            <DraftInput
+              value={String(runnerSchemaValue("managedProfileId", ""))}
+              onCommit={(value) => updateRunnerSchemaValue("managedProfileId", value.trim())}
+              immediate
+              className={inputClass}
+              placeholder="managed-primary"
+            />
+          </Field>
+          <Field
+            label="Session spend ceiling (USD)"
+            hint="Optional per-agent hard ceiling. Leave 1.00 to use a conservative default."
+          >
+            <DraftNumberInput
+              value={Number(runnerSchemaValue("maxSessionListCostUsd", 1))}
+              min={0.01}
+              onCommit={(value) => updateRunnerSchemaValue("maxSessionListCostUsd", value)}
+              immediate
+              className={inputClass}
+            />
+          </Field>
+          <ToggleField
+            label="Acknowledge managed retention"
+            hint="Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes."
+            checked={runnerSchemaValue("managedAgentsRetentionAcknowledged", false) === true}
+            onChange={(value) => updateRunnerSchemaValue("managedAgentsRetentionAcknowledged", value)}
+          />
+        </>
+      )}
+      {runnerManaged && runnerProvider === "aws_agentcore" && (
+        <>
+          <Field
+            label="AgentCore profile"
+            hint="Company-scoped qualified profile ID or key. Harness, Memory, IAM, and context-store identity come from the stored profile."
+          >
+            <DraftInput
+              value={String(runnerSchemaValue("agentCoreProfileId", ""))}
+              onCommit={(value) => updateRunnerSchemaValue("agentCoreProfileId", value.trim())}
+              immediate
+              className={inputClass}
+              placeholder="agentcore-primary"
+            />
+          </Field>
+          <Field
+            label="Estimated session ceiling (USD)"
+            hint="Paperclip estimate; AWS does not provide a per-session currency hard stop."
+          >
+            <DraftNumberInput
+              value={Number(runnerSchemaValue("maxEstimatedSessionCostUsd", 1))}
+              min={0.01}
+              onCommit={(value) => updateRunnerSchemaValue("maxEstimatedSessionCostUsd", value)}
+              immediate
+              className={inputClass}
+            />
+          </Field>
+          <Field
+            label="Maximum iterations"
+            hint="Qualified range is 1–8. Invalid values fail closed to 8."
+          >
+            <DraftNumberInput
+              value={Number(runnerSchemaValue("maxIterations", 8))}
+              min={1}
+              max={8}
+              onCommit={(value) => updateRunnerSchemaValue("maxIterations", value)}
+              immediate
+              className={inputClass}
+            />
+          </Field>
+          <Field
+            label="Maximum output tokens"
+            hint="Qualified range is 1–4096."
+          >
+            <DraftNumberInput
+              value={Number(runnerSchemaValue("maxOutputTokens", 4_096))}
+              min={1}
+              max={4_096}
+              onCommit={(value) => updateRunnerSchemaValue("maxOutputTokens", value)}
+              immediate
+              className={inputClass}
+            />
+          </Field>
+          <Field
+            label="Invocation timeout (seconds)"
+            hint="Qualified range is 1–300 seconds."
+          >
+            <DraftNumberInput
+              value={Number(runnerSchemaValue("timeoutSeconds", 300))}
+              min={1}
+              max={300}
+              onCommit={(value) => updateRunnerSchemaValue("timeoutSeconds", value)}
+              immediate
+              className={inputClass}
+            />
+          </Field>
+          <ToggleField
+            label="Acknowledge 90-day Memory retention"
+            hint="The qualified AgentCore profile retains short-term Memory events for exactly 90 days."
+            checked={runnerSchemaValue("agentCoreRetentionAcknowledged", false) === true}
+            onChange={(value) => updateRunnerSchemaValue("agentCoreRetentionAcknowledged", value)}
+          />
+        </>
       )}
       {runnerManaged && runnerProvider === "acpx" && (
         <Field
@@ -221,7 +362,7 @@ export function CodexLocalConfigFields({
           </select>
         </Field>
       )}
-      {runnerManaged && (
+      {runnerManaged && runnerPermissionCapability.configurable && (
         <Field
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} Full auto does not widen Paperclip's workspace, network, credential, or planning boundaries.`}

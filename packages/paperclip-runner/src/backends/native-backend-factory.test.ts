@@ -121,6 +121,71 @@ function opencodeExecution(): NativeExecutionInput {
   };
 }
 
+function managedExecution(
+  kind: "claude_managed" | "aws_agentcore",
+): NativeExecutionInput {
+  if (kind === "claude_managed") {
+    return {
+      ...execution(),
+      session: {
+        normalizedSessionId: "session",
+        driverKind: "claude_managed_agents_api",
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+      provider: {
+        kind,
+        model: "claude-sonnet-5",
+        maxSessionListCostUsd: 1,
+        managedProfile: {
+          profileId: "profile",
+          anthropicAgentId: "agent",
+          agentVersion: "1",
+          environmentId: "environment",
+          betaVersion: "managed-agents-2026-04-01",
+        },
+      },
+    };
+  }
+  return {
+    ...execution(),
+    session: {
+      normalizedSessionId: "session",
+      driverKind: "aws_agentcore_harness_api",
+      protocolVersion: 1,
+      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    },
+    provider: {
+      kind,
+      model: "global.anthropic.claude-sonnet-4-6",
+      maxEstimatedSessionCostUsd: 1,
+      invocationLimits: {
+        maxIterations: 8,
+        maxOutputTokens: 4096,
+        timeoutSeconds: 300,
+      },
+      agentCoreProfile: {
+        profileId: "profile",
+        region: "us-east-1",
+        accountId: "123456789012",
+        harnessArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:harness/test",
+        harnessVersion: "1",
+        endpointArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:endpoint/test",
+        endpointQualifier: "1",
+        agentRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test",
+        memoryArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:memory/test",
+        memoryId: "memory",
+        invocationRoleArn: "arn:aws:iam::123456789012:role/runner",
+        contextBucket: "context-bucket",
+        contextPrefix: "companies/company/profiles/profile",
+        contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
+        qualificationRevision: "aws-agentcore-harness-v1",
+        eventExpiryDays: 90,
+      },
+    },
+  };
+}
+
 describe("native backend factory", () => {
   it("constructs the Codex backend without starting its transport", async () => {
     const backend = createNativeSessionBackend(execution(), {
@@ -156,6 +221,29 @@ describe("native backend factory", () => {
       kind: "runner",
       name: "opencode_server",
       version: "1.18.17",
+      capabilities: {
+        steering: false,
+        resume: true,
+        interruption: true,
+        dynamicTools: true,
+      },
+    });
+  });
+
+  it.each([
+    ["claude_managed" as const, "claude_managed_agents_api", "managed-agents-2026-04-01"],
+    ["aws_agentcore" as const, "aws_agentcore_harness_api", "aws-agentcore-harness-v1"],
+  ])("routes %s through runnerd", async (kind, name, version) => {
+    const backend = createNativeSessionBackend(managedExecution(kind), {
+      codexTransportFactory: () => {
+        throw new Error("descriptor must not launch the transport");
+      },
+    });
+
+    await expect(backend.descriptor()).resolves.toMatchObject({
+      kind: "runner",
+      name,
+      version,
       capabilities: {
         steering: false,
         resume: true,

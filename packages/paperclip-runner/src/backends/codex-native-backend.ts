@@ -32,7 +32,12 @@ export interface CodexNativeSessionBackendOptions {
 function transportDriverIdentity(
   input: NativeExecutionInput,
 ): {
-  kind: "codex_app_server" | "opencode_server" | "acpx_runtime";
+  kind:
+    | "codex_app_server"
+    | "opencode_server"
+    | "claude_managed_agents_api"
+    | "aws_agentcore_harness_api"
+    | "acpx_runtime";
   displayName: string;
   version: string;
 } {
@@ -49,6 +54,18 @@ function transportDriverIdentity(
         displayName: "OpenCode server",
         version: "1.18.17",
       };
+    case "claude_managed":
+      return {
+        kind: "claude_managed_agents_api",
+        displayName: "Claude Managed Agent",
+        version: input.provider.managedProfile.betaVersion,
+      };
+    case "aws_agentcore":
+      return {
+        kind: "aws_agentcore_harness_api",
+        displayName: "AWS AgentCore Harness",
+        version: input.provider.agentCoreProfile.qualificationRevision,
+      };
     case "acpx":
       if (input.provider.agent === "pi") {
         throw new Error(
@@ -62,7 +79,7 @@ function transportDriverIdentity(
       };
     default:
       throw new Error(
-        `Native backend for ${input.provider.kind} is not available through the local runnerd transport`,
+        "Native provider is not available through the local runnerd transport",
       );
   }
 }
@@ -76,7 +93,7 @@ function createTransportBackedNativeSessionBackend(
 
   return new HarnessDriverBackend(new CodexAppServerDriver({
     ...(input.provider.model ? { model: input.provider.model } : {}),
-    // Runnerd owns provider permissions for the OpenCode/ACPX facades. Their
+    // Runnerd owns provider permissions for non-Codex facades. Their
     // Codex-compatible surface must never open a second approval channel.
     approvalPolicy:
       input.provider.kind === "codex"

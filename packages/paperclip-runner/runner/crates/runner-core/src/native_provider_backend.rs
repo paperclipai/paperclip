@@ -7,11 +7,15 @@ use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
     PolledEvent,
 };
+use crate::managed_provider_backend::{
+    ManagedProviderCommandExecutor, MANAGED_PROVIDER_STATE_FILE,
+};
 use crate::provider_backend::{CodexCommandExecutor, CODEX_PROVIDER_STATE_FILE};
 
 enum SelectedExecutor {
     LocalFacade(CodexCommandExecutor),
     Acpx(AcpxCommandExecutor),
+    Managed(ManagedProviderCommandExecutor),
 }
 
 impl CommandExecutor for SelectedExecutor {
@@ -19,6 +23,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.execute(command),
             Self::Acpx(executor) => executor.execute(command),
+            Self::Managed(executor) => executor.execute(command),
         }
     }
 
@@ -26,6 +31,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.poll_events(),
             Self::Acpx(executor) => executor.poll_events(),
+            Self::Managed(executor) => executor.poll_events(),
         }
     }
 
@@ -33,6 +39,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
             Self::Acpx(executor) => executor.acknowledge_events(count),
+            Self::Managed(executor) => executor.acknowledge_events(count),
         }
     }
 
@@ -40,6 +47,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.shutdown(),
             Self::Acpx(executor) => executor.shutdown(),
+            Self::Managed(executor) => executor.shutdown(),
         }
     }
 }
@@ -71,12 +79,22 @@ impl NativeProviderCommandExecutor {
         self.recovery_checked = true;
         let codex = self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists();
         let acpx = self.state_dir.join(ACPX_PROVIDER_STATE_FILE).exists();
-        if codex && acpx {
+        let managed = self.state_dir.join(MANAGED_PROVIDER_STATE_FILE).exists();
+        if [codex, acpx, managed]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+            > 1
+        {
             return Err(DurableRunnerError::invalid(
-                "runner state contains conflicting local provider authorities",
+                "runner state contains conflicting provider authorities",
             ));
         }
-        self.selected = if acpx {
+        self.selected = if managed {
+            Some(SelectedExecutor::Managed(
+                ManagedProviderCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+            ))
+        } else if acpx {
             Some(SelectedExecutor::Acpx(
                 AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ))
@@ -107,6 +125,9 @@ impl NativeProviderCommandExecutor {
                 &self.state_dir,
                 &self.config,
             )),
+            "claude_managed" | "aws_agentcore" => SelectedExecutor::Managed(
+                ManagedProviderCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+            ),
             _ => {
                 return Err(DurableRunnerError::invalid(format!(
                     "provider kind {kind} is not executable through the local runnerd boundary"

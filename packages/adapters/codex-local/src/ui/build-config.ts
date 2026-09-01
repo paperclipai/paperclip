@@ -101,6 +101,55 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const configuredModel = typeof config.model === "string"
     ? config.model.trim()
     : "";
+  const managedProfileId = typeof schemaValues.managedProfileId === "string"
+    ? schemaValues.managedProfileId.trim()
+    : "";
+  const agentCoreProfileId = typeof schemaValues.agentCoreProfileId === "string"
+    ? schemaValues.agentCoreProfileId.trim()
+    : "";
+  const maxSessionListCostUsd = Number(schemaValues.maxSessionListCostUsd ?? 1);
+  const maxEstimatedSessionCostUsd = Number(
+    schemaValues.maxEstimatedSessionCostUsd ?? 1,
+  );
+  const managedAgentsRetentionAcknowledged =
+    schemaValues.managedAgentsRetentionAcknowledged === true;
+  const agentCoreRetentionAcknowledged =
+    schemaValues.agentCoreRetentionAcknowledged === true;
+  const boundedLimit = (
+    value: unknown,
+    fallback: number,
+    maximum: number,
+    label: string,
+  ) => {
+    if (value === undefined || value === null || value === "") return fallback;
+    if (
+      typeof value !== "number"
+      || !Number.isSafeInteger(value)
+      || value <= 0
+      || value > maximum
+    ) {
+      throw new Error(`${label} must be an integer between 1 and ${maximum}.`);
+    }
+    return value;
+  };
+  const maxIterations = boundedLimit(
+    schemaValues.maxIterations,
+    8,
+    8,
+    "AWS AgentCore maxIterations",
+  );
+  const maxOutputTokens = boundedLimit(
+    schemaValues.maxOutputTokens,
+    4_096,
+    4_096,
+    "AWS AgentCore maxOutputTokens",
+  );
+  const timeoutSeconds = boundedLimit(
+    schemaValues.timeoutSeconds,
+    300,
+    300,
+    "AWS AgentCore timeoutSeconds",
+  );
   const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
   const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
   const configuredIdleTimeoutMs =
@@ -115,6 +164,33 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "codexPermissionMode",
     "opencodePermissionMode",
     "acpxPermissionMode",
+    "managedProfileId",
+    "managedAgentsRetentionAcknowledged",
+    "maxSessionListCostUsd",
+    "anthropicAgentId",
+    "agentVersion",
+    "anthropicEnvironmentId",
+    "agentCoreProfileId",
+    "agentCoreRetentionAcknowledged",
+    "maxEstimatedSessionCostUsd",
+    "maxIterations",
+    "maxOutputTokens",
+    "timeoutSeconds",
+    "awsRegion",
+    "awsAccountId",
+    "harnessArn",
+    "harnessId",
+    "harnessVersion",
+    "endpointArn",
+    "endpointQualifier",
+    "agentRuntimeArn",
+    "memoryArn",
+    "memoryId",
+    "invocationRoleArn",
+    "contextBucket",
+    "contextPrefix",
+    "contextKmsKeyArn",
+    "qualificationRevision",
     "lifecycleMode",
     "idleTimeoutMs",
   ]) {
@@ -147,6 +223,34 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       ? {
           acpxAgent,
           model: acpxAgent === "claude" ? "claude-sonnet-5" : "gpt-5.6-sol",
+        }
+      : {}),
+    ...(provider === "claude_managed"
+      ? {
+          ...(managedProfileId ? { managedProfileId } : {}),
+          model: configuredModel || "claude-sonnet-5",
+          maxSessionListCostUsd:
+            Number.isFinite(maxSessionListCostUsd) && maxSessionListCostUsd > 0
+              ? maxSessionListCostUsd
+              : 1,
+          managedAgentsRetentionAcknowledged:
+            managedAgentsRetentionAcknowledged,
+        }
+      : {}),
+    ...(provider === "aws_agentcore"
+      ? {
+          ...(agentCoreProfileId ? { agentCoreProfileId } : {}),
+          model: configuredModel || "global.anthropic.claude-sonnet-4-6",
+          maxEstimatedSessionCostUsd:
+            Number.isFinite(maxEstimatedSessionCostUsd)
+              && maxEstimatedSessionCostUsd > 0
+              ? maxEstimatedSessionCostUsd
+              : 1,
+          agentCoreRetentionAcknowledged:
+            agentCoreRetentionAcknowledged,
+          maxIterations,
+          maxOutputTokens,
+          timeoutSeconds,
         }
       : {}),
     lifecycleMode,

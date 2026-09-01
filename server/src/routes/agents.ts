@@ -213,6 +213,8 @@ import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -1685,18 +1687,32 @@ export function agentRoutes(
     );
   }
 
-  function assertFreshPaperclipRunnerProvider(
+  async function assertFreshPaperclipRunnerProvider(
+    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     if (adapterType !== "paperclip_runner") return;
+    let profile;
     try {
-      resolvePaperclipRunnerProviderProfile(adapterConfig);
+      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
     } catch (error) {
       if (error instanceof PaperclipRunnerProviderProfileError) {
         throw unprocessable(error.message, { code: error.code });
       }
       throw error;
+    }
+    if (profile.provider === "claude_managed") {
+      await managedAgentProfileService(db).requireQualified(
+        companyId,
+        profile.managedProfileId,
+      );
+    } else if (profile.provider === "aws_agentcore") {
+      await remoteAgentProfileService(db).requireQualified(
+        companyId,
+        profile.agentCoreProfileId,
+        "aws_bedrock_agentcore_harness",
+      );
     }
   }
 
@@ -1905,6 +1921,7 @@ export function agentRoutes(
       },
     );
     await assertAdapterConfigConstraints(
+      input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
@@ -2000,11 +2017,12 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
+    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType === "paperclip_runner") {
-      assertFreshPaperclipRunnerProvider(adapterType, adapterConfig);
+      await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
     }
     if (adapterType !== "opencode_local") return;
@@ -3424,13 +3442,12 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
-    const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     if (
       rollbackAdapterType !== existing.adapterType ||
-      (rollbackAdapterType === "paperclip_runner" &&
-        rollbackAdapterConfig.provider !== existingAdapterConfig.provider)
+      rollbackAdapterType === "paperclip_runner"
     ) {
-      assertFreshPaperclipRunnerProvider(
+      await assertFreshPaperclipRunnerProvider(
+        existing.companyId,
         rollbackAdapterType,
         rollbackAdapterConfig,
       );
@@ -3536,7 +3553,8 @@ export function agentRoutes(
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
-    assertFreshPaperclipRunnerProvider(
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
@@ -3754,7 +3772,8 @@ export function agentRoutes(
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
-    assertFreshPaperclipRunnerProvider(
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
       createInput.adapterType,
       rawCreateAdapterConfig,
     );
@@ -4252,9 +4271,11 @@ export function agentRoutes(
       if (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
-          rawEffectiveAdapterConfig.provider !== existingRunnerProvider)
+          (requestedAdapterConfig !== null ||
+            rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
       ) {
-        assertFreshPaperclipRunnerProvider(
+        await assertFreshPaperclipRunnerProvider(
+          existing.companyId,
           requestedAdapterType,
           rawEffectiveAdapterConfig,
         );

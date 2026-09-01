@@ -126,14 +126,15 @@ describe("buildPaperclipRunnerConfig", () => {
   });
 
   it("fails closed to the Codex profile and safe defaults for stale schema values", () => {
-    expect(buildPaperclipRunnerConfig(makeValues({
+    const config = buildPaperclipRunnerConfig(makeValues({
       adapterSchemaValues: {
         provider: "unknown",
         codexPermissionMode: "unrestricted",
         lifecycleMode: "forever",
         idleTimeoutMs: -1,
       },
-    }))).toMatchObject({
+    }));
+    expect(config).toMatchObject({
       provider: "codex",
       codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
@@ -206,6 +207,71 @@ describe("buildPaperclipRunnerConfig", () => {
       acpxAgent: "claude",
       model: "claude-sonnet-5",
     });
+  });
+
+  it("builds a Claude Managed profile reference with explicit retention and spend controls", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "claude-sonnet-5",
+      adapterSchemaValues: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+        managedAgentsRetentionAcknowledged: true,
+        maxSessionListCostUsd: 0.5,
+        anthropicAgentId: "editable-resource-id-must-not-survive",
+      },
+    }));
+    expect(config).toMatchObject({
+      provider: "claude_managed",
+      managedProfileId: "managed-primary",
+      model: "claude-sonnet-5",
+      managedAgentsRetentionAcknowledged: true,
+      maxSessionListCostUsd: 0.5,
+    });
+    expect(config).not.toHaveProperty("anthropicAgentId");
+  });
+
+  it("builds an AgentCore profile reference with bounded invocation controls", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+        maxEstimatedSessionCostUsd: 0.75,
+        maxIterations: 8,
+        maxOutputTokens: 2_048,
+        timeoutSeconds: 45,
+      },
+    }))).toMatchObject({
+      provider: "aws_agentcore",
+      agentCoreProfileId: "agentcore-primary",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreRetentionAcknowledged: true,
+      maxEstimatedSessionCostUsd: 0.75,
+      maxIterations: 8,
+      maxOutputTokens: 2_048,
+      timeoutSeconds: 45,
+    });
+  });
+
+  it.each([
+    ["maxIterations", 0],
+    ["maxIterations", 9],
+    ["maxIterations", "8"],
+    ["maxOutputTokens", 4_097],
+    ["timeoutSeconds", 301],
+  ])("rejects an unsafe AgentCore %s value", (field, value) => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      adapterSchemaValues: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+        [field]: value,
+      },
+    }))).toThrow("must be an integer between");
   });
 
   it("bounds warm lifecycle values to the shared safe default", () => {

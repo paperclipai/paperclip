@@ -875,6 +875,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "GET /api/companies/{companyId}/managed-agent-profiles",
+  "POST /api/companies/{companyId}/managed-agent-profiles",
+  "GET /api/companies/{companyId}/remote-agent-profiles",
+  "POST /api/companies/{companyId}/remote-agent-profiles",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
@@ -4534,6 +4538,90 @@ registry.registerPath({
   summary: "Get a user profile within a company",
   request: { params: z.object({ companyId: z.string(), userSlug: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/managed-agent-profiles",
+  tags: ["agents"],
+  summary: "List Claude Managed Agent profiles for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/managed-agent-profiles",
+  tags: ["agents"],
+  summary: "Create or operator-attest a Claude Managed Agent profile",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      profileKey: z.string(),
+      displayName: z.string(),
+      anthropicAgentId: z.string(),
+      agentVersion: z.string(),
+      environmentId: z.string(),
+      defaultModel: z.literal("claude-sonnet-5").optional(),
+      defaultMaxListCostUsd: z.number().positive().optional(),
+      apiKeySecretId: z.string(),
+      enabled: z.boolean().optional(),
+      retentionAcknowledged: z.boolean().optional(),
+      qualification: z.object({
+        probedAt: z.string().datetime(),
+        betaVersion: z.literal("managed-agents-2026-04-01"),
+        environmentPolicy: z.literal("limited_no_hosts_no_packages"),
+        agentCapabilities: z.literal("no_tools_no_mcp_no_skills_no_multiagent"),
+      }).strict().optional(),
+    })),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/remote-agent-profiles",
+  tags: ["agents"],
+  summary: "List remote AgentCore profiles for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      service: z.literal("aws_bedrock_agentcore_harness").optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/remote-agent-profiles",
+  tags: ["agents"],
+  summary: "Create or operator-attest a remote AgentCore profile",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      profileKey: z.string(),
+      displayName: z.string(),
+      service: z.literal("aws_bedrock_agentcore_harness"),
+      configuration: z.record(z.string(), z.unknown()),
+      enabled: z.boolean().optional(),
+      retentionAcknowledged: z.boolean().optional(),
+      qualification: z.object({ suite: z.literal("aws-agentcore-harness-v1") }).strict().optional(),
+    })),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 // ─── Heartbeat runs ──────────────────────────────────────────────────────────

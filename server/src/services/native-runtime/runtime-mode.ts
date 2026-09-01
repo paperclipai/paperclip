@@ -45,7 +45,12 @@ export type NativeRuntimeResolution =
       reason: "eligible_opt_in";
       profile: {
         mode: "native";
-        backend: "codex_app_server" | "opencode_server" | "acpx_runtime";
+        backend:
+          | "codex_app_server"
+          | "opencode_server"
+          | "claude_managed_agents_api"
+          | "aws_agentcore_harness_api"
+          | "acpx_runtime";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -233,9 +238,13 @@ export function resolveHeartbeatRuntimeMode(input: {
     reason: "explicit_paperclip_runner",
     provider: resolution.profile.backend === "opencode_server"
       ? "opencode"
+      : resolution.profile.backend === "claude_managed_agents_api"
+        ? "claude_managed"
+        : resolution.profile.backend === "aws_agentcore_harness_api"
+          ? "aws_agentcore"
       : resolution.profile.backend === "acpx_runtime"
-        ? "acpx"
-        : "codex",
+          ? "acpx"
+          : "codex",
   };
 }
 
@@ -279,9 +288,13 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
       const driverKind = input.persisted.driverKind;
       const backend = driverKind === "opencode_server"
         ? "opencode_server"
+        : driverKind === "claude_managed_agents_api"
+          ? "claude_managed_agents_api"
+          : driverKind === "aws_agentcore_harness_api"
+            ? "aws_agentcore_harness_api"
         : driverKind === "acpx_runtime"
-          ? "acpx_runtime"
-          : driverKind === null
+            ? "acpx_runtime"
+            : driverKind === null
               || driverKind === undefined
               || driverKind === "codex"
               || driverKind === "codex_app_server"

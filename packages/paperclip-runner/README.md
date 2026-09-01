@@ -8,7 +8,8 @@ and conformance oracle.
 
 The package includes one coherent set of capabilities: PRP v1 validation and
 replay, a supervised local runner with a scripted fake harness, durable
-WebSocket delivery and recovery, a skillless Codex app-server driver, live
+WebSocket delivery and recovery, qualified Codex, OpenCode, ACPX, Claude
+Managed, and AWS AgentCore drivers, live
 session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
@@ -41,12 +42,20 @@ route/service authorities; it does not copy those rules into this package.
 ## Quick start
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
-stdin/stdout bridge admits the qualified Codex ACPX profile only. It validates
-the exact model, session identity, tool catalog, structured input, and terminal
-settlement at the process boundary. Runnerd and the server do not select this
-sidecar in this slice. Other ACPX agents remain unavailable.
+stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
+validates the exact model, session identity, tool catalog, structured input,
+and terminal settlement at the process boundary. Pi remains unavailable.
 
-The Rust core includes a bounded client for this sidecar protocol. It enforces
+Runnerd selects only qualified provider profiles. Claude Managed and AWS
+AgentCore receive immutable company-profile snapshots with explicit retention,
+spend, and invocation limits. No provider process receives a Paperclip API
+credential or unrestricted server environment.
+
+Claude Managed resolves its API key from the company secret bound to the
+selected profile. AWS AgentCore uses workload identity only; long-lived static
+AWS access keys are intentionally removed from the runner environment.
+
+The Rust core includes a bounded client for the sidecar protocol. It enforces
 request identity, event order, frame and queue limits, timeouts, redacted
 diagnostics, and process-group cleanup. This transport remains package-local.
 It does not change runnerd provider selection in this slice.
@@ -74,14 +83,13 @@ are canonicalized, and consumers must not reinterpret the display value as
 file-access authority. Operational semantic-result and terminal events remain
 reserved for the stateful adapter rather than being duplicated.
 
-The package-local ACPX provider reducer preserves that order while it tracks one
+The ACPX provider reducer preserves that order while it tracks one
 active turn, bounded assistant text, semantic results, and pending tool or input
 correlations. Terminal events flush the final assistant message first and clear
-unresolved turn-scoped requests. This reducer still does not select ACPX in
-runnerd.
+unresolved turn-scoped requests.
 
 The package-local session bootstrap starts the bounded sidecar transport,
-verifies the Codex-only capability handshake and effective model, opens one
+verifies the qualified capability handshake and effective model, opens one
 identity-bound session, and confirms its run attachment. Any failed bootstrap
 terminates the process; session shutdown preserves persistent provider state.
 The session can then start one immutable-workspace turn, request interruption,

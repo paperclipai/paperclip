@@ -117,6 +117,8 @@ import {
   withQueuedCommentIdsInRunContext,
 } from "./issue-queued-comment-queue.js";
 import { documentService } from "./documents.js";
+import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
   buildNativeProviderEnvironment,
   buildNativeExecutionInput,
@@ -135,7 +137,11 @@ import {
   reconcileNativeFinalizations,
   resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
-import { resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
+import {
+  assertAgentCoreProfileRecoveryBinding,
+  assertManagedProfileRecoveryBinding,
+  resolvePaperclipRunnerNativeProviderInput,
+} from "./native-runtime/provider-profile.js";
 import type { NativeRunHistoricalSpan } from "./native-runtime/native-run-trace.js";
 import {
   parseNativeExecutionInput,
@@ -19758,6 +19764,30 @@ export function heartbeatService(
               throw new Error(
                 "native_execution_input_persisted_binding_mismatch",
               );
+            if (nativeExecution.provider.kind === "claude_managed") {
+              const recoveryProfile =
+                await managedAgentProfileService(db).requireQualified(
+                  agent.companyId,
+                  nativeExecution.provider.managedProfile.profileId,
+                );
+              assertManagedProfileRecoveryBinding({
+                adapterConfig: agent.adapterConfig,
+                snapshot: nativeExecution.provider.managedProfile,
+                stored: recoveryProfile,
+              });
+            }
+            if (nativeExecution.provider.kind === "aws_agentcore") {
+              const recoveryProfile =
+                await remoteAgentProfileService(db).requireQualified(
+                  agent.companyId,
+                  nativeExecution.provider.agentCoreProfile.profileId,
+                  "aws_bedrock_agentcore_harness",
+                );
+              assertAgentCoreProfileRecoveryBinding({
+                snapshot: nativeExecution.provider.agentCoreProfile,
+                stored: recoveryProfile,
+              });
+            }
           } else {
             const interactionId = readNonEmptyString(context.interactionId);
             const interactionResponses =
@@ -19769,6 +19799,50 @@ export function heartbeatService(
                 agentId: agent.id,
                 interactionIds: interactionId ? [interactionId] : [],
               });
+            const runnerAdapterConfig = parseObject(agent.adapterConfig);
+            const managedProfile =
+              nativeRuntimeResolution.profile.backend ===
+              "claude_managed_agents_api"
+                ? await managedAgentProfileService(db).requireQualified(
+                    agent.companyId,
+                    readNonEmptyString(runnerAdapterConfig.managedProfileId) ?? "",
+                  )
+                : null;
+            const agentCoreProfile =
+              nativeRuntimeResolution.profile.backend ===
+              "aws_agentcore_harness_api"
+                ? await remoteAgentProfileService(db).requireQualified(
+                    agent.companyId,
+                    readNonEmptyString(runnerAdapterConfig.agentCoreProfileId) ?? "",
+                    "aws_bedrock_agentcore_harness",
+                  )
+                : null;
+            if (managedProfile) {
+              const rawApiKeyBinding = parseObject(
+                runnerAdapterConfig.env,
+              ).ANTHROPIC_API_KEY;
+              const boundSecretId =
+                typeof rawApiKeyBinding === "object"
+                  && rawApiKeyBinding !== null
+                  ? readNonEmptyString(
+                      (rawApiKeyBinding as Record<string, unknown>).secretId,
+                    )
+                  : null;
+              if (boundSecretId !== managedProfile.apiKeySecretId) {
+                throw new ConfigurationIncompleteFailure(
+                  "configuration incomplete: Claude Managed profile API key is not bound at env.ANTHROPIC_API_KEY",
+                  {
+                    configurationIncomplete: {
+                      reason: "managed_agent_profile_secret_binding_mismatch",
+                      companyId: agent.companyId,
+                      agentId: agent.id,
+                      profileId: managedProfile.id,
+                      requiredEnvKeys: ["ANTHROPIC_API_KEY"],
+                    },
+                  },
+                );
+              }
+            }
             const executionMode =
               issueRef.workMode === "planning" && !acceptedPlanContinuationWake
                 ? ("plan" as const)
@@ -19840,6 +19914,8 @@ export function heartbeatService(
               ...resolvePaperclipRunnerNativeProviderInput({
                 backend: nativeRuntimeResolution.profile.backend,
                 adapterConfig: agent.adapterConfig,
+                managedProfile,
+                agentCoreProfile,
               }),
               lifecyclePolicy: effectiveLifecyclePolicy,
               interactionResponses,

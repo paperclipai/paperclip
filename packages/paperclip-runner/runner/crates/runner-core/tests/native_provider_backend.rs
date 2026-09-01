@@ -173,6 +173,76 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
     })
 }
 
+fn managed_prepare_payload(kind: &str) -> Value {
+    let operations = Vec::new();
+    let provider = match kind {
+        "claude_managed" => json!({
+            "kind": "claude_managed",
+            "model": "claude-sonnet-5",
+            "profileId": "profile-1",
+            "anthropicAgentId": "agent-1",
+            "agentVersion": "1",
+            "environmentId": "environment-1",
+            "betaVersion": "managed-agents-2026-04-01",
+            "maxSessionListCostUsd": 1.0,
+            "instructions": "Complete the supplied task.",
+            "runtimeContext": null,
+        }),
+        "aws_agentcore" => json!({
+            "kind": "aws_agentcore",
+            "model": "global.anthropic.claude-sonnet-4-6",
+            "profileId": "profile-1",
+            "region": "us-east-1",
+            "accountId": "123456789012",
+            "harnessArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:harness/test",
+            "harnessVersion": "1",
+            "endpointArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:endpoint/test",
+            "endpointQualifier": "1",
+            "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test",
+            "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:memory/test",
+            "memoryId": "memory-1",
+            "invocationRoleArn": "arn:aws:iam::123456789012:role/runner",
+            "contextBucket": "context-bucket",
+            "contextPrefix": "companies/company/profiles/profile",
+            "contextKmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/test",
+            "qualificationRevision": "aws-agentcore-harness-v1",
+            "eventExpiryDays": 90,
+            "maxEstimatedSessionCostUsd": 1.0,
+            "maxIterations": 8,
+            "maxOutputTokens": 4096,
+            "timeoutSeconds": 300,
+            "instructions": "Complete the supplied task.",
+            "runtimeContext": null,
+        }),
+        _ => panic!("unsupported fixture"),
+    };
+    json!({
+        "authorizedTools": {
+            "schema": "paperclip.runner.authorized-tools.v1",
+            "schemaVersion": 1,
+            "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(),
+            "operations": operations,
+        },
+        "provider": provider,
+    })
+}
+
+#[test]
+fn preserves_managed_provider_descriptors_through_the_native_selector() {
+    for kind in ["claude_managed", "aws_agentcore"] {
+        let directory = temporary_directory(kind);
+        let config = config(&directory);
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        let prepared = executor
+            .execute(&command(1, "run.prepare", managed_prepare_payload(kind)))
+            .unwrap();
+        assert_eq!(prepared.result["provider"], kind);
+        assert!(directory.join("managed-provider-state.json").exists());
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
 #[test]
 fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     let directory = temporary_directory("acpx");

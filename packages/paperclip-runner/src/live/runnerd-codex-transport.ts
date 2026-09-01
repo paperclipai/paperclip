@@ -41,6 +41,10 @@ import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
 import { createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import {
+  createSanitizedAwsAgentCoreEnvironment,
+  createSanitizedClaudeManagedEnvironment,
+} from "../drivers/claude-managed/environment.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type {
   NativeAcpxPermissionMode,
@@ -237,7 +241,7 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions {
-  provider?: "codex" | "opencode" | "acpx";
+  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   acpxPermissionMode?: NativeAcpxPermissionMode;
@@ -246,6 +250,38 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Node executable in the runner filesystem; required for remote JS providers. */
   providerNodeCommand?: string;
   acpxRuntimeDirectory?: string;
+  managedProfile?: {
+    profileId: string;
+    anthropicAgentId: string;
+    agentVersion: string;
+    environmentId: string;
+    betaVersion: "managed-agents-2026-04-01";
+    maxSessionListCostUsd: number;
+    model: string;
+  };
+  agentCoreProfile?: {
+    profileId: string;
+    region: string;
+    accountId: string;
+    harnessArn: string;
+    harnessVersion: string;
+    endpointArn: string;
+    endpointQualifier: string;
+    agentRuntimeArn: string;
+    memoryArn: string;
+    memoryId: string;
+    invocationRoleArn: string;
+    contextBucket: string;
+    contextPrefix: string;
+    contextKmsKeyArn: string;
+    qualificationRevision: string;
+    eventExpiryDays: 90;
+    maxEstimatedSessionCostUsd: number;
+    maxIterations: number;
+    maxOutputTokens: number;
+    timeoutSeconds: number;
+    model: string;
+  };
   runnerBinary?: string;
   codexCommand?: string;
   codexArgs?: string[];
@@ -858,6 +894,18 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
         : {}),
     };
   }
+  if (input.provider === "claude_managed") {
+    return {
+      ...createSanitizedClaudeManagedEnvironment(input.options.environment),
+      ...commonIdentity,
+    };
+  }
+  if (input.provider === "aws_agentcore") {
+    return {
+      ...createSanitizedAwsAgentCoreEnvironment(input.options.environment),
+      ...commonIdentity,
+    };
+  }
   const environment = createSanitizedCodexEnvironment({
     ...input.options.environment,
     HOME: input.codexHome,
@@ -1061,7 +1109,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             ).env
           : options.provider === "opencode"
             ? createSanitizedOpenCodeRunnerEnvironment(options.environment)
-            : createSanitizedCodexEnvironment(options.environment),
+            : options.provider === "claude_managed"
+              ? createSanitizedClaudeManagedEnvironment(options.environment)
+              : options.provider === "aws_agentcore"
+                ? createSanitizedAwsAgentCoreEnvironment(options.environment)
+                : createSanitizedCodexEnvironment(options.environment),
       ).sort(),
       diagnostics: ["lab transport selected authenticated durable PRP"],
     };
@@ -1523,6 +1575,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       provider === "acpx"
         ? resolveQualifiedAcpxProfile(acpxAgent!, requestedModel)
         : null;
+    const managedProfile = this.options.managedProfile;
+    const agentCoreProfile = this.options.agentCoreProfile;
+    if (provider === "claude_managed") {
+      if (!managedProfile) {
+        throw new Error("Claude Managed runner transport requires a qualified managed profile");
+      }
+      if (requestedModel !== managedProfile.model) {
+        throw new Error("Claude Managed requested model does not match its qualified profile");
+      }
+    }
+    if (provider === "aws_agentcore") {
+      if (!agentCoreProfile) {
+        throw new Error("AWS AgentCore runner transport requires a qualified AgentCore profile");
+      }
+      if (requestedModel !== agentCoreProfile.model) {
+        throw new Error("AWS AgentCore requested model does not match its qualified profile");
+      }
+    }
     const completionContract = record(params.completionContract);
     core.queueCommand("run.prepare", {
       authorizedTools: this.#authorizedTools,
@@ -1560,6 +1630,49 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   permissionModePinned: this.options.acpxPermissionModePinned ?? true,
                   runtimeContext,
                 }
+              : provider === "claude_managed"
+                ? {
+                    kind: "claude_managed",
+                    model: managedProfile!.model,
+                    profileId: managedProfile!.profileId,
+                    anthropicAgentId: managedProfile!.anthropicAgentId,
+                    agentVersion: managedProfile!.agentVersion,
+                    environmentId: managedProfile!.environmentId,
+                    betaVersion: managedProfile!.betaVersion,
+                    maxSessionListCostUsd:
+                      managedProfile!.maxSessionListCostUsd,
+                    instructions: baseInstructions,
+                    runtimeContext,
+                  }
+                : provider === "aws_agentcore"
+                  ? {
+                      kind: "aws_agentcore",
+                      model: agentCoreProfile!.model,
+                      profileId: agentCoreProfile!.profileId,
+                      region: agentCoreProfile!.region,
+                      accountId: agentCoreProfile!.accountId,
+                      harnessArn: agentCoreProfile!.harnessArn,
+                      harnessVersion: agentCoreProfile!.harnessVersion,
+                      endpointArn: agentCoreProfile!.endpointArn,
+                      endpointQualifier: agentCoreProfile!.endpointQualifier,
+                      agentRuntimeArn: agentCoreProfile!.agentRuntimeArn,
+                      memoryArn: agentCoreProfile!.memoryArn,
+                      memoryId: agentCoreProfile!.memoryId,
+                      invocationRoleArn: agentCoreProfile!.invocationRoleArn,
+                      contextBucket: agentCoreProfile!.contextBucket,
+                      contextPrefix: agentCoreProfile!.contextPrefix,
+                      contextKmsKeyArn: agentCoreProfile!.contextKmsKeyArn,
+                      qualificationRevision:
+                        agentCoreProfile!.qualificationRevision,
+                      eventExpiryDays: agentCoreProfile!.eventExpiryDays,
+                      maxEstimatedSessionCostUsd:
+                        agentCoreProfile!.maxEstimatedSessionCostUsd,
+                      maxIterations: agentCoreProfile!.maxIterations,
+                      maxOutputTokens: agentCoreProfile!.maxOutputTokens,
+                      timeoutSeconds: agentCoreProfile!.timeoutSeconds,
+                      instructions: baseInstructions,
+                      runtimeContext,
+                    }
               : {
                   kind: provider,
                   provider,
@@ -1683,6 +1796,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         modelProvider:
           provider === "opencode" && typeof params.model === "string"
             ? params.model.split("/", 1)[0]
+            : provider === "claude_managed"
+              ? "anthropic"
+              : provider === "aws_agentcore"
+                ? "aws"
             : provider === "acpx"
               ? acpxAgent === "pi"
                 ? "openrouter"

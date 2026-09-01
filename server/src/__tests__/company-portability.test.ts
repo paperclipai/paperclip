@@ -106,6 +106,14 @@ const instanceSettingsSvc = {
   getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 };
 
+const managedAgentProfileSvc = {
+  requireQualified: vi.fn(),
+};
+
+const remoteAgentProfileSvc = {
+  requireQualified: vi.fn(),
+};
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
 }));
@@ -162,6 +170,14 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => instanceSettingsSvc,
 }));
 
+vi.mock("../services/managed-agent-profiles.js", () => ({
+  managedAgentProfileService: () => managedAgentProfileSvc,
+}));
+
+vi.mock("../services/remote-agent-profiles.js", () => ({
+  remoteAgentProfileService: () => remoteAgentProfileSvc,
+}));
+
 vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
@@ -180,6 +196,16 @@ describe("company portability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    managedAgentProfileSvc.requireQualified.mockResolvedValue({
+      id: "managed-primary",
+      companyId: "company-1",
+      enabled: true,
+    });
+    remoteAgentProfileSvc.requireQualified.mockResolvedValue({
+      id: "agentcore-primary",
+      companyId: "company-1",
+      enabled: true,
+    });
     secretSvc.create.mockResolvedValue({ id: "secret-created" });
     secretSvc.remove.mockResolvedValue(true);
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
@@ -5967,6 +5993,48 @@ describe("company portability", () => {
       adapterType: "paperclip_runner",
       adapterConfig: expect.objectContaining({ provider: "codex" }),
     }));
+
+    await portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: {
+            provider: "claude_managed",
+            managedProfileId: "managed-primary",
+            managedAgentsRetentionAcknowledged: true,
+          },
+        },
+      },
+    }, "user-1");
+    expect(managedAgentProfileSvc.requireQualified).toHaveBeenCalledWith(
+      "company-1",
+      "managed-primary",
+    );
+
+    const createCallsBeforeInvalidProfile = agentSvc.create.mock.calls.length;
+    const { notFound } = await import("../errors.js");
+    managedAgentProfileSvc.requireQualified.mockRejectedValueOnce(
+      notFound("Managed Agent profile not found"),
+    );
+    await expect(portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: {
+            provider: "claude_managed",
+            managedProfileId: "managed-other-company",
+            managedAgentsRetentionAcknowledged: true,
+          },
+        },
+      },
+    }, "user-1")).rejects.toMatchObject({ status: 404 });
+    expect(managedAgentProfileSvc.requireQualified).toHaveBeenLastCalledWith(
+      "company-1",
+      "managed-other-company",
+    );
+    expect(agentSvc.create).toHaveBeenCalledTimes(createCallsBeforeInvalidProfile);
   });
 });
 

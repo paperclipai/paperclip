@@ -84,6 +84,51 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
 });
 
+it("preserves file-backed AWS workload identity at the runner spawn boundary", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    environment: {
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://127.0.0.1:9001/credentials",
+      AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+      AWS_ACCESS_KEY_ID: "must-not-reach-runnerd",
+      AWS_SECRET_ACCESS_KEY: "must-not-reach-runnerd",
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  expect(launches).toHaveLength(1);
+  expect(launches[0]!.environment).toMatchObject({
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://127.0.0.1:9001/credentials",
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+  });
+  expect(launches[0]!.environment.AWS_ACCESS_KEY_ID).toBeUndefined();
+  expect(launches[0]!.environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+});
+
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
   const digest = createHash("sha256")
     .update(domain)
