@@ -773,10 +773,12 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     });
     root = null;
     container.remove();
+    setWorktreeRuntimeMeta(false);
     vi.clearAllMocks();
   });
 
   it("groups developer and legacy settings into sections", async () => {
+    setWorktreeRuntimeMeta(true);
     await renderPage(defaultExperimentalSettings());
 
     const headings = [...container.querySelectorAll("section > div > h2")].map(
@@ -789,6 +791,8 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     ]);
 
     const sections = [...container.querySelectorAll("section")];
+    expect(sections.at(0)?.textContent).not.toContain("Run tasks in this worktree");
+    expect(sections.at(-2)?.textContent).toContain("Run tasks in this worktree");
     expect(sections.at(-2)?.textContent).toContain("Auto-Restart Dev Server When Idle");
     expect(sections.at(-2)?.textContent).toContain("Server Info Debug View");
     expect(sections.at(-2)?.textContent).toContain("Smoke Lab");
