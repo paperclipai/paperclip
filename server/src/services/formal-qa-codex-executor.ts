@@ -117,10 +117,25 @@ async function trustedScratchPath(value: string): Promise<string> {
 }
 
 function protectedRoots(environment: NodeJS.ProcessEnv): string[] {
-  return [environment.HOME, environment.CODEX_HOME, resolveSourceCodexHome(environment)]
+  return [...new Set([environment.CODEX_HOME, resolveSourceCodexHome(environment)])]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => resolve(value.trim()));
 }
+
+function assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): string[] {
+  const hostProtectedRoots = protectedRoots(environment);
+  if (hostProtectedRoots.some((root) => overlaps(scratchPath, root))) {
+    throw new Error("formal_qa_scratch_credential_overlap");
+  }
+  return hostProtectedRoots;
+}
+
+export const formalQaCodexExecutorTestOnly = {
+  assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): void {
+    assertScratchCredentialSeparation(resolve(scratchPath), environment);
+  },
+  protectedRoots,
+};
 
 async function formalQaContentTool(
   content: FormalQaSealedContent,
@@ -182,10 +197,7 @@ export async function executeFormalQaCodexAppServer(input: {
   }
   const scratchPath = await trustedScratchPath(input.scratchPath);
   const sourceEnvironment = input.environment ?? process.env;
-  const hostProtectedRoots = protectedRoots(sourceEnvironment);
-  if (hostProtectedRoots.some((root) => overlaps(scratchPath, root))) {
-    throw new Error("formal_qa_scratch_credential_overlap");
-  }
+  const hostProtectedRoots = assertScratchCredentialSeparation(scratchPath, sourceEnvironment);
   const providerHome = await mkdtemp(join(tmpdir(), "paperclip-formal-qa-codex-"));
   await chmod(providerHome, 0o700);
   const providerStats = await lstat(providerHome);

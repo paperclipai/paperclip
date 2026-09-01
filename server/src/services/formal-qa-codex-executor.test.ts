@@ -3,7 +3,10 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeFormalQaCodexAppServer } from "./formal-qa-codex-executor.js";
+import {
+  executeFormalQaCodexAppServer,
+  formalQaCodexExecutorTestOnly,
+} from "./formal-qa-codex-executor.js";
 
 const tempDirs: string[] = [];
 type CapturedOptions = {
@@ -17,6 +20,30 @@ afterEach(async () => {
 });
 
 describe("Formal-QA Codex executor", () => {
+  it("allows instance scratch under HOME while rejecting scratch inside the Codex credential home", () => {
+    const environment = { HOME: "/home/test", CODEX_HOME: "/home/test/.codex" };
+    const instanceScratch = "/home/test/.paperclip/instances/default/formal-qa-review-scratch";
+
+    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      instanceScratch,
+      environment,
+    )).not.toThrow();
+    expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).toEqual(["/home/test/.codex"]);
+    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      "/home/test/.codex/formal-qa-review-scratch",
+      environment,
+    )).toThrow("formal_qa_scratch_credential_overlap");
+  });
+
+  it("protects the resolved ~/.codex credential home when CODEX_HOME is not explicit", () => {
+    const environment = { HOME: "/home/test" };
+    expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).toEqual(["/home/test/.codex"]);
+    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      "/home/test/.codex/review",
+      environment,
+    )).toThrow("formal_qa_scratch_credential_overlap");
+  });
+
   it("interrupts and force-closes a live turn when the control plane aborts it", async () => {
     const scratch = await mkdtemp(path.join(os.tmpdir(), "formal-qa-scratch-"));
     const hostHome = await mkdtemp(path.join(os.tmpdir(), "formal-qa-host-home-"));
