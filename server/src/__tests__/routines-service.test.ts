@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -14,6 +14,7 @@ import {
   executionWorkspaces,
   folders,
   heartbeatRuns,
+  issueComments,
   instanceSettings,
   issueInboxArchives,
   issues,
@@ -75,6 +76,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -670,7 +672,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(svc.evaluateActivityGate(projectRoutine, now)).resolves.toMatchObject({ fire: true });
   });
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("coalesces onto the previous routine issue when it is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -698,11 +700,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue).toBeNull();
+    expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -712,9 +714,170 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues).toHaveLength(1);
     expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  it("coalesces onto the previous routine issue when it is parked as blocked", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+
+    // Dispatched rather than hand-built, so the parked issue carries the fingerprint a real
+    // tick would have written. Seeding the column default instead would prove only that the
+    // legacy "default" wildcard still matches -- which parked coalescing deliberately refuses.
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(first.status).toBe("issue_created");
+    const previousIssue = { id: first.linkedIssueId! };
+
+    // Park it the way recovery exhaustion does. Three things, and the third is the one that is
+    // easy to miss: the fixture's heartbeat mock leaves a `queued` run naming this issue in its
+    // context snapshot, which the SECOND lookup joins on. Leaving it makes the assertions below
+    // pass through the live path while the parked path stays untested -- an exact-fingerprint
+    // condition that never matches would still look green. stopAutomaticRecovery refuses to park
+    // at all while an execution path is live, so no live run is the production shape.
+    await db
+      .update(issues)
+      .set({ status: "blocked", executionRunId: null })
+      .where(eq(issues.id, previousIssue.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]))),
+    ).toHaveLength(0);
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    // Without this, every tick added one more. Production held nine such issues across
+    // three routines before the fix.
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0].id).toBe(previousIssue.id);
+
+    // Detail and list must agree, or the routine reads as healthy-and-idle while it is in
+    // fact parked: `lastRun: coalesced` next to an empty active issue is the misleading
+    // pair. Both surfaces carry the same parked-issue fallback for that reason.
+    const detail = await svc.getDetail(routine.id);
+    expect(detail?.activeIssue?.id).toBe(previousIssue.id);
+    const [listed] = await svc.list(companyId);
+    expect(listed.activeIssue?.id).toBe(previousIssue.id);
+  });
+
+  it("coalesces onto the existing parked issue regardless of dispatch fingerprint", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+
+    const park = async (issueId: string) => {
+      await db
+        .update(issues)
+        .set({ status: "blocked", executionRunId: null })
+        .where(eq(issues.id, issueId));
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "failed", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.companyId, companyId));
+    };
+
+    // The second payload has a different dispatch fingerprint, but the existing parked issue
+    // still owns the routine and suppresses a sibling.
+    const first = await svc.runRoutine(routine.id, { source: "manual", payload: { batch: "a" } });
+    await park(first.linkedIssueId!);
+    const second = await svc.runRoutine(routine.id, { source: "manual", payload: { batch: "b" } });
+    expect(second.status).toBe("coalesced");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    expect(second.dispatchFingerprint).not.toBe(first.dispatchFingerprint);
+
+    // A later tick continues to coalesce onto the same parked issue.
+    const again = await svc.runRoutine(routine.id, { source: "manual", payload: { batch: "a" } });
+    expect(again.status).toBe("coalesced");
+    expect(again.linkedIssueId).toBe(first.linkedIssueId);
+
+    const detail = await svc.getDetail(routine.id);
+    expect(detail?.activeIssue?.id).toBe(first.linkedIssueId);
+    const [listed] = await svc.list(companyId);
+    expect(listed.activeIssue?.id).toBe(first.linkedIssueId);
+  });
+
+  it("does not name a blocked plugin operation as the routine's parked work", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    // A plugin-managed routine whose issue template declares plugin_operation visibility keeps
+    // the routine id as originId and changes only originKind. originId alone therefore says
+    // nothing about ownership -- the pair does. Both surfaces must ignore this row, and they
+    // must ignore it the same way: one of them naming it and the other not is how a founder
+    // reads two contradictory answers off one routine.
+    const pluginIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: pluginOperationIssueOriginKind("example-plugin"),
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: pluginIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const detail = await svc.getDetail(routine.id);
+    expect(detail?.activeIssue).toBeNull();
+    const [listed] = await svc.list(companyId);
+    expect(listed.activeIssue ?? null).toBeNull();
+  });
+
+  it("coalesces onto a legacy default-fingerprint blocked issue", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    // `originFingerprint` left at the column default, which is what every pre-migration
+    // execution issue carries.
+    const legacyIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: legacyIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    // Legacy rows retain their default fingerprint, but open-issue coalescing intentionally does
+    // not compare it with the current dispatch fingerprint.
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(legacyIssue.id);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -1328,7 +1491,66 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
-  it("coalesces only when the existing routine issue has a live execution run", async () => {
+  it("coalesces onto an open issue without a live run after a fingerprint change", async () => {
+    const { routine, svc } = await seedFixture({ wakeup: async () => null });
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(first.status).toBe("issue_created");
+    expect(first.linkedIssueId).toBeTruthy();
+    expect(first.dispatchFingerprint).toBeTruthy();
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, first.linkedIssueId!));
+
+    const updatedRoutine = await svc.update(routine.id, { description: "Run the frog routine after revision" }, {});
+    expect(updatedRoutine?.latestRevisionId).not.toBe(routine.latestRevisionId);
+
+    const second = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(second.status).toBe("coalesced");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    expect(second.dispatchFingerprint).not.toBe(first.dispatchFingerprint);
+
+    const target = await db
+      .select({ id: issues.id, executionRunId: issues.executionRunId, executionState: issues.executionState })
+      .from(issues)
+      .where(eq(issues.id, first.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(target?.executionRunId).toBeNull();
+    expect(target?.executionState).toMatchObject({
+      routineCoalescing: {
+        coalescedCount: 1,
+        lastCoalescedStatus: "blocked",
+      },
+    });
+
+    const coalescingActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, first.linkedIssueId!));
+    expect(coalescingActivity).toEqual([
+      expect.objectContaining({
+        action: "routine.run_coalesced",
+        entityType: "issue",
+        details: expect.objectContaining({
+          routineId: routine.id,
+          routineRunId: second.id,
+          status: "coalesced",
+          coalescedCount: 1,
+        }),
+      }),
+    ]);
+
+    await expect(
+      db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id)),
+    ).resolves.toHaveLength(1);
+    await expect(
+      db.select().from(issueComments).where(eq(issueComments.issueId, first.linkedIssueId!)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("coalesces when a blocked routine issue has a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const liveHeartbeatRunId = randomUUID();
@@ -1336,7 +1558,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       projectId: routine.projectId,
       title: routine.title,
       description: routine.description,
-      status: "in_progress",
+      status: "blocked",
       priority: routine.priority,
       assigneeAgentId: routine.assigneeAgentId,
       originKind: "routine_execution",
@@ -1452,7 +1674,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
+      db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.entityId, previousIssue.id))
+        .then((rows) => rows.filter((row) => row.action === "issue.inbox_touched")),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
@@ -1558,7 +1784,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
   });
 
-  it("does not coalesce live routine runs with different resolved variables", async () => {
+  it("coalesces runs with different resolved variables while preserving fingerprints", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(
       companyId,
@@ -1590,10 +1816,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     expect(first.status).toBe("issue_created");
-    expect(second.status).toBe("issue_created");
+    expect(second.status).toBe("coalesced");
     expect(first.linkedIssueId).toBeTruthy();
     expect(second.linkedIssueId).toBeTruthy();
-    expect(first.linkedIssueId).not.toBe(second.linkedIssueId);
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
 
     const routineIssues = await db
       .select({
@@ -1604,12 +1830,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, variableRoutine.id));
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.title).sort()).toEqual([
-      "pre-pr for feature/a",
-      "pre-pr for feature/b",
-    ]);
-    expect(new Set(routineIssues.map((issue) => issue.originFingerprint)).size).toBe(2);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0].title).toBe("pre-pr for feature/a");
+    expect(second.dispatchFingerprint).not.toBe(first.dispatchFingerprint);
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
