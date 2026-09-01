@@ -77,7 +77,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
-    enableRunnerPreviewIngress: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
