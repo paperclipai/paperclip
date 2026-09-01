@@ -176,7 +176,7 @@ interface IssueWorkspaceCardProps {
   onUpdate: (data: Record<string, unknown>) => void;
   initialEditing?: boolean;
   livePreview?: boolean;
-  onDraftChange?: (data: Record<string, unknown>, meta: { canSave: boolean; workspaceBranchName?: string | null }) => void;
+  onDraftChange?: (data: Record<string, unknown> | null, meta: { canSave: boolean; workspaceBranchName?: string | null }) => void;
   /** Opens the workspace file browser sheet. When omitted, the browse row is hidden. */
   onBrowseFiles?: () => void;
   /** Opens the same browser sheet focused for path entry. */
@@ -299,7 +299,7 @@ export function IssueWorkspaceCard({
     draftSelection,
     draftExecutionWorkspaceId || null,
     configuredReusableWorkspace?.mode,
-  )!, [
+  ), [
     configuredReusableWorkspace?.mode,
     draftExecutionWorkspaceId,
     draftSelection,
@@ -315,7 +315,9 @@ export function IssueWorkspaceCard({
 
   const handleSave = useCallback(() => {
     if (!canSaveWorkspaceConfig) return;
-    onUpdate(buildWorkspaceDraftUpdate());
+    const update = buildWorkspaceDraftUpdate();
+    if (!update) return;
+    onUpdate(update);
     setEditing(false);
   }, [
     buildWorkspaceDraftUpdate,
