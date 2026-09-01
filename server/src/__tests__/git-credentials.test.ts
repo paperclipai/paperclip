@@ -6,11 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  DEFAULT_GITLAB_TOKEN_SECRET_NAMES,
   GIT_CREDENTIAL_TOKEN_ENV_KEY,
   buildGitAuthInvocation,
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
+  isGitLabHttpsRemoteUrl,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
 
@@ -44,6 +46,23 @@ describe("isGitHubHttpsRemoteUrl", () => {
     expect(isGitHubHttpsRemoteUrl("https://gitlab.com/example/repo.git")).toBe(false);
     expect(isGitHubHttpsRemoteUrl("https://alice:token@github.com/example/repo.git")).toBe(false);
     expect(isGitHubHttpsRemoteUrl("/local/path/repo.git")).toBe(false);
+  });
+});
+
+describe("isGitLabHttpsRemoteUrl", () => {
+  it("accepts https gitlab.com and www.gitlab.com URLs", () => {
+    expect(isGitLabHttpsRemoteUrl("https://gitlab.com/example/repo.git")).toBe(true);
+    expect(isGitLabHttpsRemoteUrl("https://www.gitlab.com/example/repo.git")).toBe(true);
+  });
+
+  it("rejects ssh, http, self-managed hosts, other providers, userinfo URLs, and non-URLs", () => {
+    expect(isGitLabHttpsRemoteUrl("git@gitlab.com:example/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("ssh://git@gitlab.com/example/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("http://gitlab.com/example/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("https://gitlab.internal.example/org/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("https://github.com/example/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("https://oauth2:token@gitlab.com/example/repo.git")).toBe(false);
+    expect(isGitLabHttpsRemoteUrl("/local/path/repo.git")).toBe(false);
   });
 });
 
@@ -94,13 +113,14 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.env.GIT_CONFIG_KEY_3).toBe("url.https://github.com/.insteadOf");
   });
 
-  it("returns null for non-GitHub URLs without touching the secret store", async () => {
+  it("returns null for out-of-scope URLs without touching the secret store", async () => {
     const secrets = buildSecretsFake({ GITHUB_TOKEN: "token" });
     const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
       secrets,
       env: {},
     });
-    await expect(provider("https://gitlab.com/example/repo.git")).resolves.toBeNull();
+    await expect(provider("https://bitbucket.org/example/repo.git")).resolves.toBeNull();
+    await expect(provider("https://gitlab.internal.example/example/repo.git")).resolves.toBeNull();
     expect(secrets.getByName).not.toHaveBeenCalled();
   });
 
@@ -150,6 +170,7 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.secretName).toBe("GH_TOKEN");
   });
 
+
   it("ignores a managed connection installed only for another agent", async () => {
     const query = (rows: unknown[]) => ({
       from: () => ({ where: async () => rows }),
@@ -183,6 +204,61 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("agent-b-legacy-token");
     expect(db.select).toHaveBeenCalledTimes(2);
   });
+
+  describe("GitLab", () => {
+    const gitlabUrl = "https://gitlab.com/example/repo.git";
+
+    it("resolves a GITLAB_TOKEN company secret", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: {},
+      });
+      const invocation = await provider(gitlabUrl);
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("glpat-token");
+      expect(invocation?.source).toBe("company_secret");
+      expect(invocation?.secretName).toBe("GITLAB_TOKEN");
+      expect(invocation?.providerId).toBe("gitlab");
+    });
+
+    it("falls back to the server env GITLAB_TOKEN", async () => {
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets: buildSecretsFake({}),
+        env: { GITLAB_TOKEN: "env-gitlab" },
+      });
+      const invocation = await provider(gitlabUrl);
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("env-gitlab");
+      expect(invocation?.source).toBe("server_env");
+      expect(invocation?.secretName).toBeNull();
+      expect(invocation?.providerId).toBe("gitlab");
+    });
+
+    it("never probes GitHub secret names for a GitLab remote, and vice versa", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: {},
+      });
+      await provider(gitlabUrl);
+      expect(secrets.getByName.mock.calls.map((call) => call[1])).toEqual([
+        "GITLAB_TOKEN",
+      ]);
+    });
+
+    it("resolves GitHub and GitLab credentials independently within one run", async () => {
+      const secrets = buildSecretsFake({ GITHUB_TOKEN: "gh-token", GITLAB_TOKEN: "gl-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: {},
+      });
+      const githubInvocation = await provider(githubUrl);
+      const gitlabInvocation = await provider(gitlabUrl);
+      expect(githubInvocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("gh-token");
+      expect(gitlabInvocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("gl-token");
+      // One lookup chain per host, not one shared/cross-contaminated lookup.
+      expect(secrets.getByName.mock.calls.map((call) => call[1])).toEqual(["GITHUB_TOKEN", "GITLAB_TOKEN"]);
+    });
+  });
 });
 
 describe("buildGitAuthInvocation", () => {
@@ -191,6 +267,7 @@ describe("buildGitAuthInvocation", () => {
       token: "super-secret-token",
       source: "company_secret",
       secretName: "GITHUB_TOKEN",
+      providerId: "github",
     });
     expect(invocation.configArgs.join(" ")).not.toContain("super-secret-token");
     expect(invocation.configArgs[0]).toBe("-c");
@@ -203,6 +280,7 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.env.GITHUB_TOKEN).toBe("super-secret-token");
     expect(invocation.env.GIT_TERMINAL_PROMPT).toBe("0");
     expect(invocation.env).not.toHaveProperty("HOME");
+    expect(invocation.providerId).toBe("github");
   });
 
   it("sets GitHub's stable noreply commit identity without exposing the token in config", () => {
@@ -210,6 +288,7 @@ describe("buildGitAuthInvocation", () => {
       token: "super-secret-token",
       source: "managed_connection",
       secretName: null,
+      providerId: "github",
       githubIdentity: { userId: "12345", login: "octocat" },
     });
     expect(invocation.env.GIT_CONFIG_KEY_7).toBe("user.name");
@@ -222,16 +301,34 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.env.GIT_COMMITTER_EMAIL).toBe("12345+octocat@users.noreply.github.com");
     expect(Object.values(invocation.env).filter((value) => value.includes("super-secret-token"))).toHaveLength(3);
   });
+
+  it("keeps the token out of argv and installs the helper URL-scoped to gitlab.com", () => {
+    const invocation = buildGitAuthInvocation({
+      token: "super-secret-token",
+      source: "company_secret",
+      secretName: "GITLAB_TOKEN",
+      providerId: "gitlab",
+    });
+    expect(invocation.configArgs.join(" ")).not.toContain("super-secret-token");
+    expect(invocation.configArgs[0]).toBe("-c");
+    expect(invocation.configArgs[1]).toBe("credential.helper=");
+    expect(invocation.configArgs[3]).toContain("credential.https://gitlab.com.helper=");
+    expect(invocation.configArgs[3]).toContain("oauth2");
+    expect(invocation.configArgs[5]).toContain("credential.https://www.gitlab.com.helper=");
+    expect(invocation.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("super-secret-token");
+    expect(invocation.providerId).toBe("gitlab");
+  });
 });
 
 describe("credential helper execution (real git, no network)", () => {
-  async function runCredentialFill(description: string) {
+  async function runCredentialFill(description: string, providerId: "github" | "gitlab" = "github") {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-cred-fill-"));
     try {
       const invocation = buildGitAuthInvocation({
         token: "abc123",
         source: "company_secret",
-        secretName: "GITHUB_TOKEN",
+        secretName: providerId === "github" ? "GITHUB_TOKEN" : "GITLAB_TOKEN",
+        providerId,
       });
       return await new Promise<{ code: number | null; stdout: string; stderr: string }>(
         (resolve, reject) => {
@@ -277,6 +374,25 @@ describe("credential helper execution (real git, no network)", () => {
     expect(result.code).not.toBe(0);
     expect(result.stdout).not.toContain("abc123");
   });
+
+  it("answers a gitlab.com https request with the env-carried token, using the oauth2 username", async () => {
+    const result = await runCredentialFill("protocol=https\nhost=gitlab.com\n\n", "gitlab");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("username=oauth2");
+    expect(result.stdout).toContain("password=abc123");
+  });
+
+  it("a gitlab-scoped invocation never answers for github.com", async () => {
+    const result = await runCredentialFill("protocol=https\nhost=github.com\n\n", "gitlab");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("abc123");
+  });
+
+  it("a github-scoped invocation never answers for gitlab.com", async () => {
+    const result = await runCredentialFill("protocol=https\nhost=gitlab.com\n\n", "github");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("abc123");
+  });
 });
 
 describe("scrubGitCredentialText", () => {
@@ -310,25 +426,63 @@ describe("scrubGitCredentialText", () => {
 });
 
 describe("describeGitAuthFailure", () => {
-  it("names the company secret when a stored credential was used", () => {
+  it("names the company secret when a stored GitHub credential was used", () => {
     expect(describeGitAuthFailure({
       error: "fatal: Authentication failed",
-      used: { source: "company_secret", secretName: "GH_TOKEN" },
+      used: { source: "company_secret", secretName: "GH_TOKEN", providerId: "github" },
     })).toContain("the GH_TOKEN company-secret GitHub credential");
   });
 
-  it("names the server environment when an env credential was used", () => {
+  it("names the server environment when an env GitHub credential was used", () => {
     expect(describeGitAuthFailure({
       error: "fatal: Authentication failed",
-      used: { source: "server_env", secretName: null },
+      used: { source: "server_env", secretName: null, providerId: "github" },
     })).toContain("server-environment GitHub credential");
   });
 
-  it("points at Settings → Secrets for auth-looking failures without a credential", () => {
+  it("names the company secret when a stored GitLab credential was used", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: Authentication failed",
+      used: { source: "company_secret", secretName: "GITLAB_TOKEN", providerId: "gitlab" },
+    })).toContain("the GITLAB_TOKEN company-secret GitLab credential");
+  });
+
+  it("names the server environment when an env GitLab credential was used", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: Authentication failed",
+      used: { source: "server_env", secretName: null, providerId: "gitlab" },
+    })).toContain("server-environment GitLab credential");
+  });
+
+  it("points at Settings → Secrets for a GitHub remote with no credential", () => {
     expect(describeGitAuthFailure({
       error: "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
       used: null,
-    })).toContain("add a GITHUB_TOKEN or GH_TOKEN company secret");
+      remoteUrl: "https://github.com/example/repo.git",
+    })).toContain("No GitHub credential is configured — add a GITHUB_TOKEN or GH_TOKEN company secret");
+  });
+
+  it("points at Settings → Secrets for a GitLab remote with no credential", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: could not read Username for 'https://gitlab.com': terminal prompts disabled",
+      used: null,
+      remoteUrl: "https://gitlab.com/example/repo.git",
+    })).toContain("No GitLab credential is configured — add a GITLAB_TOKEN company secret");
+  });
+
+  it("falls back to generic guidance when the remote's provider is unknown", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: could not read Username for 'https://bitbucket.org': terminal prompts disabled",
+      used: null,
+      remoteUrl: "https://bitbucket.org/example/repo.git",
+    })).toContain("No git credential is configured — add a GITHUB_TOKEN/GH_TOKEN or GITLAB_TOKEN company secret");
+  });
+
+  it("falls back to generic guidance when no remoteUrl is available either", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: could not read Username for 'https://example.invalid': terminal prompts disabled",
+      used: null,
+    })).toContain("No git credential is configured — add a GITHUB_TOKEN/GH_TOKEN or GITLAB_TOKEN company secret");
   });
 
   it("stays silent for non-auth failures without a credential", () => {
@@ -343,7 +497,7 @@ describe("describeGitAuthFailure", () => {
     // collision) must not be blamed for it.
     expect(describeGitAuthFailure({
       error: "fatal: destination path '/x/y' already exists and is not an empty directory.",
-      used: { source: "company_secret", secretName: "GH_TOKEN" },
+      used: { source: "company_secret", secretName: "GH_TOKEN", providerId: "github" },
     })).toBeNull();
   });
 });
@@ -354,6 +508,15 @@ describe("DEFAULT_GITHUB_TOKEN_SECRET_NAMES", () => {
       "GITHUB_TOKEN",
       "GH_TOKEN",
       "PAPERCLIP_GITHUB_TOKEN",
+    ]);
+  });
+});
+
+describe("DEFAULT_GITLAB_TOKEN_SECRET_NAMES", () => {
+  it("keeps the shared name order stable", () => {
+    expect([...DEFAULT_GITLAB_TOKEN_SECRET_NAMES]).toEqual([
+      "GITLAB_TOKEN",
+      "PAPERCLIP_GITLAB_TOKEN",
     ]);
   });
 });
