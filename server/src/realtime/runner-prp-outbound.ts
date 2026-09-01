@@ -136,6 +136,37 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+async function awaitWithinDeadline<T>(input: {
+  operation: () => Promise<T>;
+  deadline: number;
+  signal: AbortSignal;
+}): Promise<T> {
+  if (input.signal.aborted) {
+    throw new Error("runner ingress operation was cancelled");
+  }
+  const remaining = input.deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error("runner ingress operation deadline elapsed");
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const gate = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("runner ingress operation deadline elapsed")),
+      remaining,
+    );
+    onAbort = () => reject(new Error("runner ingress operation was cancelled"));
+    input.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const operation = Promise.resolve().then(input.operation);
+  try {
+    return await Promise.race([operation, gate]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) input.signal.removeEventListener("abort", onAbort);
+  }
+}
+
 async function openEndpoint(input: {
   endpoint: RunnerIngressEndpoint;
   signal: AbortSignal;
@@ -299,7 +330,11 @@ export function connectRunnerPrpIngress(input: {
           Date.now() < recoveryDeadline
         ) {
           try {
-            const refreshedEndpoint = await endpoint.refresh();
+            const refreshedEndpoint = await awaitWithinDeadline({
+              operation: () => endpoint.refresh(),
+              deadline: recoveryDeadline,
+              signal: abort.signal,
+            });
             // Preview credentials can rotate without changing the sandbox
             // generation. Refresh every rejected credential, but never let a
             // successful refresh reset or step past the fixed recovery budget.
@@ -308,6 +343,7 @@ export function connectRunnerPrpIngress(input: {
               continue;
             }
           } catch (refreshError) {
+            if (abort.signal.aborted) return;
             failure = refreshError;
           }
         }
@@ -360,3 +396,5 @@ export function connectRunnerPrpIngress(input: {
     },
   };
 }
+
+export const __runnerPrpOutboundTesting = { awaitWithinDeadline };

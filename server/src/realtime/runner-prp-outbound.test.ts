@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 import {
+  __runnerPrpOutboundTesting,
   connectRunnerPrpIngress,
   WsJsonWireConnection,
 } from "./runner-prp-outbound.js";
@@ -17,6 +18,26 @@ class FakeSocket extends EventEmitter {
 }
 
 describe("runner provider-ingress WebSocket wire", () => {
+  it("bounds credential refresh by the fixed deadline and cancellation", async () => {
+    const signal = new AbortController().signal;
+    await expect(
+      __runnerPrpOutboundTesting.awaitWithinDeadline({
+        operation: async () => await new Promise<never>(() => undefined),
+        deadline: Date.now() - 1,
+        signal,
+      }),
+    ).rejects.toThrow("deadline elapsed");
+
+    const abort = new AbortController();
+    const pending = __runnerPrpOutboundTesting.awaitWithinDeadline({
+      operation: async () => await new Promise<never>(() => undefined),
+      deadline: Date.now() + 60_000,
+      signal: abort.signal,
+    });
+    abort.abort();
+    await expect(pending).rejects.toThrow("cancelled");
+  });
+
   it("delivers one terminal close to both PRP authority and reconnect ownership", () => {
     const socket = new FakeSocket();
     const wire = new WsJsonWireConnection(
