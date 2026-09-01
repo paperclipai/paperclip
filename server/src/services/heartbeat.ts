@@ -7954,6 +7954,10 @@ export interface HeartbeatServiceOptions {
   ) => NativeSessionBackend;
   /** Closed Formal-QA executor seam; production uses the native Codex bridge. */
   formalQaExecutor?: typeof executeFormalQaCodexAppServer;
+  /** Test seam for cancelling after the Formal-QA claim commits but before provider dispatch. */
+  afterFormalQaRunClaim?: (input: { runId: string; reviewId: string }) => Promise<void>;
+  /** Test seam for a Formal-QA decision racing the control-plane cancellation lock. */
+  beforeFormalQaRunCancellation?: (input: { runId: string; reviewId: string }) => Promise<void>;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -10795,6 +10799,22 @@ export function heartbeatService(
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  async function setWakeupStatusFromLive(
+    wakeupRequestId: string | null | undefined,
+    status: string,
+    fromStatuses: string[],
+    patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
+  ) {
+    if (!wakeupRequestId) return;
+    await db
+      .update(agentWakeupRequests)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(
+        eq(agentWakeupRequests.id, wakeupRequestId),
+        inArray(agentWakeupRequests.status, fromStatuses),
+      ));
   }
 
   async function addContinuationExhaustedCommentOnce(input: {
@@ -17391,6 +17411,11 @@ export function heartbeatService(
     let claimed: Awaited<ReturnType<typeof formalQaReviewsSvc.claimRun>> | null = null;
     let result: AdapterExecutionResult | null = null;
     const executionController = new AbortController();
+    // Publish cancellation ownership before claimRun's first asynchronous
+    // boundary. A board cancellation that commits while the claim response is
+    // returning must abort this exact controller, not miss an unregistered
+    // executor that would otherwise start after the terminal cancellation.
+    formalQaRunAbortControllers.set(input.run.id, executionController);
     try {
       if (input.agent.adapterType !== "codex_local") {
         throw new Error("formal_qa_reviewer_adapter_unsupported");
@@ -17401,7 +17426,11 @@ export function heartbeatService(
         companyId: input.run.companyId,
         agentId: input.agent.id,
       });
-      formalQaRunAbortControllers.set(input.run.id, executionController);
+      await options.afterFormalQaRunClaim?.({
+        runId: input.run.id,
+        reviewId: claimed.review.id,
+      });
+      executionController.signal.throwIfAborted();
       await appendRunEvent(input.run, {
         eventType: "formal_qa.review_started",
         stream: "system",
@@ -17415,6 +17444,7 @@ export function heartbeatService(
       });
       const baseConfig = parseObject(input.agent.adapterConfig);
       const boundedTimeout = Math.max(60, Math.min(asNumber(baseConfig.timeoutSec, 1800), 3600));
+      executionController.signal.throwIfAborted();
       const formalExecution = await (options.formalQaExecutor ?? executeFormalQaCodexAppServer)({
         runId: input.run.id,
         reviewId: claimed.review.id,
@@ -25016,7 +25046,7 @@ export function heartbeatService(
   async function cancelRunInternal(
     runId: string,
     reason = "Cancelled by control plane",
-    options: CancelRunOptions = {},
+    cancellationOptions: CancelRunOptions = {},
   ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -25027,7 +25057,7 @@ export function heartbeatService(
     )
       return run;
     const agent = await getAgent(run.agentId);
-    const errorCode = options.errorCode ?? "cancelled";
+    const errorCode = cancellationOptions.errorCode ?? "cancelled";
     const resultJson = agent
       ? {
           ...mergeRunStopMetadataForAgent(agent, "cancelled", {
@@ -25035,22 +25065,45 @@ export function heartbeatService(
             errorCode,
             errorMessage: reason,
           }),
-          ...(options.resultJson ?? {}),
+          ...(cancellationOptions.resultJson ?? {}),
         }
-      : options.resultJson;
+      : cancellationOptions.resultJson;
 
     const running = runningProcesses.get(run.id);
     const runContext = parseObject(run.contextSnapshot);
     const formalQaReviewId = readNonEmptyString(runContext.formalQaReviewId);
     if (formalQaReviewId && runContext.schema === FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
-      await formalQaReviewsSvc.cancelRun({
+      await options.beforeFormalQaRunCancellation?.({ runId: run.id, reviewId: formalQaReviewId });
+      const review = await formalQaReviewsSvc.cancelRun({
         reviewId: formalQaReviewId,
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
         reason,
       });
-      formalQaRunAbortControllers.get(run.id)?.abort(new Error("formal_qa_codex_cancelled"));
+      if (review.status === "cancelled") {
+        formalQaRunAbortControllers.get(run.id)?.abort(new Error("formal_qa_codex_cancelled"));
+      } else {
+        // A sealed review terminal won the review lock before cancellation.
+        // Project that immutable outcome and never overwrite it with a stale
+        // generic scheduler cancellation based on the run snapshot above.
+        await formalQaReviewsSvc.convergeTerminalRun({
+          reviewId: formalQaReviewId,
+          runId: run.id,
+          companyId: run.companyId,
+          agentId: run.agentId,
+        });
+        const terminalRun = await getRun(run.id);
+        const reviewCompleted = review.status === "approved" || review.status === "rejected";
+        await finalizeAgentStatus(
+          run.agentId,
+          reviewCompleted ? "succeeded" : "failed",
+          reviewCompleted ? null : (review.terminalReason ?? `Formal-QA review ${review.status}`),
+          { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
+        );
+        await startNextQueuedRunForAgent(run.agentId);
+        return terminalRun;
+      }
     }
     try {
       await cancelHeartbeatNativeRun({
@@ -25077,54 +25130,59 @@ export function heartbeatService(
             parseObject(current?.resultJson),
           )
         : {};
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancelledTransition = await setRunStatusFromLive(
+      run.id,
+      "cancelled",
+      [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+      {
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson || Object.keys(persistedCancellationResult).length > 0
+          ? {
+              resultJson: {
+                ...persistedCancellationResult,
+                ...(resultJson ?? {}),
+                // The native cancellation helper may have advanced a durable
+                // pending intent to its acknowledged state after `run` was
+                // first read. Never let that stale snapshot overwrite the
+                // authoritative post-dispatch acknowledgement.
+                ...(Object.hasOwn(
+                  persistedCancellationResult,
+                  "nativeCancellation",
+                )
+                  ? {
+                      nativeCancellation:
+                        persistedCancellationResult.nativeCancellation,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      },
+    );
+
+    await setWakeupStatusFromLive(run.wakeupRequestId, "cancelled", ["queued", "claimed", "running", "deferred_issue_execution"], {
       finishedAt,
       error: reason,
-      errorCode,
-      ...(resultJson || Object.keys(persistedCancellationResult).length > 0
-        ? {
-            resultJson: {
-              ...persistedCancellationResult,
-              ...(resultJson ?? {}),
-              // The native cancellation helper may have advanced a durable
-              // pending intent to its acknowledged state after `run` was
-              // first read. Never let that stale snapshot overwrite the
-              // authoritative post-dispatch acknowledgement.
-              ...(Object.hasOwn(
-                persistedCancellationResult,
-                "nativeCancellation",
-              )
-                ? {
-                    nativeCancellation:
-                      persistedCancellationResult.nativeCancellation,
-                  }
-                : {}),
-            },
-          }
-        : {}),
     });
 
-    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt,
-      error: reason,
-    });
-
-    if (cancelled) {
-      await appendRunEvent(cancelled, {
+    if (cancelledTransition.updated && cancelledTransition.run) {
+      await appendRunEvent(cancelledTransition.run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: options.eventMessage ?? "run cancelled",
-        ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+        message: cancellationOptions.eventMessage ?? "run cancelled",
+        ...(cancellationOptions.eventPayload ? { payload: cancellationOptions.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelledTransition.run);
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
     await startNextQueuedRunForAgent(run.agentId);
-    return cancelled;
+    return cancelledTransition.run;
   }
 
   async function cancelActiveForAgentInternal(
@@ -25149,14 +25207,25 @@ export function heartbeatService(
       const runContext = parseObject(run.contextSnapshot);
       const formalQaReviewId = readNonEmptyString(runContext.formalQaReviewId);
       if (formalQaReviewId && runContext.schema === FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
-        await formalQaReviewsSvc.cancelRun({
+        await options.beforeFormalQaRunCancellation?.({ runId: run.id, reviewId: formalQaReviewId });
+        const review = await formalQaReviewsSvc.cancelRun({
           reviewId: formalQaReviewId,
           runId: run.id,
           companyId: run.companyId,
           agentId: run.agentId,
           reason,
         });
-        formalQaRunAbortControllers.get(run.id)?.abort(new Error("formal_qa_codex_cancelled"));
+        if (review.status === "cancelled") {
+          formalQaRunAbortControllers.get(run.id)?.abort(new Error("formal_qa_codex_cancelled"));
+        } else {
+          await formalQaReviewsSvc.convergeTerminalRun({
+            reviewId: formalQaReviewId,
+            runId: run.id,
+            companyId: run.companyId,
+            agentId: run.agentId,
+          });
+          continue;
+        }
       }
       if (run.runtimeMode === "native") {
         await cancelHeartbeatNativeRun({
@@ -25172,7 +25241,7 @@ export function heartbeatService(
               parseObject(current?.resultJson),
             )
           : parseObject(run.resultJson);
-      await setRunStatus(run.id, "cancelled", {
+      await setRunStatusFromLive(run.id, "cancelled", [...CANCELLABLE_HEARTBEAT_RUN_STATUSES], {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -25187,7 +25256,7 @@ export function heartbeatService(
           : {}),
       });
 
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      await setWakeupStatusFromLive(run.wakeupRequestId, "cancelled", ["queued", "claimed", "running", "deferred_issue_execution"], {
         finishedAt: new Date(),
         error: reason,
       });

@@ -184,6 +184,9 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
       issuerOperationId: `request:${preparationId}:v1`,
       issuedByUserId: "board-user",
       idempotencyKey: `formal-heartbeat-${preparationId}`,
+      requestKey: `formal-heartbeat-${preparationId}`,
+      generation: 1,
+      predecessorPreparationId: null,
       requestSha256: "c".repeat(64),
       expiresAt,
       status: "prepared",
@@ -474,6 +477,112 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
       .toEqual([expect.objectContaining({ status: "archived", cleanupReason: "formal_qa_terminal:cancelled" })]);
     await expect(access(path.join(f.instanceRoot, "formal-qa-review-scratch", f.companyId, f.review.id)))
       .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not start the provider when cancellation commits after the claim", async () => {
+    const f = await fixture();
+    let heartbeat!: ReturnType<typeof heartbeatService>;
+    let crossedClaimBarrier = false;
+    heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      formalQaExecutor,
+      afterFormalQaRunClaim: async ({ runId, reviewId }) => {
+        crossedClaimBarrier = true;
+        expect(runId).toBe(f.review.heartbeatRunId);
+        expect(reviewId).toBe(f.review.id);
+        expect(await heartbeat.cancelActiveForAgent(
+          f.reviewerAgentId,
+          "Cancelled at the committed Formal-QA claim barrier",
+        )).toBe(1);
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(crossedClaimBarrier).toBe(true);
+    expect(formalQaExecutor).not.toHaveBeenCalled();
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({
+      status: "cancelled",
+      decision: null,
+      terminalReason: "Cancelled at the committed Formal-QA claim barrier",
+    });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "cancelled" });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "cancelled" })]);
+  });
+
+  it("cancels a generic scheduled-retry run with its still-live wakeup", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({
+      status: "scheduled_retry",
+      contextSnapshot: {},
+    }).where(eq(heartbeatRuns.id, f.review.heartbeatRunId));
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, formalQaExecutor });
+    expect(await heartbeat.cancelRun(f.review.heartbeatRunId, "Cancelled scheduled retry"))
+      .toMatchObject({ status: "cancelled", error: "Cancelled scheduled retry" });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "cancelled", error: "Cancelled scheduled retry" })]);
+    expect(formalQaExecutor).not.toHaveBeenCalled();
+  });
+
+  it("preserves a sealed decision that commits before cancellation takes the review lock", async () => {
+    const f = await fixture();
+    let resolveProvider!: (value: { output: string; usage: null }) => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      formalQaExecutor.mockImplementation(() => {
+        resolve();
+        return new Promise((providerResolve) => { resolveProvider = providerResolve; });
+      });
+    });
+    let releaseCancellation!: () => void;
+    const cancellationGate = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    let cancellationPaused!: () => void;
+    const cancellationReachedBarrier = new Promise<void>((resolve) => { cancellationPaused = resolve; });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      formalQaExecutor,
+      beforeFormalQaRunCancellation: async ({ runId, reviewId }) => {
+        expect(runId).toBe(f.review.heartbeatRunId);
+        expect(reviewId).toBe(f.review.id);
+        cancellationPaused();
+        await cancellationGate;
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await providerStarted;
+    const cancellation = heartbeat.cancelRun(f.review.heartbeatRunId, "Stale cancellation must not replace approval");
+    await cancellationReachedBarrier;
+    const output = JSON.stringify({
+      schema: "paperclip.formal-qa-review-decision/v1",
+      reviewId: f.review.id,
+      runId: f.review.heartbeatRunId,
+      headSha: f.review.headSha,
+      treeSha: f.review.treeSha,
+      contractSha256: f.review.contractSha256,
+      decision: "approved",
+      summary: "Approval won the terminal review lock.",
+      findings: [],
+    });
+    expect(await f.reviews.finishRun({
+      reviewId: f.review.id,
+      runId: f.review.heartbeatRunId,
+      companyId: f.companyId,
+      agentId: f.reviewerAgentId,
+      succeeded: true,
+      output,
+    })).toMatchObject({ status: "approved", decision: "approved" });
+    releaseCancellation();
+    await cancellation;
+    resolveProvider({ output, usage: null });
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({ status: "approved", decision: "approved" });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "succeeded", error: null });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "completed", error: null })]);
   });
 
   it("reaper preserves a committed approval and converges stale run, wakeup, and workspace rows", async () => {
