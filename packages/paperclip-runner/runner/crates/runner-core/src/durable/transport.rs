@@ -217,6 +217,7 @@ impl RunnerTransportEndpoint {
         &self,
         max_frame_bytes: usize,
         ca_bundle_path: Option<&Path>,
+        connect_deadline: Instant,
     ) -> Result<Option<RunnerSocket>, DurableRunnerError> {
         let websocket_config = || {
             WebSocketConfig::default()
@@ -230,7 +231,7 @@ impl RunnerTransportEndpoint {
                         "--ca-bundle-path is accepted only with wss://",
                     ));
                 }
-                let stream = connect_pinned_addresses(&target.addresses)?;
+                let stream = connect_pinned_addresses(&target.addresses, connect_deadline)?;
                 configure_auth_timeouts(&stream)?;
                 let request = target
                     .request_url()
@@ -352,9 +353,13 @@ fn configure_auth_timeouts(stream: &TcpStream) -> Result<(), DurableRunnerError>
         .map_err(|error| DurableRunnerError::invalid(error.to_string()))
 }
 
-fn connect_pinned_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, DurableRunnerError> {
+fn connect_pinned_addresses(
+    addresses: &[SocketAddr],
+    lifecycle_deadline: Instant,
+) -> Result<TcpStream, DurableRunnerError> {
     connect_pinned_addresses_with(
         addresses,
+        lifecycle_deadline,
         CONNECT_TOTAL_TIMEOUT,
         CONNECT_ATTEMPT_TIMEOUT,
         TcpStream::connect_timeout,
@@ -363,6 +368,7 @@ fn connect_pinned_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, Durab
 
 fn connect_pinned_addresses_with<T, F>(
     addresses: &[SocketAddr],
+    lifecycle_deadline: Instant,
     total_budget: Duration,
     attempt_budget: Duration,
     mut connect: F,
@@ -375,14 +381,22 @@ where
             "WebSocket connect requires pinned addresses and non-zero timeout budgets",
         ));
     }
+    let started = Instant::now();
+    let transport_deadline = started + total_budget;
+    let deadline = lifecycle_deadline.min(transport_deadline);
+    if deadline <= started {
+        return Err(DurableRunnerError::invalid(
+            "WebSocket connect lifecycle deadline elapsed before dialing",
+        ));
+    }
+    let effective_budget = deadline.saturating_duration_since(started);
     let mut ordered = addresses.to_vec();
     ordered.sort_unstable();
     ordered.dedup();
-    let started = Instant::now();
     let mut attempted = 0_usize;
     let mut last_failure: Option<(SocketAddr, io::Error)> = None;
     for address in &ordered {
-        let remaining = total_budget.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
@@ -399,7 +413,7 @@ where
     Err(DurableRunnerError::invalid(format!(
         "WebSocket connect failed after {attempted}/{} pinned address attempts within {} ms; {suffix}",
         ordered.len(),
-        total_budget.as_millis(),
+        effective_budget.as_millis(),
     )))
 }
 
@@ -763,6 +777,7 @@ impl AuthenticatedTransport {
         state: &DurableState,
         bootstrap: Option<&BootstrapTicket>,
         lease: Option<&LeaseCredential>,
+        connect_deadline: Instant,
     ) -> Result<Option<(Self, Welcome)>, ConnectFailure> {
         let (credential_token, credential_kind, expected_lease) = match (lease, bootstrap) {
             (Some(lease), _) => (
@@ -783,7 +798,11 @@ impl AuthenticatedTransport {
         };
         let credential = CredentialMaterial::from_token(credential_token);
         let Some(mut socket) = endpoint
-            .open(config.max_frame_bytes, config.ca_bundle_path.as_deref())
+            .open(
+                config.max_frame_bytes,
+                config.ca_bundle_path.as_deref(),
+                connect_deadline,
+            )
             .map_err(ConnectFailure::retryable)?
         else {
             return Ok(None);
@@ -1647,6 +1666,7 @@ mod tests {
         let mut attempts = Vec::new();
         let connected = connect_pinned_addresses_with(
             &[second, first],
+            Instant::now() + Duration::from_secs(2),
             Duration::from_secs(2),
             Duration::from_millis(250),
             |address, timeout| {
@@ -1673,6 +1693,7 @@ mod tests {
 
         let failure = connect_pinned_addresses_with(
             &[second, first],
+            Instant::now() + Duration::from_secs(2),
             Duration::from_secs(2),
             Duration::from_millis(250),
             |_, _| -> io::Result<()> {
@@ -1682,6 +1703,21 @@ mod tests {
         .unwrap_err();
         assert!(failure.to_string().contains(&second.to_string()));
         assert!(failure.to_string().contains("2/2 pinned address attempts"));
+
+        let lifecycle_budget = Duration::from_millis(40);
+        let mut observed_timeout = None;
+        connect_pinned_addresses_with(
+            &[first],
+            Instant::now() + lifecycle_budget,
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |_, timeout| -> io::Result<()> {
+                observed_timeout = Some(timeout);
+                Err(io::Error::new(io::ErrorKind::TimedOut, "simulated timeout"))
+            },
+        )
+        .unwrap_err();
+        assert!(observed_timeout.is_some_and(|timeout| timeout <= lifecycle_budget));
     }
 
     #[test]
@@ -1738,6 +1774,7 @@ mod tests {
             &state,
             Some(&ticket),
             None,
+            Instant::now() + config.max_runtime,
         ) {
             Err(error) => error,
             Ok(_) => panic!("invalid listener peer unexpectedly authenticated"),
@@ -1780,10 +1817,16 @@ mod tests {
             );
         });
         valid_connected.recv().unwrap();
-        let (_, accepted) =
-            AuthenticatedTransport::connect(&endpoint, &config, &state, Some(&ticket), None)
-                .unwrap()
-                .unwrap();
+        let (_, accepted) = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(accepted.connection.connection_id, "connection_1");
         assert_eq!(accepted.lease.unwrap().expose().unwrap(), "lease-secret");
         valid_peer.join().unwrap();
@@ -1941,10 +1984,16 @@ mod tests {
 
         let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
-        let (_, welcome) =
-            AuthenticatedTransport::connect(&endpoint, &config, &state, Some(&ticket), None)
-                .unwrap()
-                .unwrap();
+        let (_, welcome) = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();

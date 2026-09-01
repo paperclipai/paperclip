@@ -45,7 +45,7 @@ enum CommandLifecycle {
     Shutdown,
 }
 
-fn sleep_for_reconnect(base: Duration, attempt: &mut u32) {
+fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
     let multiplier = 1_u128 << (*attempt).min(5);
     let uncapped = base.as_millis().saturating_mul(multiplier);
     let capped = uncapped.clamp(1, 5_000) as u64;
@@ -54,9 +54,31 @@ fn sleep_for_reconnect(base: Duration, attempt: &mut u32) {
         .map_or(0, |duration| u64::from(duration.subsec_nanos()));
     let jitter_percent = 75 + nanos % 51;
     *attempt = attempt.saturating_add(1);
-    thread::sleep(Duration::from_millis(
-        capped.saturating_mul(jitter_percent) / 100,
-    ));
+    let delay = Duration::from_millis(capped.saturating_mul(jitter_percent) / 100).min(max_delay);
+    if !delay.is_zero() {
+        thread::sleep(delay);
+    }
+}
+
+fn connection_attempt_deadline(
+    config: &DurableRunnerConfig,
+    started: Instant,
+    disconnected_since: Option<Instant>,
+) -> Instant {
+    let now = Instant::now();
+    let runtime_remaining = config
+        .max_runtime
+        .saturating_sub(now.saturating_duration_since(started));
+    let remaining = disconnected_since.zip(config.reconnect_grace).map_or(
+        runtime_remaining,
+        |(disconnected_at, grace)| {
+            runtime_remaining
+                .min(grace.saturating_sub(now.saturating_duration_since(disconnected_at)))
+        },
+    );
+    // Validation caps max_runtime at seven days, and reconnect grace can only
+    // shorten this budget, so adding it to a current Instant cannot overflow.
+    now + remaining
 }
 
 impl CommandLifecycle {
@@ -182,12 +204,14 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
 
         let using_bootstrap = lease.is_none();
+        let connect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
         let connection = AuthenticatedTransport::connect(
             &endpoint,
             &config,
             &state,
             bootstrap_ticket.as_ref(),
             lease.as_ref(),
+            connect_deadline,
         );
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
@@ -203,7 +227,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         "bootstrap connection failed closed; provide a fresh one-use ticket",
                     ));
                 }
-                sleep_for_reconnect(config.reconnect_delay, &mut reconnect_attempt);
+                sleep_for_reconnect(
+                    config.reconnect_delay,
+                    connect_deadline.saturating_duration_since(Instant::now()),
+                    &mut reconnect_attempt,
+                );
                 continue;
             }
         };
