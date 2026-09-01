@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
   parseObject,
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
@@ -2347,7 +2348,9 @@ export function agentRoutes(
     if (role !== "ceo") return undefined;
     const adapter = findActiveServerAdapter(adapterType);
     if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
-    return PAPERCLIP_CORE_SKILL_KEYS.map((key) => ({ key, versionId: null }));
+    return PAPERCLIP_CORE_SKILL_KEYS
+      .filter((key) => adapterType !== "paperclip_runner" || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY)
+      .map((key) => ({ key, versionId: null }));
   }
 
   function withDefaultRoleSkillSelections(
@@ -2470,11 +2473,12 @@ export function agentRoutes(
 
     const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
     if (
-      adapterType === "paperclip_runner" &&
-      desiredSkillEntries.some((entry) => entry.key === "paperclipai/paperclip/paperclip")
+      adapterType === "paperclip_runner"
+      && mode !== "remove"
+      && requestedSkillEntries.some((entry) => entry.key === PAPERCLIP_OPERATIONAL_SKILL_KEY)
     ) {
       throw unprocessable(
-        "paperclip_runner does not support the legacy Paperclip operational skill (paperclipai/paperclip/paperclip); remove it from this agent",
+        `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
       );
     }
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);

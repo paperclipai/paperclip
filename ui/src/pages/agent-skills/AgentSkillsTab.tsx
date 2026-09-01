@@ -345,6 +345,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
 
   const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    // Historical assignments stay interactive so the user can remove them.
+    // The server rejects new assignments and omits stale ones from native
+    // runtime context, so disabling an enabled row would only trap stale data.
     const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
       && variant === "available"
       && row.key === PAPERCLIP_CORE_SKILL_KEY;
