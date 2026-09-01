@@ -151,7 +151,6 @@ jobs:
       contents: read
     env:
       PAPERCLIPAI_VERSION: ${{ needs.publish_canary.outputs.canary_version }}
-      PAPERCLIP_CANARY_SMOKE_SERVER_LOG: ${{ runner.temp }}/canary-onboarding-server.log
       PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
 
     steps:
@@ -176,6 +175,8 @@ jobs:
         run: google-chrome --version
 
       - name: Smoke exact published canary through onboarding
+        env:
+          PAPERCLIP_CANARY_SMOKE_SERVER_LOG: ${{ runner.temp }}/canary-onboarding-server.log
         run: pnpm run test:canary-onboarding-smoke
 
       - name: Upload failed canary onboarding diagnostics
