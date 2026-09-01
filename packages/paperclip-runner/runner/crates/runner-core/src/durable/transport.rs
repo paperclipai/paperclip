@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::handshake::HandshakeError;
 use tungstenite::handshake::server::ErrorResponse;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{accept_hdr_with_config, client_tls_with_config, Connector, Message, WebSocket};
@@ -25,6 +25,8 @@ use super::{
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -228,9 +230,7 @@ impl RunnerTransportEndpoint {
                         "--ca-bundle-path is accepted only with wss://",
                     ));
                 }
-                let stream = TcpStream::connect(target.addresses.as_slice()).map_err(|error| {
-                    DurableRunnerError::invalid(format!("WebSocket connect failed: {error}"))
-                })?;
+                let stream = connect_pinned_addresses(&target.addresses)?;
                 configure_auth_timeouts(&stream)?;
                 let request = target
                     .request_url()
@@ -350,6 +350,57 @@ fn configure_auth_timeouts(stream: &TcpStream) -> Result<(), DurableRunnerError>
         .set_read_timeout(Some(AUTH_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(AUTH_TIMEOUT)))
         .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+}
+
+fn connect_pinned_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, DurableRunnerError> {
+    connect_pinned_addresses_with(
+        addresses,
+        CONNECT_TOTAL_TIMEOUT,
+        CONNECT_ATTEMPT_TIMEOUT,
+        TcpStream::connect_timeout,
+    )
+}
+
+fn connect_pinned_addresses_with<T, F>(
+    addresses: &[SocketAddr],
+    total_budget: Duration,
+    attempt_budget: Duration,
+    mut connect: F,
+) -> Result<T, DurableRunnerError>
+where
+    F: FnMut(&SocketAddr, Duration) -> io::Result<T>,
+{
+    if addresses.is_empty() || total_budget.is_zero() || attempt_budget.is_zero() {
+        return Err(DurableRunnerError::invalid(
+            "WebSocket connect requires pinned addresses and non-zero timeout budgets",
+        ));
+    }
+    let mut ordered = addresses.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    let started = Instant::now();
+    let mut attempted = 0_usize;
+    let mut last_failure: Option<(SocketAddr, io::Error)> = None;
+    for address in &ordered {
+        let remaining = total_budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        attempted += 1;
+        match connect(address, attempt_budget.min(remaining)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_failure = Some((*address, error)),
+        }
+    }
+    let suffix = last_failure.map_or_else(
+        || "the total connection budget elapsed before an attempt".to_owned(),
+        |(address, error)| format!("last attempt {address} failed: {error}"),
+    );
+    Err(DurableRunnerError::invalid(format!(
+        "WebSocket connect failed after {attempted}/{} pinned address attempts within {} ms; {suffix}",
+        ordered.len(),
+        total_budget.as_millis(),
+    )))
 }
 
 fn custom_tls_connector(path: &Path) -> Result<Connector, DurableRunnerError> {
@@ -1204,11 +1255,7 @@ fn receive_plain(
     socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Value, DurableRunnerError> {
-    receive_plain_optional_until(
-        socket,
-        max_frame_bytes,
-        Some(Instant::now() + AUTH_TIMEOUT),
-    )?
+    receive_plain_optional_until(socket, max_frame_bytes, Some(Instant::now() + AUTH_TIMEOUT))?
         .ok_or_else(|| DurableRunnerError::invalid("WebSocket message timed out"))
 }
 
@@ -1591,6 +1638,50 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn pinned_connect_falls_back_in_deterministic_order_with_bounded_attempts() {
+        let first = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3001);
+        let second = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3002);
+        let mut attempts = Vec::new();
+        let connected = connect_pinned_addresses_with(
+            &[second, first],
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |address, timeout| {
+                attempts.push((*address, timeout));
+                if *address == first {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "first address refused",
+                    ))
+                } else {
+                    Ok("connected")
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(connected, "connected");
+        assert_eq!(
+            attempts.iter().map(|attempt| attempt.0).collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.1 <= Duration::from_millis(250)));
+
+        let failure = connect_pinned_addresses_with(
+            &[second, first],
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |_, _| -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::TimedOut, "simulated timeout"))
+            },
+        )
+        .unwrap_err();
+        assert!(failure.to_string().contains(&second.to_string()));
+        assert!(failure.to_string().contains("2/2 pinned address attempts"));
     }
 
     #[test]
