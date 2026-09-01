@@ -819,6 +819,30 @@ function isPlainBinding(
   return value.type === "plain" && "value" in value;
 }
 
+function isPublicSecretVersion(value: unknown): value is number | "latest" {
+  return value === "latest" || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+}
+
+function redactSecretRefBinding(
+  value: { type: "secret_ref"; secretId: string; version?: unknown },
+): { type: "secret_ref"; secretId: string; version?: number | "latest" } {
+  return {
+    type: value.type,
+    secretId: value.secretId,
+    ...(isPublicSecretVersion(value.version) ? { version: value.version } : {}),
+  };
+}
+
+function redactUserSecretRefBinding(
+  value: { type: "user_secret_ref"; key: string; version?: unknown },
+): { type: "user_secret_ref"; key: string; version?: number | "latest" } {
+  return {
+    type: value.type,
+    key: value.key,
+    ...(isPublicSecretVersion(value.version) ? { version: value.version } : {}),
+  };
+}
+
 function sanitizeCommandArgs(args: unknown[]): unknown[] {
   let redactNext = false;
   return args.map((arg) => {
@@ -975,8 +999,8 @@ export function redactAgentAdapterConfig(
 function redactConfigurationValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(redactConfigurationValue);
-  if (isSecretRefBinding(value)) return { type: value.type, secretId: value.secretId, version: value.version };
-  if (isUserSecretRefBinding(value)) return { type: value.type, key: value.key, version: value.version };
+  if (isSecretRefBinding(value)) return redactSecretRefBinding(value);
+  if (isUserSecretRefBinding(value)) return redactUserSecretRefBinding(value);
   if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) return REDACTED_EVENT_VALUE;
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactConfigurationValue(child)]));

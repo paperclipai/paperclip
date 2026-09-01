@@ -43,6 +43,39 @@ describe("redaction", () => {
     }
   });
 
+  it.each([
+    ["secret_ref", "secretId", "secret-id"],
+    ["user_secret_ref", "key", "user-secret-key"],
+  ] as const)("omits malformed version payloads from %s bindings", (type, identityKey, identityValue) => {
+    const binding = { type, [identityKey]: identityValue };
+    const result = redactConfigurationPayload({
+      scalar: { ...binding, version: "plaintext-that-must-not-survive" },
+      object: { ...binding, version: { nested: "plaintext-that-must-not-survive" } },
+      array: { ...binding, version: ["plaintext-that-must-not-survive"] },
+    });
+
+    expect(result).toEqual({
+      scalar: binding,
+      object: binding,
+      array: binding,
+    });
+    expect(JSON.stringify(result)).not.toContain("plaintext-that-must-not-survive");
+  });
+
+  it("preserves only supported public secret-reference versions", () => {
+    expect(redactConfigurationPayload({
+      latest: { type: "secret_ref", secretId: "secret-id", version: "latest" },
+      numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
+      zero: { type: "secret_ref", secretId: "secret-id", version: 0 },
+      fractional: { type: "user_secret_ref", key: "user-secret-key", version: 1.5 },
+    })).toEqual({
+      latest: { type: "secret_ref", secretId: "secret-id", version: "latest" },
+      numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
+      zero: { type: "secret_ref", secretId: "secret-id" },
+      fractional: { type: "user_secret_ref", key: "user-secret-key" },
+    });
+  });
+
   it("redacts sensitive keys and nested secret values", () => {
     const input = {
       apiKey: "abc123",
