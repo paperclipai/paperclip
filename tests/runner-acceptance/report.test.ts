@@ -92,6 +92,79 @@ describe("Runner acceptance report", () => {
     expect(unsafe.results[0]).not.toHaveProperty("diagnostic");
   });
 
+  it("fails closed when assertions are missing or are not an array", () => {
+    const cell = cells[0]!;
+    const withoutAssertions = { ...passingResult(cell) } as Record<string, unknown>;
+    delete withoutAssertions.assertions;
+    const missing = buildRunnerAcceptanceReport({
+      cells: [cell],
+      results: [withoutAssertions],
+    });
+    const nonArray = buildRunnerAcceptanceReport({
+      cells: [cell],
+      results: [{ ...passingResult(cell), assertions: { passed: true } }],
+    });
+
+    for (const report of [missing, nonArray]) {
+      expect(report).toMatchObject({ selected: 1, passed: 0, failed: 1 });
+      expect(report.results[0]).toMatchObject({
+        valid: false,
+        assertions: [],
+      });
+      expect(report.results[0]?.validationErrors).toEqual(expect.arrayContaining([
+        "assertions must be an array",
+        `missing assertion ${cell.assertions[0]}`,
+      ]));
+    }
+  });
+
+  it("normalizes invalid scalar and assertion types without throwing", () => {
+    const cell = cells[0]!;
+    const report = buildRunnerAcceptanceReport({
+      cells: [cell],
+      results: [{
+        schema: 1,
+        cellId: cell.id,
+        attempt: "1",
+        status: true,
+        failureClass: 42,
+        error: { message: "failed" },
+        startedAt: 1,
+        finishedAt: null,
+        durationMs: "1000",
+        redaction: false,
+        assertions: [
+          null,
+          { id: cell.assertions[0], passed: "yes", detail: 42 },
+        ],
+      }],
+    });
+
+    expect(report).toMatchObject({ selected: 1, passed: 0, failed: 1 });
+    expect(report.results[0]).toMatchObject({
+      attempt: 0,
+      status: "failed",
+      startedAt: "",
+      finishedAt: "",
+      durationMs: 0,
+      redaction: "failed",
+      valid: false,
+    });
+    expect(report.results[0]?.validationErrors).toEqual(expect.arrayContaining([
+      "unsupported result schema",
+      "attempt must be a positive safe integer",
+      "duration must be a non-negative finite number",
+      "timestamps must be valid ISO-compatible values",
+      "status must be passed or failed",
+      "failureClass is unsupported",
+      "error must be a string when present",
+      "redaction did not pass",
+      "assertion 0 must be an object",
+      `assertion ${cell.assertions[0]} passed must be a boolean`,
+      `assertion ${cell.assertions[0]} detail must be a string when present`,
+    ]));
+  });
+
   it("renders deterministic Markdown and JUnit summaries", () => {
     const report = buildRunnerAcceptanceReport({
       cells,
