@@ -394,27 +394,6 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
   ];
 }
 
-async function traceRunnerCiStage<T>(
-  scope: string,
-  stage: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  const startedAt = Date.now();
-  process.stderr.write(`[runner-ci] ${scope}:${stage}:start\n`);
-  try {
-    const result = await run();
-    process.stderr.write(
-      `[runner-ci] ${scope}:${stage}:done:${Date.now() - startedAt}ms\n`,
-    );
-    return result;
-  } catch (error) {
-    process.stderr.write(
-      `[runner-ci] ${scope}:${stage}:failed:${Date.now() - startedAt}ms:${String(error)}\n`,
-    );
-    throw error;
-  }
-}
-
 function assignedRuntimeContext(skillRoot: string, instructionRoot: string): NativeRuntimeContextSnapshot {
   const digest = "0".repeat(64);
   const value = {
@@ -509,7 +488,6 @@ it("expands coalesced canonical items without dropping strict bindings", () => {
 });
 
 it("runs the lab provider boundary through authenticated durable PRP", async () => {
-  const scope = "authenticated-durable-prp";
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lab-provider-"));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
@@ -530,39 +508,31 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     ],
   }));
   try {
-    await traceRunnerCiStage(scope, "initialize", () =>
-      bundle.transport.request("initialize", {}),
-    );
-    const opened = await traceRunnerCiStage(scope, "thread.start", () =>
-      bundle.transport.request("thread/start", {
-        cwd: tmpdir(),
-        dynamicTools: [
-          {
-            name: "get_task_context",
-            description: "Read the active task.",
-            inputSchema: {
-              type: "object",
-              properties: {},
-              additionalProperties: false,
-            },
+    await bundle.transport.request("initialize", {});
+    const opened = await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [
+        {
+          name: "get_task_context",
+          description: "Read the active task.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
           },
-        ],
-      }),
-    );
+        },
+      ],
+    });
     expect(opened.thread).toMatchObject({ modelProvider: "openai" });
-    await traceRunnerCiStage(scope, "turn.start", () =>
-      bundle.transport.request("turn/start", {
-        input: [{ type: "text", text: "Read the task." }],
-      }),
-    );
+    await bundle.transport.request("turn/start", {
+      input: [{ type: "text", text: "Read the task." }],
+    });
     const methods: string[] = [];
     let terminalParams: Record<string, unknown> | null = null;
-    process.stderr.write(`[runner-ci] ${scope}:notifications:start\n`);
     for await (const notification of bundle.transport.notifications()) {
       methods.push(notification.method);
       if (notification.method === "turn/completed") {
         terminalParams = notification.params;
-        process.stderr.write(`[runner-ci] ${scope}:notifications:terminal\n`);
         break;
       }
     }
@@ -575,14 +545,14 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
       "runnerd authenticated to the durable PRP control plane",
     );
   } finally {
-    await traceRunnerCiStage(scope, "close", () => bundle.transport.close());
+    await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
   expect(bundle.evidence()).toMatchObject({
     runnerExited: true,
     runnerExitCode: 0,
   });
-}, 45_000);
+}, 30_000);
 
 it("bridges a runnerd-native question into the server request handler and resolves it canonically", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-runtime-question-"));
