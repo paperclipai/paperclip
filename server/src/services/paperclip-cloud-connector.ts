@@ -293,22 +293,19 @@ export function createPaperclipCloudConnector(input: {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
     },
     async getCapabilities(): Promise<GoogleWorkspaceConnectorProfileId[]> {
-      const endpoint = new URL("/v1/connector/capabilities", `${config.baseUrl}/`).toString();
-      let response: Response;
+      let response: ConnectorResponse;
       try {
-        response = await request(endpoint, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+        response = await call("status", {
+          subject: "instance-capabilities",
+          companyId: "instance-capabilities",
+        });
       } catch {
         return [];
       }
-      if (!response.ok) return [];
-      const payload = await response.json().catch(() => null) as ConnectorResponse | null;
-      if (!Array.isArray(payload?.providers)) return [];
-      const google = payload.providers.find((value) => isRecord(value) && value.key === "google");
-      if (!isRecord(google) || !Array.isArray(google.profiles)) return [];
-      return google.profiles.flatMap((value) => {
-        if (!isRecord(value) || value.enabled !== true || typeof value.key !== "string") return [];
-        return isGoogleWorkspaceConnectorProfileId(value.key) ? [value.key] : [];
-      });
+      if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) return [];
+      return [...new Set(response.profiles.flatMap((value) =>
+        typeof value === "string" && isGoogleWorkspaceConnectorProfileId(value) ? [value] : []
+      ))];
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -367,13 +364,7 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
   const connector = createPaperclipCloudConnector({ config });
-  let status: "active" | "suspended" | "removed";
-  try {
-    status = await connector.getInstanceStatus();
-  } catch {
-    return [];
-  }
-  const profiles = status === "active" ? await connector.getCapabilities() : [];
+  const profiles = await connector.getCapabilities();
   capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
   return profiles;
 }

@@ -1274,7 +1274,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run).toMatchObject({
       status: "running",
-      errorCode: "process_detached",
+      errorCode: "native_execution_ownership_unverified",
       processPid: child.pid,
     });
     const retries = await db

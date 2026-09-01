@@ -121,6 +121,10 @@ import {
   readPendingNativeRuntimeRequest,
   type NativeRuntimeRequestResolver,
 } from "../services/native-runtime/runtime-request-resolution-authority.js";
+import {
+  NativeRuntimeRequestResolutionError,
+  resolveNativeRuntimeRequest,
+} from "../services/native-runtime/native-session-executor.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
   instanceSettingsService,
@@ -1670,6 +1674,19 @@ export function agentRoutes(
     throw unprocessable(
       `Adapter "${adapterType}" is not available on this instance. `
       + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
+    );
+  }
+
+  function assertFreshPaperclipRunnerProvider(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): void {
+    if (adapterType !== "paperclip_runner") return;
+    const provider = adapterConfig.provider;
+    if (provider === undefined || provider === "codex") return;
+    throw unprocessable(
+      "Paperclip Runner currently supports Codex for new or changed agent configurations.",
+      { code: "paperclip_runner_provider_unavailable" },
     );
   }
 
@@ -3477,6 +3494,36 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanUpdateAgent(req, existing);
 
+    const revision = await svc.getConfigRevision(id, revisionId);
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+    const rollbackConfig = asRecord(revision.afterConfig);
+    if (!rollbackConfig) {
+      throw unprocessable("Invalid revision snapshot");
+    }
+    const rollbackAdapterType = assertKnownAdapterType(
+      typeof rollbackConfig.adapterType === "string"
+        ? rollbackConfig.adapterType
+        : null,
+    );
+    if (rollbackAdapterType !== existing.adapterType) {
+      await assertSelectableAdapterType(rollbackAdapterType);
+    }
+    const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+    if (
+      rollbackAdapterType !== existing.adapterType ||
+      (rollbackAdapterType === "paperclip_runner" &&
+        rollbackAdapterConfig.provider !== existingAdapterConfig.provider)
+    ) {
+      assertFreshPaperclipRunnerProvider(
+        rollbackAdapterType,
+        rollbackAdapterConfig,
+      );
+    }
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -3576,6 +3623,10 @@ export function agentRoutes(
     } = req.body;
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertFreshPaperclipRunnerProvider(
+      hireInput.adapterType,
+      rawHireAdapterConfig,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -3796,6 +3847,10 @@ export function agentRoutes(
     } = req.body;
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertFreshPaperclipRunnerProvider(
+      createInput.adapterType,
+      rawCreateAdapterConfig,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -4284,6 +4339,20 @@ export function agentRoutes(
         }
         rawEffectiveAdapterConfig = preserveInstructionsBundleConfig(
           existingAdapterConfig,
+          rawEffectiveAdapterConfig,
+        );
+      }
+      const existingRunnerProvider =
+        existing.adapterType === "paperclip_runner"
+          ? existingAdapterConfig.provider
+          : undefined;
+      if (
+        changingAdapterType ||
+        (requestedAdapterType === "paperclip_runner" &&
+          rawEffectiveAdapterConfig.provider !== existingRunnerProvider)
+      ) {
+        assertFreshPaperclipRunnerProvider(
+          requestedAdapterType,
           rawEffectiveAdapterConfig,
         );
       }
@@ -5665,13 +5734,71 @@ export function agentRoutes(
         ) {
           throw conflict("This runtime request is stale or is no longer pending.");
         }
-        const queued = queueRunnerPrpRuntimeRequestResolution({
-          companyId: existing.companyId,
-          runId,
-          pendingRequest: currentPendingRequest,
-          actor: resolutionActor,
-          resolution,
-        });
+        let queued: { commandId: string };
+        try {
+          queued = await resolveNativeRuntimeRequest({
+            runId,
+            requestId,
+            turnId: currentPendingRequest.turnId,
+            resolution,
+            authorizeBeforeDispatch: async () => {
+              const dispatchPendingRequest =
+                await readPendingNativeRuntimeRequest(db, {
+                  companyId: existing.companyId,
+                  runId,
+                  requestId,
+                });
+              if (
+                !dispatchPendingRequest
+                || dispatchPendingRequest.requestKind !==
+                  currentPendingRequest.requestKind
+                || dispatchPendingRequest.turnId !==
+                  currentPendingRequest.turnId
+              ) {
+                throw conflict(
+                  "This runtime request is stale or is no longer pending.",
+                );
+              }
+              assertNativeRuntimeRequestResolverAuthorized(
+                dispatchPendingRequest,
+                resolutionActor,
+              );
+            },
+          });
+        } catch (error) {
+          if (
+            error instanceof NativeRuntimeRequestResolutionError &&
+            error.code === "runtime_request_resolution_conflict"
+          ) {
+            throw conflict(
+              "A different response was already submitted for this runtime request.",
+            );
+          }
+          if (
+            !(error instanceof NativeRuntimeRequestResolutionError) ||
+            ![
+              "native_session_not_active",
+              "runtime_request_resolution_unsupported",
+            ].includes(error.code)
+          ) {
+            if (
+              error instanceof NativeRuntimeRequestResolutionError &&
+              error.code === "runtime_request_stale_turn"
+            ) {
+              throw conflict(
+                "The runner session is no longer accepting runtime responses.",
+              );
+            }
+            throw error;
+          }
+          queued = queueRunnerPrpRuntimeRequestResolution({
+            companyId: existing.companyId,
+            runId,
+            pendingRequest: currentPendingRequest,
+            actor: resolutionActor,
+            resolution,
+          });
+        }
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: "user",

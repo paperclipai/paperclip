@@ -1,0 +1,475 @@
+{
+  "schema": "paperclip.status-authority-conformance.v1",
+  "corpusRevision": 2,
+  "policyVersion": "status-authority-v1",
+  "fixtures": [
+    {
+      "id": "native-mechanical-completion",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-01"], "terminalRows": ["TC-01"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "mechanically_satisfied", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["release_checkout"], "forbiddenEffects": ["bind_reviewer", "bind_blocker"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "native-low-risk-policy-claim",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-02"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "low_risk_policy_claim", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "completion_claim_policy_accepted", "requiredEffects": ["release_checkout"], "forbiddenEffects": ["create_interaction"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "premature-done-missing-evidence",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-03"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["premature_done_claim", "incomplete_evidence", "partial_progress", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "missing_required_test", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["release_checkout_as_done", "enqueue_continuation"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "incomplete-evidence-no-live-path",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["incomplete_evidence", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "missing_required_test", "trigger": "runner_finalizer", "fault": "continuation_insert_failure" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["enqueue_continuation"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "prior-status-preserved-without-live-path",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-03"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-06"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["atomic_liveness", "reconciliation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "no_durable_continuation", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "prior_status_preserved_no_live_path", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["set_issue_status", "enqueue_continuation", "bind_blocker", "bind_reviewer"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "required-subjective-review",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-04"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-01"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["required_review", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "named_reviewer_required", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["bind_blocker", "notify_owner"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "required-governed-review",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-04"], "terminalRows": [], "attentionRows": ["ATT-08"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["required_review", "excessive_human_request"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "governed_gate_pending", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "governed_gate_pending", "requiredEffects": ["create_interaction", "notify_owner"], "forbiddenEffects": ["attention_routed_to_agent"], "livePathKind": "interaction", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "review-side-effect-rollback",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-02"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["required_review", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "review_required", "trigger": "runner_finalizer", "fault": "reviewer_insert_failure" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "side_effect_planning_failed", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["bind_reviewer", "notify_owner", "status_version_increment"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "invalid-native-result",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-05"], "terminalRows": ["TC-08"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-02"], "migrationRows": [] },
+      "tags": ["native_legacy_distinction", "reconciliation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": null, "nativeFinalization": "invalid", "completionState": "safe_partial_parse", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "native_finalization_invalid", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["legacy_finalizer", "bind_blocker", "bind_reviewer"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "valid-yielded-continuation",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-06"], "terminalRows": ["TC-05"], "attentionRows": [], "livenessRows": ["LIVE-05"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["continuation", "partial_progress", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "interrupted", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "valid_continuation", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["bind_blocker"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "false-task-wide-blocker",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-07"], "terminalRows": [], "attentionRows": ["ATT-05"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["false_blocker", "excessive_human_request", "continuation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "alternate_track_runnable", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "turn_waiting_other_track_live", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["bind_blocker", "create_interaction"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "real-task-wide-blocker",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-08"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-03"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["real_blocker", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "task_wide_owner_action_bound", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "blocked", "reasonCode": "task_wide_blocker_bound", "requiredEffects": ["bind_blocker", "notify_owner"], "forbiddenEffects": ["enqueue_continuation"], "livePathKind": "blocker", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "blocker-side-effect-rollback",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-04"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["real_blocker", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "task_wide_owner_action_bound", "trigger": "runner_finalizer", "fault": "blocker_insert_failure" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "side_effect_planning_failed", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["bind_blocker", "notify_owner", "status_version_increment"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "question-resolved-from-context",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-09"], "terminalRows": [], "attentionRows": ["ATT-01"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["excessive_human_request", "repeated_question"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "context_answer_current", "trigger": "attention_response" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "attention_resolved_from_context", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["create_interaction", "notify_owner"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "human-request-routed-to-agent",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-10"], "terminalRows": [], "attentionRows": ["ATT-04"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["excessive_human_request"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "ordinary_domain_expertise", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "attention_routed_to_agent", "requiredEffects": ["create_delegated_issue", "enqueue_continuation"], "forbiddenEffects": ["create_interaction"], "livePathKind": "delegated_issue", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "human-authority-required",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-11"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["required_review"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "intentional_human_judgment", "reviewGate": "completion", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "attention_requires_human_authority", "requiredEffects": ["create_interaction", "notify_owner"], "forbiddenEffects": ["bind_blocker"], "livePathKind": "interaction", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "duplicate-and-fresh-key-question",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-12"], "terminalRows": [], "attentionRows": ["ATT-02", "ATT-03"], "livenessRows": [], "reconciliationRows": ["REC-02"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["repeated_question", "excessive_human_request", "deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "equivalent_attention_family", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_duplicate_suppressed", "requiredEffects": ["link_canonical_request"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 6, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "attention-budget-exhausted",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-13"], "terminalRows": [], "attentionRows": ["ATT-07", "ATT-12"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["excessive_human_request", "repeated_question", "reconciliation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "resolver_budget_exhausted", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_budget_exhausted", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["create_interaction", "bind_blocker", "bind_reviewer"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 8, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "failed-run-partial-evidence",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-14"], "terminalRows": ["TC-02"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["partial_progress", "partial_evidence_before_failure"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "failed", "runTerminalState": "failed", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "partial_evidence_persisted", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "run_failed_partial_evidence_preserved", "requiredEffects": ["schedule_retry"], "forbiddenEffects": ["release_checkout_as_done"], "livePathKind": "retry", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "completion-report-finalization-failure",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-15"], "terminalRows": ["TC-03"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["finalization_failure", "partial_evidence_before_failure", "reconciliation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "failed", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "claim_before_workspace_failure", "trigger": "runner_finalizer", "fault": "workspace_finalize_failure" },
+      "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "finalization_failed_claim_preserved", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["release_checkout_as_done"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "turn-only-cancellation",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-16"], "terminalRows": ["TC-06"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["cancellation_scope"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "cancelled", "runTerminalState": "active", "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "turn_scope", "trigger": "authorized_agent" },
+      "expected": { "runStatus": "running", "statusAction": "preserve", "reasonCode": "cancellation_turn_only", "requiredEffects": ["accept_replacement_turn"], "forbiddenEffects": ["cancel_issue", "release_run_resources"], "livePathKind": "continuation", "preserveClaim": false, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "run-only-cancellation",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-17"], "terminalRows": ["TC-06"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["cancellation_scope"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "cancelled", "runTerminalState": "cancelled", "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "run_scope", "trigger": "authorized_agent" },
+      "expected": { "runStatus": "cancelled", "statusAction": "preserve", "reasonCode": "cancellation_run_only", "requiredEffects": ["release_run_resources"], "forbiddenEffects": ["cancel_issue"], "livePathKind": null, "preserveClaim": false, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "issue-cancellation-authorized",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-18"], "terminalRows": ["TC-07"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["cancellation_scope"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "cancelled", "runTerminalState": "cancelled", "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "issue_scope_authorized", "trigger": "board_user" },
+      "expected": { "runStatus": "cancelled", "statusAction": "cancelled", "reasonCode": "cancellation_issue_authorized", "requiredEffects": ["release_checkout", "cancel_continuations"], "forbiddenEffects": ["authorized_resume"], "livePathKind": null, "preserveClaim": false, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "new-evidence-supersedes-decision",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-19"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-07"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["supersession", "deterministic_replay", "reconciliation"],
+      "given": { "priorIssueStatus": "in_review", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "new_evidence_satisfies_contract", "trigger": "interaction" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "decision_superseded_by_new_evidence", "requiredEffects": ["release_checkout"], "forbiddenEffects": ["replay_superseded_effect"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "dependency-resolution-supersession",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-19"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["supersession", "continuation"],
+      "given": { "priorIssueStatus": "blocked", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "dependency_now_done", "trigger": "dependency" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "dependency_resolved", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["duplicate_dependency_wake"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "authorized-resume-terminal-issue",
+      "mode": "native",
+      "covers": { "decisionRows": ["SD-19"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-05"], "migrationRows": [] },
+      "tags": ["authorized_resume", "supersession", "existing_issue_state"],
+      "given": { "priorIssueStatus": "done", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "explicit_resume_capability", "trigger": "board_user" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "authorized_resume", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["late_result_reopen"], "livePathKind": "continuation", "preserveClaim": false, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "interrupted-active-run",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": ["TC-04"], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["continuation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "interrupted", "runTerminalState": "active", "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "replacement_turn_accepted", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "running", "statusAction": "preserve", "reasonCode": null, "requiredEffects": ["accept_replacement_turn"], "forbiddenEffects": ["finalize_run", "set_issue_status"], "livePathKind": "continuation", "preserveClaim": false, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "retry-succeeds-before-escalation",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-06"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["excessive_human_request"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "transient_retry_then_success", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "attention_resolved_from_context", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["create_delegated_issue", "create_interaction"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "cross-company-attention-rejected",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-09"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["excessive_human_request"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "cross_company_target", "trigger": "attention_candidate" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "result_schema_rejected", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "stale-attention-response",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-10"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["supersession", "repeated_question"],
+      "given": { "priorIssueStatus": "in_review", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "response_after_supersession", "trigger": "interaction" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_duplicate_suppressed", "requiredEffects": ["record_stale_response"], "forbiddenEffects": ["enqueue_continuation", "set_issue_status"], "livePathKind": null, "preserveClaim": false, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "expired-human-interaction",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-11"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["repeated_question", "excessive_human_request"],
+      "given": { "priorIssueStatus": "in_review", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "present", "completionState": "interaction_expired", "trigger": "monitor" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_budget_exhausted", "requiredEffects": ["record_expiry"], "forbiddenEffects": ["recreate_equivalent_interaction"], "livePathKind": "recovery", "preserveClaim": false, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "identical-result-replay",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-01"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "identical_result_before_ack", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["release_checkout"], "forbiddenEffects": ["duplicate_decision", "duplicate_effect"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "caller-id-mutation-conflict",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-03"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "reused_id_changed_material", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "structured_result_replay_conflict", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["set_issue_status", "notify_owner", "enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "crash-before-workspace-finalization",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-04"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["reconciliation", "deterministic_replay", "finalization_failure"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "result_preserved", "trigger": "runner_finalizer", "fault": "crash_before_workspace_finalize" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["resume_workspace_operation", "release_checkout"], "forbiddenEffects": ["duplicate_workspace_finalize"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "crash-after-decision-commit",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-05"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["reconciliation", "deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "decision_committed_delivery_pending", "trigger": "runner_finalizer", "fault": "crash_before_outbox_ack" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation", "dispatch_pending_effect"], "forbiddenEffects": ["re_arbitrate", "duplicate_continuation"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "board-wins-finalizer-race",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-06"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["supersession", "reconciliation"],
+      "given": { "priorIssueStatus": "cancelled", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "board_cancelled_before_cas", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "prior_status_terminal_preserved", "requiredEffects": ["append_superseding_assessment"], "forbiddenEffects": ["reopen_issue", "release_checkout_as_done"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "policy-version-changes-before-replay",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-08"], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["supersession", "reconciliation", "deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "new_policy_requires_review", "trigger": "authorized_agent" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "completion_review_required", "requiredEffects": ["bind_reviewer", "append_superseding_assessment"], "forbiddenEffects": ["mutate_old_decision"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 1, "maxNotificationCount": 1 },
+      "replay": { "attempts": 2, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "legacy-adapter-unchanged",
+      "mode": "legacy",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-01", "COMP-07"], "migrationRows": [] },
+      "tags": ["native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "not_applicable", "completionState": "legacy_exit_zero", "trigger": "legacy_finalizer" },
+      "expected": { "runStatus": "legacy_derived", "statusAction": "legacy_finalizer", "reasonCode": null, "requiredEffects": ["legacy_existing_behavior"], "forbiddenEffects": ["create_completion_contract", "create_work_assessment", "create_status_decision"], "livePathKind": null, "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "model-authored-native-field-ignored",
+      "mode": "legacy",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-03"], "migrationRows": [] },
+      "tags": ["native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "not_applicable", "completionState": "native_field_only_in_result_json", "trigger": "legacy_finalizer" },
+      "expected": { "runStatus": "legacy_derived", "statusAction": "legacy_finalizer", "reasonCode": null, "requiredEffects": ["legacy_existing_behavior"], "forbiddenEffects": ["select_native_mode", "create_work_assessment"], "livePathKind": null, "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "existing-open-issues-expand-only",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-04"], "migrationRows": [] },
+      "tags": ["existing_issue_state"],
+      "given": { "priorIssueStatus": "in_review", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "missing", "completionState": "preexisting_open_issue", "trigger": "migration" },
+      "expected": { "runStatus": "running", "statusAction": "preserve", "reasonCode": null, "requiredEffects": ["initialize_status_version_zero"], "forbiddenEffects": ["synthesize_contract", "synthesize_decision", "change_liveness_path"], "livePathKind": "review", "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "shadow-records-remain-unapplied",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-06"], "migrationRows": [] },
+      "tags": ["native_legacy_distinction", "rollback"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "shadow_application_disabled", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["record_shadow_decision"], "forbiddenEffects": ["set_issue_status", "dispatch_effect"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "mixed-ledger-native-legacy",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-07"], "migrationRows": [] },
+      "tags": ["native_legacy_distinction"],
+      "given": { "priorIssueStatus": "done", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "mixed_ledger", "trigger": "read_model" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["render_four_layers"], "forbiddenEffects": ["decorate_legacy_row", "aggregate_modes"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "authorized-writer-version-race",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": ["COMP-08"], "migrationRows": [] },
+      "tags": ["existing_issue_state", "reconciliation"],
+      "given": { "priorIssueStatus": "in_review", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "authorized_writer_incremented_version", "trigger": "board_user" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "arbitration_conflict_reloaded", "requiredEffects": ["increment_status_version", "schedule_reconciliation"], "forbiddenEffects": ["apply_stale_decision"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-expand-schema",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-01"] },
+      "tags": ["existing_issue_state", "rollback"],
+      "given": { "priorIssueStatus": "todo", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "missing", "completionState": "production_shaped_upgrade", "trigger": "migration" },
+      "expected": { "runStatus": "running", "statusAction": "preserve", "reasonCode": null, "requiredEffects": ["expand_schema", "status_version_default_zero"], "forbiddenEffects": ["rewrite_issue", "synthesize_history"], "livePathKind": null, "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-version-all-writers",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-02"] },
+      "tags": ["existing_issue_state"],
+      "given": { "priorIssueStatus": "todo", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "missing", "completionState": "authorized_status_write", "trigger": "board_user" },
+      "expected": { "runStatus": "running", "statusAction": "in_review", "reasonCode": null, "requiredEffects": ["increment_status_version_once", "bind_reviewer"], "forbiddenEffects": ["double_increment"], "livePathKind": "review", "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 1, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-read-only-compatibility",
+      "mode": "legacy",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-03"] },
+      "tags": ["native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "not_applicable", "completionState": "no_native_rows", "trigger": "read_model" },
+      "expected": { "runStatus": "legacy_derived", "statusAction": "legacy_finalizer", "reasonCode": null, "requiredEffects": ["return_native_false"], "forbiddenEffects": ["read_error", "native_ui_decoration"], "livePathKind": null, "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-shadow-materialization",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-04"] },
+      "tags": ["native_legacy_distinction", "deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "shadow_compute", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["materialize_contract", "record_shadow_decision"], "forbiddenEffects": ["set_issue_status", "dispatch_effect"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-shadow-comparison",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-05"] },
+      "tags": ["native_legacy_distinction", "deterministic_replay"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "classified_native_legacy_divergence", "trigger": "shadow_comparator" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "completion_evidence_incomplete", "requiredEffects": ["record_mode_labeled_divergence"], "forbiddenEffects": ["apply_shadow_decision", "aggregate_modes"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-internal-canary",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-06"] },
+      "tags": ["atomic_liveness", "native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "allowlisted_company_adapter_policy", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation", "record_mode_native"], "forbiddenEffects": ["mode_switch_mid_run"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-cohort-rollout",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-07"] },
+      "tags": ["reconciliation", "native_legacy_distinction"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "cohort_policy_pinned", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "done", "reasonCode": "completion_contract_satisfied", "requiredEffects": ["record_mode_native", "record_policy_version"], "forbiddenEffects": ["latest_policy_rebind"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-kill-switch-rollback",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-08"] },
+      "tags": ["rollback", "native_legacy_distinction", "reconciliation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "kill_switch_during_active_native_run", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation", "finish_as_native", "fresh_flag_off_run_rejected"], "forbiddenEffects": ["convert_active_run_to_legacy", "persist_agent_kill_switch", "drop_coordinator"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "migration-explicit-contract-migration",
+      "mode": "legacy",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-09"] },
+      "tags": ["native_legacy_distinction", "existing_issue_state", "rollback"],
+      "given": { "priorIssueStatus": "done", "turnTerminalState": null, "runTerminalState": null, "reportedWorkDisposition": null, "nativeFinalization": "not_applicable", "completionState": "no_reviewed_adapter_contract_migration", "trigger": "migration" },
+      "expected": { "runStatus": "legacy_derived", "statusAction": "legacy_finalizer", "reasonCode": null, "requiredEffects": ["retain_legacy_mode", "retain_audit_lineage"], "forbiddenEffects": ["infer_contract_from_exit_code", "delete_history"], "livePathKind": null, "preserveClaim": false, "nativeRecords": false, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+    }
+  ]
+}

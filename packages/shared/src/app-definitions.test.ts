@@ -4,8 +4,29 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_DEFINITIONS } from "./app-definitions.generated.js";
 import { APP_STORE_DEFINITIONS, APP_STORE_HIDDEN_SLUGS, CONNECTABLE_APP_DEFINITIONS, appSupportsCatalogSetup, getAvailableConnectionMethod, getRecommendedConnectionMethod, recommendedDefaultsForApp, resolveConnectionMethodServerUrl } from "./app-definitions.js";
+import { GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, type GoogleWorkspaceConnectorProfileId } from "./google-workspace-connectors.js";
 import { BLOCKED_MCP_PROVIDERS, SELF_SERVE_MCP_CANDIDATES, SELF_SERVE_MCP_RESEARCH } from "./self-serve-mcp-research.js";
 import { appDefinitionsSchema } from "./validators/app-definition.js";
+
+const googleScope=(scope:string)=>`https://www.googleapis.com/auth/${scope}`;
+const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
+ {profile:"gmail.read",appSlug:"gmail",serverUrl:"https://gmailmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("gmail.readonly")],writeTools:[]},
+ {profile:"gmail.draft",appSlug:"gmail",serverUrl:"https://gmailmcp.googleapis.com/mcp/v1",capability:"draft",riskTier:"S4",scopes:[googleScope("gmail.readonly"),googleScope("gmail.compose")],writeTools:["create_draft"]},
+ {profile:"drive.read",appSlug:"google-drive",serverUrl:"https://drivemcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("drive.readonly")],writeTools:[]},
+ {profile:"drive.write",appSlug:"google-drive",serverUrl:"https://drivemcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("drive.readonly"),googleScope("drive.file")],writeTools:["copy_file","create_file"]},
+ {profile:"docs.read",appSlug:"google-docs",serverUrl:"https://docsmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("drive.readonly"),googleScope("documents.readonly")],writeTools:[]},
+ {profile:"docs.write",appSlug:"google-docs",serverUrl:"https://docsmcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("drive.readonly"),googleScope("drive.file"),googleScope("documents")],writeTools:["update_doc"]},
+ {profile:"sheets.read",appSlug:"google-sheets",serverUrl:"https://sheetsmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("drive.readonly"),googleScope("spreadsheets.readonly")],writeTools:[]},
+ {profile:"sheets.write",appSlug:"google-sheets",serverUrl:"https://sheetsmcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("drive.readonly"),googleScope("drive.file"),googleScope("spreadsheets")],writeTools:["update_spreadsheet","update_values","update_formulas","insert_dimension"]},
+ {profile:"slides.read",appSlug:"google-slides",serverUrl:"https://slidesmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("drive.readonly"),googleScope("presentations.readonly")],writeTools:[]},
+ {profile:"slides.write",appSlug:"google-slides",serverUrl:"https://slidesmcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("drive.readonly"),googleScope("drive.file"),googleScope("presentations")],writeTools:["update_presentation"]},
+ {profile:"calendar.read",appSlug:"google-calendar",serverUrl:"https://calendarmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("calendar.calendarlist.readonly"),googleScope("calendar.events.freebusy"),googleScope("calendar.events.readonly")],writeTools:[]},
+ {profile:"calendar.write",appSlug:"google-calendar",serverUrl:"https://calendarmcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("calendar.calendarlist.readonly"),googleScope("calendar.events.freebusy"),googleScope("calendar.events")],writeTools:["create_event","update_event","delete_event","respond_to_event"]},
+ {profile:"chat.read",appSlug:"google-chat",serverUrl:"https://chatmcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("chat.spaces.readonly"),googleScope("chat.memberships.readonly"),googleScope("chat.messages.readonly"),googleScope("chat.users.readstate.readonly")],writeTools:[]},
+ {profile:"chat.write",appSlug:"google-chat",serverUrl:"https://chatmcp.googleapis.com/mcp/v1",capability:"write",riskTier:"S4",scopes:[googleScope("chat.spaces.readonly"),googleScope("chat.memberships.readonly"),googleScope("chat.messages.readonly"),googleScope("chat.users.readstate.readonly"),googleScope("chat.messages.create")],writeTools:["send_message"]},
+ {profile:"people.read",appSlug:"google-people",serverUrl:"https://people.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("directory.readonly"),googleScope("userinfo.profile"),googleScope("contacts.readonly")],writeTools:[]},
+ {profile:"workspace-search.read",appSlug:"google-workspace-search",serverUrl:"https://workspacemcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("gmail.readonly"),googleScope("drive.readonly"),googleScope("calendar.readonly"),googleScope("chat.messages.readonly")],writeTools:[]},
+] as const satisfies ReadonlyArray<{profile:GoogleWorkspaceConnectorProfileId;appSlug:string;serverUrl:string;capability:"read"|"write"|"draft";riskTier:"S3"|"S4";scopes:readonly string[];writeTools:readonly string[]}>;
 describe("AppDefinition catalog",()=>{
  it("validates all Wave 1 definitions",()=>expect(()=>appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
  it("contains every established provider plus the reviewed self-serve catalog",()=>{
@@ -100,9 +121,16 @@ describe("AppDefinition catalog",()=>{
   expect(getAvailableConnectionMethod(drive)?.key).toBe("customer-write-oauth");
   expect(getAvailableConnectionMethod(gmail)?.key).toBe("customer-draft-oauth");
   expect(getRecommendedConnectionMethod(drive.methods.filter((candidate)=>candidate.ownershipModes.includes("customer")))?.key).toBe("customer-write-oauth");
+  expect(getRecommendedConnectionMethod(gmail.methods.filter((candidate)=>[
+   "paperclip-read","customer-read-oauth","customer-draft-oauth",
+  ].includes(candidate.key)))?.key).toBe("paperclip-read");
+  expect(getRecommendedConnectionMethod(gmail.methods.filter((candidate)=>candidate.capabilityProfile?.key==="draft"))?.key).toBe("paperclip-draft");
+  expect(getRecommendedConnectionMethod(gmail.methods.filter((candidate)=>
+   candidate.capabilityProfile?.key==="draft"&&candidate.ownershipModes.includes("customer")
+  ))?.key).toBe("customer-draft-oauth");
  });
  it("explains Google Workspace Developer Preview enrollment before connection",()=>{
-  const googleWorkspaceMcpSlugs=["gmail","google-drive","google-docs","google-slides","google-calendar","google-chat","google-people","google-workspace-search"];
+  const googleWorkspaceMcpSlugs=["gmail","google-drive","google-docs","google-sheets","google-slides","google-calendar","google-chat","google-people","google-workspace-search"];
   for(const slug of googleWorkspaceMcpSlugs){
    const prerequisite=APP_DEFINITIONS.find((app)=>app.slug===slug)?.setupPrerequisite;
    expect(prerequisite?.actionUrl,slug).toBe("https://developers.google.com/workspace/preview");
@@ -158,40 +186,41 @@ describe("AppDefinition catalog",()=>{
   for(const candidate of SELF_SERVE_MCP_CANDIDATES)expect(appSupportsCatalogSetup(definitions.get(candidate.slug))).toBe(true);
   for(const blocked of BLOCKED_MCP_PROVIDERS)expect(definitions.has(blocked.slug)).toBe(false);
  });
- it("ships each Google Workspace surface as an independent personal OAuth app",()=>{
-  const expected={
-   gmail:"https://gmailmcp.googleapis.com/mcp/v1",
-   "google-drive":"https://drivemcp.googleapis.com/mcp/v1",
-   "google-docs":"https://docsmcp.googleapis.com/mcp/v1",
-   "google-sheets":"https://sheetsmcp.googleapis.com/mcp/v1",
-   "google-slides":"https://slidesmcp.googleapis.com/mcp/v1",
-   "google-calendar":"https://calendarmcp.googleapis.com/mcp/v1",
-   "google-chat":"https://chatmcp.googleapis.com/mcp/v1",
-   "google-people":"https://people.googleapis.com/mcp/v1",
-   "google-workspace-search":"https://workspacemcp.googleapis.com/mcp/v1",
-  } as const;
-  for(const [slug,serverUrl] of Object.entries(expected)){
-   const app=APP_DEFINITIONS.find((candidate)=>candidate.slug===slug);
-   expect(app,slug).toBeTruthy();
-   expect(app?.methods.some((method)=>method.oauthStrategy==="paperclip_cloud_connector")).toBe(true);
-   for(const method of app?.methods.filter((candidate)=>candidate.auth==="oauth")??[]){
-    expect(method.grantKinds,`${slug}:${method.key}`).toEqual(["user"]);
-    expect(method.defaults?.serverUrl,`${slug}:${method.key}`).toBe(serverUrl);
-    expect(method.capabilityProfile,`${slug}:${method.key}`).toBeTruthy();
-   }
+ it("keeps all Google Workspace profiles aligned with their app, endpoint, scopes, ownership, risk, and write policy",()=>{
+  expect(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS).toEqual(GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS.map((entry)=>entry.profile));
+  expect(Object.keys(GOOGLE_WORKSPACE_CONNECTOR_PROFILES)).toEqual([...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+  for(const expected of GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS){
+   expect(GOOGLE_WORKSPACE_CONNECTOR_PROFILES[expected.profile],expected.profile).toEqual({
+    appSlug:expected.appSlug,
+    serverUrl:expected.serverUrl,
+    scopes:expected.scopes,
+    writeTools:expected.writeTools,
+   });
+   const app=APP_DEFINITIONS.find((candidate)=>candidate.slug===expected.appSlug);
+   const managed=app?.methods.find((method)=>method.connectorProfile===expected.profile);
+   expect(managed,expected.profile).toMatchObject({
+    auth:"oauth",
+    oauthStrategy:"paperclip_cloud_connector",
+    connectorProfile:expected.profile,
+    capabilityProfile:{key:expected.capability},
+    grantKinds:["user"],
+    ownershipModes:["platform_shared"],
+    defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
+    riskTier:expected.riskTier,
+   });
+   expect(managed?.riskTier,`${expected.profile}:write-risk`).toBe(expected.writeTools.length>0?"S4":"S3");
+   const customer=app?.methods.find((method)=>
+    method.auth==="oauth"
+    &&method.oauthStrategy===undefined
+    &&method.capabilityProfile?.key===expected.capability
+   );
+   expect(customer,`${expected.profile}:customer-fallback`).toMatchObject({
+    grantKinds:["user"],
+    ownershipModes:["customer"],
+    defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
+    riskTier:expected.riskTier,
+   });
   }
- });
- it("advertises managed Gmail methods with their profile-scoped grants",()=>{
-  const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail");
-  const managedMethods=gmail?.methods.filter((method)=>method.oauthStrategy==="paperclip_cloud_connector")??[];
-  expect(managedMethods.map((method)=>method.key)).toEqual(["paperclip-read","paperclip-draft"]);
-  expect(managedMethods.map((method)=>[method.connectorProfile,method.defaults?.scopesHint])).toEqual([
-   ["gmail.read",["https://www.googleapis.com/auth/gmail.readonly"]],
-   ["gmail.draft",[
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
-   ]],
-  ]);
  });
  it("configures Shopify's current UCP and compatibility MCP methods without OAuth",()=>{const shopify=APP_DEFINITIONS.find((app)=>app.slug==="shopify");expect(shopify?.methods.map((method)=>method.key)).toEqual(["ucp-commerce","storefront-mcp"]);const ucp=shopify?.methods[0];const compatibility=shopify?.methods[1];expect(ucp).toMatchObject({auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/ucp/mcp",toolArgumentDefaults:{meta:{"ucp-agent":{profile:"https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json"}}}},tenantFields:[expect.objectContaining({key:"storeDomain",required:true})]});expect(compatibility).toMatchObject({auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/mcp"}});expect(resolveConnectionMethodServerUrl(ucp!,{storeDomain:"paperclip-demo.myshopify.com"})).toBe("https://paperclip-demo.myshopify.com/api/ucp/mcp");expect(resolveConnectionMethodServerUrl(compatibility!,{storeDomain:"paperclip-demo.myshopify.com"})).toBe("https://paperclip-demo.myshopify.com/api/mcp");expect(resolveConnectionMethodServerUrl(ucp!,{})).toBeNull();expect(shopify?.setupPrerequisite).toMatchObject({title:"Launch the storefront before connecting",actionUrl:"https://admin.shopify.com/"});expect(shopify?.setupPrerequisite?.steps?.join(" ")).toContain("Storefront visibility to Public")});
  it("offers PostHog OAuth and API-key methods with zero-config defaults and advanced narrowing",()=>{const posthog=APP_DEFINITIONS.find((app)=>app.slug==="posthog");expect(posthog?.methods.map((method)=>method.key)).toEqual(["mcp-oauth","mcp-api-key"]);for(const method of posthog?.methods??[]){const projectField=method.tenantFields?.find((field)=>field.key==="projectId");expect(method.riskTier).toBe("S3");expect(method.tenantFields?.find((field)=>field.key==="readOnly")).toMatchObject({defaultValue:false,advanced:true});expect(projectField).toMatchObject({advanced:true,transport:{location:"header",name:"x-posthog-project-id"}});expect(projectField?.required).not.toBe(true);expect(method.tenantFields?.filter((field)=>field.advanced).map((field)=>field.key)).toEqual(["projectId","readOnly","features","tools"]);expect(method.tenantFields?.find((field)=>field.key==="mode")).toMatchObject({hidden:true,defaultValue:"tools",transport:{location:"query",name:"mode"}});expect(method.configRequirements).toBeUndefined();expect(method.requiredResourceFilters).toBeUndefined();expect(method.guidanceMd).toContain("optional advanced controls")}});

@@ -39,6 +39,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
 
 describe("PaperclipControlPlanePort conformance", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -278,17 +279,30 @@ describe("PaperclipControlPlanePort conformance", () => {
 
   it("runs the unchanged package conformance suite against Paperclip persistence", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
-    const port = new PaperclipControlPlanePort(db, {
-      companyId: identity.companyId,
-      issueId: identity.issueId,
-      runId: identity.runId,
-      agentId: identity.agentId,
-      sessionId: identity.sessionId,
-      completionContractId: contractId,
-      completionContractSha256: contractSha,
-      sourceInstanceId: conformanceRunnerId,
-      controlPlaneSourceInstanceId: "control-conformance",
-    });
+    const committedEventIds: string[] = [];
+    const duplicateEventIds: string[] = [];
+    const port = new PaperclipControlPlanePort(
+      db,
+      {
+        companyId: identity.companyId,
+        issueId: identity.issueId,
+        runId: identity.runId,
+        agentId: identity.agentId,
+        sessionId: identity.sessionId,
+        completionContractId: contractId,
+        completionContractSha256: contractSha,
+        sourceInstanceId: conformanceRunnerId,
+        controlPlaneSourceInstanceId: "control-conformance",
+      },
+      {
+        onCommittedEvent: async (event) => {
+          committedEventIds.push(event.sourceEventId);
+        },
+        onDuplicateEvent: async (event) => {
+          duplicateEventIds.push(event.sourceEventId);
+        },
+      },
+    );
     await expect(runControlPlanePortConformance({ port })).resolves.toEqual({
       eventCount: 3,
       highestContiguousSourceSeq: 3,
@@ -300,6 +314,14 @@ describe("PaperclipControlPlanePort conformance", () => {
       replayBindingRejected: true,
       resultMutationRejected: true,
     });
+    expect(committedEventIds).toEqual([
+      "00000000-0000-4000-8000-000000000005:event:1",
+      "00000000-0000-4000-8000-000000000005:event:3",
+      "00000000-0000-4000-8000-000000000005:event:2",
+    ]);
+    expect(duplicateEventIds).toEqual([
+      "00000000-0000-4000-8000-000000000005:event:2",
+    ]);
     await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).resolves.toHaveLength(1);
     await finalizeNativeRun({
       db,
@@ -322,6 +344,155 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
     );
+  });
+
+  it("recovers a runtime question when the event commits before its callback", async () => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const issueId = "40000000-0000-4000-8000-000000000041";
+    const runId = "41000000-0000-4000-8000-000000000041";
+    const sessionId = "42000000-0000-4000-8000-000000000041";
+    const runnerInstanceId = "43000000-0000-4000-8000-000000000041";
+    const localContractId = "44000000-0000-4000-8000-000000000041";
+    const contractSha256 = "runtime-question-recovery-contract";
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: identity.companyId,
+      title: "Recover a committed runtime question",
+      status: "in_progress",
+      assigneeAgentId: identity.agentId,
+      workMode: "standard",
+    });
+    await db.insert(completionContracts).values({
+      id: localContractId,
+      companyId: identity.companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v1",
+      risk: "standard",
+      completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {
+        revision: "phase6-v1",
+        objective: "Recover a committed runtime question",
+        criteria: [{ id: "objective", requirement: "Recover the question" }],
+      },
+      canonicalSha256: contractSha256,
+      createdByActorType: "system",
+      createdByActorId: "test",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: identity.companyId,
+      agentId: identity.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      nativeSessionId: sessionId,
+      runnerInstanceId,
+      completionContractId: localContractId,
+      completionContractSha256: contractSha256,
+      contextSnapshot: { issueId },
+    });
+
+    const binding = {
+      companyId: identity.companyId,
+      issueId,
+      runId,
+      agentId: identity.agentId,
+      sessionId,
+      completionContractId: localContractId,
+      completionContractSha256: contractSha256,
+      sourceInstanceId: runnerInstanceId,
+      controlPlaneSourceInstanceId: "runtime-question-recovery-control",
+    };
+    const questionEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "runtime-question-recovery:1",
+      sourceSeq: 1,
+      sourceInstanceId: runnerInstanceId,
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: sessionId,
+      turnId: "runtime-question-recovery-turn",
+      eventType: "runtime_request.expired",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-09T03:00:00.000Z",
+      payload: {
+        requestId: "runtime-question-recovery-request",
+        requestKind: "runtime",
+        requestType: "input",
+        reason: "provider_process_lost",
+        replayAllowed: false,
+        request: {
+          schema: "paperclip.runtime_request.v2",
+          requestKind: "runtime",
+          requestId: "runtime-question-recovery-request",
+          type: "input",
+          status: "pending",
+          prompt: "Choose a recovery option",
+          turnId: "runtime-question-recovery-turn",
+          itemId: "runtime-question-recovery-item",
+          input: {
+            schema: "paperclip.question_set.v1",
+            title: "Choose a recovery option",
+            questions: [
+              {
+                id: "recovery-option",
+                prompt: "Which option should recovery use?",
+                required: true,
+                answerMode: "single_select",
+                options: [
+                  { id: "safe", label: "Safe recovery" },
+                  { id: "fast", label: "Fast recovery" },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    };
+    const port = new PaperclipControlPlanePort(db, binding, {
+      onCommittedEvent: async () => {
+        throw new Error("simulated_post_commit_crash");
+      },
+      onDuplicateEvent: async (event) => {
+        await materializeRuntimeQuestionFallback({ db, binding, event });
+      },
+    });
+    await port.openRun({
+      identity: { ...identity, issueId, runId, sessionId },
+      backendKind: "mock",
+      sourceInstanceId: runnerInstanceId,
+    });
+
+    await expect(port.appendEvent(questionEvent)).rejects.toThrow(
+      "simulated_post_commit_crash",
+    );
+    await expect(
+      db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, issueId)),
+    ).resolves.toEqual([]);
+
+    await expect(port.appendEvent(questionEvent)).resolves.toMatchObject({
+      disposition: "duplicate",
+    });
+    await expect(
+      db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, issueId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        kind: "ask_user_questions",
+        status: "pending",
+        idempotencyKey: `runtime-input-durable:v1:${runId}:runtime-question-recovery-request`,
+        sourceRunId: runId,
+      }),
+    ]);
   });
 
   it("completes one selected Paperclip task through the public package session contract", async () => {

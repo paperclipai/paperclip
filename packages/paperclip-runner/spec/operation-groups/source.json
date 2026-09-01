@@ -1,0 +1,358 @@
+{
+  "schemaVersion": 1,
+  "documentTitle": "Paperclip agent operation groups",
+  "evalRepositoryUrl": "https://github.com/paperclipai/paperclip-evals/blob/master/",
+  "prpEventFamilyDescriptions": {
+    "runner": "Runner connection, drain, and diagnostic lifecycle.",
+    "runtime": "Runner phase transitions.",
+    "sandbox": "Sandbox resource measurements.",
+    "workspace": "Workspace readiness.",
+    "harness": "Provider harness startup, readiness, exit, and diagnostics.",
+    "session": "Provider-neutral session open, resume, reconciliation, close, and failure.",
+    "turn": "Model turn submission through terminal turn disposition.",
+    "item": "Provider-neutral model/tool item lifecycle.",
+    "mcp_app": "MCP App discovery, initialization, tool, action, host-context, and teardown evidence.",
+    "runtime_request": "Runtime permission/input request lifecycle.",
+    "interaction": "Issue-thread interaction proposal, materialization, response, delivery, and rejection.",
+    "run": "Structured result negotiation and terminal run outcome.",
+    "attention": "Continuation and attention routing lifecycle.",
+    "work": "Recorded work-assessment evidence.",
+    "issue": "Issue-status decision proposal outcome and application evidence.",
+    "plan": "Complete provider-authored within-turn checklist snapshots, separate from durable Paperclip Plan documents.",
+    "tool": "Provider-neutral process, MCP, dynamic, and built-in execution activity.",
+    "research": "Provider-reported search, page-open, and in-page research activity.",
+    "delegation": "Child-agent delegation lifecycle and aggregate status.",
+    "model": "Requested/effective model routing and verification state.",
+    "context": "Context-window compaction markers without hidden summaries.",
+    "artifact": "Authorized artifact viewing and structured generated outputs.",
+    "review": "Provider review-mode state, separate from Paperclip authority.",
+    "hook": "Bounded provider hook lifecycle and blocking outcomes.",
+    "memory": "Authorized or unavailable memory citation references.",
+    "safety": "Provider safety review state attached to governed work.",
+    "terminal": "Content-free terminal input activity metadata.",
+    "wait": "Intentional provider waits, distinct from warm idle and human input.",
+    "provider": "Redacted provider notices and actionable warnings.",
+    "semantic_tool": "Canonical authorized Paperclip tool input and result evidence.",
+    "usage": "Provider/model-attributed usage and accounting boundaries."
+  },
+  "prpCommandFamilyDescriptions": {
+    "semantic_tool": "Returns an authorized, correlated Paperclip tool result to the provider through runnerd.",
+    "run": "Prepare or cancel a run.",
+    "session": "Open, snapshot, or close a normalized provider session.",
+    "turn": "Start, steer, interrupt, or stop a model turn.",
+    "request": "Resolve a pending runtime request.",
+    "interaction": "Acknowledge delivery of an interaction response.",
+    "runner": "Drain or shut down the runner process."
+  },
+  "optionalGrantGroups": [
+    {
+      "id": "discovery",
+      "description": "Company-visible task, agent, project, and goal discovery.",
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
+    },
+    {
+      "id": "delegation_dependencies",
+      "description": "Create delegated work and maintain dependency edges.",
+      "operationIds": ["create_task", "set_dependencies"]
+    },
+    {
+      "id": "governance",
+      "description": "Read, request, comment on, and decide approvals under governed-action checks.",
+      "operationIds": ["list_approvals", "get_approval", "get_approval_context", "request_approval", "decide_approval", "comment_on_approval"]
+    },
+    {
+      "id": "cases",
+      "description": "Read and update case summaries without reusing issue-document authority.",
+      "operationIds": ["list_cases", "upsert_case"]
+    },
+    {
+      "id": "workspace_runtime",
+      "description": "Inspect and control the active issue workspace runtime.",
+      "operationIds": ["get_workspace_runtime", "control_workspace_service"]
+    },
+    {
+      "id": "wake_scheduling",
+      "description": "Schedule a bounded continuation wake when the current task owns the future check.",
+      "operationIds": ["schedule_wake"]
+    },
+    {
+      "id": "routines",
+      "description": "Inspect or manage company routines.",
+      "operationIds": ["list_routines", "manage_routine"]
+    },
+    {
+      "id": "company_skills",
+      "description": "Inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["list_company_skills", "sync_company_skills"]
+    },
+    {
+      "id": "secrets",
+      "description": "Inspect secret metadata or use a brokered secret value without exposing plaintext evidence.",
+      "operationIds": ["list_secret_metadata", "read_secret_value"]
+    },
+    {
+      "id": "portability_admin",
+      "description": "Export portable company state; broad administration remains deferred until split into governed operations.",
+      "operationIds": ["export_company", "administer_company"]
+    },
+    {
+      "id": "test_escape_hatch",
+      "description": "Controlled skill-test transport only; never product coverage.",
+      "operationIds": ["generic_api_request"]
+    }
+  ],
+  "behaviorGroups": [
+    {
+      "id": "hb",
+      "legacyGroup": 1,
+      "name": "Heartbeat",
+      "owner": "control plane + always tools",
+      "operationIds": ["get_task_context"],
+      "controlPlaneOperationIds": ["select_work", "enforce_budget"],
+      "realSurface": "agent identity, inbox-lite, heartbeat context, budget and active-issue services",
+      "mockStateDomains": ["company", "actor", "wake", "task", "budget", "run"],
+      "prpEvidence": "runner/session/run context plus bounded task-context tool results",
+      "gap": "Production semantic binding is unbound; identity and work selection remain injected/control-plane-owned."
+    },
+    {
+      "id": "co",
+      "legacyGroup": 2,
+      "name": "Checkout",
+      "owner": "control plane",
+      "operationIds": [],
+      "controlPlaneOperationIds": ["checkout_task"],
+      "realSurface": "POST /api/issues/:id/checkout and execution-lock services",
+      "mockStateDomains": ["task", "actor", "run", "idempotency", "fault"],
+      "prpEvidence": "run preparation and issue-status decision evidence with checkout receipt",
+      "gap": "Intentionally no model tool; the production checkout receipt still needs the additive semantic-receipt envelope."
+    },
+    {
+      "id": "st",
+      "legacyGroup": 3,
+      "name": "Status",
+      "owner": "always tools + control-plane arbitration",
+      "operationIds": ["answer_status_question", "finish_task", "block_task", "request_review"],
+      "controlPlaneOperationIds": ["reconcile_run", "append_audit_record"],
+      "realSurface": "issue PATCH, review/liveness policy, and native finalization arbitration",
+      "mockStateDomains": ["task", "comments", "interactions", "blockers", "audit", "run"],
+      "prpEvidence": "semantic operation receipt, work assessment, issue-status decision, and terminal causality",
+      "gap": "Production semantic binding and additive typed operation/conflict receipts remain unimplemented."
+    },
+    {
+      "id": "cm",
+      "legacyGroup": 4,
+      "name": "Comments",
+      "owner": "always tools",
+      "operationIds": ["get_task_history", "report_progress"],
+      "controlPlaneOperationIds": ["append_audit_record"],
+      "realSurface": "issue comment list/get/create routes",
+      "mockStateDomains": ["task", "comments", "actor", "idempotency", "audit"],
+      "prpEvidence": "bounded read result or idempotent comment-write receipt plus audit reference",
+      "gap": "Active-task binding is unbound; cross-task comment mutation is deliberately outside V1."
+    },
+    {
+      "id": "se",
+      "legacyGroup": 5,
+      "name": "Search",
+      "owner": "optional discovery tools",
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"],
+      "controlPlaneOperationIds": [],
+      "realSurface": "company issue search and agent/project/goal list/get routes",
+      "mockStateDomains": ["company", "task", "actor", "project", "goal"],
+      "prpEvidence": "bounded redacted read projections through tool-result item events",
+      "gap": "Project and goal operations are scenario-only; every real service binding is unbound."
+    },
+    {
+      "id": "su",
+      "legacyGroup": 6,
+      "name": "Subtasks",
+      "owner": "optional delegation tools",
+      "operationIds": ["create_task"],
+      "controlPlaneOperationIds": ["route_wake"],
+      "realSurface": "company issue create, child issue, assignment, and wake services",
+      "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
+      "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
+      "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."
+    },
+    {
+      "id": "bl",
+      "legacyGroup": 7,
+      "name": "Blockers",
+      "owner": "always/optional tools + control plane",
+      "operationIds": ["block_task", "set_dependencies"],
+      "controlPlaneOperationIds": ["schedule_blocker_wake", "route_wake"],
+      "realSurface": "issue relations, blocker projection, liveness validation, and blocker wake services",
+      "mockStateDomains": ["task", "blockers", "wake", "actor", "audit", "fault"],
+      "prpEvidence": "dependency diff, block receipt, attention routing, and issue-status decision",
+      "gap": "set_dependencies is production-bound for the active issue; block_task remains unbound, and cancelled-blocker receipts still need typed additive evidence."
+    },
+    {
+      "id": "dp",
+      "legacyGroup": 8,
+      "name": "Documents and plans",
+      "owner": "always tools; restore optional; destructive lifecycle control-plane-only",
+      "operationIds": ["list_documents", "read_document", "list_document_revisions", "write_document"],
+      "controlPlaneOperationIds": ["append_audit_record"],
+      "realSurface": "issue document list/read/upsert/revision/restore/lock/unlock/delete routes",
+      "mockStateDomains": ["task", "documents", "interactions", "idempotency", "audit", "fault"],
+      "prpEvidence": "bounded reads and revision-safe write/conflict/denial receipts with revision lineage",
+      "gap": "restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only."
+    },
+    {
+      "id": "ix",
+      "legacyGroup": 9,
+      "name": "Interactions",
+      "owner": "always tools + addressed resolver",
+      "operationIds": ["request_human_input"],
+      "controlPlaneOperationIds": ["route_wake"],
+      "realSurface": "issue-thread interaction create/respond/accept/reject/withdraw services",
+      "mockStateDomains": ["task", "documents", "interactions", "wake", "actor", "idempotency"],
+      "prpEvidence": "interaction proposal/materialization/response/delivery and attention events",
+      "gap": "Production binding and semantic resolution receipts are unbound."
+    },
+    {
+      "id": "ap",
+      "legacyGroup": 10,
+      "name": "Approvals",
+      "owner": "optional governance tools + governed approver",
+      "operationIds": ["list_approvals", "get_approval", "get_approval_context", "request_approval", "decide_approval", "comment_on_approval"],
+      "controlPlaneOperationIds": ["route_wake", "append_audit_record"],
+      "realSurface": "company approval, decision, issue-link, comment, and governed-action services",
+      "mockStateDomains": ["company", "task", "approvals", "actor", "wake", "audit", "idempotency"],
+      "prpEvidence": "governed semantic receipts, audit references, and attention/continuation linkage",
+      "gap": "Production binding and additive governed-action receipts are unbound; board-only authority stays outside grants."
+    },
+    {
+      "id": "ar",
+      "legacyGroup": 11,
+      "name": "Artifacts",
+      "owner": "always tools + artifact/work-product services",
+      "operationIds": ["register_deliverable"],
+      "controlPlaneOperationIds": ["append_audit_record"],
+      "realSurface": "attachment upload and issue work-product routes",
+      "mockStateDomains": ["task", "artifacts", "workProducts", "workspace", "audit", "idempotency"],
+      "prpEvidence": "artifact/work-product reference and durable inspectability receipt; never binary bytes",
+      "gap": "Production upload/register composite and additive durable-reference receipt are unbound."
+    },
+    {
+      "id": "er",
+      "legacyGroup": 12,
+      "name": "Errors and critical rules",
+      "owner": "runner/control plane + optional workspace/wake tools",
+      "operationIds": ["get_workspace_runtime", "control_workspace_service", "schedule_wake", "inspect_operation_result"],
+      "controlPlaneOperationIds": ["release_task", "enforce_budget", "persist_run", "replay_run", "reconcile_run"],
+      "realSurface": "workspace runtime, monitor/recovery, budget, run persistence/replay, release, and terminal services",
+      "mockStateDomains": ["workspace", "budget", "run", "wake", "audit", "idempotency", "fault"],
+      "prpEvidence": "runtime/workspace/attention/run lifecycle, typed denials, replay facts, and terminal causality",
+      "gap": "Budget stop reasons and semantic denial/conflict receipts require additive v1 envelopes; inspect_operation_result remains scenario-only."
+    },
+    {
+      "id": "rf",
+      "legacyGroup": 13,
+      "name": "Reference files",
+      "owner": "optional domain tools + test-only escape hatch",
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request"],
+      "controlPlaneOperationIds": ["append_audit_record"],
+      "realSurface": "case, routine, company-skill, secret, portability, and administration services",
+      "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
+      "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
+      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage."
+    },
+    {
+      "id": "mh",
+      "legacyGroup": 14,
+      "name": "Multi-hop",
+      "owner": "composed semantic operations + control-plane continuation",
+      "operationIds": ["create_task", "set_dependencies", "request_human_input", "request_approval", "register_deliverable"],
+      "controlPlaneOperationIds": ["route_wake", "reconcile_run"],
+      "realSurface": "delegation, dependency, interaction, approval, artifact, and terminal orchestration services",
+      "mockStateDomains": ["task", "blockers", "interactions", "approvals", "artifacts", "wake", "run", "audit"],
+      "prpEvidence": "correlated operation receipts, state diffs, attention hops, work assessment, status decision, and terminal outcome",
+      "gap": "No generic transaction tool is allowed; shared mock/real conformance must prove each composed effect."
+    },
+    {
+      "id": "rs",
+      "legacyGroup": 15,
+      "name": "Restraint and no-call",
+      "owner": "policy/exposure layer",
+      "operationIds": ["answer_status_question", "read_secret_value", "generic_api_request"],
+      "controlPlaneOperationIds": ["enforce_budget"],
+      "realSurface": "task-mode, secret-broker, test-scope, pause, and budget policy checks",
+      "mockStateDomains": ["actor", "task", "budget", "secrets", "audit", "fault"],
+      "prpEvidence": "absence of forbidden effects plus typed policy denial/redaction receipts when a call is attempted",
+      "gap": "Typed redaction/authorization receipts need additive v1 evidence; generic_api_request is never a product fallback."
+    },
+    {
+      "id": "wk",
+      "legacyGroup": 16,
+      "name": "Wake situations",
+      "owner": "control plane + always context/history tools",
+      "operationIds": ["get_task_context", "get_task_history", "schedule_wake"],
+      "controlPlaneOperationIds": ["select_work", "route_wake"],
+      "realSurface": "wakeup requests, heartbeat context, comment/interaction/approval/blocker wake routing, and scheduled wake services",
+      "mockStateDomains": ["wake", "task", "comments", "interactions", "approvals", "blockers", "run"],
+      "prpEvidence": "attention request routing/resolution plus resumed session/run causality",
+      "gap": "Production scheduling binding is unbound; control-plane routing remains non-callable."
+    }
+  ],
+  "rules": {
+    "companyAuthorization": [
+      "Every entity read and write is resolved inside the authenticated actor's company; cross-company identifiers fail without disclosing protected facts.",
+      "Board actors use active membership and role permissions. Agent writes require a company-scoped run JWT and X-Paperclip-Run-Id; active-task tools cannot accept a caller-selected company or arbitrary task.",
+      "Optional tools are omitted unless every required claim, role, and task-mode condition is satisfied. A grant never bypasses approval, budget, pause, execution-lock, interaction-owner, or other governed-action checks."
+    ],
+    "taskModes": [
+      "standard permits the full eligible catalog subject to claims and role checks.",
+      "ask is answer-only: investigation reads are eligible, while implementation, document mutation, delegation, terminal, and governed writes are absent.",
+      "planning permits plan/document/progress/input operations but not delegation or terminal completion; accepting a plan transitions the issue into a fresh standard execution continuation for the exact accepted revision.",
+      "skill_test exposes only scenario-admitted tools. generic_api_request additionally requires the explicit test grant and allowlist and never supplies product coverage."
+    ],
+    "redaction": [
+      "Tool descriptors declare observable redaction. Secret plaintext may reach only the model-use capsule authorized for a bound secret; it never reaches PRP, logs, artifacts, errors, audit details, or serialized tool results.",
+      "Authorization denials reveal stable codes, missing public claims, and remediation only; they do not include protected entity state, credentials, headers, cookies, or another company's policy.",
+      "Artifacts carry durable references, hashes, content type, and size on the wire; binary payloads remain in storage transports."
+    ],
+    "idempotency": [
+      "Every mutation whose descriptor says required must carry a stable idempotency key. Retrying the same key and equivalent input returns the prior receipt without duplicating side effects.",
+      "Reusing a key with different input is an idempotency conflict. Optimistic document writes additionally bind baseRevisionId and return the current revision on conflict.",
+      "PRP source event IDs are idempotent, source sequence gaps are evidence, and replay is side-effect free. Replaying a trace cannot repeat control-plane writes."
+    ],
+    "sideEffects": [
+      "read operations return bounded projections and do not mutate control-plane state.",
+      "task_write and company_write operations emit normalized state diffs and immutable audit references after production authorization succeeds.",
+      "governance, workspace_control, secret_read, and admin operations retain their production-specific gates; catalog exposure is necessary but never sufficient authority.",
+      "Terminal semantic operations propose intent. The control plane owns checkout, release, budget enforcement, persisted run evidence, replay, wake routing, audit append, and final status arbitration."
+    ]
+  },
+  "documentLifecycle": {
+    "scope": [
+      "Issue documents are active-task working records identified by (activeIssueId, key). Always-present document tools do not accept a company id or arbitrary issue id.",
+      "Cross-task document reads require a future explicit optional operation and grant; case documents and future company knowledge are separate resource types.",
+      "Locked-document fallback may create a deterministic new key only when lockedDocumentStrategy is create_new_document; the source stays locked and the returned receipt names the redirected key."
+    ],
+    "operations": [
+      {"action": "create", "semanticOperation": "write_document", "placement": "always_agent_tool", "contract": "baseRevisionId is null; create revision 1 and return document/revision/audit identity.", "status": "supported contract; production binding unbound"},
+      {"action": "read", "semanticOperation": "list_documents / read_document", "placement": "always_agent_tool", "contract": "List metadata or read the current active-task document by stable key.", "status": "supported contract; production binding unbound"},
+      {"action": "update", "semanticOperation": "write_document", "placement": "always_agent_tool", "contract": "Require the exact latest baseRevisionId and an idempotency key; append an immutable revision.", "status": "supported contract; production binding unbound"},
+      {"action": "revisions", "semanticOperation": "list_document_revisions", "placement": "always_agent_tool", "contract": "Return bounded immutable revision history newest first.", "status": "supported contract; production binding unbound"},
+      {"action": "restore", "semanticOperation": "restore_document_revision", "placement": "optional_agent_tool (documents:restore)", "contract": "Validate same-document lineage, reject locked documents, append a new revision, and return source/new revision identity; restoring current is a no-change duplicate.", "status": "approved catalog gap"},
+      {"action": "lock", "semanticOperation": "none", "placement": "control_plane_owned", "contract": "Board/administrative lifecycle action; agent writes receive document_locked or use explicit create-new fallback.", "status": "intentionally non-callable"},
+      {"action": "unlock", "semanticOperation": "none", "placement": "control_plane_owned", "contract": "Board/administrative lifecycle action; never inferred from a failed write.", "status": "intentionally non-callable"},
+      {"action": "delete", "semanticOperation": "none", "placement": "control_plane_owned", "contract": "Destructive audited action; pending targets become stale and the runner never recreates them automatically.", "status": "intentionally non-callable"}
+    ]
+  },
+  "legacySemanticTargetDispositions": {
+    "injected_actor_context": {"kind": "control_plane", "targets": ["select_work"], "reason": "Identity is launch context, not a model tool."},
+    "runner_work_selection": {"kind": "control_plane", "targets": ["select_work"], "reason": "Inbox selection belongs to the control plane."},
+    "get_project": {"kind": "folded", "targets": ["list_projects"], "reason": "The bounded discovery operation owns project list/get projection in V1."},
+    "wait_for_workspace_service": {"kind": "folded", "targets": ["control_workspace_service"], "reason": "Wait is a bounded action of workspace service control."},
+    "get_goal": {"kind": "folded", "targets": ["list_goals"], "reason": "The bounded discovery operation owns goal list/get projection in V1."},
+    "semantic_task_disposition": {"kind": "composite", "targets": ["answer_status_question", "finish_task", "block_task", "request_review"], "reason": "Generic issue PATCH is replaced by intent-specific terminal/status operations."},
+    "atomic_checkout": {"kind": "control_plane", "targets": ["checkout_task"], "reason": "Checkout is an atomic control-plane transaction."},
+    "runtime_release": {"kind": "control_plane", "targets": ["release_task"], "reason": "Release is runner/control-plane cleanup."},
+    "restore_document_revision": {"kind": "known_gap", "targets": [], "reason": "Approved optional documents:restore operation is not yet in the canonical catalog."},
+    "link_approval": {"kind": "folded", "targets": ["request_approval", "get_task_context"], "reason": "Issue linkage is part of approval request/context composites."},
+    "unlink_approval": {"kind": "control_plane", "targets": ["append_audit_record"], "reason": "No standalone agent unlink tool is approved in V1."},
+    "test_only_api_escape_hatch": {"kind": "folded", "targets": ["generic_api_request"], "reason": "Compatibility alias for the test-only escape hatch."}
+  }
+}

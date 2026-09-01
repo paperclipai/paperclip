@@ -6,6 +6,7 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
+import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
   assembleThreadItems,
@@ -514,11 +515,25 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailRunId = liveRun ? liveRun.id : showSettlingTail ? settlingRun!.id : null;
   const tailStreaming = Boolean(liveRun);
   const tailEntries = tailRunId ? (transcriptByRun.get(tailRunId) ?? []) : [];
-  const tailContentKey = tailEntries.reduce((total, entry) => {
-    if ("text" in entry) return total + entry.text.length;
-    if ("content" in entry) return total + entry.content.length;
-    return total + entry.kind.length;
-  }, tailEntries.length);
+  const tailRunSource = tailRunId
+    ? runs.find((run) => run.id === tailRunId)
+    : undefined;
+  const paperclipRunnerTail =
+    tailRunSource?.runtimeMode === "native" &&
+    tailRunSource.adapterType === "paperclip_runner";
+  const tailContentKey = tailEntries.reduce((key, entry) => {
+    const textIdentity = "text" in entry ? entry.text : "";
+    const contentIdentity = "content" in entry ? entry.content : "";
+    const channelIdentity = "channel" in entry ? entry.channel ?? "" : "";
+    const lifecycleIdentity = "lifecycle" in entry ? entry.lifecycle ?? "" : "";
+    const statusIdentity = "isError" in entry
+      ? entry.isError ? "error" : "ok"
+      : "";
+    const usageIdentity = entry.kind === "result"
+      ? `${entry.subtype}:${entry.inputTokens}:${entry.outputTokens}:${entry.cachedTokens}:${entry.costUsd}`
+      : "";
+    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}`;
+  }, String(tailEntries.length));
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
     : liveWorkLinks
@@ -713,26 +728,38 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <>
                 {tailRunId ? (
                   <div data-testid="task-chat-live-transcript">
-                    <TaskChatLiveRunPill
-                      status={tailStatus}
-                      startedAtMs={tailStartedAtMs}
-                      finishedAtMs={tailFinishedAtMs}
-                      toolSummary={tailToolSummary}
-                    />
-                    <TaskChatLiveTail
-                      items={tailItems}
-                      emptyMessage={
-                        tailStatus === "queued"
-                          ? "Waiting to start..."
-                          : // Before the first transcript token, surface the run's
-                            // live runtime status (sandbox preparation phases like
-                            // "Syncing workspace to environment" emitted via
-                            // onRuntimeProgress) instead of an opaque wait message.
-                            (liveRun && liveRun.id === tailRunId
-                              ? liveRun.currentStatusMessage
-                              : null) || "Waiting for transcript..."
-                      }
-                    />
+                    {paperclipRunnerTail ? (
+                      <TaskChatRunnerTurn
+                        items={tailItems}
+                        status={tailStatus}
+                        startedAtMs={tailStartedAtMs}
+                        finishedAtMs={tailFinishedAtMs}
+                        toolSummary={tailToolSummary}
+                      />
+                    ) : (
+                      <>
+                        <TaskChatLiveRunPill
+                          status={tailStatus}
+                          startedAtMs={tailStartedAtMs}
+                          finishedAtMs={tailFinishedAtMs}
+                          toolSummary={tailToolSummary}
+                        />
+                        <TaskChatLiveTail
+                          items={tailItems}
+                          emptyMessage={
+                            tailStatus === "queued"
+                              ? "Waiting to start..."
+                              : // Before the first transcript token, surface the run's
+                                // live runtime status (sandbox preparation phases like
+                                // "Syncing workspace to environment" emitted via
+                                // onRuntimeProgress) instead of an opaque wait message.
+                                (liveRun && liveRun.id === tailRunId
+                                  ? liveRun.currentStatusMessage
+                                  : null) || "Waiting for transcript..."
+                          }
+                        />
+                      </>
+                    )}
                   </div>
                 ) : null}
                 {bottomBlockerLinks}

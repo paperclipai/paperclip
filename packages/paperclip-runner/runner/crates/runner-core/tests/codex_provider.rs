@@ -1030,33 +1030,60 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     // thread/read, and then exits nonzero. Recovery preserves the completed
     // run outcome, while the later idle provider failure remains visible.
     let mut recovered = CodexCommandExecutor::new(&directory);
-    let mut recovered_event_types = Vec::new();
+    let mut recovered_events = Vec::new();
     let recovered_exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < recovered_exit_deadline {
-        recovered_event_types.extend(
-            poll_and_ack(&mut recovered)
-                .expect("poll restored provider after idle crash")
-                .into_iter()
-                .map(|event| event.event_type),
-        );
-        if recovered_event_types
+        recovered_events
+            .extend(poll_and_ack(&mut recovered).expect("poll restored provider after idle crash"));
+        if recovered_events
             .iter()
-            .any(|event| event == "session.failed")
+            .any(|event| event.event_type == "session.failed")
         {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert!(recovered_event_types
+    assert!(recovered_events
         .iter()
-        .any(|event| event == "session.failed"));
-    assert!(!recovered_event_types
+        .any(|event| event.event_type == "session.failed"));
+    let resumed_index = recovered_events
         .iter()
-        .any(|event| event == "turn.failed"));
+        .position(|event| event.event_type == "session.resumed")
+        .expect("recovery identifies the replacement provider process");
+    let resumed = &recovered_events[resumed_index];
+    assert_eq!(resumed.payload["providerSessionId"], "codex-thread-1");
     assert_eq!(
-        recovered_event_types
+        resumed.payload["providerAccountSessionId"],
+        "codex-account-session"
+    );
+    assert!(resumed.payload["processId"]
+        .as_u64()
+        .is_some_and(|pid| pid > 0));
+    assert_eq!(
+        recovered_events
             .iter()
-            .filter(|event| event.as_str() == "session.reconciled")
+            .filter(|event| event.event_type == "session.resumed")
+            .count(),
+        1,
+        "recovery identifies the replacement provider process exactly once"
+    );
+    assert!(!recovered_events
+        .iter()
+        .any(|event| event.event_type == "turn.failed"));
+    let reconciled_index = recovered_events
+        .iter()
+        .position(|event| event.event_type == "session.reconciled")
+        .expect("recovery reconciles the restored provider");
+    let failed_index = recovered_events
+        .iter()
+        .position(|event| event.event_type == "session.failed")
+        .expect("the resumed provider exit fails its session");
+    assert!(resumed_index < reconciled_index);
+    assert!(resumed_index < failed_index);
+    assert_eq!(
+        recovered_events
+            .iter()
+            .filter(|event| event.event_type == "session.reconciled")
             .count(),
         1,
         "recovery is reconciled once, but the resumed provider exit fails its session"
@@ -1067,6 +1094,10 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     )
     .expect("parse provider state after resumed exit");
     assert_eq!(recovered_persisted["lifecycle"], "provider_exited");
+    assert_eq!(
+        recovered_persisted["providerSessionId"],
+        "codex-account-session"
+    );
     assert_eq!(recovered_persisted["providerProcessGeneration"], 2);
     assert_eq!(recovered_persisted["completedTurnProcessGeneration"], 1);
     assert_eq!(call_count(&directory, "thread/read"), 1);
@@ -2723,8 +2754,13 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
         .expect("parse state before provider recovery");
         let resume_count = call_count(&directory, "thread/resume");
         let mut next = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        let mut session_resumed_events = 0;
         for _ in 0..32 {
             let events = poll_and_ack(&mut next).expect("poll exact pending replay");
+            session_resumed_events += events
+                .iter()
+                .filter(|event| event.event_type == "session.resumed")
+                .count();
             assert!(events.iter().all(|event| {
                 event.event_type != "semantic_tool.input"
                     && event.event_type != "semantic_tool.reconciled"
@@ -2740,6 +2776,10 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
         );
         for _ in 0..4 {
             let events = poll_and_ack(&mut next).expect("poll exact pending replay");
+            session_resumed_events += events
+                .iter()
+                .filter(|event| event.event_type == "session.resumed")
+                .count();
             assert!(events.iter().all(|event| {
                 event.event_type != "semantic_tool.input"
                     && event.event_type != "semantic_tool.reconciled"
@@ -2759,8 +2799,13 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
             "exact pending replay {replay} must not append queued events"
         );
         assert_eq!(
-            after["nextProviderEventSeq"], before["nextProviderEventSeq"],
-            "exact pending replay {replay} must not consume durable event capacity"
+            session_resumed_events, 1,
+            "recovery {replay} publishes exactly one provider lifecycle event"
+        );
+        assert_eq!(
+            after["nextProviderEventSeq"].as_u64(),
+            before["nextProviderEventSeq"].as_u64().map(|sequence| sequence + 1),
+            "only session.resumed may consume durable event capacity during exact pending replay {replay}"
         );
         recovered = Some(next);
         if replay < 3 {
@@ -3418,12 +3463,13 @@ fn receipt_limit_rejects_the_call_and_keeps_polling_when_interrupt_fails() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let events = poll_and_ack(&mut recovered)
-        .expect("a failed first interrupt must not terminate durable provider polling");
-    assert!(events.iter().any(|event| {
-        event.event_type == "harness.diagnostic"
-            && event.payload["code"] == "semantic_tool_turn_receipt_limit"
-    }));
+    let resumed = wait_for_executor_event(&mut recovered, "session.resumed");
+    assert_eq!(resumed.payload["provider"], "codex");
+    let diagnostic = wait_for_executor_event(&mut recovered, "harness.diagnostic");
+    assert_eq!(
+        diagnostic.payload["code"],
+        "semantic_tool_turn_receipt_limit"
+    );
     assert_eq!(call_count(&directory, "tool-response:failure"), 1);
     assert_eq!(call_count(&directory, "turn/interrupt"), 1);
 
@@ -3493,12 +3539,13 @@ fn receipt_limit_retry_preserves_a_turn_settled_during_provider_recovery() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let events = poll_and_ack(&mut recovered)
-        .expect("the first failed interruption must leave a durable retry");
-    assert!(events.iter().any(|event| {
-        event.event_type == "harness.diagnostic"
-            && event.payload["code"] == "semantic_tool_turn_receipt_limit"
-    }));
+    let resumed = wait_for_executor_event(&mut recovered, "session.resumed");
+    assert_eq!(resumed.payload["provider"], "codex");
+    let diagnostic = wait_for_executor_event(&mut recovered, "harness.diagnostic");
+    assert_eq!(
+        diagnostic.payload["code"],
+        "semantic_tool_turn_receipt_limit"
+    );
     assert_eq!(call_count(&directory, "turn/interrupt"), 1);
 
     // Lose the live transport while retaining its durable interruption retry,
@@ -3659,9 +3706,35 @@ fn receipt_limit_polls_an_authoritative_terminal_with_unacknowledged_events() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let pending = recovered
-        .poll_events()
-        .expect("begin the durable receipt-limit stop");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let pending = loop {
+        let events = recovered
+            .poll_events()
+            .expect("begin the durable receipt-limit stop");
+        if events.iter().any(|event| {
+            event.event_type == "harness.diagnostic"
+                && event.payload["code"] == "semantic_tool_turn_receipt_limit"
+        }) {
+            break events;
+        }
+        assert!(
+            events.is_empty()
+                || events
+                    .iter()
+                    .all(|event| event.event_type == "session.resumed"),
+            "only recovery lifecycle events may precede the receipt-limit diagnostic"
+        );
+        recovered
+            .acknowledge_events(events.len())
+            .expect("acknowledge recovery lifecycle events before receipt-limit polling");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the durable receipt-limit diagnostic must become observable"
+        );
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
     assert!(pending.iter().any(|event| {
         event.event_type == "harness.diagnostic"
             && event.payload["code"] == "semantic_tool_turn_receipt_limit"

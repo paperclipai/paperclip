@@ -1,896 +1,583 @@
-import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ValidateFunction } from "ajv/dist/2020.js";
-
-import {
-  PAPERCLIP_SEMANTIC_ACTION_CATALOG,
-  paperclipSemanticAction,
-} from "../catalog/semantic-action-catalog.js";
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import type {
-  PaperclipJsonValue,
-  PaperclipSemanticActionDescriptor,
-  PaperclipSemanticActionId,
-} from "../catalog/semantic-action-types.js";
-import { decidePaperclipSemanticAuthorization } from "./authorization.js";
+  CapabilityCommandOutcome,
+  CapabilityJsonValue,
+  CapabilityMockControlPlanePort,
+  CapabilityRunContext,
+  CapabilitySemanticCommand,
+} from "../mock-core/capability-control-plane-types.js";
 import {
-  discoverPaperclipSemanticTools,
-  projectPaperclipSemanticTools,
-} from "./discovery.js";
+  CAPABILITY_SEMANTIC_TOOL_CATALOG,
+  capabilitySemanticToolDescriptor,
+} from "./catalog.js";
 import {
-  createPaperclipSemanticInputReceipt,
-  createPaperclipSemanticResultReceipt,
-  denialRetryable,
-  digestPaperclipSemanticContent,
-  isPaperclipSemanticStableId,
-  normalizePaperclipSemanticReferences,
-  paperclipSemanticAuthorizationBoundary,
-  paperclipSemanticOutcome,
-} from "./receipts.js";
+  createCapabilitySemanticPolicyContext,
+  decideCapabilitySemanticAuthorization,
+  DEFAULT_CAPABILITY_SCENARIO_POLICY,
+} from "./policy.js";
 import {
-  inspectPaperclipSemanticValue,
-  redactPaperclipSemanticValue,
+  containsProtectedSemanticData,
+  redactSemanticValue,
 } from "./redaction.js";
+import { discoverCapabilityDefinitions } from "./discovery.js";
 import type {
-  PaperclipSemanticActionBinding,
-  PaperclipSemanticAuthorizationDecision,
-  PaperclipSemanticAuthorizationRecord,
-  PaperclipSemanticBindingResult,
-  PaperclipSemanticContextProvider,
-  PaperclipSemanticDenialCode,
-  PaperclipSemanticDiscoveryResult,
-  PaperclipSemanticIdempotencyClaim,
-  PaperclipSemanticIdempotencyStore,
-  PaperclipSemanticRunContext,
-  PaperclipSemanticStoredOutcome,
-  PaperclipSemanticToolCall,
-  PaperclipSemanticToolDefinition,
-  PaperclipSemanticToolDenial,
-  PaperclipSemanticToolResult,
-  PaperclipSemanticToolSuccess,
+  CapabilitySemanticAuthorizationDecision,
+  CapabilitySemanticAuthorizationRecord,
+  CapabilitySemanticDenialCode,
+  CapabilitySemanticOperationId,
+  CapabilitySemanticPolicyContext,
+  CapabilitySemanticScenarioPolicy,
+  CapabilitySemanticToolCall,
+  CapabilitySemanticToolDefinition,
+  CapabilitySemanticToolDescriptor,
+  CapabilitySemanticToolResult,
 } from "./types.js";
 
-export interface PaperclipSemanticDispatcherOptions {
-  readonly contextProvider: PaperclipSemanticContextProvider;
-  readonly bindings: readonly PaperclipSemanticActionBinding[];
-  readonly idempotencyStore?: PaperclipSemanticIdempotencyStore;
-  readonly maxAuthorizationRecords?: number;
+export type CapabilitySemanticControlPlane = Pick<
+  CapabilityMockControlPlanePort,
+  "context" | "snapshot" | "tryApplyCommand"
+>;
+
+export interface CapabilitySemanticDispatcherOptions {
+  readonly scenario?: CapabilitySemanticScenarioPolicy;
+  readonly explicitClaims?: readonly string[];
 }
 
-interface ClaimedMutation {
-  readonly token: string;
-  readonly inputDigest: string;
-  readonly idempotencyKey: string;
+interface OperationSuccess {
+  result: CapabilityJsonValue;
+  stateRevision: number;
 }
 
-export class PaperclipSemanticDispatcher {
-  readonly #contextProvider: PaperclipSemanticContextProvider;
-  readonly #bindings = new Map<
-    PaperclipSemanticActionId,
-    PaperclipSemanticActionBinding
-  >();
-  readonly #boundOperationIds: ReadonlySet<PaperclipSemanticActionId>;
-  readonly #inputValidators = new Map<
-    PaperclipSemanticActionId,
-    ValidateFunction
-  >();
-  readonly #outputValidators = new Map<
-    PaperclipSemanticActionId,
-    ValidateFunction
-  >();
-  readonly #idempotencyStore: PaperclipSemanticIdempotencyStore | undefined;
-  readonly #maxAuthorizationRecords: number;
-  readonly #authorizationRecords: PaperclipSemanticAuthorizationRecord[] = [];
-  #recordSequence = 0;
+class SemanticDispatchFailure extends Error {
+  constructor(
+    readonly code: CapabilitySemanticDenialCode,
+    message: string,
+    readonly retryable = false,
+    readonly controlPlaneCode?: string,
+  ) {
+    super(message);
+    this.name = "SemanticDispatchFailure";
+  }
+}
 
-  constructor(options: PaperclipSemanticDispatcherOptions) {
-    this.#contextProvider = options.contextProvider;
-    this.#idempotencyStore = options.idempotencyStore;
-    this.#maxAuthorizationRecords = Math.max(
-      1,
-      Math.min(Math.floor(options.maxAuthorizationRecords ?? 1_000), 10_000),
-    );
-    for (const binding of options.bindings) {
-      if (this.#bindings.has(binding.operationId)) {
-        throw new Error(
-          `duplicate semantic action binding: ${binding.operationId}`,
-        );
-      }
-      if (paperclipSemanticAction(binding.operationId) === undefined) {
-        throw new Error(
-          `unknown semantic action binding: ${binding.operationId}`,
-        );
-      }
-      this.#bindings.set(binding.operationId, binding);
-    }
-    this.#boundOperationIds = new Set(this.#bindings.keys());
+export class CapabilitySemanticDispatcher {
+  readonly #validators = new Map<CapabilitySemanticOperationId, ValidateFunction>();
+  readonly #records: CapabilitySemanticAuthorizationRecord[] = [];
+  #recordCounter = 0;
 
-    const ajv = new Ajv2020({
-      allErrors: true,
-      allowUnionTypes: true,
-      strict: true,
-    });
-    for (const descriptor of PAPERCLIP_SEMANTIC_ACTION_CATALOG) {
-      this.#inputValidators.set(
-        descriptor.operationId,
-        ajv.compile(descriptor.inputSchema),
-      );
-      this.#outputValidators.set(
-        descriptor.operationId,
-        ajv.compile(descriptor.outputSchema),
-      );
+  constructor(
+    readonly port: CapabilitySemanticControlPlane,
+    readonly options: CapabilitySemanticDispatcherOptions = {},
+  ) {
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    for (const descriptor of CAPABILITY_SEMANTIC_TOOL_CATALOG) {
+      this.#validators.set(descriptor.operationId, ajv.compile(descriptor.inputSchema));
     }
   }
 
-  async listAlwaysAvailableTools(
-    runId: string,
-  ): Promise<readonly PaperclipSemanticToolDefinition[]> {
-    const context = await this.#contextProvider(runId);
-    this.#recordExposureDecisions(runId, context, "always");
-    return projectPaperclipSemanticTools({
-      runId,
-      context,
-      boundOperationIds: this.#boundOperationIds,
-      placement: "always",
-    });
-  }
-
-  async discoverTools(input: {
-    readonly runId: string;
-    readonly query: string;
-    readonly namespace?: string;
-    readonly limit?: number;
-  }): Promise<PaperclipSemanticDiscoveryResult> {
-    const context = await this.#contextProvider(input.runId);
-    this.#recordExposureDecisions(input.runId, context, "optional");
-    return discoverPaperclipSemanticTools({
-      ...input,
-      context,
-      boundOperationIds: this.#boundOperationIds,
-    });
-  }
-
-  authorizationRecords(): readonly PaperclipSemanticAuthorizationRecord[] {
-    return deepFreeze(structuredClone(this.#authorizationRecords));
-  }
-
-  async dispatch(
-    call: PaperclipSemanticToolCall,
-  ): Promise<PaperclipSemanticToolResult> {
-    if (!validCallIdentity(call)) {
-      return this.#identityDenial(call);
-    }
-    const descriptor = paperclipSemanticAction(call.operationId);
-    const binding = descriptor && this.#bindings.get(descriptor.operationId);
-    if (descriptor === undefined || binding === undefined) {
-      return this.#denial(call, "operation_absent", null, null);
-    }
-
-    let context: PaperclipSemanticRunContext;
-    try {
-      context = await this.#contextProvider(call.runId);
-    } catch {
-      return this.#denial(call, "binding_failed", descriptor, null);
-    }
-    let decision = decidePaperclipSemanticAuthorization(
-      descriptor,
-      context,
-      "invocation",
-      call.runId,
-      call.input,
-    );
-    if (!decision.allowed) {
-      return this.#denial(
-        call,
-        denialCode(decision),
+  listTools(runId: string): readonly CapabilitySemanticToolDefinition[] {
+    const policyContext = this.#policyContext(runId);
+    const definitions: CapabilitySemanticToolDefinition[] = [];
+    for (const descriptor of CAPABILITY_SEMANTIC_TOOL_CATALOG) {
+      const decision = decideCapabilitySemanticAuthorization(
         descriptor,
-        context,
-        decision,
-      );
-    }
-
-    const inputSafety = inspectPaperclipSemanticValue(call.input);
-    if (!inputSafety.withinBounds) {
-      decision = deniedDecision(
-        decision,
-        "input_invalid",
-        "Tool input exceeds safe bounds.",
-      );
-      return this.#denial(call, "input_invalid", descriptor, context, decision);
-    }
-    if (inputSafety.containsProtectedData) {
-      decision = deniedDecision(
-        decision,
-        "protected_data_denied",
-        "Protected data is not accepted by semantic actions.",
-      );
-      return this.#denial(
-        call,
-        "protected_data_denied",
-        descriptor,
-        context,
-        decision,
-        true,
-      );
-    }
-    const inputValidator = this.#inputValidators.get(descriptor.operationId);
-    const idempotencyKey = stringProperty(call.input, "idempotencyKey");
-    if (descriptor.effect !== "read" && idempotencyKey === undefined) {
-      decision = deniedDecision(
-        decision,
-        "idempotency_required",
-        "Mutation actions require an idempotency key.",
-      );
-      return this.#denial(
-        call,
-        "idempotency_required",
-        descriptor,
-        context,
-        decision,
-      );
-    }
-    if (inputValidator === undefined || !inputValidator(call.input)) {
-      decision = deniedDecision(
-        decision,
-        "input_invalid",
-        formatValidationError(inputValidator),
-      );
-      return this.#denial(call, "input_invalid", descriptor, context, decision);
-    }
-
-    const inputReceipt = createPaperclipSemanticInputReceipt({
-      operationId: descriptor.operationId,
-      callId: call.callId,
-      correlation: call.correlation,
-      idempotencyKey: idempotencyKey ?? null,
-      content: call.input,
-    });
-    const inputDigest = digestPaperclipSemanticContent(call.input);
-    let claim: ClaimedMutation | undefined;
-    if (descriptor.effect !== "read") {
-      if (this.#idempotencyStore === undefined) {
-        decision = deniedDecision(
-          decision,
-          "receipt_store_unavailable",
-          "No durable idempotency store is configured for mutation actions.",
-        );
-        return this.#denial(
-          call,
-          "receipt_store_unavailable",
-          descriptor,
-          context,
-          decision,
-        );
-      }
-      const scope = digestPaperclipSemanticContent([
-        context.companyId,
-        call.runId,
-        descriptor.operationId,
-        idempotencyKey,
-      ]);
-      let claimed: PaperclipSemanticIdempotencyClaim;
-      try {
-        claimed = await this.#idempotencyStore.claim({
-          scope,
-          operationId: descriptor.operationId,
-          inputDigest,
-        });
-      } catch {
-        decision = deniedDecision(
-          decision,
-          "receipt_store_unavailable",
-          "The durable idempotency store is unavailable.",
-        );
-        return this.#denial(
-          call,
-          "receipt_store_unavailable",
-          descriptor,
-          context,
-          decision,
-        );
-      }
-      if (claimed.kind === "conflict") {
-        decision = deniedDecision(
-          decision,
-          "idempotency_conflict",
-          "The idempotency key was already used with different input.",
-        );
-        return this.#denial(
-          call,
-          "idempotency_conflict",
-          descriptor,
-          context,
-          decision,
-        );
-      }
-      if (claimed.kind === "in_progress") {
-        decision = deniedDecision(
-          decision,
-          "idempotency_in_progress",
-          "The original mutation is still in progress.",
-        );
-        return this.#denial(
-          call,
-          "idempotency_in_progress",
-          descriptor,
-          context,
-          decision,
-        );
-      }
-      if (claimed.kind === "duplicate") {
-        return this.#duplicate(
-          call,
-          descriptor,
-          context,
-          decision,
-          inputReceipt,
-          inputDigest,
-          claimed.outcome,
-        );
-      }
-      claim = {
-        token: claimed.token,
-        inputDigest,
-        idempotencyKey: idempotencyKey!,
-      };
-    }
-
-    // Re-read authority after any durable claim and immediately before the
-    // application binding. A stale projection can never authorize execution.
-    let currentContext: PaperclipSemanticRunContext;
-    try {
-      currentContext = await this.#contextProvider(call.runId);
-    } catch {
-      if (claim !== undefined && !(await this.#releaseClaim(claim.token))) {
-        return this.#denial(
-          call,
-          "receipt_store_unavailable",
-          descriptor,
-          context,
-        );
-      }
-      return this.#denial(call, "binding_failed", descriptor, context);
-    }
-    decision = decidePaperclipSemanticAuthorization(
-      descriptor,
-      currentContext,
-      "invocation",
-      call.runId,
-      call.input,
-    );
-    if (!decision.allowed) {
-      if (claim !== undefined && !(await this.#releaseClaim(claim.token))) {
-        return this.#denial(
-          call,
-          "receipt_store_unavailable",
-          descriptor,
-          currentContext,
-          deniedDecision(
-            decision,
-            "receipt_store_unavailable",
-            "The unused mutation claim could not be released.",
-          ),
-        );
-      }
-      return this.#denial(
-        call,
-        denialCode(decision),
-        descriptor,
-        currentContext,
-        decision,
-      );
-    }
-
-    let executed: PaperclipSemanticBindingResult;
-    try {
-      executed = await binding.execute({
-        runId: call.runId,
-        companyId: currentContext.companyId,
-        actorId: currentContext.actor.id,
-        taskId: currentContext.activeTask.id,
-        callId: call.callId,
-        operationId: descriptor.operationId,
-        input: call.input as Readonly<Record<string, PaperclipJsonValue>>,
-      });
-    } catch {
-      // A mutation may have crossed the application boundary. Keep its claim
-      // reserved so an uncertain retry cannot execute it twice.
-      decision = deniedDecision(
-        decision,
-        "binding_failed",
-        "The action binding failed safely.",
-      );
-      return this.#denial(
-        call,
-        "binding_failed",
-        descriptor,
-        currentContext,
-        decision,
-      );
-    }
-
-    if (!isBindingResult(executed)) {
-      decision = deniedDecision(
-        decision,
-        "binding_output_invalid",
-        "The action binding returned an invalid result.",
-      );
-      return this.#denial(
-        call,
-        "binding_output_invalid",
-        descriptor,
-        currentContext,
-        decision,
-      );
-    }
-    const outputSafety = inspectPaperclipSemanticValue(executed.value);
-    const safeValue = redactPaperclipSemanticValue(executed.value);
-    const outputValidator = this.#outputValidators.get(descriptor.operationId);
-    if (
-      !outputSafety.withinBounds ||
-      !validOptionalCode(executed.code) ||
-      !validOptionalRevision(executed.stateRevision) ||
-      !validOptionalStableId(executed.auditReceiptId) ||
-      outputValidator === undefined ||
-      !outputValidator(safeValue)
-    ) {
-      decision = deniedDecision(
-        decision,
-        "binding_output_invalid",
-        "The action binding returned an invalid result.",
-      );
-      return this.#denial(
-        call,
-        "binding_output_invalid",
-        descriptor,
-        currentContext,
-        decision,
-        outputSafety.containsProtectedData,
-      );
-    }
-
-    const code = executed.code ?? "ok";
-    const references = normalizePaperclipSemanticReferences(
-      executed.references,
-    );
-    const resultReceipt = createPaperclipSemanticResultReceipt({
-      operationId: descriptor.operationId,
-      callId: call.callId,
-      correlation: call.correlation,
-      idempotencyKey: idempotencyKey ?? null,
-      content: safeValue,
-      references,
-      redacted: outputSafety.containsProtectedData,
-      outcome: paperclipSemanticOutcome({ ok: true, code }),
-      code,
-      retryable: false,
-      authorizationBoundary: paperclipSemanticAuthorizationBoundary(code),
-      ...(validRevision(executed.stateRevision)
-        ? { currentRevision: executed.stateRevision }
-        : {}),
-      ...(executed.auditReceiptId !== undefined
-        ? { auditReceiptId: executed.auditReceiptId }
-        : {}),
-    });
-    const operationReceiptId = String(resultReceipt.operationReceiptId);
-
-    if (claim !== undefined) {
-      const stored: PaperclipSemanticStoredOutcome = {
-        operationId: descriptor.operationId,
-        inputDigest,
-        operationReceiptId,
-        value: safeValue,
-        code,
-        ...(validRevision(executed.stateRevision)
-          ? { stateRevision: executed.stateRevision }
-          : {}),
-        references,
-        ...(executed.auditReceiptId !== undefined
-          ? { auditReceiptId: executed.auditReceiptId }
-          : {}),
-      };
-      try {
-        await this.#idempotencyStore!.complete(claim.token, stored);
-      } catch {
-        try {
-          await this.#idempotencyStore!.recover(claim.token, stored);
-        } catch {
-          // The application effect may have happened. Keep the claim reserved
-          // and stop automatic retries. The store's operator recovery path can
-          // commit the same sanitized outcome without repeating the effect.
-          decision = deniedDecision(
-            decision,
-            "receipt_recovery_failed",
-            "The mutation receipt needs operator recovery.",
-          );
-          return this.#denial(
-            call,
-            "receipt_recovery_failed",
-            descriptor,
-            currentContext,
-            decision,
-          );
-        }
-      }
-    }
-
-    this.#record(
-      currentContext,
-      decision,
-      call.callId,
-      inputDigest,
-      operationReceiptId,
-    );
-    return deepFreeze({
-      ok: true,
-      operationId: descriptor.operationId,
-      callId: call.callId,
-      value: safeValue,
-      code,
-      duplicate: false,
-      ...(validRevision(executed.stateRevision)
-        ? { stateRevision: executed.stateRevision }
-        : {}),
-      inputReceipt,
-      resultReceipt,
-    } satisfies PaperclipSemanticToolSuccess);
-  }
-
-  #recordExposureDecisions(
-    runId: string,
-    context: PaperclipSemanticRunContext,
-    placement: PaperclipSemanticActionDescriptor["placement"],
-  ): void {
-    for (const descriptor of PAPERCLIP_SEMANTIC_ACTION_CATALOG) {
-      if (
-        descriptor.placement !== placement ||
-        !this.#boundOperationIds.has(descriptor.operationId)
-      ) {
-        continue;
-      }
-      const decision = decidePaperclipSemanticAuthorization(
-        descriptor,
-        context,
+        policyContext,
         "exposure",
-        runId,
       );
-      this.#record(context, decision, null, null, null);
+      this.#record(policyContext, decision, null, null, null);
+      if (decision.allowed) definitions.push(toDefinition(descriptor));
     }
+    return deepFreeze(definitions);
   }
 
-  #duplicate(
-    call: PaperclipSemanticToolCall,
-    descriptor: PaperclipSemanticActionDescriptor,
-    context: PaperclipSemanticRunContext,
-    decision: PaperclipSemanticAuthorizationDecision,
-    inputReceipt: PaperclipSemanticToolSuccess["inputReceipt"],
-    inputDigest: string,
-    stored: PaperclipSemanticStoredOutcome,
-  ): PaperclipSemanticToolResult {
-    if (!isStoredOutcome(stored)) {
-      const denied = deniedDecision(
-        decision,
-        "binding_output_invalid",
-        "The stored mutation receipt is invalid.",
-      );
-      return this.#denial(
-        call,
-        "binding_output_invalid",
-        descriptor,
-        context,
-        denied,
-      );
+  discoverTools(
+    runId: string,
+    query: string,
+    options: { namespace?: string; limit?: number } = {},
+  ) {
+    return discoverCapabilityDefinitions(query, this.#policyContext(runId), options);
+  }
+
+  authorizationRecords(): readonly CapabilitySemanticAuthorizationRecord[] {
+    return deepFreeze(structuredClone(this.#records));
+  }
+
+  async dispatch(call: CapabilitySemanticToolCall): Promise<CapabilitySemanticToolResult> {
+    const descriptor = capabilitySemanticToolDescriptor(call.operationId);
+    if (descriptor === undefined) {
+      return this.#unknownToolDenial(call);
     }
-    const outputValidator = this.#outputValidators.get(descriptor.operationId);
-    const outputSafety = inspectPaperclipSemanticValue(stored.value);
-    const safeValue = redactPaperclipSemanticValue(stored.value);
-    if (
-      stored.operationId !== descriptor.operationId ||
-      stored.inputDigest !== inputDigest ||
-      !isPaperclipSemanticStableId(stored.operationReceiptId) ||
-      !validCode(stored.code) ||
-      !validOptionalRevision(stored.stateRevision) ||
-      !validOptionalStableId(stored.auditReceiptId) ||
-      !outputSafety.withinBounds ||
-      outputValidator === undefined ||
-      !outputValidator(safeValue)
-    ) {
-      const denied = deniedDecision(
-        decision,
-        "binding_output_invalid",
-        "The stored mutation receipt is invalid.",
-      );
-      return this.#denial(
-        call,
-        "binding_output_invalid",
-        descriptor,
-        context,
-        denied,
-      );
-    }
-    const references = normalizePaperclipSemanticReferences(stored.references);
-    const resultReceipt = createPaperclipSemanticResultReceipt({
-      operationId: descriptor.operationId,
-      callId: call.callId,
-      correlation: call.correlation,
-      idempotencyKey: stringProperty(call.input, "idempotencyKey") ?? null,
-      content: safeValue,
-      references,
-      redacted: outputSafety.containsProtectedData,
-      outcome: "duplicate",
-      code: stored.code,
-      retryable: false,
-      authorizationBoundary: paperclipSemanticAuthorizationBoundary(
-        stored.code,
-      ),
-      operationReceiptId: stored.operationReceiptId,
-      duplicateOfReceiptId: stored.operationReceiptId,
-      ...(validRevision(stored.stateRevision)
-        ? { currentRevision: stored.stateRevision }
-        : {}),
-      ...(stored.auditReceiptId !== undefined
-        ? { auditReceiptId: stored.auditReceiptId }
-        : {}),
-    });
-    this.#record(
-      context,
-      decision,
-      call.callId,
-      inputDigest,
-      stored.operationReceiptId,
+
+    const policyContext = this.#policyContext(call.runId);
+    const invocation = decideCapabilitySemanticAuthorization(
+      descriptor,
+      policyContext,
+      "invocation",
+      call.input,
     );
-    return deepFreeze({
-      ok: true,
-      operationId: descriptor.operationId,
-      callId: call.callId,
-      value: safeValue,
-      code: stored.code,
-      duplicate: true,
-      ...(validRevision(stored.stateRevision)
-        ? { stateRevision: stored.stateRevision }
-        : {}),
-      inputReceipt,
-      resultReceipt,
-    } satisfies PaperclipSemanticToolSuccess);
-  }
+    if (!invocation.allowed) {
+      const result = this.#denial(call, descriptor.operationId, denialCode(invocation), invocation.reason);
+      this.#record(policyContext, invocation, call.callId, call.input, result);
+      return result;
+    }
 
-  async #releaseClaim(token: string): Promise<boolean> {
+    if (containsProtectedSemanticData(call.input)) {
+      const decision = deniedDecision(
+        invocation,
+        "protected_data_denied",
+        "Protected data is not accepted by semantic tools.",
+      );
+      const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
+      this.#record(policyContext, decision, call.callId, call.input, result);
+      return result;
+    }
+
+    const validator = this.#validators.get(descriptor.operationId);
+    if (validator === undefined || !validator(call.input)) {
+      const decision = deniedDecision(
+        invocation,
+        "input_invalid",
+        formatValidationError(validator),
+      );
+      const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
+      this.#record(policyContext, decision, call.callId, call.input, result);
+      return result;
+    }
+
     try {
-      await this.#idempotencyStore!.release(token);
-      return true;
-    } catch {
-      return false;
+      const executed = await this.#execute(
+        descriptor.operationId,
+        call.runId,
+        call.input as Record<string, unknown>,
+      );
+      const result = deepFreeze({
+        ok: true,
+        operationId: descriptor.operationId,
+        callId: call.callId,
+        result: redactSemanticValue(executed.result),
+        stateRevision: executed.stateRevision,
+      } as const);
+      this.#record(policyContext, invocation, call.callId, call.input, result);
+      return result;
+    } catch (error) {
+      const failure = normalizeFailure(error);
+      const decision = deniedDecision(invocation, failure.code, failure.message);
+      const result = this.#denial(
+        call,
+        descriptor.operationId,
+        failure.code,
+        failure.message,
+        failure.retryable,
+        failure.controlPlaneCode,
+      );
+      this.#record(policyContext, decision, call.callId, call.input, result);
+      return result;
     }
   }
 
-  #identityDenial(
-    call: PaperclipSemanticToolCall,
-  ): PaperclipSemanticToolDenial {
+  #policyContext(runId: string): CapabilitySemanticPolicyContext {
+    const context = this.port.context(runId);
+    const scenario = this.options.scenario ?? DEFAULT_CAPABILITY_SCENARIO_POLICY;
+    return {
+      ...createCapabilitySemanticPolicyContext(
+        context,
+        scenario,
+        this.options.explicitClaims ?? context.capabilities,
+      ),
+      runId,
+    };
+  }
+
+  async #execute(
+    operationId: CapabilitySemanticOperationId,
+    runId: string,
+    input: Record<string, unknown>,
+  ): Promise<OperationSuccess> {
+    const context = this.port.context(runId);
+    const state = this.port.snapshot();
+    switch (operationId) {
+      case "get_task_context":
+        return readSuccess(state.revision, context);
+      case "get_task_history": {
+        const limit = optionalNumber(input.limit, 50);
+        return readSuccess(state.revision, {
+          comments: state.comments
+            .filter((comment) => comment.taskId === context.activeTask.id)
+            .slice(-limit),
+        });
+      }
+      case "list_documents":
+        return readSuccess(state.revision, {
+          documents: state.documents
+            .filter((document) => document.taskId === context.activeTask.id)
+            .map((document) => ({
+              id: document.id,
+              key: document.key,
+              title: document.title,
+              format: document.format,
+              latestRevisionId: document.latestRevisionId,
+              revisionCount: document.revisions.length,
+            })),
+        });
+      case "read_document": {
+        const document = activeDocument(state.documents, context, requiredString(input.key));
+        const revision = document.revisions.find(
+          (candidate) => candidate.id === document.latestRevisionId,
+        );
+        if (revision === undefined) {
+          throw new SemanticDispatchFailure("operation_unavailable", "Document revision is missing.");
+        }
+        return readSuccess(state.revision, { document, revision });
+      }
+      case "list_document_revisions": {
+        const document = activeDocument(state.documents, context, requiredString(input.key));
+        const limit = optionalNumber(input.limit, 50);
+        return readSuccess(state.revision, {
+          documentId: document.id,
+          key: document.key,
+          revisions: document.revisions.slice(-limit),
+        });
+      }
+      case "list_agents":
+        return readSuccess(state.revision, {
+          actors: state.actors.map(({ capabilityGrants: _claims, budgetId: _budget, ...actor }) => actor),
+        });
+      case "get_agent": {
+        const actor = state.actors.find((candidate) => candidate.id === requiredString(input.actorId));
+        if (actor === undefined) throw new SemanticDispatchFailure("operation_unavailable", "Mock actor not found.");
+        const { capabilityGrants: _claims, budgetId: _budget, ...profile } = actor;
+        return readSuccess(state.revision, { actor: profile });
+      }
+      case "search_tasks": {
+        const query = optionalString(input.query)?.toLowerCase();
+        const statuses = optionalStringArray(input.statuses);
+        const limit = optionalNumber(input.limit, 50);
+        const tasks = state.tasks.filter((task) =>
+          (query === undefined || `${task.identifier} ${task.title} ${task.description ?? ""}`.toLowerCase().includes(query)) &&
+          (statuses.length === 0 || statuses.includes(task.status)),
+        ).slice(0, limit);
+        return readSuccess(state.revision, { tasks });
+      }
+      case "list_approvals":
+        return readSuccess(state.revision, { approvals: state.approvals });
+      case "get_approval": {
+        const approval = approvalById(state.approvals, requiredString(input.approvalId));
+        return readSuccess(state.revision, { approval });
+      }
+      case "get_approval_context": {
+        const approval = approvalById(state.approvals, requiredString(input.approvalId));
+        return readSuccess(state.revision, {
+          approval,
+          tasks: state.tasks.filter((task) => approval.taskIds.includes(task.id)),
+        });
+      }
+      case "get_workspace_runtime":
+        return readSuccess(state.revision, {
+          services: state.workspaceServices.filter(
+            (service) => service.taskId === context.activeTask.id,
+          ),
+        });
+      case "generic_api_request":
+        return this.#genericApiRead(state.revision, context, input);
+      default:
+        return this.#applyMutation(operationId, runId, context, input);
+    }
+  }
+
+  #genericApiRead(
+    revision: number,
+    context: CapabilityRunContext,
+    input: Record<string, unknown>,
+  ): OperationSuccess {
+    if (input.method === "GET" && input.path === "/mock/state/revision") {
+      return readSuccess(revision, { revision });
+    }
+    if (input.method === "GET" && input.path === "/mock/task") {
+      return readSuccess(revision, { task: context.activeTask });
+    }
+    throw new SemanticDispatchFailure(
+      "operation_unavailable",
+      "The test-only generic request is outside the explicit mock allowlist.",
+    );
+  }
+
+  async #applyMutation(
+    operationId: CapabilitySemanticOperationId,
+    runId: string,
+    context: CapabilityRunContext,
+    input: Record<string, unknown>,
+  ): Promise<OperationSuccess> {
+    const idempotencyKey = requiredString(input.idempotencyKey);
+    const taskId = context.activeTask.id;
+    let command: CapabilitySemanticCommand;
+    switch (operationId) {
+      case "report_progress":
+      case "answer_status_question":
+        command = { kind: "report_progress", taskId, body: requiredString(input.body) };
+        break;
+      case "write_document":
+        command = {
+          kind: "write_document",
+          taskId,
+          key: requiredString(input.key),
+          title: requiredString(input.title),
+          body: requiredString(input.body),
+          baseRevisionId: nullableString(input.baseRevisionId),
+          changeSummary: nullableOptionalString(input.changeSummary),
+        };
+        break;
+      case "request_human_input":
+        command = {
+          kind: "request_human_input",
+          taskId,
+          interactionKind: requiredString(input.interactionKind) as Extract<CapabilitySemanticCommand, { kind: "request_human_input" }>["interactionKind"],
+          title: requiredString(input.title),
+          prompt: requiredString(input.prompt),
+          payload: optionalJson(input.payload),
+          targetRevisionId: nullableOptionalString(input.targetRevisionId),
+          continuationPolicy: requiredString(input.continuationPolicy) as Extract<CapabilitySemanticCommand, { kind: "request_human_input" }>["continuationPolicy"],
+        };
+        break;
+      case "register_deliverable":
+        command = {
+          kind: "register_deliverable",
+          taskId,
+          filename: requiredString(input.filename),
+          contentType: requiredString(input.contentType),
+          byteSize: requiredNumber(input.byteSize),
+          sha256: requiredString(input.sha256),
+          contentRef: requiredString(input.contentRef),
+          title: requiredString(input.title),
+        };
+        break;
+      case "finish_task":
+        command = { kind: "finish_task", taskId, summary: requiredString(input.summary) };
+        break;
+      case "block_task":
+        command = { kind: "block_task", taskId, reason: requiredString(input.reason), blockedByTaskIds: optionalStringArray(input.blockedByTaskIds) };
+        break;
+      case "request_review":
+        command = { kind: "request_review", taskId, summary: requiredString(input.summary) };
+        break;
+      case "set_dependencies":
+        command = { kind: "set_dependencies", taskId, blockedByTaskIds: optionalStringArray(input.blockedByTaskIds) };
+        break;
+      case "create_task":
+        command = {
+          kind: "create_task",
+          taskId,
+          title: requiredString(input.title),
+          description: nullableOptionalString(input.description),
+          assigneeActorId: nullableOptionalString(input.assigneeActorId),
+          priority: optionalString(input.priority) as Extract<CapabilitySemanticCommand, { kind: "create_task" }>["priority"],
+          blockedByTaskIds: optionalStringArray(input.blockedByTaskIds),
+        };
+        break;
+      case "request_approval":
+        command = { kind: "request_approval", taskId, approvalType: requiredString(input.approvalType), payload: optionalJson(input.payload) };
+        break;
+      case "decide_approval":
+        command = { kind: "decide_approval", taskId, approvalId: requiredString(input.approvalId), decision: requiredString(input.decision) as Extract<CapabilitySemanticCommand, { kind: "decide_approval" }>["decision"], note: requiredString(input.note) };
+        break;
+      case "comment_on_approval":
+        command = { kind: "comment_on_approval", taskId, approvalId: requiredString(input.approvalId), body: requiredString(input.body) };
+        break;
+      case "control_workspace_service":
+        command = { kind: "control_workspace_service", taskId, serviceId: requiredString(input.serviceId), action: requiredString(input.action) as Extract<CapabilitySemanticCommand, { kind: "control_workspace_service" }>["action"], url: nullableOptionalString(input.url) };
+        break;
+      case "schedule_wake":
+        command = { kind: "schedule_wake", taskId, reason: requiredString(input.reason) as Extract<CapabilitySemanticCommand, { kind: "schedule_wake" }>["reason"], payload: optionalJson(input.payload), delayTicks: requiredNumber(input.delayTicks) };
+        break;
+      default:
+        throw new SemanticDispatchFailure("operation_unavailable", "No mock operation is bound to this descriptor.");
+    }
+    const outcome = await this.port.tryApplyCommand({ runId, idempotencyKey, command });
+    return commandOutcome(outcome);
+  }
+
+  #record(
+    context: CapabilitySemanticPolicyContext,
+    decision: CapabilitySemanticAuthorizationDecision,
+    callId: string | null,
+    input: unknown,
+    result: unknown,
+  ): void {
+    this.#recordCounter += 1;
+    this.#records.push(deepFreeze({
+      schema: "paperclip.semantic-authorization-record.v1",
+      id: `semantic-auth-${String(this.#recordCounter).padStart(6, "0")}`,
+      runId: context.runId,
+      scenarioId: context.scenario.id,
+      actorId: context.actor.id,
+      taskId: context.task.id,
+      callId,
+      ...decision,
+      input: input === null ? null : redactSemanticValue(input),
+      result: result === null ? null : redactSemanticValue(result),
+    }));
+  }
+
+  #unknownToolDenial(call: CapabilitySemanticToolCall): CapabilitySemanticToolResult {
     return deepFreeze({
       ok: false,
-      operationId: safeIdentity(call.operationId),
-      callId: safeIdentity(call.callId),
-      error: {
-        code: "input_invalid",
-        message: "The semantic call identity is invalid.",
+      operationId: call.operationId,
+      callId: call.callId,
+      denial: {
+        schema: "paperclip.semantic-denial.v1",
+        code: "tool_not_exposed",
+        message: "The requested semantic tool is not in the stable catalog.",
         retryable: false,
       },
-      inputReceipt: null,
-      resultReceipt: null,
+      stateRevision: this.port.snapshot().revision,
     });
   }
 
   #denial(
-    call: PaperclipSemanticToolCall,
-    code: PaperclipSemanticDenialCode,
-    descriptor: PaperclipSemanticActionDescriptor | null,
-    context: PaperclipSemanticRunContext | null,
-    decision?: PaperclipSemanticAuthorizationDecision,
-    redacted = false,
-  ): PaperclipSemanticToolDenial {
-    const idempotencyKey = stringProperty(call.input, "idempotencyKey") ?? null;
-    const inputReceipt = createPaperclipSemanticInputReceipt({
-      operationId: call.operationId,
-      callId: call.callId,
-      correlation: call.correlation,
-      idempotencyKey,
-      content: call.input,
-      redacted,
-    });
-    const resultReceipt = createPaperclipSemanticResultReceipt({
-      operationId: call.operationId,
-      callId: call.callId,
-      correlation: call.correlation,
-      idempotencyKey,
-      content: { code },
-      redacted,
-      outcome: paperclipSemanticOutcome({ ok: false, code }),
-      code,
-      retryable: denialRetryable(code),
-      authorizationBoundary: paperclipSemanticAuthorizationBoundary(code),
-    });
-    if (descriptor !== null && context !== null) {
-      const finalDecision =
-        decision ??
-        deniedDecision(
-          decidePaperclipSemanticAuthorization(
-            descriptor,
-            context,
-            "invocation",
-            call.runId,
-            call.input,
-          ),
-          code,
-          denialMessage(code),
-        );
-      this.#record(
-        context,
-        finalDecision,
-        call.callId,
-        digestPaperclipSemanticContent(call.input),
-        String(resultReceipt.operationReceiptId),
-      );
-    }
+    call: CapabilitySemanticToolCall,
+    operationId: CapabilitySemanticOperationId,
+    code: Exclude<CapabilitySemanticAuthorizationDecision["code"], "allowed">,
+    message: string,
+    retryable = false,
+    controlPlaneCode?: string,
+  ): CapabilitySemanticToolResult {
     return deepFreeze({
       ok: false,
-      operationId: call.operationId,
+      operationId,
       callId: call.callId,
-      error: {
+      denial: {
+        schema: "paperclip.semantic-denial.v1",
         code,
-        message: denialMessage(code),
-        retryable: denialRetryable(code),
+        ...(controlPlaneCode === undefined ? {} : { controlPlaneCode }),
+        message: redactSemanticValue(message) as string,
+        retryable,
       },
-      inputReceipt,
-      resultReceipt,
+      stateRevision: this.port.snapshot().revision,
     });
   }
+}
 
-  #record(
-    context: PaperclipSemanticRunContext,
-    decision: PaperclipSemanticAuthorizationDecision,
-    callId: string | null,
-    inputDigest: string | null,
-    operationReceiptId: string | null,
-  ): void {
-    if (decision.code === "authority_context_invalid") return;
-    this.#recordSequence += 1;
-    this.#authorizationRecords.push(
-      deepFreeze({
-        schema: "paperclip.semantic-authorization-record.v1",
-        id: `semantic_auth:${String(this.#recordSequence).padStart(8, "0")}`,
-        runId: context.runId,
-        companyId: context.companyId,
-        actorId: context.actor.id,
-        taskId: context.activeTask.id,
-        callId,
-        ...decision,
-        inputDigest,
-        operationReceiptId,
-      }),
+function commandOutcome(outcome: CapabilityCommandOutcome): OperationSuccess {
+  if (!outcome.ok) {
+    throw new SemanticDispatchFailure(
+      "control_plane_denied",
+      outcome.error.message,
+      outcome.error.retryable,
+      outcome.error.code,
     );
-    if (this.#authorizationRecords.length > this.#maxAuthorizationRecords) {
-      this.#authorizationRecords.splice(
-        0,
-        this.#authorizationRecords.length - this.#maxAuthorizationRecords,
-      );
-    }
   }
+  // `commandKind` is internal control-plane routing metadata. The provider
+  // receives the operation-specific response contract, whose operationId is
+  // already carried by the authenticated semantic result envelope.
+  const { commandKind: _commandKind, ...result } = outcome.result;
+  return { result: result as unknown as CapabilityJsonValue, stateRevision: outcome.result.stateRevision };
 }
 
-function validCallIdentity(call: PaperclipSemanticToolCall): boolean {
-  return (
-    call.correlation.runId === call.runId &&
-    [
-      call.runId,
-      call.callId,
-      call.operationId,
-      call.correlation.normalizedSessionId,
-      call.correlation.turnId,
-      call.correlation.itemId,
-      ...(call.correlation.requestId === undefined
-        ? []
-        : [call.correlation.requestId]),
-    ].every(isPaperclipSemanticStableId)
-  );
-}
-
-function isBindingResult(
-  value: unknown,
-): value is PaperclipSemanticBindingResult {
-  return typeof value === "object" && value !== null && "value" in value;
-}
-
-function isStoredOutcome(
-  value: unknown,
-): value is PaperclipSemanticStoredOutcome {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "operationId" in value &&
-    "inputDigest" in value &&
-    "operationReceiptId" in value &&
-    "value" in value &&
-    "code" in value &&
-    Array.isArray((value as { references?: unknown }).references)
-  );
+function toDefinition(descriptor: CapabilitySemanticToolDescriptor): CapabilitySemanticToolDefinition {
+  return {
+    name: descriptor.operationId,
+    description: descriptor.description,
+    inputSchema: descriptor.inputSchema,
+    outputSchema: descriptor.outputSchema,
+    annotations: {
+      semanticContract: descriptor.schema,
+      operationId: descriptor.operationId,
+      version: descriptor.version,
+      exposure: descriptor.exposure,
+      requiredClaims: descriptor.requiredClaims,
+    },
+  };
 }
 
 function deniedDecision(
-  decision: PaperclipSemanticAuthorizationDecision,
-  code: PaperclipSemanticDenialCode,
+  allowed: CapabilitySemanticAuthorizationDecision,
+  code: CapabilitySemanticDenialCode,
   reason: string,
-): PaperclipSemanticAuthorizationDecision {
-  return { ...decision, allowed: false, code, reason };
+): CapabilitySemanticAuthorizationDecision {
+  return { ...allowed, allowed: false, code, reason };
 }
 
 function denialCode(
-  decision: PaperclipSemanticAuthorizationDecision,
-): PaperclipSemanticDenialCode {
+  decision: CapabilitySemanticAuthorizationDecision,
+): CapabilitySemanticDenialCode {
   if (decision.code === "allowed") {
     throw new Error("allowed authorization decision cannot create a denial");
   }
   return decision.code;
 }
 
-function denialMessage(code: PaperclipSemanticDenialCode): string {
-  switch (code) {
-    case "operation_absent":
-      return "The requested semantic action is not available.";
-    case "idempotency_in_progress":
-      return "The original mutation is still in progress.";
-    case "binding_failed":
-      return "The semantic action could not complete safely.";
-    default:
-      return "The requested semantic action was not executed.";
-  }
+function normalizeFailure(error: unknown): SemanticDispatchFailure {
+  return error instanceof SemanticDispatchFailure
+    ? error
+    : new SemanticDispatchFailure("operation_unavailable", "The semantic operation failed safely.");
 }
 
-function formatValidationError(
-  validator: ValidateFunction | undefined,
-): string {
+function formatValidationError(validator: ValidateFunction | undefined): string {
   const issue = validator?.errors?.[0];
-  if (issue === undefined)
-    return "Tool input does not match its action schema.";
-  return `Tool input ${issue.instancePath || "/"} ${issue.message ?? "is invalid"}.`;
+  if (issue === undefined) return "Semantic tool input does not match its stable schema.";
+  return `Semantic tool input ${issue.instancePath || "/"} ${issue.message ?? "is invalid"}.`;
 }
 
-function stringProperty(value: unknown, key: string): string | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
-  const candidate = (value as Record<string, unknown>)[key];
-  return typeof candidate === "string" ? candidate : undefined;
-}
-
-function validCode(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,159}$/.test(value);
-}
-
-function validOptionalCode(value: unknown): value is string | undefined {
-  return value === undefined || validCode(value);
-}
-
-function validRevision(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function validOptionalRevision(value: unknown): value is number | undefined {
-  return value === undefined || validRevision(value);
-}
-
-function validOptionalStableId(value: unknown): value is string | undefined {
-  return (
-    value === undefined ||
-    (typeof value === "string" && isPaperclipSemanticStableId(value))
+function activeDocument(
+  documents: ReturnType<CapabilitySemanticControlPlane["snapshot"]>["documents"],
+  context: CapabilityRunContext,
+  key: string,
+) {
+  const document = documents.find(
+    (candidate) => candidate.taskId === context.activeTask.id && candidate.key === key,
   );
+  if (document === undefined) throw new SemanticDispatchFailure("operation_unavailable", "Document not found.");
+  return document;
 }
 
-function safeIdentity(value: string): string {
-  return isPaperclipSemanticStableId(value) ? value : "invalid";
+function approvalById(
+  approvals: ReturnType<CapabilitySemanticControlPlane["snapshot"]>["approvals"],
+  approvalId: string,
+) {
+  const approval = approvals.find((candidate) => candidate.id === approvalId);
+  if (approval === undefined) throw new SemanticDispatchFailure("operation_unavailable", "Approval not found.");
+  return approval;
+}
+
+function readSuccess(revision: number, value: unknown): OperationSuccess {
+  return { result: redactSemanticValue(value), stateRevision: revision };
+}
+
+function requiredString(value: unknown): string {
+  if (typeof value !== "string") throw new SemanticDispatchFailure("input_invalid", "Expected string input.");
+  return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null ? null : requiredString(value);
+}
+
+function nullableOptionalString(value: unknown): string | null | undefined {
+  return value === undefined ? undefined : nullableString(value);
+}
+
+function requiredNumber(value: unknown): number {
+  if (typeof value !== "number") throw new SemanticDispatchFailure("input_invalid", "Expected number input.");
+  return value;
+}
+
+function optionalNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" ? value : fallback;
+}
+
+function optionalStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function optionalJson(value: unknown): CapabilityJsonValue {
+  return value === undefined ? {} : redactSemanticValue(value);
 }
 
 function deepFreeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
-    return value;
-  }
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
   Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
   return value;

@@ -45,6 +45,8 @@ test("the runner pins every qualified ACPX production dependency", () => {
 
 test("the package exposes only the reviewed provider transport binaries", () => {
   assert.deepEqual(runnerPackage.bin, {
+    "paperclip-runner-codex-proxy":
+      "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
     "paperclip-runner-opencode-proxy":
       "./dist/cli/opencode-app-server-proxy.js",

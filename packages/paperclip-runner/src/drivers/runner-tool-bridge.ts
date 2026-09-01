@@ -597,7 +597,11 @@ function strictJson(value: unknown): string | null {
   try {
     const serialized = JSON.stringify(
       value,
-      function strictJsonValue(key, candidate) {
+      function strictJsonValue(
+        this: { readonly [key: string]: unknown },
+        key: string,
+        candidate: unknown,
+      ) {
         const source = this[key];
         if (
           typeof candidate === "undefined" ||

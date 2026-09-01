@@ -26,13 +26,10 @@ export type {
   ControlPlanePort,
   HarnessRuntimeRequestKind,
   HarnessRuntimeRequestResolution,
-  NativeAcpxAgent,
-  NativeAcpxPermissionMode,
   NativeCodexApprovalPolicy,
   NativeExecutionInput,
   NativeExecutionInputV4,
   NativeInteractionResponseEnvelope,
-  NativeOpenCodePermissionMode,
   NativePlanningContext,
   NativeRunEvent,
   NativeRunResult,
@@ -64,6 +61,8 @@ const runner = await import(sourceUrl.href) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
+export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
+  runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
 export const NATIVE_RUNTIME_ASSET_SCHEMA = runner.NATIVE_RUNTIME_ASSET_SCHEMA;
@@ -75,6 +74,12 @@ export const canonicalNativeRuntimeContextDigest =
 export const createNativeSessionBackend = runner.createNativeSessionBackend;
 export const createPaperclipRunnerAuthorizedToolSet =
   runner.createPaperclipRunnerAuthorizedToolSet;
+export const createRunnerdCodexTransport: (
+  options?: import("@paperclipai/paperclip-runner").RunnerdCodexTransportOptions,
+) => import("@paperclipai/paperclip-runner").RunnerdCodexTransport =
+  runner.createRunnerdCodexTransport;
+export const defaultCapabilityRunnerdBinary =
+  runner.defaultCapabilityRunnerdBinary;
 export const executeNativeSession = runner.executeNativeSession;
 export const nativeRuntimePromptDigest = runner.nativeRuntimePromptDigest;
 export const normalizePrpResultSignals = runner.normalizePrpResultSignals;

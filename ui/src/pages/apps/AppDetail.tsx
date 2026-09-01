@@ -586,7 +586,7 @@ export function AppDetail() {
   const status = statusFor(connection);
   const needsReconnect = status.tone === "attention" && connection.healthStatus !== "unknown";
   const quarantined = catalog.filter((e) => e.status === "quarantined");
-  const active = catalog.filter((e) => e.status !== "quarantined" && e.status !== "removed");
+  const active = catalog.filter((e) => e.status === "active");
   const readOnly = active.filter((e) => e.isReadOnly);
   const canChange = active.filter((e) => !e.isReadOnly);
   const actionCount = catalogQuery.data ? active.length : null;
