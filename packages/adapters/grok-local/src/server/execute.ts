@@ -41,6 +41,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
@@ -358,7 +359,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onProgress: (line) => onLog("stdout", line),
         onRuntimeProgress: ctx.onRuntimeProgress,
         assets: stagedGrokHomeDir
-          ? [{ key: "home", localDir: stagedGrokHomeDir, followSymlinks: true }]
+          ? [
+              {
+                key: "home",
+                localDir: stagedGrokHomeDir,
+                followSymlinks: true,
+                // Outbound (sandbox to host) copy-out: at teardown, read the
+                // sandbox's `auth.json` and — guarded by the direction-
+                // agnostic decision predicate under a directory lock —
+                // atomically install it onto the shared host credential when
+                // it is a strictly-later same-identity copy. The destination
+                // is always the server-derived managed Grok home, never a
+                // value read from `env.GROK_HOME`. A copy-out failure never
+                // fails the run: `copyBackGrokAuth` logs the errno code and
+                // rethrows, and this callback swallows that rejection.
+                restore: async ({ assetDir, readFile }) =>
+                  void (await copyBackGrokAuth({
+                    readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                    hostHomeDir: hostGrokHome,
+                    log: (line) => onLog("stdout", `${line}\n`),
+                    env: process.env,
+                  }).catch(() => undefined)),
+              },
+            ]
           : undefined,
       });
       restoreRemoteWorkspace = () =>

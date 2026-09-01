@@ -85,6 +85,46 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+const GROK_IDENTITY = "https://auth.x.ai::11111111-1111-1111-1111-111111111111";
+const NOW = Date.now();
+const NEWER_EXPIRY = new Date(NOW + 2 * 60_000).toISOString();
+const OLDER_EXPIRY = new Date(NOW + 60_000).toISOString();
+
+function grokAuth(input: { key: string; expiresAt: string }): string {
+  return JSON.stringify({
+    [GROK_IDENTITY]: { key: input.key, refresh_token: `${input.key}-refresh`, expires_at: input.expiresAt },
+  });
+}
+
+// Captures the sandbox `auth.json` bytes a mocked remote teardown hands back
+// to the `home` asset's `restore` contribution — mirrors the sandbox core's
+// own restore closure without needing a live sandbox. `error`, when set, makes
+// the injected `readFile` reject instead of resolving.
+const sandboxAuthFixture: { bytes: Buffer | null; error: (Error & { code?: string }) | null } = {
+  bytes: null,
+  error: null,
+};
+
+function makeRestoreWorkspace(
+  assets: Array<{ restore?: (ctx: { assetDir: string; readFile: (path: string) => Promise<Buffer> }) => Promise<void> }>,
+) {
+  return async () => {
+    for (const asset of assets) {
+      if (!asset.restore) continue;
+      await asset.restore({
+        assetDir: "/remote/workspace/.paperclip-runtime/grok/home",
+        readFile: async () => {
+          if (sandboxAuthFixture.error) throw sandboxAuthFixture.error;
+          if (sandboxAuthFixture.bytes === null) {
+            throw Object.assign(new Error("ENOENT: no such file or directory, open 'auth.json'"), { code: "ENOENT" });
+          }
+          return sandboxAuthFixture.bytes;
+        },
+      });
+    }
+  };
+}
+
 function makeSuccessfulRunResult(overrides: Partial<{ sessionId: string }> = {}) {
   return {
     exitCode: 0,
@@ -379,6 +419,8 @@ describe("grok_local execute", () => {
       // touches a real developer or CI-host `~/.paperclip` tree.
       paperclipHomeRoot = await makeTempRoot();
       process.env.PAPERCLIP_HOME = paperclipHomeRoot;
+      sandboxAuthFixture.bytes = null;
+      sandboxAuthFixture.error = null;
     });
 
     afterEach(() => {
@@ -431,7 +473,7 @@ describe("grok_local execute", () => {
       expect(assetCount).toBe(1);
       expect(homeAssetShape).toMatchObject({ key: "home", followSymlinks: true });
       expect((homeAssetShape as { provision?: unknown } | null)?.provision).toBeUndefined();
-      expect((homeAssetShape as { restore?: unknown } | null)?.restore).toBeUndefined();
+      expect(typeof (homeAssetShape as { restore?: unknown } | null)?.restore).toBe("function");
       expect(stagedAuthContents).toBe(JSON.stringify({ live: "token" }));
     });
 
@@ -562,6 +604,88 @@ describe("grok_local execute", () => {
 
       expect(stagedDir).not.toBe("");
       expect(await pathExists(stagedDir)).toBe(false);
+    });
+
+    it("a remote run copies the refreshed sandbox credential to the company Grok home", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      const hostGrokHome = await seedHostGrokAuth(grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }));
+      const refreshedAuth = grokAuth({ key: "refreshed-key", expiresAt: NEWER_EXPIRY });
+      sandboxAuthFixture.bytes = Buffer.from(refreshedAuth, "utf8");
+      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      prepareRuntimeMock.mockImplementationOnce(async (input: {
+        assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean; provision?: unknown; restore?: unknown }>;
+      }) => {
+        const assets = (input.assets ?? []) as Array<{
+          restore?: (ctx: { assetDir: string; readFile: (path: string) => Promise<Buffer> }) => Promise<void>;
+        }>;
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: makeRestoreWorkspace(assets),
+        };
+      });
+
+      await execute(await makeCtx("run-copyout-e2e", await makeTempRoot()));
+
+      expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(refreshedAuth);
+    });
+
+    it("the copy-out installs to the resolver directory when env.GROK_HOME names a different directory, and the named directory stays empty", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      const resolverDir = await seedHostGrokAuth(grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }));
+      const attackerDir = await makeTempRoot();
+      const refreshedAuth = grokAuth({ key: "refreshed-key", expiresAt: NEWER_EXPIRY });
+      sandboxAuthFixture.bytes = Buffer.from(refreshedAuth, "utf8");
+      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      prepareRuntimeMock.mockImplementationOnce(async (input: {
+        assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean; provision?: unknown; restore?: unknown }>;
+      }) => {
+        const assets = (input.assets ?? []) as Array<{
+          restore?: (ctx: { assetDir: string; readFile: (path: string) => Promise<Buffer> }) => Promise<void>;
+        }>;
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: makeRestoreWorkspace(assets),
+        };
+      });
+
+      const ctx = await makeCtx("run-copyout-pinning", await makeTempRoot());
+      ctx.config = { ...ctx.config, env: { GROK_HOME: attackerDir } };
+      await execute(ctx);
+
+      expect(await fs.readFile(path.join(resolverDir, "auth.json"), "utf8")).toBe(refreshedAuth);
+      await expect(fs.readFile(path.join(attackerDir, "auth.json"), "utf8")).rejects.toThrow();
+    });
+
+    it("a copy-out failure does not fail the run", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      const hostGrokHome = await seedHostGrokAuth(grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }));
+      sandboxAuthFixture.error = Object.assign(new Error("sandbox read boom"), { code: "EIO" });
+      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      prepareRuntimeMock.mockImplementationOnce(async (input: {
+        assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean; provision?: unknown; restore?: unknown }>;
+      }) => {
+        const assets = (input.assets ?? []) as Array<{
+          restore?: (ctx: { assetDir: string; readFile: (path: string) => Promise<Buffer> }) => Promise<void>;
+        }>;
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: makeRestoreWorkspace(assets),
+        };
+      });
+
+      const result = await execute(await makeCtx("run-copyout-failure", await makeTempRoot()));
+
+      expect(result.exitCode).toBe(0);
+      // The host credential is untouched by the failed copy-out.
+      expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(
+        grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }),
+      );
     });
   });
 });
