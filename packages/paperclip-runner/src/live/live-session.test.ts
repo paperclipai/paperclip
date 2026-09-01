@@ -60,6 +60,7 @@ interface FakeProviderState {
   turns: Map<string, string>;
   attachments: Array<{ runId: string; turnId: string; itemId: string }>;
   holdAfterTool: boolean;
+  closeError: Error | null;
   onTurnStart?: () => Promise<void>;
 }
 
@@ -157,6 +158,7 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
     this.#closed = true;
     this.notificationsQueue.close();
     this.onClose();
+    if (this.state.closeError !== null) throw this.state.closeError;
   }
 
   processInfo() {
@@ -296,6 +298,7 @@ function providerState(): FakeProviderState {
     turns: new Map(),
     attachments: [],
     holdAfterTool: false,
+    closeError: null,
   };
 }
 
@@ -447,6 +450,39 @@ describe("Capability live runnerd and Codex session", () => {
         expect.objectContaining({ turnId: "turn-1", status: "completed" }),
       ],
     });
+    expect(state.transports[0]?.processInfo().exited).toBe(true);
+  });
+
+  it("preserves cleanup and persistence failures from failed-session shutdown", async () => {
+    const state = providerState();
+    const store = new TransientFailureLiveSessionStore();
+    const service = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const session = await service.create({
+      runId: "run-live-shutdown-failures",
+      sessionId: "session-live-shutdown-failures",
+    });
+
+    store.rejectTerminalSaves();
+    await expect(session.sendMessage("fail before shutdown cleanup")).rejects.toThrow(
+      "transient terminal-notification store failure",
+    );
+    await vi.waitFor(() => expect(session.snapshot().status).toBe("failed"));
+    const cleanupFailure = new Error("provider cleanup failed");
+    state.closeError = cleanupFailure;
+
+    const failure = await service.shutdown(session.id).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors[0]).toBe(cleanupFailure);
+    expect(String((failure as AggregateError).errors[1])).toContain(
+      "transient terminal-notification store failure",
+    );
     expect(state.transports[0]?.processInfo().exited).toBe(true);
   });
 

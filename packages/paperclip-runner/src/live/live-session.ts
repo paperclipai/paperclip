@@ -1721,8 +1721,20 @@ export class CapabilityLiveSession {
       } catch (error) {
         disconnectError = error;
       }
-      await this.#persist();
+      let persistenceError: unknown = null;
+      try {
+        await this.#persist();
+      } catch (error) {
+        persistenceError = error;
+      }
+      if (disconnectError !== null && persistenceError !== null) {
+        throw new AggregateError(
+          [disconnectError, persistenceError],
+          "Capability live cleanup and final persistence both failed",
+        );
+      }
       if (disconnectError !== null) throw disconnectError;
+      if (persistenceError !== null) throw persistenceError;
       return;
     }
     this.#status = "suspending";
