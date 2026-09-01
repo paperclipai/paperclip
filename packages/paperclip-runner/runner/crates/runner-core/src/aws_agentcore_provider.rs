@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aws_config::sts::AssumeRoleProvider;
 use aws_sdk_bedrockagentcore::error::SdkError;
@@ -50,6 +50,15 @@ const MAX_CONTEXT_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEMORY_HISTORY_PAGES: usize = 1_000;
 const MAX_MEMORY_HISTORY_EVENTS: usize = 100_000;
 const MAX_INTERRUPT_DRAIN_EVENTS: usize = 256;
+#[cfg(not(test))]
+const AGENTCORE_INTERRUPT_USAGE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const AGENTCORE_INTERRUPT_USAGE_RECONCILIATION_TIMEOUT: Duration = Duration::from_millis(75);
+pub(crate) const AGENTCORE_USAGE_RECONCILIATION_OBSERVED: &str = "authoritative_metadata_observed";
+pub(crate) const AGENTCORE_USAGE_RECONCILIATION_PENDING: &str =
+    "latest_cumulative_estimate_pending_metadata";
+pub(crate) const AGENTCORE_USAGE_RECONCILIATION_FIELD: &str = "usageReconciliation";
+pub(crate) const AGENTCORE_PENDING_INVOCATION_FIELD: &str = "pendingInvocationId";
 #[cfg(test)]
 const AGENTCORE_INLINE_TOOL_ALLOWLIST: &str = "@*/pc_*";
 #[derive(Clone, Debug)]
@@ -100,6 +109,26 @@ fn restored_usage_snapshot(snapshot: Option<&Value>) -> Result<Value, LocalRunne
         return Err(LocalRunnerError::invalid(
             "AgentCore durable usage snapshot has invalid costSource",
         ));
+    }
+    match (
+        object.get(AGENTCORE_USAGE_RECONCILIATION_FIELD),
+        object.get(AGENTCORE_PENDING_INVOCATION_FIELD),
+    ) {
+        (None, None) => {}
+        (Some(reconciliation), None)
+            if reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_OBSERVED) => {}
+        (Some(reconciliation), Some(invocation_id))
+            if reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
+                && invocation_id.as_str().is_some_and(|invocation_id| {
+                    !invocation_id.is_empty()
+                        && invocation_id.len() <= 512
+                        && !invocation_id.chars().any(char::is_control)
+                }) => {}
+        _ => {
+            return Err(LocalRunnerError::invalid(
+                "AgentCore durable usage snapshot has invalid pending reconciliation state",
+            ));
+        }
     }
     let mut restored = snapshot.clone();
     restored["estimatedCostUsd"] = json!(estimated);
@@ -258,6 +287,17 @@ impl NetworkWorker {
 
     fn try_event(&self) -> Option<NetworkEvent> {
         self.events.try_recv().ok()
+    }
+
+    fn receive_event_until(&self, deadline: Instant) -> Option<NetworkEvent> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match self.events.recv_timeout(remaining) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
+        }
     }
 
     fn shutdown(&mut self) {
@@ -1066,6 +1106,7 @@ impl AwsAgentCoreHarnessProvider {
                 "AgentCore prior invocation is still active",
             ));
         }
+        self.require_reconciled_interrupt_usage()?;
         if self
             .usage
             .get("estimatedCostUsd")
@@ -1089,13 +1130,17 @@ impl AwsAgentCoreHarnessProvider {
             Uuid::new_v4()
         );
         self.durable_cursor = Some(invocation_id.clone());
+        // Delivery can time out after AgentCore has accepted the invocation.
+        // Retain its identity before crossing that ambiguity boundary so a
+        // subsequent interrupt can reconcile (or durably fail closed on) the
+        // matching authoritative usage metadata.
+        self.active_invocation_id = Some(invocation_id.clone());
         self.worker.invoke(
             messages,
             self.tools.clone(),
             self.allowed_tools.clone(),
             invocation_id.clone(),
         )?;
-        self.active_invocation_id = Some(invocation_id.clone());
         Ok(json!({ "runtimeSessionId": self.session_id, "invocationId": invocation_id }))
     }
 
@@ -1170,12 +1215,54 @@ impl AwsAgentCoreHarnessProvider {
         }
     }
 
-    fn reconcile_queued_interrupt_usage(&mut self) {
+    fn pending_usage_reconciliation_invocation_id(&self) -> Option<String> {
+        (self
+            .usage
+            .get(AGENTCORE_USAGE_RECONCILIATION_FIELD)
+            .and_then(Value::as_str)
+            == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING))
+        .then(|| {
+            self.usage
+                .get(AGENTCORE_PENDING_INVOCATION_FIELD)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten()
+    }
+
+    fn mark_usage_reconciliation_pending(&mut self, invocation_id: &str) {
+        self.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_PENDING);
+        self.usage[AGENTCORE_PENDING_INVOCATION_FIELD] = json!(invocation_id);
+    }
+
+    fn mark_usage_reconciliation_observed(&mut self) {
+        self.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_OBSERVED);
+        if let Some(usage) = self.usage.as_object_mut() {
+            usage.remove(AGENTCORE_PENDING_INVOCATION_FIELD);
+        }
+    }
+
+    fn require_reconciled_interrupt_usage(&mut self) -> Result<(), LocalRunnerError> {
+        if self.pending_usage_reconciliation_invocation_id().is_some() {
+            return Err(LocalRunnerError::invalid(
+                "AgentCore usage reconciliation remains pending after an interrupted invocation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn reconcile_interrupted_usage(&mut self) {
+        if self.invocation_usage_observed {
+            return;
+        }
         let Some(active_invocation_id) = self.active_invocation_id.clone() else {
             return;
         };
+        let deadline = Instant::now() + AGENTCORE_INTERRUPT_USAGE_RECONCILIATION_TIMEOUT;
         for _ in 0..MAX_INTERRUPT_DRAIN_EVENTS {
-            let Some(event) = self.worker.try_event() else {
+            let Some(event) = self.worker.receive_event_until(deadline) else {
                 break;
             };
             if event.invocation_id != active_invocation_id {
@@ -1199,13 +1286,21 @@ impl AwsAgentCoreHarnessProvider {
                         false,
                     );
                     self.invocation_usage_observed = true;
+                    break;
                 }
             }
         }
     }
 
-    fn settle_interrupted_turn(&mut self, turn_id: &str) {
+    fn settle_interrupted_turn(&mut self, turn_id: &str, interrupted_invocation_id: Option<&str>) {
         let usage_observed = self.invocation_usage_observed;
+        if usage_observed {
+            self.mark_usage_reconciliation_observed();
+        } else {
+            if let Some(invocation_id) = interrupted_invocation_id {
+                self.mark_usage_reconciliation_pending(invocation_id);
+            }
+        }
         self.active_invocation_id = None;
         self.pending_stop_reason = None;
         self.invocation_usage_observed = false;
@@ -1220,15 +1315,9 @@ impl AwsAgentCoreHarnessProvider {
             )
         });
 
-        let mut usage = self.usage.clone();
-        usage["usageReconciliation"] = json!(if usage_observed {
-            "authoritative_metadata_observed"
-        } else {
-            "latest_cumulative_estimate_pending_metadata"
-        });
         self.queue.push_back(ProviderEvent::Notification {
             method: "thread/tokenUsage/updated".to_owned(),
-            params: usage,
+            params: self.usage.clone(),
         });
         if !self.current_text.is_empty() {
             self.queue.push_back(ProviderEvent::Notification {
@@ -1364,6 +1453,7 @@ impl Provider for AwsAgentCoreHarnessProvider {
         if self.current_turn_id.is_some() {
             return Err(LocalRunnerError::invalid("AgentCore turn already active"));
         }
+        self.require_reconciled_interrupt_usage()?;
         self.current_turn_id = Some(turn_id.to_owned());
         self.current_text.clear();
         self.queue.push_back(ProviderEvent::Notification {
@@ -1383,8 +1473,9 @@ impl Provider for AwsAgentCoreHarnessProvider {
             "paperclip-interrupt-{}",
             sha_hex(&(self.session_id.clone() + turn_id), 32)
         ))?;
-        self.reconcile_queued_interrupt_usage();
-        self.settle_interrupted_turn(turn_id);
+        let interrupted_invocation_id = self.active_invocation_id.clone();
+        self.reconcile_interrupted_usage();
+        self.settle_interrupted_turn(turn_id, interrupted_invocation_id.as_deref());
         Ok(json!({ "runtimeSessionId": self.session_id, "stopped": true, "terminalQueued": true }))
     }
 
@@ -1411,9 +1502,10 @@ impl Provider for AwsAgentCoreHarnessProvider {
             kind,
         } = event;
         if self.active_invocation_id.as_deref() != Some(invocation_id.as_str()) {
-            // StopRuntimeSession truncates the active EventStream. Once the
-            // interrupted terminal is queued, no record from that invocation
-            // may escape after the run terminal or mutate its durable usage.
+            // Once the interrupted terminal is queued, no record from its
+            // truncated EventStream may escape after the durable terminal or
+            // mutate accounting. A timed-out usage snapshot stays fail closed
+            // for the lifetime of this remote session.
             return Ok(None);
         }
         match kind {
@@ -2049,6 +2141,20 @@ mod tests {
         events_before_stop_reply: bool,
         usage: Value,
     ) -> AwsAgentCoreHarnessProvider {
+        provider_with_delayed_interrupt_stream(
+            interrupt_events,
+            events_before_stop_reply,
+            Duration::from_millis(10),
+            usage,
+        )
+    }
+
+    fn provider_with_delayed_interrupt_stream(
+        interrupt_events: Vec<NetworkEvent>,
+        events_before_stop_reply: bool,
+        post_stop_delay: Duration,
+        usage: Value,
+    ) -> AwsAgentCoreHarnessProvider {
         let (commands, command_rx) = mpsc::sync_channel(4);
         let (event_tx, event_rx) = mpsc::sync_channel(interrupt_events.len().max(1));
         let join = thread::spawn(move || {
@@ -2062,7 +2168,7 @@ mod tests {
                         }
                         reply.send(Ok(())).unwrap();
                         if !events_before_stop_reply {
-                            thread::sleep(Duration::from_millis(10));
+                            thread::sleep(post_stop_delay);
                             for event in &interrupt_events {
                                 event_tx.send(event.clone()).unwrap();
                             }
@@ -2163,6 +2269,18 @@ mod tests {
             "costSource": "provider_claim"
         })))
         .is_err());
+        assert!(restored_usage_snapshot(Some(&json!({
+            "inputTokens": 123,
+            "outputTokens": 45,
+            "cacheReadInputTokens": 67,
+            "cacheWriteInputTokens": 8,
+            "requestCount": 4,
+            "estimatedCostUsd": 0.73,
+            "costSource": "paperclip_estimate",
+            "usageReconciliation": "unexpected_state",
+            "pendingInvocationId": "invocation-1"
+        })))
+        .is_err());
     }
 
     #[test]
@@ -2200,7 +2318,7 @@ mod tests {
     }
 
     #[test]
-    fn mid_stream_interrupt_is_terminal_before_late_usage_and_truncated_completion() {
+    fn mid_stream_interrupt_waits_for_late_usage_and_suppresses_truncated_completion() {
         let late_usage = NetworkEventKind::Usage {
             input_tokens: 2_000,
             output_tokens: 100,
@@ -2233,10 +2351,11 @@ mod tests {
         match snapshot {
             ProviderEvent::Notification { method, params } => {
                 assert_eq!(method, "thread/tokenUsage/updated");
-                assert_eq!(params["requestCount"], 0);
+                assert_eq!(params["requestCount"], 1);
+                assert_eq!(params["inputTokens"], 2_000);
                 assert_eq!(
                     params["usageReconciliation"],
-                    "latest_cumulative_estimate_pending_metadata"
+                    "authoritative_metadata_observed"
                 );
             }
             other => panic!("unexpected interrupted usage snapshot: {other:?}"),
@@ -2269,9 +2388,157 @@ mod tests {
         }
         assert_eq!(late_usage_updates, 0);
         assert_eq!(extra_terminals, 0);
+        assert_eq!(provider.usage["requestCount"], 1);
+        assert_eq!(provider.usage["inputTokens"], 2_000);
+        assert!(provider.current_text.is_empty());
+    }
+
+    #[test]
+    fn interrupt_usage_timeout_is_durable_and_blocks_future_invocations() {
+        let mut provider = provider_with_interrupt_stream(
+            Vec::new(),
+            false,
+            restored_usage_snapshot(None).unwrap(),
+        );
+
+        provider.interrupt_turn("turn-1").unwrap();
+        let snapshot = provider.usage_snapshot().unwrap();
+        assert_eq!(
+            snapshot[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_PENDING
+        );
+        assert_eq!(snapshot[AGENTCORE_PENDING_INVOCATION_FIELD], "invocation-1");
+        assert_eq!(restored_usage_snapshot(Some(&snapshot)).unwrap(), snapshot);
+
+        match provider.poll().unwrap().unwrap() {
+            ProviderEvent::Notification { method, params } => {
+                assert_eq!(method, "thread/tokenUsage/updated");
+                assert_eq!(params, snapshot);
+            }
+            other => panic!("unexpected pending usage snapshot: {other:?}"),
+        }
+        assert!(matches!(
+            provider.poll().unwrap().unwrap(),
+            ProviderEvent::Notification { ref method, .. } if method == "turn/completed"
+        ));
+
+        let error = provider.invoke(Vec::new()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("usage reconciliation remains pending"));
+        assert!(provider.active_invocation_id.is_none());
+        assert!(provider.current_turn_id.is_none());
+
+        provider.increase_budget(2.0).unwrap();
+        assert_eq!(
+            provider.usage[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_PENDING
+        );
+        assert!(provider.invoke(Vec::new()).is_err());
+
+        let mut recovered = provider_with_events(Vec::new(), snapshot);
+        recovered.active_invocation_id = None;
+        recovered.current_turn_id = None;
+        let error = recovered.invoke(Vec::new()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("usage reconciliation remains pending"));
+    }
+
+    #[test]
+    fn ambiguous_invoke_delivery_retains_identity_for_interrupt_reconciliation() {
+        let mut provider = provider_with_interrupt_stream(
+            Vec::new(),
+            false,
+            restored_usage_snapshot(None).unwrap(),
+        );
+        provider.current_turn_id = None;
+        provider.active_invocation_id = None;
+
+        let error = provider
+            .start_turn("ambiguous delivery", "", "turn-ambiguous")
+            .unwrap_err();
+        assert!(error.to_string().contains("unexpected test invocation"));
+        let ambiguous_invocation_id = provider
+            .active_invocation_id
+            .clone()
+            .expect("ambiguous invocation identity is retained");
+        assert_eq!(
+            provider.durable_cursor.as_deref(),
+            Some(ambiguous_invocation_id.as_str())
+        );
+
+        provider.interrupt_turn("turn-ambiguous").unwrap();
+        let snapshot = provider.usage_snapshot().unwrap();
+        assert_eq!(
+            snapshot[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_PENDING
+        );
+        assert_eq!(
+            snapshot[AGENTCORE_PENDING_INVOCATION_FIELD],
+            ambiguous_invocation_id
+        );
+
+        let restored = restored_usage_snapshot(Some(&snapshot)).unwrap();
+        let mut recovered = provider_with_events(Vec::new(), restored);
+        recovered.active_invocation_id = None;
+        recovered.current_turn_id = None;
+        let error = recovered.invoke(Vec::new()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("usage reconciliation remains pending"));
+    }
+
+    #[test]
+    fn usage_arriving_after_interrupted_terminal_is_suppressed_and_remains_fail_closed() {
+        let mut provider = provider_with_delayed_interrupt_stream(
+            vec![
+                invocation_event(NetworkEventKind::Usage {
+                    input_tokens: 900,
+                    output_tokens: 90,
+                    cache_read_input_tokens: 30,
+                    cache_write_input_tokens: 10,
+                    latency_ms: 14,
+                }),
+                invocation_event(NetworkEventKind::InvocationComplete),
+            ],
+            false,
+            Duration::from_millis(150),
+            restored_usage_snapshot(None).unwrap(),
+        );
+
+        provider.interrupt_turn("turn-1").unwrap();
+        let pending_snapshot = provider.usage_snapshot().unwrap();
+        assert_eq!(
+            pending_snapshot[AGENTCORE_USAGE_RECONCILIATION_FIELD],
+            AGENTCORE_USAGE_RECONCILIATION_PENDING
+        );
+        assert!(matches!(
+            provider.poll().unwrap().unwrap(),
+            ProviderEvent::Notification { ref method, .. }
+                if method == "thread/tokenUsage/updated"
+        ));
+        assert!(matches!(
+            provider.poll().unwrap().unwrap(),
+            ProviderEvent::Notification { ref method, .. } if method == "turn/completed"
+        ));
+
+        thread::sleep(Duration::from_millis(125));
+        assert!(provider.poll().unwrap().is_none());
+        assert!(provider.poll().unwrap().is_none());
+        assert_eq!(provider.usage, pending_snapshot);
         assert_eq!(provider.usage["requestCount"], 0);
         assert_eq!(provider.usage["inputTokens"], 0);
-        assert!(provider.current_text.is_empty());
+
+        let error = provider.invoke(Vec::new()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("usage reconciliation remains pending"));
+        let restored = restored_usage_snapshot(Some(&pending_snapshot)).unwrap();
+        let mut recovered = provider_with_events(Vec::new(), restored);
+        recovered.active_invocation_id = None;
+        recovered.current_turn_id = None;
+        assert!(recovered.invoke(Vec::new()).is_err());
     }
 
     #[test]

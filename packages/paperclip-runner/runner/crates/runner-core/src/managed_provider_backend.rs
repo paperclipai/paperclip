@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::aws_agentcore_provider::AwsAgentCoreHarnessProvider;
+use crate::aws_agentcore_provider::{
+    AwsAgentCoreHarnessProvider, AGENTCORE_PENDING_INVOCATION_FIELD,
+    AGENTCORE_USAGE_RECONCILIATION_FIELD, AGENTCORE_USAGE_RECONCILIATION_OBSERVED,
+    AGENTCORE_USAGE_RECONCILIATION_PENDING,
+};
 use crate::claude_managed_provider::ClaudeManagedProvider;
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, sanitize_value,
@@ -381,20 +385,46 @@ fn valid_agentcore_usage_snapshot(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    [
-        "inputTokens",
-        "outputTokens",
-        "cacheReadInputTokens",
-        "cacheWriteInputTokens",
-        "requestCount",
-    ]
-    .iter()
-    .all(|field| object.get(*field).and_then(Value::as_u64).is_some())
+    let reconciliation_valid = match (
+        object.get(AGENTCORE_USAGE_RECONCILIATION_FIELD),
+        object.get(AGENTCORE_PENDING_INVOCATION_FIELD),
+    ) {
+        (None, None) => true,
+        (Some(reconciliation), None) => {
+            reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_OBSERVED)
+        }
+        (Some(reconciliation), Some(invocation_id)) => {
+            reconciliation.as_str() == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
+                && invocation_id.as_str().is_some_and(|invocation_id| {
+                    !invocation_id.is_empty()
+                        && invocation_id.len() <= 512
+                        && !invocation_id.chars().any(char::is_control)
+                })
+        }
+        _ => false,
+    };
+    reconciliation_valid
+        && [
+            "inputTokens",
+            "outputTokens",
+            "cacheReadInputTokens",
+            "cacheWriteInputTokens",
+            "requestCount",
+        ]
+        .iter()
+        .all(|field| object.get(*field).and_then(Value::as_u64).is_some())
         && object
             .get("estimatedCostUsd")
             .and_then(Value::as_f64)
             .is_some_and(|value| value.is_finite() && value >= 0.0)
         && object.get("costSource").and_then(Value::as_str) == Some("paperclip_estimate")
+}
+
+fn agentcore_usage_reconciliation_pending(value: &Value) -> bool {
+    value
+        .get(AGENTCORE_USAGE_RECONCILIATION_FIELD)
+        .and_then(Value::as_str)
+        == Some(AGENTCORE_USAGE_RECONCILIATION_PENDING)
 }
 
 fn valid_claude_managed_skill_ref(value: &ClaudeManagedSkillRef) -> bool {
@@ -1066,6 +1096,17 @@ impl ManagedProviderCommandExecutor {
             .ok_or_else(|| {
                 DurableRunnerError::invalid("turn.start payload.text is required and bounded")
             })?;
+        if self.state.as_ref().is_some_and(|state| {
+            state.descriptor.kind() == ManagedProviderKind::AwsAgentcore
+                && state
+                    .provider_usage
+                    .as_ref()
+                    .is_some_and(agentcore_usage_reconciliation_pending)
+        }) {
+            return Err(DurableRunnerError::invalid(
+                "AgentCore usage reconciliation remains pending after an interrupted invocation",
+            ));
+        }
         if self.provider.is_none() {
             self.open_session()?;
         }
@@ -2325,7 +2366,42 @@ mod tests {
     }
 
     #[test]
-    fn durable_agentcore_usage_is_supplied_to_the_recovered_provider() {
+    fn agentcore_usage_snapshot_accepts_only_bounded_reconciliation_states() {
+        let usage = json!({
+            "inputTokens": 12,
+            "outputTokens": 3,
+            "cacheReadInputTokens": 4,
+            "cacheWriteInputTokens": 5,
+            "requestCount": 2,
+            "estimatedCostUsd": 0.75,
+            "costSource": "paperclip_estimate"
+        });
+        assert!(valid_agentcore_usage_snapshot(&usage));
+
+        let mut observed = usage.clone();
+        observed[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_OBSERVED);
+        assert!(valid_agentcore_usage_snapshot(&observed));
+
+        let mut pending = usage.clone();
+        pending[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_PENDING);
+        pending[AGENTCORE_PENDING_INVOCATION_FIELD] = json!("invocation-1");
+        assert!(valid_agentcore_usage_snapshot(&pending));
+
+        pending[AGENTCORE_USAGE_RECONCILIATION_FIELD] = json!("unknown");
+        assert!(!valid_agentcore_usage_snapshot(&pending));
+        pending[AGENTCORE_USAGE_RECONCILIATION_FIELD] =
+            json!(AGENTCORE_USAGE_RECONCILIATION_PENDING);
+        pending
+            .as_object_mut()
+            .unwrap()
+            .remove(AGENTCORE_PENDING_INVOCATION_FIELD);
+        assert!(!valid_agentcore_usage_snapshot(&pending));
+    }
+
+    #[test]
+    fn durable_pending_agentcore_usage_is_restored_and_blocks_turn_start_preflight() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-managed-provider-test-{}",
             Uuid::new_v4()
@@ -2341,7 +2417,9 @@ mod tests {
             "cacheWriteInputTokens": 5,
             "requestCount": 2,
             "estimatedCostUsd": 0.75,
-            "costSource": "paperclip_estimate"
+            "costSource": "paperclip_estimate",
+            "usageReconciliation": AGENTCORE_USAGE_RECONCILIATION_PENDING,
+            "pendingInvocationId": "invocation-before-restart"
         });
         let first_observed = Arc::new(Mutex::new(Vec::new()));
         let mut first = ManagedProviderCommandExecutor::with_factory(
@@ -2379,6 +2457,20 @@ mod tests {
             recovered_observed.lock().unwrap().as_slice(),
             &[Some(usage)]
         );
+        let error = recovered
+            .execute(&test_command(
+                5,
+                "turn.start",
+                json!({ "text": "must remain fail closed" }),
+            ))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("usage reconciliation remains pending"));
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(persisted["lifecycle"], "session_open");
+        assert_eq!(persisted["activeTurnId"], Value::Null);
         fs::remove_dir_all(directory).unwrap();
     }
 
