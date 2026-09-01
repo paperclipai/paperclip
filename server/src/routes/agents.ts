@@ -659,7 +659,12 @@ export function agentRoutes(
               "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
             );
           }
-          if (outcome !== "promoted") {
+          // A `kept` outcome is a successful login too: the company home
+          // already holds a same-account credential that is not older than
+          // this one (for example, a teardown copy-back installed a fresher
+          // copy while this login was in progress), so a later run still
+          // authenticates as the same account.
+          if (outcome !== "promoted" && outcome !== "kept") {
             throw new Error(`device-login credential promotion rejected: ${outcome}`);
           }
         },
