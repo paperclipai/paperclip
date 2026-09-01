@@ -143,12 +143,17 @@ const constantPathRoutes: Array<{ file: string; marker: string; route: string }>
  * preserving length so offsets stay valid against the raw source. Brace
  * counting on the result reflects real block nesting.
  *
- * Masking rather than parsing because TypeScript 7 no longer exposes the
- * syntactic compiler API from its main entry (`ts.createSourceFile` and friends
- * are gone; the official lexer survives only under the explicitly-unstable
- * `typescript/unstable/ast/scanner` subpath, which a test should not couple to),
- * and a real parser is not worth a new dependency for one test. The trade is
- * covered rather than assumed: `loadActualRoutes` refuses to report any file
+ * Masking rather than parsing. TypeScript 7 no longer exposes the syntactic
+ * compiler API from its main entry (`ts.createSourceFile` and friends are gone;
+ * the official lexer survives only under the explicitly-unstable
+ * `typescript/unstable/ast/scanner` subpath, which a test should not couple to).
+ * Vite's `parseAst` — a declared devDependency, and what this suite already runs
+ * on — does parse annotated TypeScript with exact node offsets, and rebuilding
+ * this scan on it would delete the lexer and the statement-position heuristics
+ * below; that is the right follow-up if these helpers ever need to grow again.
+ * For now the hand scan stays: its rules are individually pinned by tests and
+ * were hardened against every shape the route tree actually contains. The trade
+ * is covered rather than assumed: `loadActualRoutes` refuses to report any file
  * this masker cannot brace-balance, and the test asserts that list is empty, so
  * a masking bug fails the suite instead of silently shrinking what gets checked.
  */
@@ -629,6 +634,17 @@ function registrationArguments(masked: string, registrationIndex: number) {
   return null;
 }
 
+// The one place both registration loops decide a route is guarded: an inline
+// (or middleware-preceded) function argument asserting, or a named handler
+// whose declaration asserts. Shared so the two loops cannot drift apart —
+// the constant-path loop once silently lacked the named-handler arm.
+function routeIsBoardGuarded(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
+  return (
+    assertsBoardUnconditionally(registrationArguments(masked, registrationIndex) ?? "", assertNames) ||
+    namedHandlerAssertsBoard(masked, registrationIndex, assertNames)
+  );
+}
+
 function braceBalanceOf(masked: string) {
   let balance = 0;
   for (const char of masked) {
@@ -690,13 +706,7 @@ function computeActualRoutes() {
       const route = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
       routes.add(route);
 
-      const handlerSource = registrationArguments(masked, match.index) ?? "";
-      if (
-        assertsBoardUnconditionally(handlerSource, assertNames) ||
-        namedHandlerAssertsBoard(masked, match.index, assertNames)
-      ) {
-        boardGuardedRoutes.add(route);
-      }
+      if (routeIsBoardGuarded(masked, match.index, assertNames)) boardGuardedRoutes.add(route);
     });
 
     for (const { file: constantFile, marker, route } of constantPathRoutes) {
@@ -706,12 +716,7 @@ function computeActualRoutes() {
       const at = masked.indexOf(marker);
       if (at < 0) continue;
       routes.add(route);
-      if (
-        assertsBoardUnconditionally(registrationArguments(masked, at) ?? "", assertNames) ||
-        namedHandlerAssertsBoard(masked, at, assertNames)
-      ) {
-        boardGuardedRoutes.add(route);
-      }
+      if (routeIsBoardGuarded(masked, at, assertNames)) boardGuardedRoutes.add(route);
     }
   }
 
