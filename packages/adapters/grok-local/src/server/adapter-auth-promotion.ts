@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "no
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import {
   grokHomeHasUsableAuth,
   parseGrokAuthPayload,
@@ -23,6 +24,13 @@ import {
 // is empty or already holds the SAME account, and it keeps the home untouched
 // when a DIFFERENT account already occupies it. The helper never writes the
 // instance-global home, only the company-scoped one.
+//
+// The comparison-and-install step runs under `withDirectoryMergeLock` on the
+// company Grok home, the same lock `copyBackGrokAuth` (see
+// `grok-auth-copyback.ts`) takes on the same directory at teardown. Both
+// resolve the lock key from the directory's canonical real path, so a
+// promotion and a teardown copy-back for the same company can never
+// interleave their read-decide-write sections.
 //
 // The helper treats the whole credential value as a secret: it never logs a
 // token, a refresh token, or a personal field (email, name, user id).
@@ -305,31 +313,45 @@ export async function promoteGrokDeviceLoginCredential(
   //    read as the same identity — absent from a read failure, invalid JSON,
   //    or a non-Grok payload — is treated as a foreign identity, so the
   //    promotion fails closed and writes nothing.
-  const companyHome = resolveManagedGrokHomeDir(env, companyId);
-  const authPath = path.join(companyHome, AUTH_FILE_NAME);
-  const existingState = await readExistingHomeState(authPath);
-  if (existingState.kind === "unreadable") {
-    await log(
-      "[paperclip] Grok device-login promotion: kept the company credential home (the existing file is present but this step cannot read it as a usable Grok credential).",
-    );
-    return "kept_foreign_identity";
-  }
-  if (existingState.kind === "identity" && existingState.identityKey !== payload.identityKey) {
-    await log(
-      "[paperclip] Grok device-login promotion: kept the company credential home (the login is a different account than the one already set for this company).",
-    );
-    return "kept_foreign_identity";
-  }
-
+  //
   // 6. Write the company credential home. `mkdir` applies `mode` only when it
   //    creates the directory, so an explicit `chmod` follows it. This keeps
   //    the directory mode exact both for a new home and for a home that
   //    already existed at a broader mode. The write itself is atomic: it
   //    stages the bytes into a private temporary file in the same directory,
   //    then renames that file over `auth.json`.
+  //
+  // Steps 5 and 6 run under `withDirectoryMergeLock` on the company home, the
+  // same lock the teardown copy-back takes on the same directory (see
+  // `grok-auth-copyback.ts`). The directory must exist before the lock can
+  // resolve a canonical real path, so `mkdir` runs once, up front, at the
+  // final private mode; a home that already exists keeps its current mode
+  // until the write path below re-asserts it.
+  const companyHome = resolveManagedGrokHomeDir(env, companyId);
   await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
-  await chmod(companyHome, PRIVATE_DIR_MODE);
-  await writeAuthFileAtomically(authPath, authBytes);
-  await log("[paperclip] Grok device-login promotion: wrote the company credential home at mode 0600.");
-  return "promoted";
+  return await withDirectoryMergeLock(
+    companyHome,
+    async (canonicalCompanyHome) => {
+      const authPath = path.join(canonicalCompanyHome, AUTH_FILE_NAME);
+      const existingState = await readExistingHomeState(authPath);
+      if (existingState.kind === "unreadable") {
+        await log(
+          "[paperclip] Grok device-login promotion: kept the company credential home (the existing file is present but this step cannot read it as a usable Grok credential).",
+        );
+        return "kept_foreign_identity";
+      }
+      if (existingState.kind === "identity" && existingState.identityKey !== payload.identityKey) {
+        await log(
+          "[paperclip] Grok device-login promotion: kept the company credential home (the login is a different account than the one already set for this company).",
+        );
+        return "kept_foreign_identity";
+      }
+
+      await chmod(canonicalCompanyHome, PRIVATE_DIR_MODE);
+      await writeAuthFileAtomically(authPath, authBytes);
+      await log("[paperclip] Grok device-login promotion: wrote the company credential home at mode 0600.");
+      return "promoted";
+    },
+    env,
+  );
 }
