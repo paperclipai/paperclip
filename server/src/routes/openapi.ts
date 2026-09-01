@@ -1005,6 +1005,14 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
+  // Both routes assert `assertBoard(req)` as the first line of the handler
+  // body — this set is what makes that the declared tier too, rather than
+  // leaving the spec claim `board_or_agent` while the body enforces
+  // `board`. `DELETE /api/agents/{id}` was already body-gated; it was
+  // simply never added here. `DELETE /api/labels/{labelId}` is the gate
+  // added alongside it, for the same reason (see the PR description).
+  "DELETE /api/agents/{id}",
+  "DELETE /api/labels/{labelId}",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([

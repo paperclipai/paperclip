@@ -8771,12 +8771,21 @@ export function issueService(db: Db) {
       return created;
     },
 
-    deleteLabel: async (id: string) =>
-      db
-        .delete(labels)
-        .where(eq(labels.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    deleteLabel: async (
+      id: string,
+    ): Promise<{ removed: typeof labels.$inferSelect | null; affectedIssueIds: string[] }> =>
+      db.transaction(async (tx) => {
+        // Read the blast radius before the delete cascades `issue_labels` away
+        // at the foreign-key level. This runs in the same transaction as the
+        // delete so the read is consistent with what actually gets stripped,
+        // not a snapshot that a concurrent label-add could race past.
+        const affected = await tx
+          .select({ issueId: issueLabels.issueId })
+          .from(issueLabels)
+          .where(eq(issueLabels.labelId, id));
+        const [removed] = await tx.delete(labels).where(eq(labels.id, id)).returning();
+        return { removed: removed ?? null, affectedIssueIds: affected.map((row) => row.issueId) };
+      }),
 
     listComments: async (
       issueId: string,
