@@ -79,8 +79,8 @@ export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.r
 
 /**
  * Report an error to Sentry. A no-op before the gate opens, when the gate
- * never opens (`SENTRY_DSN` unset), or when bootstrap failed. Never throws —
- * observability must not change control flow.
+ * never opens (the backend DSN resolves to `null`), or when bootstrap
+ * failed. Never throws — observability must not change control flow.
  */
 export function captureException(error: unknown): void {
   if (!sentryHandle) return;
