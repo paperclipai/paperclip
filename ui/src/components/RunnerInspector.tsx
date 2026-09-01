@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   HeartbeatRunEvent,
   ProviderTraceFieldMapping,
@@ -53,6 +53,12 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 type TraceEntry = Record<string, unknown>;
 type InspectorView = "overview" | "pipeline" | "trace";
 
+type RawTraceAccess = {
+  runId: string;
+  allowed: boolean;
+  epoch: number;
+};
+
 type TraceOperation = {
   key: string;
   frames: TraceEntry[];
@@ -87,6 +93,10 @@ function record(value: unknown): Record<string, unknown> {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function revealedFrameKey(runId: string, frameId: number): string {
+  return `${runId}:${frameId}`;
 }
 
 function scalar(value: unknown): string {
@@ -645,8 +655,25 @@ export function RunnerInspector({
   const [disposition, setDisposition] = useState("all");
   const [prpType, setPrpType] = useState("all");
   const [visibility, setVisibility] = useState("all");
-  const [revealed, setRevealed] = useState<Record<number, ProviderTraceFrame>>({});
-  const [canInspectRaw, setCanInspectRaw] = useState<boolean | null>(null);
+  const [revealed, setRevealed] = useState<Record<string, ProviderTraceFrame>>({});
+  const [rawTraceAccess, setRawTraceAccess] = useState<RawTraceAccess | null>(null);
+  const rawTraceAccessRef = useRef<RawTraceAccess | null>(null);
+  const rawTraceAccessEpochRef = useRef(0);
+  const canInspectRaw =
+    open && rawTraceAccess?.runId === runId ? rawTraceAccess.allowed : null;
+
+  useLayoutEffect(() => {
+    rawTraceAccessEpochRef.current += 1;
+    rawTraceAccessRef.current = null;
+    setRawTraceAccess(null);
+    setInspection(null);
+    setEvents([]);
+    setLoading(open);
+    setError(null);
+    setSelectedKey(null);
+    setSelectedFrameId(null);
+    setRevealed({});
+  }, [open, runId]);
 
   useEffect(() => {
     if (!open) return;
@@ -666,7 +693,14 @@ export function RunnerInspector({
       .then(async ([boardAccess, nextEvents]) => {
         if (!active) return;
         const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
-        setCanInspectRaw(canRaw);
+        const access = {
+          runId,
+          allowed: canRaw,
+          epoch: rawTraceAccessEpochRef.current,
+        };
+        rawTraceAccessRef.current = access;
+        setRawTraceAccess(access);
+        if (!canRaw) setRevealed({});
         const trace = canRaw
           ? await heartbeatsApi.providerTrace(runId)
           : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
@@ -743,6 +777,12 @@ export function RunnerInspector({
   }, [open, runId, selectedOperation, view]);
 
   const selectedFrame = selectedOperation?.frames.find((frame) => Number(frame.frameId) === selectedFrameId) ?? selectedOperation?.frames.at(-1) ?? null;
+  const revealedFrame =
+    canInspectRaw === true && selectedFrame
+      ? (revealed[
+          revealedFrameKey(runId, Number(selectedFrame.frameId))
+        ] ?? null)
+      : null;
   const selectedInterpretations = selectedFrame
     ? selectedOperation?.interpretations.filter((entry) => Number(entry.frameId) === Number(selectedFrame.frameId)) ?? []
     : selectedOperation?.interpretations ?? [];
@@ -769,13 +809,82 @@ export function RunnerInspector({
   };
 
   const reveal = async (frameId: number) => {
+    if (canInspectRaw !== true) return;
+    const requestedAccess = rawTraceAccessRef.current;
+    if (requestedAccess?.runId !== runId || requestedAccess.allowed !== true) {
+      return;
+    }
     if (!window.confirm("This exact provider frame may contain prompts, tool arguments, secrets, or reasoning. Reveal it now?")) return;
-    const frame = await heartbeatsApi.revealProviderTraceFrame(runId, frameId);
-    setRevealed((current) => ({ ...current, [frameId]: frame }));
+    const requestedRunId = runId;
+    const frame = await heartbeatsApi.revealProviderTraceFrame(
+      requestedRunId,
+      frameId,
+    );
+    const currentAccess = rawTraceAccessRef.current;
+    if (
+      currentAccess?.runId !== requestedRunId ||
+      currentAccess.allowed !== true ||
+      currentAccess.epoch !== requestedAccess.epoch
+    ) {
+      return;
+    }
+    setRevealed((current) => ({
+      ...current,
+      [revealedFrameKey(requestedRunId, frameId)]: frame,
+    }));
+  };
+
+  const downloadTrace = async () => {
+    if (canInspectRaw !== true) return;
+    const requestedAccess = rawTraceAccessRef.current;
+    if (requestedAccess?.runId !== runId || requestedAccess.allowed !== true) {
+      return;
+    }
+    if (!window.confirm("Download the exact raw trace? It may contain sensitive prompts, tool arguments, and provider-only fields.")) return;
+    const blob = await heartbeatsApi.downloadProviderTrace(runId);
+    const currentAccess = rawTraceAccessRef.current;
+    if (
+      currentAccess?.runId !== runId ||
+      currentAccess.allowed !== true ||
+      currentAccess.epoch !== requestedAccess.epoch
+    ) {
+      return;
+    }
+    downloadBlob(blob, `provider-trace-${runId}.ndjson`);
+  };
+
+  const deleteTrace = async () => {
+    if (canInspectRaw !== true) return;
+    const currentAccess = rawTraceAccessRef.current;
+    if (currentAccess?.runId !== runId || currentAccess.allowed !== true) {
+      return;
+    }
+    if (!window.confirm("Delete this raw trace immediately? This cannot be undone.")) return;
+    rawTraceAccessEpochRef.current += 1;
+    const deletionAccess = {
+      ...currentAccess,
+      epoch: rawTraceAccessEpochRef.current,
+    };
+    rawTraceAccessRef.current = deletionAccess;
+    setRawTraceAccess(deletionAccess);
+    setRevealed({});
+    await heartbeatsApi.deleteProviderTrace(runId);
+    if (rawTraceAccessRef.current?.epoch !== deletionAccess.epoch) return;
+    setInspection({ trace: null, entries: [] });
+    setSelectedKey(null);
+    setSelectedFrameId(null);
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
+      rawTraceAccessEpochRef.current += 1;
+      rawTraceAccessRef.current = null;
+      setRawTraceAccess(null);
+      setInspection(null);
+      setEvents([]);
+      setSelectedKey(null);
+      setSelectedFrameId(null);
+      setRevealed({});
       const params = new URLSearchParams(window.location.search);
       params.delete("inspectRun");
       params.delete("traceView");
@@ -843,13 +952,13 @@ export function RunnerInspector({
               <p className="mt-1 text-sm text-muted-foreground">Canonical PRP events and presentation decisions remain inspectable below.</p>
             </div>
           ) : null}
-          {!loading && !error && canInspectRaw !== false && !inspection?.trace ? (
+          {!loading && !error && canInspectRaw === true && !inspection?.trace ? (
             <div className="m-4 flex items-start justify-between gap-4 rounded-md border border-border bg-muted/20 p-4">
               <div>
                 <p className="font-medium">Raw provider capture was off for this run.</p>
                 <p className="mt-1 text-sm text-muted-foreground">Canonical PRP events and persisted presentation decisions remain available below.</p>
               </div>
-              {onRerunWithTrace && canInspectRaw ? (
+              {onRerunWithTrace && canInspectRaw === true ? (
                 <Button size="sm" onClick={onRerunWithTrace}><RefreshCw className="mr-1.5 h-4 w-4" />Re-run with provider trace</Button>
               ) : null}
             </div>
@@ -938,8 +1047,8 @@ export function RunnerInspector({
                             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge variant="outline">frame {String(selectedFrame.frameId)}</Badge><span>{text(selectedFrame.direction).replaceAll("_", " ")}</span><span>{formatBytes(Number(selectedFrame.byteLength) || 0)}</span><code className="truncate">{text(selectedFrame.digest)}</code></div>
                             <JsonExplorer value={selectedFrame.parsed} />
                             {Array.isArray(selectedFrame.withheldPaths) && selectedFrame.withheldPaths.length > 0 ? <div className="flex items-start gap-2 rounded-md border border-border bg-accent/30 px-3 py-2 text-xs text-muted-foreground"><ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-foreground" /><span>Withheld paths: {selectedFrame.withheldPaths.join(", ")}</span></div> : null}
-                            {canInspectRaw ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}
-                            {revealed[Number(selectedFrame.frameId)] ? <div className="rounded-md border border-destructive/30 p-2"><p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-destructive"><ShieldAlert className="h-3.5 w-3.5" />Exact unredacted frame</p><JsonExplorer value={decodeExactFrame(revealed[Number(selectedFrame.frameId)]!.rawBase64)} label="Search exact frame" /></div> : null}
+                            {canInspectRaw === true ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}
+                            {revealedFrame ? <div className="rounded-md border border-destructive/30 p-2"><p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-destructive"><ShieldAlert className="h-3.5 w-3.5" />Exact unredacted frame</p><JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /></div> : null}
                           </div>
                         ) : <p className="text-sm text-muted-foreground">This PRP event has no recoverable raw frame.</p>}
                       </section>
@@ -993,14 +1102,14 @@ export function RunnerInspector({
           {view === "trace" ? (
             <div className="grid min-h-0 flex-1 md:grid-cols-(--gtc-runner-inspector-trace)">
               <ScrollArea className="border-r border-border"><div className="p-2">{frames.length ? [...frames].sort((left, right) => Number(left.frameId) - Number(right.frameId)).map((frame) => <button key={Number(frame.frameId)} type="button" onClick={() => { const operation = operations.find((candidate) => candidate.frames.some((candidateFrame) => Number(candidateFrame.frameId) === Number(frame.frameId))); if (operation) setSelectedKey(operation.key); setSelectedFrameId(Number(frame.frameId)); }} className={cn("mb-1 w-full rounded-md border px-3 py-2 text-left", Number(frame.frameId) === Number(selectedFrame?.frameId) ? "border-primary/40 bg-primary/10" : "border-transparent hover:bg-muted/50")}><span className="flex items-center gap-2 text-sm font-medium"><span className="font-mono text-xs text-muted-foreground">#{String(frame.frameId)}</span><span className="truncate">{frameMethod(frame) || text(frame.direction)}</span></span><span className="mt-1 block text-(length:--text-nano) text-muted-foreground">{text(frame.direction).replaceAll("_", " ")} · {formatBytes(Number(frame.byteLength) || 0)}</span></button>) : <p className="p-3 text-sm text-muted-foreground">No raw frames were captured for this run.</p>}</div></ScrollArea>
-              <ScrollArea><div className="space-y-3 p-5">{selectedFrame ? <><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">Exact trace frame #{String(selectedFrame.frameId)}</h3><Badge variant="outline">{frameMethod(selectedFrame) || text(selectedFrame.direction)}</Badge></div><JsonExplorer value={selectedFrame.parsed} />{canInspectRaw ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}{revealed[Number(selectedFrame.frameId)] ? <JsonExplorer value={decodeExactFrame(revealed[Number(selectedFrame.frameId)]!.rawBase64)} label="Search exact frame" /> : null}</> : <p className="text-sm text-muted-foreground">Select a frame from the chronological trace.</p>}</div></ScrollArea>
+              <ScrollArea><div className="space-y-3 p-5">{selectedFrame ? <><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">Exact trace frame #{String(selectedFrame.frameId)}</h3><Badge variant="outline">{frameMethod(selectedFrame) || text(selectedFrame.direction)}</Badge></div><JsonExplorer value={selectedFrame.parsed} />{canInspectRaw === true ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}{revealedFrame ? <JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /> : null}</> : <p className="text-sm text-muted-foreground">Select a frame from the chronological trace.</p>}</div></ScrollArea>
             </div>
           ) : null}
 
-          {inspection?.trace ? (
+          {canInspectRaw === true && inspection?.trace?.runId === runId ? (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border p-3">
               <p className="text-xs text-muted-foreground">{inspection.trace.frameCount} frames · {formatBytes(inspection.trace.byteCount)} · expires {new Date(inspection.trace.expiresAt).toLocaleString()}</p>
-              <div className="flex gap-2"><Button size="sm" variant="outline" onClick={async () => { if (!window.confirm("Download the exact raw trace? It may contain sensitive prompts, tool arguments, and provider-only fields.")) return; downloadBlob(await heartbeatsApi.downloadProviderTrace(runId), `provider-trace-${runId}.ndjson`); }}><Download className="mr-1.5 h-4 w-4" />Download exact trace</Button><Button size="sm" variant="destructive" onClick={async () => { if (!window.confirm("Delete this raw trace immediately? This cannot be undone.")) return; await heartbeatsApi.deleteProviderTrace(runId); setInspection({ trace: null, entries: [] }); }}><Trash2 className="mr-1.5 h-4 w-4" />Delete trace</Button></div>
+              <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void downloadTrace()}><Download className="mr-1.5 h-4 w-4" />Download exact trace</Button><Button size="sm" variant="destructive" onClick={() => void deleteTrace()}><Trash2 className="mr-1.5 h-4 w-4" />Delete trace</Button></div>
             </div>
           ) : null}
         </div>

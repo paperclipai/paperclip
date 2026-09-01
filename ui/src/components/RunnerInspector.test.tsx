@@ -68,6 +68,37 @@ async function flush() {
   }
 }
 
+function traceInspection(runId: string, marker: string) {
+  return {
+    trace: {
+      id: `trace-${runId}`,
+      runId,
+      companyId: "company-1",
+      status: "complete",
+      provider: "codex",
+      frameCount: 1,
+      byteCount: 31,
+      digest: `sha256:${"a".repeat(64)}`,
+      reason: null,
+      requestedBy: "local-admin",
+      createdAt: "2026-08-22T12:00:00.000Z",
+      expiresAt: "2026-08-23T12:00:00.000Z",
+      deletedAt: null,
+      schema: "paperclip.provider_trace_metadata.v1",
+    },
+    entries: [
+      {
+        kind: "frame",
+        frameId: 1,
+        direction: "provider_to_client",
+        byteLength: 31,
+        parsed: { method: "item/completed", marker },
+        withheldPaths: ["secret"],
+      },
+    ],
+  };
+}
+
 describe("RunnerInspector", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -186,6 +217,123 @@ describe("RunnerInspector", () => {
       expect.stringContaining("may contain prompts"),
     );
     expect(revealMock).toHaveBeenCalledWith("run-1", 1);
+  });
+
+  it("does not reuse an exact frame after switching runs with the same frame id", async () => {
+    traceMock.mockImplementation(async (requestedRunId: string) =>
+      traceInspection(requestedRunId, `${requestedRunId}-redacted`),
+    );
+    revealMock.mockResolvedValue({
+      schema: "paperclip.provider_trace_frame.v1",
+      frameId: 1,
+      timestamp: "1",
+      direction: "provider_to_client",
+      transport: "stdio_jsonl",
+      provider: "codex",
+      byteLength: 31,
+      digest: `sha256:${"b".repeat(64)}`,
+      rawBase64: btoa(JSON.stringify({ secret: "run-one-secret" })),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    await flush();
+    const reveal = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Reveal exact frame"),
+    );
+    flushSync(() => reveal?.click());
+    await flush();
+    expect(container.textContent).toContain("run-one-secret");
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-2"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    expect(container.textContent).not.toContain("run-one-secret");
+    await flush();
+    expect(container.textContent).toContain("run-2-redacted");
+    expect(container.textContent).not.toContain("run-one-secret");
+  });
+
+  it("clears exact frames before reopening after raw-trace access is revoked", async () => {
+    traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
+    revealMock.mockResolvedValue({
+      schema: "paperclip.provider_trace_frame.v1",
+      frameId: 1,
+      timestamp: "1",
+      direction: "provider_to_client",
+      transport: "stdio_jsonl",
+      provider: "codex",
+      byteLength: 31,
+      digest: `sha256:${"b".repeat(64)}`,
+      rawBase64: btoa(JSON.stringify({ secret: "revoked-secret" })),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    await flush();
+    const reveal = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Reveal exact frame"),
+    );
+    flushSync(() => reveal?.click());
+    await flush();
+    expect(container.textContent).toContain("revoked-secret");
+
+    accessMock.mockResolvedValue({
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open={false}
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    expect(container.textContent).not.toContain("revoked-secret");
+    await flush();
+    expect(container.textContent).toContain(
+      "Raw provider traces require an instance administrator.",
+    );
+    expect(container.textContent).not.toContain("Reveal exact frame");
+    expect(container.textContent).not.toContain("revoked-secret");
   });
 
   it("keeps client and provider JSON-RPC id spaces separate when grouping operations", async () => {
