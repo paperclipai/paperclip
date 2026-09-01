@@ -380,9 +380,13 @@ function isStoredCoreState(
         commandTypes.has(command.type) &&
         typeof command.issuedAt === "string" &&
         isRecord(command.payload) &&
-        ["pending", "completed", "failed", "rejected"].includes(
-          String(command.status),
-        ) &&
+        [
+          "pending",
+          "completed",
+          "failed",
+          "rejected",
+          "indeterminate",
+        ].includes(String(command.status)) &&
         (command.result === null || isRecord(command.result)),
     )
   ) {
@@ -1641,10 +1645,16 @@ export class DurablePrpControlPlane {
       return;
     }
     const status = result.status;
+    // `indeterminate` is terminal too: a runner that crashed between journaling
+    // a command and confirming its effect reports it on recovery and will not
+    // execute it again. Rejecting it closes the connection, and since the
+    // runner replays the same result on every reconnect, the session never
+    // recovers.
     if (
       status !== "completed" &&
       status !== "failed" &&
-      status !== "rejected"
+      status !== "rejected" &&
+      status !== "indeterminate"
     ) {
       connection.close();
       return;

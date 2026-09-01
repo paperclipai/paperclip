@@ -615,4 +615,98 @@ describe.sequential("DurablePrpControlPlane", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps a recovered runner attached when it reports an indeterminate command", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-indeterminate-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const journaled = controlPlane.queueCommand(
+        "semantic_tool.result",
+        { callId: "call-1" },
+        "command-tool-1",
+      );
+      controlPlane.queueCommand(
+        "turn.interrupt",
+        { turnId: "turn-1" },
+        "command-interrupt-1",
+      );
+      const client = await authenticate(
+        controlPlane,
+        controlPlane.issueBootstrapTicket(),
+      );
+      expect(client?.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({ commandId: "command-tool-1" }),
+        ],
+      });
+
+      // Exactly what runnerd replays after it is killed between journaling a
+      // command and confirming its effect. Its durable contract promotes such a
+      // command to `indeterminate` so that it is never executed twice.
+      const indeterminateResult = {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: journaled.commandId,
+          commandType: journaled.type,
+          controllerSeq: journaled.controllerSeq,
+          status: "indeterminate",
+          result: {
+            code: "execution_indeterminate",
+            message:
+              "runner recovered after journaling this command; it will not execute twice",
+          },
+        },
+      };
+      sendSecure(client!, indeterminateResult);
+
+      // The authority has to accept that terminal status and hand out the next
+      // command. Closing the connection instead strands the runner in a silent
+      // reconnect loop that never re-reports its provider identity.
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command",
+        payload: { commandId: "command-interrupt-1" },
+      });
+      expect(controlPlane.store.state.commands).toMatchObject([
+        { commandId: "command-tool-1", status: "indeterminate" },
+        { commandId: "command-interrupt-1", status: "pending" },
+      ]);
+
+      // The runner replays its journal on every reconnect, so the same
+      // indeterminate result arrives again. It has to be absorbed as a
+      // duplicate rather than treated as a conflicting result.
+      sendSecure(client!, indeterminateResult);
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command",
+        payload: { commandId: "command-interrupt-1" },
+      });
+      expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+
+      client?.socket.destroy();
+      await controlPlane.stop();
+
+      // That result is now persisted, so a control plane restarted over the
+      // same directory has to be able to read its own state back.
+      const restarted = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+      });
+      expect(restarted.store.state.commands).toMatchObject([
+        { commandId: "command-tool-1", status: "indeterminate" },
+        { commandId: "command-interrupt-1", status: "pending" },
+      ]);
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
