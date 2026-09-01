@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -378,35 +378,9 @@ export function activityService(db: Db) {
 
     runsForIssue: async (companyId: string, issueId: string) => {
       scheduleRunLivenessBackfill(companyId, issueId);
-      // Run ids linked to this issue via activity_log, fetched up front (indexed lookup)
-      // so the main query below can use `issueId = X OR id IN (...)` — a BitmapOr of two
-      // index scans — instead of `issueId = X OR EXISTS (correlated activity_log subquery)`,
-      // which forced a full scan of the company's heartbeat_runs (~2.5s -> ~sub-ms).
-      const activityRunRows = await db
-        .select({ runId: activityLog.runId })
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueId),
-            isNotNull(activityLog.runId),
-          ),
-        );
-      const activityRunIds = activityRunRows
-        .map((row) => row.runId)
-        .filter((runId): runId is string => runId !== null);
-      const issueRunCondition =
-        activityRunIds.length > 0
-          ? or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              inArray(heartbeatRuns.id, activityRunIds),
-            )
-          : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`;
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
-          runtimeMode: heartbeatRuns.runtimeMode,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -428,9 +402,6 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
-          wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
-          contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -443,7 +414,26 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            issueRunCondition,
+            // Runs linked to the issue directly (context_snapshot.issueId) or via
+            // activity_log, gathered in ONE statement so the lookup is atomic (no run
+            // lost to a link created between two separate queries) and each branch uses
+            // its index. The prior `issueId = X OR EXISTS(correlated activity_log)`
+            // forced a full scan of the company's heartbeat_runs; a plain
+            // `OR id IN (subquery)` also seq-scans, so the qualifying ids are collected
+            // by a UNION (de-dupes by id) and filtered via the primary key.
+            sql`${heartbeatRuns.id} IN (
+              SELECT ${heartbeatRuns.id}
+              FROM ${heartbeatRuns}
+              WHERE ${heartbeatRuns.companyId} = ${companyId}
+                AND ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}
+              UNION
+              SELECT ${activityLog.runId}
+              FROM ${activityLog}
+              WHERE ${activityLog.companyId} = ${companyId}
+                AND ${activityLog.entityType} = 'issue'
+                AND ${activityLog.entityId} = ${issueId}
+                AND ${activityLog.runId} IS NOT NULL
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
