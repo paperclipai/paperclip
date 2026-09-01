@@ -319,6 +319,23 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("prefers an explicit final item completed after the result proposal", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "run.result.proposed", runResult("Structured fallback.")),
+      itemEvent(2, "item.completed", "message-final", {
+        kind: "assistant_message",
+        channel: "final",
+        text: "The complete final reply.",
+      }),
+    ])).toEqual([
+      expect.objectContaining({
+        kind: "assistant",
+        text: "The complete final reply.",
+        channel: "final",
+      }),
+    ]);
+  });
+
   it("keeps progress separate from the final runner response", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.completed", {

@@ -328,6 +328,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     cachedTokens: number;
     costUsd: number;
   } | null = null;
+  let runResultFallback: { ts: string; text: string } | null = null;
   const orderedEvents = [...events].sort((a, b) => a.seq - b.seq);
   const completedAgentMessageIds = new Set<string>();
   const completedReasoningIds = new Set<string>();
@@ -532,13 +533,22 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       const result = event.eventType === "run.result.accepted" ? record(payload.result) : payload;
       if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
       const summary = text(result.summary);
-      if (summary) {
-        hasFinalAssistantMessage = true;
-        entries.push({ kind: "assistant", ts, text: summary, channel: "final" });
-      }
+      if (summary && !runResultFallback) runResultFallback = { ts, text: summary };
       continue;
     }
 
+  }
+
+  // A structured result can be proposed before its originating final item is
+  // durably completed. Delay the fallback until every event has been examined
+  // so the explicit assistant reply wins regardless of source ordering.
+  if (!hasFinalAssistantMessage && runResultFallback) {
+    entries.push({
+      kind: "assistant",
+      ts: runResultFallback.ts,
+      text: runResultFallback.text,
+      channel: "final",
+    });
   }
 
   if (usageSummary) {
