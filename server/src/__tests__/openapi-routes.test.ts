@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
-import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { AUTH_TABLE_OPERATIONS, buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -241,12 +241,13 @@ const constantPathRoutes: Array<{ file: string; marker: string; route: string }>
  * counting on the result reflects real block nesting.
  *
  * Masking rather than parsing because TypeScript 7 no longer exposes the
- * syntactic compiler API (`ts.createSourceFile` and friends are gone from the
- * published package), and a real parser is not worth a new dependency for one
- * test. The trade is covered rather than assumed: `loadActualRoutes` refuses to
- * report any file this masker cannot brace-balance, and the test asserts that
- * list is empty, so a masking bug fails the suite instead of silently shrinking
- * what gets checked.
+ * syntactic compiler API from its main entry (`ts.createSourceFile` and friends
+ * are gone; the official lexer survives only under the explicitly-unstable
+ * `typescript/unstable/ast/scanner` subpath, which a test should not couple to),
+ * and a real parser is not worth a new dependency for one test. The trade is
+ * covered rather than assumed: `loadActualRoutes` refuses to report any file
+ * this masker cannot brace-balance, and the test asserts that list is empty, so
+ * a masking bug fails the suite instead of silently shrinking what gets checked.
  */
 function maskLiterals(source: string) {
   const out = source.split("");
@@ -263,7 +264,13 @@ function maskLiterals(source: string) {
       while (k >= 0 && /[A-Za-z0-9_$]/.test(out[k])) k--;
       return regexPrecedingKeywords.has(out.slice(k + 1, j + 1).join(""));
     }
-    return !")]".includes(out[j]);
+    // A postfix `++`/`--` ends a value, so `n++ / 2` divides; reading it as a
+    // regex would silently mask the rest of the line without unbalancing a brace.
+    if ((out[j] === "+" || out[j] === "-") && out[j - 1] === out[j]) return false;
+    // `}` is ambiguous (object literal vs block end); treat it as ending a value.
+    // No route file opens a regex right after a block close, and misreading a
+    // real regex as division leaves its text unmasked, which unbalances loudly.
+    return !")]}".includes(out[j]);
   };
 
   const blocks: string[] = [];
@@ -380,6 +387,15 @@ function maskLiterals(source: string) {
 const BOARD_ASSERT_ROOT = "assertBoard";
 const AUTHZ_FILE = "authz.ts";
 
+// Guards that reject a non-board actor by inlining `req.actor.type !== "board"`
+// instead of calling `assertBoard`, so the transitive closure cannot reach them.
+// Each name is verified by reading its declaration: it throws for every non-board
+// actor on every path. Keyed by file so a same-named helper elsewhere is not
+// trusted by association.
+const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {
+  "environments.ts": ["assertCanAccessInstanceEnvironments", "assertCustomImageCompanyAccess"],
+};
+
 // `function name(` and `const name = (` declarations, used both to find wrappers and
 // to resolve a route registered with a named handler.
 const FUNCTION_DECLARATION_PATTERN = /(?:^|[\s;})])(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
@@ -403,9 +419,11 @@ function declarationsIn(masked: string) {
 // The trailing `[,)]` lets a wrapper take further arguments —
 // `assertCompanySecretWrite(req, companyId)` asserts just as unconditionally as
 // `assertBoard(req)`, and requiring a bare `(req);` is precisely what hid it.
+// `_?req` because a handler that ignores its request except to assert names the
+// parameter `_req` — `GET /api/adapters` is exactly that shape.
 function boardAssertCallPattern(names: ReadonlySet<string>) {
   const alternation = [...names].map((name) => name.replace(/[$]/g, "\\$")).join("|");
-  return new RegExp(`^(?:${alternation})\\(\\s*req\\s*[,)]`);
+  return new RegExp(`^(?:${alternation})\\(\\s*_?req\\s*[,)]`);
 }
 
 /**
@@ -467,7 +485,6 @@ function assertsBoardUnconditionally(
   const bodyStart = isNamedFunction ? namedFunctionBodyStart(handlerSource) : handlerSource.search(/=>\s*\{/);
   if (bodyStart < 0) return false;
   const callPattern = boardAssertCallPattern(assertNames);
-  const window = Math.max(...[...assertNames].map((name) => name.length)) + 16;
   const blocks: string[] = [];
   for (let i = handlerSource.indexOf("{", bodyStart); i < handlerSource.length; i++) {
     const char = handlerSource[i];
@@ -477,13 +494,24 @@ function assertsBoardUnconditionally(
     }
     if (char === "}") {
       blocks.pop();
-      if (blocks.length === 0) return false;
+      if (blocks.length === 0) {
+        // A function argument closed without asserting. In a registration span
+        // that can be an inline middleware sitting before the real handler, and
+        // every function argument runs unconditionally, so move on to the next
+        // arrow body in the span instead of concluding the route is unguarded.
+        const next = handlerSource.slice(i + 1).search(/=>\s*\{/);
+        if (next < 0) return false;
+        i += next; // land on the arrow; only `=>` and whitespace precede its `{`
+      }
       continue;
     }
     if (blocks.slice(1).some((kind) => kind !== "try")) continue;
     if (!/[A-Za-z_$]/.test(char)) continue;
     if (/[\w$.]/.test(handlerSource[i - 1] ?? " ")) continue; // mid-identifier, or a `.method(` call
-    if (!callPattern.test(handlerSource.slice(i, i + window))) continue;
+    // Unbounded slice: a windowed test misses a prettier-wrapped call whose
+    // newline and indentation outrun the slack, and the anchored pattern fails
+    // fast on a non-matching prefix anyway.
+    if (!callPattern.test(handlerSource.slice(i))) continue;
     if (!isUnconditionalStatement(handlerSource, i)) continue;
     return true;
   }
@@ -512,6 +540,15 @@ function isUnconditionalStatement(source: string, at: number) {
     skipWhitespace();
   }
   if (j < 0) return true;
+  // `return assertBoard(req);` executes exactly as unconditionally as a bare
+  // statement — several wrappers end with it — but only when the `return` is
+  // itself a statement: `if (x) return assertBoard(req);` stays conditional.
+  if (j >= 5 && source.slice(j - 5, j + 1) === "return" && !/[\w$]/.test(source[j - 6] ?? " ")) {
+    j -= 6;
+    skipWhitespace();
+    if (j < 0) return true;
+    return source[j] === ";" || source[j] === "{" || source[j] === "}";
+  }
   const previous = source[j];
   if (previous === ";" || previous === "{" || previous === "}") return true;
   // `const userId = boardUserId(req);` asserts just as unconditionally, but only
@@ -595,7 +632,11 @@ function namedHandlerAssertsBoard(masked: string, registrationIndex: number, ass
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(handlerName)) return false;
   const declaration = declarationsIn(masked).find((entry) => entry.name === handlerName);
   if (!declaration) return false;
-  return assertsBoardUnconditionally(masked.slice(declaration.index), assertNames, declaration.isNamedFunction);
+  // The declaration's own body only — an unbounded slice reintroduces the
+  // borrow-the-next-body spillover that `resolveBoardAssertNames` bounds against.
+  const body = declarationBody(masked, declaration);
+  if (body === null) return false;
+  return assertsBoardUnconditionally(body, assertNames, declaration.isNamedFunction);
 }
 
 // The text between the parentheses of the `router.<method>(...)` call itself.
@@ -656,7 +697,10 @@ function loadActualRoutes() {
     const masked = maskLiterals(source);
     if (braceBalanceOf(masked) !== 0) unbalancedRouteFiles.push(file);
 
-    const assertNames = resolveBoardAssertNames(masked, sharedAssertNames);
+    const assertNames = resolveBoardAssertNames(
+      masked,
+      new Set([...sharedAssertNames, ...(INLINE_BOARD_ASSERTIONS[file] ?? [])]),
+    );
 
     const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
     registrations.forEach((match) => {
@@ -1829,6 +1873,20 @@ describe("openapi routes", () => {
       .toContain("viaConst");
     expect([...closure("async function viaAwait(req: Request) { const id = await assertBoard(req); return id; }")])
       .toContain("viaAwait");
+    // A return-position assertion executes exactly as unconditionally as a bare
+    // statement — but not when the `return` itself hangs off a braceless `if`.
+    expect([...closure("function viaReturn(req: Request) { return assertBoard(req); }")])
+      .toContain("viaReturn");
+    expect([...closure("function condReturn(req: Request) { if (x) return assertBoard(req); }")])
+      .not.toContain("condReturn");
+    // A division after a postfix increment must not be read as a regex literal:
+    // the masker would silently blank the assertion that shares its line.
+    expect([...closure("function afterDivision(req: Request) { n++; const a = n++ / 2; assertBoard(req); }")])
+      .toContain("afterDivision");
+    // A prettier-wrapped call — newline and deep indentation between `(` and the
+    // argument — is still the same unconditional call.
+    expect([...closure("function wrapped(req: Request) { assertBoard(\n              req,\n            ); }")])
+      .toContain("wrapped");
 
     // A declaration with no brace body must not borrow the next one's. Without
     // bounding each declaration to its own body, `concise` inherits `real`'s
@@ -1843,10 +1901,28 @@ describe("openapi routes", () => {
     const names = new Set([BOARD_ASSERT_ROOT]);
 
     // A wrapper call must pass `req` first; a same-named call on something else
-    // is not an assertion.
+    // is not an assertion. `_req` is the same parameter under the
+    // unused-elsewhere naming convention.
     expect(assertsBoardUnconditionally("(req, res) => { assertBoard(req, extra); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(_req, res) => { assertBoard(_req); }", names)).toBe(true);
     expect(assertsBoardUnconditionally("(req, res) => { assertBoard(other); }", names)).toBe(false);
     expect(assertsBoardUnconditionally("(req, res) => { svc.assertBoard(req); }", names)).toBe(false);
+
+    // An inline middleware before the real handler: every function argument runs
+    // unconditionally, so an assertion in any of them guards the route — and its
+    // absence from all of them does not become a false positive.
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", (req, res, next) => { next(); }, (req, res) => { assertBoard(req); res.json({}); }',
+        names,
+      ),
+    ).toBe(true);
+    expect(
+      assertsBoardUnconditionally(
+        '"/x", (req, res, next) => { next(); }, (req, res) => { res.json({}); }',
+        names,
+      ),
+    ).toBe(false);
 
     // The neighbouring-helper mis-attribution. `/thing` runs `namedHandler`, which
     // asserts nothing; the arrow-bodied `helper` below it does assert. Scanning from
@@ -1890,6 +1966,14 @@ describe("openapi routes", () => {
     // `activeToolMembership` -> `assertToolConnectionConfigureAccess`: two hops from
     // `assertBoard`, so a one-level lookup is not enough.
     expect([...boardGuardedRoutes]).toContain("GET /api/tool-connections/{connectionId}/services");
+    // `assertBoardOrgAccess(_req)` — the parameter named under the unused
+    // convention, which a literal-`req` pattern walked straight past.
+    expect([...boardGuardedRoutes]).toContain("GET /api/adapters");
+    // `assertCanAccessInstanceEnvironments` inlines its board check instead of
+    // calling `assertBoard`, so it is seeded via INLINE_BOARD_ASSERTIONS.
+    expect([...boardGuardedRoutes]).toContain("PATCH /api/environments/{id}");
+    // An inline `validate(...)` middleware sits before the asserting handler.
+    expect([...boardGuardedRoutes]).toContain("POST /api/companies/{companyId}/environments");
     // Negative controls: a board assertion buried in a branch does not count.
     // `POST /api/invites/{inviteId}/revoke` asserts instance admin only for
     // bootstrap-CEO invites, and `POST /api/agents/{id}/heartbeat/invoke`
@@ -1910,6 +1994,23 @@ describe("openapi routes", () => {
       .sort();
 
     expect(mislabeled).toEqual([]);
+  });
+
+  // The other direction of table rot: the guard above fires when a guarded
+  // handler is missing from the table, but nothing else notices a table entry
+  // that stops matching a served operation — `resolveOperationAuthLevel` falls
+  // through to `authenticated` for unmatched keys, so a route rename or a typo
+  // silently downgrades the published authorization.
+  it("keeps every auth-table entry matched to a served operation", () => {
+    const { routes: specRoutes } = loadSpecRoutes();
+
+    const stale = Object.entries(AUTH_TABLE_OPERATIONS)
+      .flatMap(([table, operations]) =>
+        [...operations].filter((operation) => !specRoutes.has(operation)).map((operation) => `${table}: ${operation}`),
+      )
+      .sort();
+
+    expect(stale).toEqual([]);
   });
 
   it("documents auth and reviewed response-code invariants", () => {
@@ -1940,6 +2041,13 @@ describe("openapi routes", () => {
     ).toEqual({
       actor: "board",
     });
+    // The adapter login-session create route's board guard is callback-shaped
+    // (the start spine awaits `deriveOwner` -> `assertCanManageAdapterLogin` ->
+    // `assertBoard`), so the drift scan cannot see it; its table entry is
+    // maintained by hand and pinned here so removing it fails loudly.
+    expect(
+      spec.paths["/api/companies/{companyId}/adapters/{type}/login-sessions"].post["x-paperclip-authorization"],
+    ).toEqual({ actor: "board" });
     expect(
       spec.paths["/api/companies/{companyId}/cost-events"].post.responses[
         "201"
