@@ -4666,6 +4666,11 @@ export async function createRunnerdBackend(input: {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;
+  if (remoteTarget && input.execution.provider.kind !== "codex") {
+    throw new Error(
+      "runner_transport_ineligible: remote native execution currently supports Codex only",
+    );
+  }
   const remoteCommandRunner = remoteTarget
     ? remoteTarget.transport === "ssh"
       ? createSshCommandManagedRuntimeRunner({
