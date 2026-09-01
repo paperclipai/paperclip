@@ -390,14 +390,37 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_blocked",
   "budget_exhausted",
   "issue_paused",
-  "issue_dependencies_blocked",
 ]);
 
-// A continuation cancelled with this code is a *deliberate wait* (the latest run
-// reported it was parked for review/approval), not a lost execution path. When the
-// issue has a real waiting target we convert it into a normal dependency wait rather
-// than escalating it as stranded.
+// A continuation cancelled with one of these codes is a *deliberate wait*, not a lost
+// execution path: something the issue is legitimately waiting for stopped the run on
+// purpose. When the issue has a real waiting target we convert it into a normal
+// dependency wait rather than escalating it as stranded.
+//
+// `issue_dependencies_blocked` belongs here and not in the non-retryable set above.
+// Waiting on an open child is the most ordinary reason a continuation stops, and
+// classifying it as "cannot retry" strands the issue: the owner is dropped, the
+// provider session is never resumed, and the work restarts from scratch under whoever
+// picks up the escalation. The wait already knows when it ends -- the child closing --
+// so there is nothing to escalate.
+type ContinuationDeliberateWait = { label: string; because: string };
+
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
+const CONTINUATION_DEPENDENCIES_BLOCKED_ERROR_CODE = "issue_dependencies_blocked";
+
+const CONTINUATION_WAITING_ON_REVIEW_WAIT: ContinuationDeliberateWait = {
+  label: "continuation_waiting_on_review",
+  because: "because the latest run reported it was waiting for review/approval",
+};
+const CONTINUATION_DEPENDENCIES_BLOCKED_WAIT: ContinuationDeliberateWait = {
+  label: "continuation_dependencies_blocked",
+  because: "because its continuation run was held back while that work is still open",
+};
+
+const CONTINUATION_DELIBERATE_WAITS = new Map<string, ContinuationDeliberateWait>([
+  [CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE, CONTINUATION_WAITING_ON_REVIEW_WAIT],
+  [CONTINUATION_DEPENDENCIES_BLOCKED_ERROR_CODE, CONTINUATION_DEPENDENCIES_BLOCKED_WAIT],
+]);
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
@@ -529,7 +552,7 @@ type ContinuationRetryClassification = {
 
 export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
-  if (errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
+  if (errorCode && CONTINUATION_DELIBERATE_WAITS.has(errorCode)) {
     return {
       kind: "deliberate_wait_without_target",
       maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
@@ -2481,6 +2504,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
+    return resolveContinuationDeliberateWait(issue, CONTINUATION_WAITING_ON_REVIEW_WAIT);
+  }
+
+  async function resolveContinuationDeliberateWait(
+    issue: typeof issues.$inferSelect,
+    cause: ContinuationDeliberateWait,
+  ) {
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
       openChildIssues(issue),
@@ -2496,7 +2526,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue.id,
       `This task is waiting on ${waitingOn} to finish. ` +
         "It will continue automatically when that work is done — there's nothing you need to do. " +
-        "(It was paused because the latest run reported it was waiting for review/approval; " +
+        `(It was paused ${cause.because}; ` +
         "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
       {
@@ -2507,7 +2537,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sections: [{
             title: "Recovery",
             rows: [
-              { type: "key_value", label: "Cause", value: "continuation_waiting_on_review" },
+              { type: "key_value", label: "Cause", value: cause.label },
               { type: "key_value", label: "Previous status", value: issue.status },
               {
                 type: "key_value",
@@ -2532,7 +2562,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         identifier: issue.identifier,
         status: "blocked",
         previousStatus: issue.status,
-        source: "recovery.reconcile_continuation_waiting_on_review",
+        source: `recovery.reconcile_${cause.label}`,
         blockedByIssueIds,
       },
     });
@@ -3569,7 +3599,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEscalated: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
-      waitingOnReviewResolved: 0,
+      deliberateWaitResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
@@ -3825,7 +3855,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ) {
             const resolved = await resolveContinuationWaitingOnReview(issue);
             if (resolved) {
-              result.waitingOnReviewResolved += 1;
+              result.deliberateWaitResolved += 1;
               result.issueIds.push(issue.id);
               continue;
             }
@@ -3848,7 +3878,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS && latestPostResolutionRun) {
             const resolved = await resolveContinuationWaitingOnReview(issue);
             if (resolved) {
-              result.waitingOnReviewResolved += 1;
+              result.deliberateWaitResolved += 1;
               result.issueIds.push(issue.id);
               continue;
             }
@@ -4220,10 +4250,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
         const classification = classifyContinuationFailure(latestRun);
 
-        if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
-          const resolved = await resolveContinuationWaitingOnReview(issue);
+        const deliberateWait = classification.errorCode
+          ? CONTINUATION_DELIBERATE_WAITS.get(classification.errorCode)
+          : undefined;
+        if (deliberateWait) {
+          const resolved = await resolveContinuationDeliberateWait(issue, deliberateWait);
           if (resolved) {
-            result.waitingOnReviewResolved += 1;
+            result.deliberateWaitResolved += 1;
             result.issueIds.push(issue.id);
             continue;
           }
