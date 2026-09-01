@@ -55,6 +55,7 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableOwnerInstanceAdmin: false,
       enableSandboxDuplexBridge: false,
+      enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,

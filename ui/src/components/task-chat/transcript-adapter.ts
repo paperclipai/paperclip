@@ -3,7 +3,7 @@
  * useLiveRunTranscripts — the same source the current thread consumes) into the
  * redesign's TaskChatItem[]. This is what lets a real task stream
  * thinking → tool → diff → responding while a run is in flight, rather than
- * only showing the final message once the turn produces a comment.
+ * only showing a response after the turn settles.
  */
 import type { TranscriptEntry } from "@/adapters";
 import type {
@@ -13,8 +13,20 @@ import type {
   TaskChatToolItem,
   TaskChatTurnChildItem,
   TaskChatTurnItem,
+  TaskChatProviderActivityItem,
+  TaskChatProtocolDetail,
+  TaskChatProtocolItem,
+  TaskChatProtocolStep,
+  TaskChatRunResultItem,
+  TaskChatMessageItem,
+  TaskChatPlanDocumentItem,
 } from "./task-chat-model";
-import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
+import {
+  humanizeToolName,
+  isGenericToolName,
+  toolActivityPresentation,
+  toolTaxonomy,
+} from "./tool-taxonomy";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -24,22 +36,77 @@ const TERMINAL_STATUSES = new Set([
   "succeeded",
 ]);
 
-export function isTerminalRunStatus(status: string | undefined | null): boolean {
+export function isTerminalRunStatus(
+  status: string | undefined | null,
+): boolean {
   return status != null && TERMINAL_STATUSES.has(status);
+}
+
+export interface TranscriptTimeSegment {
+  startMs: number;
+  endMs: number;
+  entries: TranscriptEntry[];
+}
+
+/**
+ * Split one provider run at durable in-turn input timestamps. Each boundary
+ * belongs to the segment after it, so a steering acknowledgement can stay in
+ * the thread between the work produced before and after the steer. Live and
+ * settled renderers share this projector to avoid re-sorting at handoff.
+ */
+export function splitTranscriptAtAnchors(
+  entries: readonly TranscriptEntry[],
+  startMs: number,
+  rawAnchors: readonly number[],
+): TranscriptTimeSegment[] {
+  const anchors = [...new Set(rawAnchors.filter(Number.isFinite))].sort(
+    (a, b) => a - b,
+  );
+  if (anchors.length === 0) {
+    return [
+      {
+        startMs,
+        endMs: Number.POSITIVE_INFINITY,
+        entries: [...entries],
+      },
+    ];
+  }
+  return [startMs, ...anchors].map((segmentStartMs, index) => {
+    const segmentEndMs = anchors[index] ?? Number.POSITIVE_INFINITY;
+    return {
+      startMs: segmentStartMs,
+      endMs: segmentEndMs,
+      entries: entries.filter((entry) => {
+        const parsed = Date.parse(entry.ts);
+        const entryMs = Number.isFinite(parsed) ? parsed : 0;
+        const afterStart = index === 0 || entryMs >= segmentStartMs;
+        return afterStart && entryMs < segmentEndMs;
+      }),
+    };
+  });
 }
 
 /**
  * The live parent row's nesting rule (PAP-354, narrowed by PAP-361): only tool
- * calls and usage readouts nest inside the expandable live turn. Messages
- * never nest — an interstitial update streams on the parent row's own line
- * (TaskChatStatusItem.selfTalk) and vanishes when it completes, and the run's
- * final reply lands as its posted comment bubble. Thinking never nests either:
- * its live signal is the pill's "Thinking…" state, and the text stays in the
- * run log / classic transcript. Markers, statuses and interaction cards stay
- * in the thread outside.
+ * calls, provider-supplied reasoning summaries, and usage readouts nest inside
+ * the expandable live turn. The classic parent-row surface may flatten a live
+ * interstitial into its status line; the Paperclip Runner task surface instead
+ * projects commentary as durable chronological phase boundaries. The run's
+ * final reply is resolved separately into the turn's durable response slot or
+ * its posted comment bubble. Markers, statuses and interaction cards stay in
+ * the thread outside.
  */
-export function isNestableLiveChild(item: TaskChatItem): item is TaskChatTurnChildItem {
-  return item.kind === "tool" || item.kind === "usage" || item.kind === "activity_phase";
+export function isNestableLiveChild(
+  item: TaskChatItem,
+): item is TaskChatTurnChildItem {
+  return (
+    item.kind === "tool" ||
+    item.kind === "thinking" ||
+    item.kind === "usage" ||
+    item.kind === "activity_phase" ||
+    item.kind === "plan_document" ||
+    item.kind === "protocol"
+  );
 }
 
 /**
@@ -95,23 +162,30 @@ function clip(text: string, max: number): string {
  */
 export function summarizeToolInput(input: unknown): string | undefined {
   if (input == null) return undefined;
-  if (typeof input === "string") return input.trim() ? clip(input, TARGET_MAX) : undefined;
+  if (typeof input === "string")
+    return input.trim() ? clip(input, TARGET_MAX) : undefined;
   if (typeof input !== "object") return clip(String(input), TARGET_MAX);
   const record = input as Record<string, unknown>;
   for (const key of TARGET_KEYS) {
     const value = record[key];
-    if (typeof value === "string" && value.trim()) return clip(value, TARGET_MAX);
+    if (typeof value === "string" && value.trim())
+      return clip(value, TARGET_MAX);
   }
   // The acpx log parser synthesizes { text, status } onto tool inputs from the
   // event's summary line — presentation noise, not call parameters.
   const entries = Object.entries(record).filter(
     ([k, v]) =>
-      (typeof v === "string" || typeof v === "number" || typeof v === "boolean") &&
+      (typeof v === "string" ||
+        typeof v === "number" ||
+        typeof v === "boolean") &&
       k !== "text" &&
       k !== "status",
   );
   if (entries.length === 0) return undefined;
-  return clip(entries.map(([k, v]) => `${k}: ${String(v)}`).join(", "), TARGET_MAX);
+  return clip(
+    entries.map(([k, v]) => `${k}: ${String(v)}`).join(", "),
+    TARGET_MAX,
+  );
 }
 
 /**
@@ -121,24 +195,351 @@ export function summarizeToolInput(input: unknown): string | undefined {
  */
 export function toolDisplayName(name: string | undefined | null): string {
   const raw = (name ?? "").trim();
-  if (isGenericToolName(raw)) return "Tool";
-  const mcp = mcpToolSegment(raw);
-  if (mcp) return mcp;
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
+  return isGenericToolName(raw) ? "Unnamed tool" : humanizeToolName(raw);
 }
 
 /** "Thought for Ns" once a coalesced thinking group spans ≥1s. */
-function thoughtDurationLabel(startTs: string | undefined, endTs: string): string | undefined {
+function thoughtDurationLabel(
+  startTs: string | undefined,
+  endTs: string,
+): string | undefined {
   if (!startTs) return undefined;
   const start = Date.parse(startTs);
   const end = Date.parse(endTs);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined;
   const secs = Math.round((end - start) / 1000);
   if (secs < 1) return undefined;
-  return secs < 60 ? `Thought for ${secs}s` : `Thought for ${Math.floor(secs / 60)}m ${secs % 60}s`;
+  return secs < 60
+    ? `Thought for ${secs}s`
+    : `Thought for ${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+/** Append token deltas onto the open logical line while preserving real newlines. */
+function appendThinkingText(
+  lines: string[],
+  text: string,
+  delta: boolean | undefined,
+) {
+  const fragments = text.split("\n");
+  if (!delta || lines.length === 0) {
+    lines.push(...fragments);
+    return;
+  }
+  lines[lines.length - 1] =
+    `${lines[lines.length - 1] ?? ""}${fragments[0] ?? ""}`;
+  lines.push(...fragments.slice(1));
 }
 
 const DETAIL_MAX = 600;
+const PROTOCOL_OUTPUT_MAX = 8 * 1024;
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function scalarValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return undefined;
+}
+
+function titleCaseKey(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function safeHttpHref(value: unknown): string | null {
+  const href = stringValue(value);
+  if (!href) return null;
+  try {
+    const url = new URL(href);
+    return url.protocol === "http:" || url.protocol === "https:" ? href : null;
+  } catch {
+    return null;
+  }
+}
+
+const PROVIDER_DETAIL_KEYS: Record<
+  TaskChatProviderActivityItem["family"],
+  readonly string[]
+> = {
+  plan: ["revision", "syncStatus", "documentRevision", "complete"],
+  tool_execution: [
+    "transport",
+    "operation",
+    "name",
+    "target",
+    "namespace",
+    "readOnly",
+    "status",
+    "progress",
+    "durationMs",
+    "exitCode",
+    "outputBytes",
+  ],
+  research: ["action", "status", "query", "pattern", "url"],
+  delegation: ["action", "status"],
+  model_identity: [
+    "provider",
+    "requestedModel",
+    "fromModel",
+    "effectiveModel",
+    "reason",
+    "status",
+    "buffering",
+    "summary",
+  ],
+  context: ["reason", "preTokens", "postTokens", "sameSession"],
+  artifact: [
+    "status",
+    "reference",
+    "mediaType",
+    "title",
+    "registered",
+    "transparentBackground",
+    "failure",
+  ],
+  review: ["state", "scope"],
+  hook: ["event", "scope", "status", "blocking", "durationMs", "summary"],
+  memory: ["label", "available", "reference"],
+  safety: ["status", "decision", "targetExecutionId", "summary"],
+  terminal: ["origin", "inputClass", "byteCount"],
+  wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
+  provider_notice: [
+    "severity",
+    "category",
+    "scope",
+    "recoverable",
+    "userActionable",
+    "summary",
+  ],
+};
+
+function providerActivityKey(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+): string {
+  const idKeys = [
+    "planId",
+    "executionId",
+    "researchId",
+    "delegationId",
+    "routeId",
+    "verificationId",
+    "compactionId",
+    "artifactId",
+    "reviewId",
+    "hookId",
+    "citationId",
+    "waitId",
+    "noticeId",
+  ];
+  for (const key of idKeys) {
+    const value = stringValue(entry.payload[key]);
+    if (value) return `${entry.family}:${value}`;
+  }
+  return `${entry.family}:${entry.eventType}:${entry.ts}`;
+}
+
+function providerActivityItem(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+  runId: string,
+  index: number,
+): TaskChatProviderActivityItem {
+  const details: TaskChatProtocolDetail[] = [];
+  for (const key of PROVIDER_DETAIL_KEYS[entry.family]) {
+    const value = scalarValue(entry.payload[key]);
+    if (!value) continue;
+    if (
+      entry.family === "tool_execution" &&
+      key === "name" &&
+      isGenericToolName(value)
+    )
+      continue;
+    if (
+      entry.family === "tool_execution" &&
+      key === "progress" &&
+      !meaningfulProviderToolSummary(value)
+    )
+      continue;
+    details.push({
+      label: titleCaseKey(key),
+      value: clip(
+        value,
+        key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+      ),
+      mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
+    });
+  }
+
+  const steps =
+    entry.family === "plan" && Array.isArray(entry.payload.steps)
+      ? entry.payload.steps
+          .map(objectRecord)
+          .slice(0, 256)
+          .map((step, stepIndex) => {
+            const rawStatus = stringValue(step.status);
+            const status: TaskChatProtocolStep["status"] =
+              rawStatus === "in_progress" ||
+              rawStatus === "completed" ||
+              rawStatus === "blocked"
+                ? rawStatus
+                : "pending";
+            return {
+              id: stringValue(step.stepId) ?? `${runId}:plan-step:${stepIndex}`,
+              label: stringValue(step.body) ?? "Plan step",
+              status,
+            };
+          })
+      : [];
+
+  const links =
+    entry.family === "research" && Array.isArray(entry.payload.sources)
+      ? entry.payload.sources
+          .map(objectRecord)
+          .slice(0, 64)
+          .flatMap((source) => {
+            const href = safeHttpHref(source.url);
+            return href
+              ? [
+                  {
+                    label: stringValue(source.title) ?? href,
+                    href,
+                    description: stringValue(source.snippet),
+                  },
+                ]
+              : [];
+          })
+      : [];
+
+  const children =
+    entry.family === "delegation" && Array.isArray(entry.payload.children)
+      ? entry.payload.children
+          .map(objectRecord)
+          .slice(0, 64)
+          .map((child, childIndex) => ({
+            id:
+              stringValue(child.childId) ?? `${runId}:delegation:${childIndex}`,
+            title: stringValue(child.role) ?? "Subagent",
+            status: stringValue(child.status) ?? "unknown",
+            metadata:
+              [stringValue(child.model), stringValue(child.activitySummary)]
+                .filter(Boolean)
+                .join(" · ") || undefined,
+            summary: stringValue(child.summary),
+          }))
+      : [];
+
+  const rawOutput =
+    entry.family === "tool_execution"
+      ? stringValue(entry.payload.output)
+      : undefined;
+  const outputTruncated =
+    entry.payload.outputTruncated === true ||
+    Boolean(rawOutput && rawOutput.length > PROTOCOL_OUTPUT_MAX);
+  const summary =
+    entry.summary && entry.summary !== entry.eventType
+      ? entry.summary
+      : (stringValue(entry.payload.explanation) ??
+        stringValue(entry.payload.progress) ??
+        stringValue(entry.payload.message) ??
+        stringValue(entry.payload.summary));
+
+  return {
+    id: `${runId}:provider:${providerActivityKey(entry)}:${index}`,
+    kind: "protocol",
+    surface: "provider_activity",
+    family: entry.family,
+    eventType: entry.eventType,
+    status: entry.status,
+    title: entry.title,
+    summary,
+    details,
+    steps,
+    links,
+    children,
+    output: rawOutput ? rawOutput.slice(0, PROTOCOL_OUTPUT_MAX) : undefined,
+    outputTruncated,
+    transcriptIndex: index,
+  };
+}
+
+function providerItemDetail(
+  item: TaskChatProviderActivityItem,
+  label: string,
+): string | undefined {
+  return item.details.find((detail) => detail.label === label)?.value;
+}
+
+function meaningfulProviderToolSummary(value: string | undefined): boolean {
+  return Boolean(
+    value && !isGenericToolName(value) && !/^tool(?:\s+|_)call\b/i.test(value),
+  );
+}
+
+/**
+ * Provider lifecycle records are deltas. A terminal update owns status and
+ * output, while earlier identity/progress fields survive when later frames
+ * omit them or carry ACPX's literal `tool call` placeholder.
+ */
+function mergeProviderActivityItem(
+  previous: TaskChatProviderActivityItem,
+  incoming: TaskChatProviderActivityItem,
+): TaskChatProviderActivityItem {
+  if (
+    previous.family !== "tool_execution" ||
+    incoming.family !== "tool_execution"
+  ) {
+    return { ...incoming, id: previous.id };
+  }
+  const details = new Map(
+    previous.details.map((detail) => [detail.label, detail]),
+  );
+  const incomingName = providerItemDetail(incoming, "Name");
+  const genericIncomingIdentity = isGenericToolName(incomingName);
+  const identityLabels = new Set([
+    "Name",
+    "Transport",
+    "Namespace",
+    "Operation",
+    "Target",
+  ]);
+  for (const detail of incoming.details) {
+    if (
+      identityLabels.has(detail.label) &&
+      genericIncomingIdentity &&
+      details.has(detail.label)
+    ) {
+      continue;
+    }
+    if (
+      detail.label === "Progress" &&
+      !meaningfulProviderToolSummary(detail.value) &&
+      details.has("Progress")
+    ) {
+      continue;
+    }
+    details.set(detail.label, detail);
+  }
+  return {
+    ...incoming,
+    id: previous.id,
+    summary: meaningfulProviderToolSummary(incoming.summary)
+      ? incoming.summary
+      : previous.summary,
+    details: [...details.values()],
+  };
+}
 
 /** Result content → the expandable mono detail block (clipped, trimmed). */
 function formatToolResultDetail(content: unknown): string | undefined {
@@ -146,7 +547,9 @@ function formatToolResultDetail(content: unknown): string | undefined {
   const text = typeof content === "string" ? content : String(content);
   const trimmed = text.trim();
   if (!trimmed) return undefined;
-  return trimmed.length > DETAIL_MAX ? `${trimmed.slice(0, DETAIL_MAX)}\n…` : trimmed;
+  return trimmed.length > DETAIL_MAX
+    ? `${trimmed.slice(0, DETAIL_MAX)}\n…`
+    : trimmed;
 }
 
 interface TranscriptAdapterOptions {
@@ -167,6 +570,7 @@ export function transcriptToTaskChatItems(
 ): TaskChatItem[] {
   const items: TaskChatItem[] = [];
   const toolIndexById = new Map<string, number>();
+  const protocolIndexByKey = new Map<string, number>();
   const thinkingStartTs = new Map<number, string>();
   let lastToolIndex = -1;
   let thinkingIndex = -1;
@@ -174,9 +578,17 @@ export function transcriptToTaskChatItems(
   let messageIndex = -1;
   let messageChannel: "progress" | "final" | "unknown" | undefined;
 
-  const resetInline = () => {
+  const finishThinking = () => {
+    if (thinkingIndex >= 0) {
+      const item = items[thinkingIndex];
+      if (item?.kind === "thinking") item.streaming = false;
+    }
     thinkingIndex = -1;
     thinkingChannel = undefined;
+  };
+
+  const resetInline = () => {
+    finishThinking();
     messageIndex = -1;
     messageChannel = undefined;
   };
@@ -184,42 +596,61 @@ export function transcriptToTaskChatItems(
   for (const [i, entry] of entries.entries()) {
     switch (entry.kind) {
       case "thinking": {
-        if (!entry.text) break;
-        const channel = entry.channel;
-        if (thinkingIndex >= 0 && thinkingChannel === channel) {
+        const lifecycleOnly = !entry.text;
+        if (thinkingIndex >= 0 && thinkingChannel === entry.channel) {
           const it = items[thinkingIndex];
           if (it.kind === "thinking") {
-            it.lines.push(...entry.text.split("\n"));
+            if (entry.text) {
+              appendThinkingText(it.lines, entry.text, entry.delta);
+              it.lifecycleOnly = false;
+            }
+            it.transcriptIndex = i;
             const startTs = thinkingStartTs.get(thinkingIndex);
             const label = thoughtDurationLabel(startTs, entry.ts);
             if (label) it.summaryLabel = label;
+            if (entry.lifecycle === "completed") it.streaming = false;
           }
         } else {
+          // A reasoning item is active only until the provider moves on to a
+          // different reasoning channel or another transcript surface. ACPX
+          // does not always send an explicit completed lifecycle frame, so
+          // waiting for one leaves every earlier brain blue and shimmering.
+          finishThinking();
           items.push({
             id: `${runId}:think:${i}`,
             kind: "thinking",
-            lines: entry.text.split("\n"),
-            streaming: running,
+            lines: entry.text ? entry.text.split("\n") : [],
+            streaming: running && entry.lifecycle !== "completed",
             // Settled history folds its thinking behind the header (v7);
             // the in-flight run streams it expanded.
             collapsed: !running,
-            channel,
+            channel: entry.channel,
+            lifecycleOnly,
+            transcriptIndex: i,
           });
           thinkingIndex = items.length - 1;
-          thinkingChannel = channel;
+          thinkingChannel = entry.channel;
           thinkingStartTs.set(thinkingIndex, entry.ts);
           messageIndex = -1;
           messageChannel = undefined;
+        }
+        if (entry.lifecycle === "completed") {
+          finishThinking();
         }
         break;
       }
       case "assistant": {
         if (!entry.text) break;
+        finishThinking();
         const channel = entry.channel;
         if (messageIndex >= 0 && messageChannel === channel) {
           const it = items[messageIndex];
-          if (it.kind === "message") it.text += entry.text;
+          if (it.kind === "message") {
+            it.text += entry.text;
+            it.transcriptIndex = i;
+          }
         } else {
+          finishThinking();
           const atMs = Date.parse(entry.ts);
           items.push({
             id: `${runId}:msg:${i}`,
@@ -229,22 +660,23 @@ export function transcriptToTaskChatItems(
             text: entry.text,
             channel,
             streaming: running,
-            // Everything the agent says inside a run turn is self-talk until it
-            // lands as the posted comment — live and history tag it alike.
+            // Explicit final-answer items stream durably. Unclassified text
+            // remains transient for backwards compatibility and fail-closed
+            // handling of a delta whose start metadata was missed.
             interstitial: channel !== "final",
             atMs: Number.isFinite(atMs) ? atMs : undefined,
+            transcriptIndex: i,
           });
           messageIndex = items.length - 1;
           messageChannel = channel;
-          thinkingIndex = -1;
-          thinkingChannel = undefined;
         }
         break;
       }
       case "tool_call": {
         const toolCallId = entry.toolUseId || `tool-${i}`;
         const existingIndex = toolIndexById.get(toolCallId);
-        const existing = existingIndex != null ? items[existingIndex] : undefined;
+        const existing =
+          existingIndex != null ? items[existingIndex] : undefined;
         if (existing?.kind === "tool") {
           // tool_call_update for a call already in the list: merge. Updates
           // often omit the title (acpx fills in a literal "tool call"), so a
@@ -281,14 +713,24 @@ export function transcriptToTaskChatItems(
         if (idx != null) {
           const existing = items[idx];
           if (existing.kind === "tool") {
-            existing.status = entry.isError ? "failed" : "completed";
-            if (isGenericToolName(existing.rawName) && !isGenericToolName(entry.toolName)) {
+            existing.status = entry.delta
+              ? "in_progress"
+              : entry.isError
+                ? "failed"
+                : "completed";
+            if (
+              isGenericToolName(existing.rawName) &&
+              !isGenericToolName(entry.toolName)
+            ) {
               existing.name = toolDisplayName(entry.toolName);
               existing.rawName = entry.toolName;
             }
-            if (!existing.detail) {
-              const detail = formatToolResultDetail(entry.content);
-              if (detail) existing.detail = detail;
+            const detail = formatToolResultDetail(entry.content);
+            if (detail) {
+              existing.detail =
+                entry.delta && existing.detail
+                  ? `${existing.detail}${detail}`
+                  : detail;
             }
           }
         }
@@ -296,10 +738,31 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "diff": {
-        const line = { kind: diffKind(entry.changeType), text: entry.text ?? "" };
+        if (entry.changeType === "file_header") {
+          if (lastToolIndex >= 0 && items[lastToolIndex].kind === "tool") {
+            const tool = items[lastToolIndex] as TaskChatToolItem;
+            tool.diff = tool.diff ?? {
+              path: entry.text,
+              added: 0,
+              removed: 0,
+              lines: [],
+            };
+            tool.diff.path = entry.text;
+          }
+          resetInline();
+          break;
+        }
+        const line = {
+          kind: diffKind(entry.changeType),
+          text: entry.text ?? "",
+        };
         if (lastToolIndex >= 0 && items[lastToolIndex].kind === "tool") {
           const tool = items[lastToolIndex] as TaskChatToolItem;
-          const diff: TaskChatDiff = tool.diff ?? { added: 0, removed: 0, lines: [] };
+          const diff: TaskChatDiff = tool.diff ?? {
+            added: 0,
+            removed: 0,
+            lines: [],
+          };
           diff.lines = diff.lines ?? [];
           diff.lines.push(line);
           if (line.kind === "add") diff.added += 1;
@@ -318,6 +781,153 @@ export function transcriptToTaskChatItems(
             },
           });
           lastToolIndex = items.length - 1;
+        }
+        resetInline();
+        break;
+      }
+      case "provider_activity": {
+        const key = `provider:${providerActivityKey(entry)}`;
+        const item = providerActivityItem(entry, runId, i);
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          const existing = items[existingIndex];
+          items[existingIndex] =
+            existing.kind === "protocol" &&
+            existing.surface === "provider_activity"
+              ? mergeProviderActivityItem(existing, item)
+              : item;
+        }
+        resetInline();
+        break;
+      }
+      case "workspace_change": {
+        const key = `workspace:${entry.changeSetId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:workspace:${entry.changeSetId}`,
+          kind: "protocol",
+          surface: "workspace_change",
+          changeSetId: entry.changeSetId,
+          revision: entry.revision,
+          source: entry.source,
+          complete: entry.complete,
+          files: entry.files.map((file) => ({
+            ...file,
+            diff:
+              file.diff == null
+                ? null
+                : file.diff.slice(0, PROTOCOL_OUTPUT_MAX),
+          })),
+          totals: entry.totals,
+          patchArtifactRef: entry.patchArtifactRef,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "workspace_file_reference": {
+        const key = `workspace-file:${entry.referenceId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:workspace-file:${entry.referenceId}`,
+          kind: "protocol",
+          surface: "workspace_file",
+          referenceId: entry.referenceId,
+          source: entry.source,
+          path: entry.path,
+          displayName: entry.displayName,
+          mediaType: entry.mediaType,
+          presentation: entry.presentation,
+          line: entry.line,
+          preview:
+            entry.preview == null
+              ? null
+              : entry.preview.slice(0, PROTOCOL_OUTPUT_MAX),
+          previewTruncated:
+            entry.previewTruncated ||
+            Boolean(
+              entry.preview && entry.preview.length > PROTOCOL_OUTPUT_MAX,
+            ),
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "runtime_request": {
+        const key = `runtime-request:${entry.requestId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:runtime-request:${entry.requestId}`,
+          kind: "protocol",
+          surface: "runtime_request",
+          runId,
+          requestId: entry.requestId,
+          requestKind: entry.requestKind,
+          turnId: entry.turnId,
+          requestType: entry.requestType,
+          status: entry.status,
+          prompt: entry.prompt,
+          choices: entry.choices,
+          fields: entry.fields,
+          questionSet: entry.questionSet,
+          resolvedAction: entry.resolvedAction,
+          response: entry.response,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "run_result": {
+        items.push({
+          id: `${runId}:result:${i}`,
+          kind: "protocol",
+          surface: "run_result",
+          disposition: entry.disposition,
+          summary: entry.summary,
+          objectiveSatisfied: entry.objectiveSatisfied,
+          verification: entry.verification,
+          remainingWork: entry.remainingWork,
+          blocker: entry.blocker,
+          artifacts: entry.artifacts,
+        });
+        resetInline();
+        break;
+      }
+      case "run_terminal": {
+        const key = "run-terminal";
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:terminal`,
+          kind: "protocol",
+          surface: "run_terminal",
+          turnState: entry.turnState,
+          runState: entry.runState,
+          disposition: entry.disposition,
+          stopReason: entry.stopReason,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = item;
         }
         resetInline();
         break;
@@ -359,10 +969,41 @@ export function transcriptToTaskChatItems(
   }
 
   // Only the message still open at the transcript tail is streaming; earlier
-  // self-talk is finished and nests as a settled row even mid-run.
+  // provider commentary is complete but remains a durable phase boundary.
   if (running) {
     for (const [idx, it] of items.entries()) {
       if (it.kind === "message" && idx !== messageIndex) it.streaming = false;
+    }
+  } else {
+    // A terminal transcript cannot retain live spinners forever when a
+    // provider disconnects or the operator cancels while a tool is active.
+    // Preserve the unfinished lifecycle honestly instead of inventing a
+    // success/failure result the provider never emitted.
+    for (const item of items) {
+      if (
+        item.kind === "tool" &&
+        (item.status === "pending" || item.status === "in_progress")
+      ) {
+        item.status = "interrupted";
+        item.detail = item.detail
+          ? `${item.detail}\nInterrupted before the provider reported completion.`
+          : "Interrupted before the provider reported completion.";
+      } else if (
+        item.kind === "protocol" &&
+        item.surface === "provider_activity" &&
+        item.status === "running"
+      ) {
+        item.status = "interrupted";
+        item.summary = item.summary
+          ? `${item.summary} · Interrupted before completion.`
+          : "Interrupted before completion.";
+      } else if (
+        item.kind === "protocol" &&
+        item.surface === "runtime_request" &&
+        item.status === "pending"
+      ) {
+        item.status = "cancelled";
+      }
     }
   }
 
@@ -370,19 +1011,266 @@ export function transcriptToTaskChatItems(
 }
 
 /**
- * A settled run's nested children: activity phases containing chronological
- * tool rows and their historical interstitial boundary. The final reply is
- * excluded because its posted comment is canonical. Thinking stays in the
- * run log / classic transcript.
+ * A settled run's chronological children. Commentary remains attached to the
+ * phase it introduced, while terminal runtime-request receipts keep the slot
+ * where the request first appeared. Final text is excluded because the turn's
+ * dedicated response slot or posted comment owns it.
  */
-export function settledRunChildren(parsed: readonly TaskChatItem[]): TaskChatTurnChildItem[] {
-  return buildActivityPhases(parsed, false);
+export function settledRunChildren(
+  parsed: readonly TaskChatItem[],
+): TaskChatTurnChildItem[] {
+  return buildTurnTimelineRows(parsed, false);
 }
 
-function phaseSummary(items: readonly (TaskChatToolItem | { kind: "usage" })[]): string {
+/**
+ * Keep the paperclip runner's expanded activity history focused on work the
+ * user can act on. The normalized transcript remains lossless; this is only a
+ * presentation filter for the new-runner turn surface. Legacy adapters keep
+ * their existing lifecycle and usage rows.
+ */
+export function paperclipRunnerHistoryItems(
+  parsed: readonly TaskChatItem[],
+): TaskChatItem[] {
+  return parsed.filter((item) => {
+    if (item.kind === "usage") return false;
+    if (item.kind !== "marker") return true;
+    if (item.variant === "session_start") return false;
+    return (
+      item.variant !== "turn_boundary" ||
+      (item.label !== "Turn started" && item.label !== "Turn completed")
+    );
+  });
+}
+
+/**
+ * Semantic rows for the Paperclip runner's Codex-style activity disclosure.
+ *
+ * This is intentionally narrower than the stored transcript and the runner
+ * inspector: it keeps work a person can understand or act on while excluding
+ * transport/lifecycle bookkeeping, terminal authority, and the final
+ * response. Logical provider/tool lifecycles have already been coalesced by
+ * `transcriptToTaskChatItems`, so each returned item is one visible "thing".
+ */
+export function paperclipRunnerActivityItems(
+  parsed: readonly TaskChatItem[],
+): TaskChatItem[] {
+  const hasAggregateWorkspaceChange = parsed.some(
+    (item) => item.kind === "protocol" && item.surface === "workspace_change",
+  );
+  return parsed.filter((item) => {
+    switch (item.kind) {
+      case "message":
+        return Boolean(item.interstitial && item.text.trim());
+      case "thinking":
+        // A textless reasoning lifecycle drives the live "Thinking…" label,
+        // but repeating it as an empty child row adds no information.
+        return item.lines.some((line) => line.trim().length > 0);
+      case "tool": {
+        const normalizedName = (item.rawName ?? item.name)
+          .replaceAll("-", "_")
+          .toLowerCase();
+        if (
+          hasAggregateWorkspaceChange &&
+          (normalizedName === "file_change" || normalizedName === "filechange")
+        ) return false;
+        return normalizedName !== "paperclip_finish";
+      }
+      case "marker":
+        return item.variant === "interrupted";
+      case "protocol":
+        if (
+          hasAggregateWorkspaceChange &&
+          item.surface === "provider_activity" &&
+          item.family === "tool_execution"
+        ) {
+          const presentation = toolActivityPresentation({
+            name: providerItemDetail(item, "Name"),
+            transport: providerItemDetail(item, "Transport"),
+            namespace: providerItemDetail(item, "Namespace"),
+            operation: providerItemDetail(item, "Operation"),
+            target: providerItemDetail(item, "Target"),
+            progress: providerItemDetail(item, "Progress"),
+          });
+          if (presentation.summaryGroup.key === "file_change") return false;
+        }
+        return (
+          item.surface === "provider_activity" ||
+          item.surface === "workspace_change" ||
+          item.surface === "workspace_file" ||
+          item.surface === "resource"
+        );
+      case "usage":
+        return true;
+      case "status":
+      case "activity_phase":
+      case "interaction":
+      case "turn":
+      case "brief":
+      case "plan_document":
+        return false;
+    }
+  });
+}
+
+/**
+ * Ordered input for the Paperclip Runner task-turn timeline. This keeps the
+ * semantic activity filter above, but retains runtime-request lifecycles so
+ * the shared projector can use each request as a phase boundary and place its
+ * terminal receipt at the request's first-seen position.
+ */
+export function paperclipRunnerTimelineItems(
+  parsed: readonly TaskChatItem[],
+): TaskChatItem[] {
+  const activityIds = new Set(
+    paperclipRunnerActivityItems(parsed).map((item) => item.id),
+  );
+  return parsed.filter(
+    (item) =>
+      activityIds.has(item.id) ||
+      item.kind === "plan_document" ||
+      (item.kind === "protocol" && item.surface === "runtime_request"),
+  );
+}
+
+/**
+ * Resolve the durable response owned by a Paperclip Runner turn. Provider final
+ * text wins when present; yielded control-plane runs fall back to the accepted
+ * run-result summary because those runs intentionally do not post a comment.
+ */
+export function paperclipRunnerFinalResponse(
+  parsed: readonly TaskChatItem[],
+  options?: {
+    runId?: string;
+    agentName?: string;
+    fallbackSummary?: string | null;
+    /** Structured summaries are terminal fallbacks, never live partial replies. */
+    allowFallback?: boolean;
+  },
+): TaskChatMessageItem | undefined {
+  for (let index = parsed.length - 1; index >= 0; index -= 1) {
+    const item = parsed[index];
+    if (
+      item.kind === "message" &&
+      item.channel === "final" &&
+      item.text.trim()
+    ) {
+      return item;
+    }
+  }
+  if (options?.allowFallback === false) return undefined;
+  // Historical runner transcripts may contain a complete assistant reply from
+  // before message channels were persisted. Keep that user-authored text as
+  // the terminal response and do not replace it with a structured result
+  // summary. Explicit progress text is intentionally excluded.
+  for (let index = parsed.length - 1; index >= 0; index -= 1) {
+    const item = parsed[index];
+    if (
+      item.kind === "message" &&
+      item.channel !== "progress" &&
+      item.text.trim()
+    ) {
+      return { ...item, channel: "final", interstitial: false, streaming: false };
+    }
+  }
+  const runResult = [...parsed]
+    .reverse()
+    .find(
+      (item): item is TaskChatRunResultItem =>
+        item.kind === "protocol" &&
+        item.surface === "run_result" &&
+        Boolean(item.summary?.trim()),
+    );
+  const text = runResult?.summary?.trim() ?? options?.fallbackSummary?.trim();
+  if (!text) return undefined;
+  return {
+    id: runResult
+      ? `${runResult.id}:final-response`
+      : `${options?.runId ?? "run"}:result-summary:final-response`,
+    kind: "message",
+    author: "agent",
+    authorName: options?.agentName,
+    text,
+    channel: "final",
+    streaming: false,
+  };
+}
+
+/**
+ * Materialize a saved plan at the tool boundary that created its revision.
+ * The document query and transcript stream update independently, so folding
+ * the document into the parsed turn gives live, settling, and replay the same
+ * stable owner and DOM position.
+ */
+export function embedPlanDocumentAtWriteBoundary(
+  parsed: readonly TaskChatItem[],
+  plan: TaskChatPlanDocumentItem,
+): TaskChatItem[] {
+  const withoutPlan = parsed.filter((item) => item.id !== plan.id);
+  let writeIndex = -1;
+  for (let index = 0; index < withoutPlan.length; index += 1) {
+    const item = withoutPlan[index];
+    const name =
+      item.kind === "tool"
+        ? (item.rawName ?? item.name)
+        : item.kind === "protocol" &&
+            item.surface === "provider_activity" &&
+            item.family === "tool_execution"
+          ? providerItemDetail(item, "Name")
+          : null;
+    if (!name) continue;
+    const normalizedName = name.replaceAll("-", "_").toLowerCase();
+    if (normalizedName === "write_document") writeIndex = index;
+  }
+  if (writeIndex < 0) return withoutPlan;
+  return [
+    ...withoutPlan.slice(0, writeIndex + 1),
+    plan,
+    ...withoutPlan.slice(writeIndex + 1),
+  ];
+}
+
+function phaseSummary(
+  items: ReadonlyArray<TaskChatActivityPhaseItem["items"][number]>,
+): string {
   const counts = new Map<string, number>();
+  const providerCounts = new Map<
+    TaskChatProviderActivityItem["family"],
+    number
+  >();
+  const providerToolGroups = new Map<string, number>();
+  let providerToolActions = 0;
   let generic = 0;
+  let workspaceFiles = 0;
   for (const item of items) {
+    if (item.kind === "protocol") {
+      if (item.surface === "provider_activity") {
+        providerCounts.set(
+          item.family,
+          (providerCounts.get(item.family) ?? 0) + 1,
+        );
+        if (item.family === "tool_execution") {
+          const presentation = toolActivityPresentation({
+            name: providerItemDetail(item, "Name"),
+            transport: providerItemDetail(item, "Transport"),
+            namespace: providerItemDetail(item, "Namespace"),
+            operation: providerItemDetail(item, "Operation"),
+            target: providerItemDetail(item, "Target"),
+            progress: providerItemDetail(item, "Progress"),
+          });
+          const summaryGroup = presentation.summaryGroup;
+          providerToolGroups.set(
+            summaryGroup.key,
+            (providerToolGroups.get(summaryGroup.key) ?? 0) + 1,
+          );
+          providerToolActions += 1;
+        }
+      } else if (item.surface === "workspace_change") {
+        workspaceFiles += item.totals.files || item.files.length;
+      } else if (item.surface === "workspace_file") {
+        workspaceFiles += 1;
+      }
+      continue;
+    }
     if (item.kind !== "tool") continue;
     if (isGenericToolName(item.rawName ?? item.name)) {
       generic += 1;
@@ -391,37 +1279,240 @@ function phaseSummary(items: readonly (TaskChatToolItem | { kind: "usage" })[]):
     const family = toolTaxonomy(item.rawName ?? item.name).family;
     counts.set(family, (counts.get(family) ?? 0) + 1);
   }
-  const phrases: string[] = [];
-  const add = (family: string, verb: string, singular: string, plural: string) => {
+  const phrases: Array<{ text: string; count: number }> = [];
+  const add = (
+    family: string,
+    singular: string,
+    plural: (count: number) => string,
+  ) => {
     const count = counts.get(family) ?? 0;
-    if (count) phrases.push(`${verb} ${count} ${count === 1 ? singular : plural}`);
+    if (count)
+      phrases.push({ text: count === 1 ? singular : plural(count), count });
   };
-  add("read", "Read", "file", "files");
-  add("edit", "Edited", "file", "files");
-  add("terminal", "Ran", "command", "commands");
+  add("read", "Read a file", (count) => `Read ${count} files`);
+  add("edit", "Edited a file", (count) => `Edited ${count} files`);
+  add("terminal", "Ran a command", (count) => `Ran ${count} commands`);
   const searched = (counts.get("grep") ?? 0) + (counts.get("search") ?? 0);
-  if (searched) phrases.push(`Searched ${searched} ${searched === 1 ? "time" : "times"}`);
+  if (searched)
+    phrases.push({
+      text: searched === 1 ? "Searched once" : `Searched ${searched} times`,
+      count: searched,
+    });
   const known = new Set(["read", "edit", "terminal", "grep", "search"]);
-  const other = [...counts].reduce((n, [family, count]) => n + (known.has(family) ? 0 : count), 0) + generic;
-  if (other) phrases.push(`Called ${other} ${other === 1 ? "tool" : "tools"}`);
-  return phrases.join(", ") || "No tool activity";
+  const other =
+    [...counts].reduce(
+      (n, [family, count]) => n + (known.has(family) ? 0 : count),
+      0,
+    ) + generic;
+  if (other)
+    phrases.push({
+      text: other === 1 ? "Used a tool" : `Used ${other} tools`,
+      count: other,
+    });
+  const providerCount = (family: TaskChatProviderActivityItem["family"]) =>
+    providerCounts.get(family) ?? 0;
+  const addProvider = (
+    family: TaskChatProviderActivityItem["family"],
+    singular: string,
+    plural: (count: number) => string,
+  ) => {
+    const count = providerCount(family);
+    if (count)
+      phrases.push({ text: count === 1 ? singular : plural(count), count });
+  };
+  addProvider("plan", "Updated the plan", (count) => `Updated ${count} plans`);
+  addProvider(
+    "research",
+    "Searched once",
+    (count) => `Searched ${count} times`,
+  );
+  addProvider(
+    "delegation",
+    "Used a subagent",
+    (count) => `Used ${count} subagents`,
+  );
+  addProvider(
+    "model_identity",
+    "Updated the model",
+    (count) => `Updated the model ${count} times`,
+  );
+  addProvider(
+    "context",
+    "Compacted context",
+    (count) => `Compacted context ${count} times`,
+  );
+  addProvider(
+    "artifact",
+    "Handled an artifact",
+    (count) => `Handled ${count} artifacts`,
+  );
+  addProvider(
+    "review",
+    "Changed review mode",
+    (count) => `Changed review mode ${count} times`,
+  );
+  addProvider("hook", "Ran a hook", (count) => `Ran ${count} hooks`);
+  addProvider(
+    "memory",
+    "Referenced memory",
+    (count) => `Referenced memory ${count} times`,
+  );
+  addProvider(
+    "safety",
+    "Ran a safety review",
+    (count) => `Ran ${count} safety reviews`,
+  );
+  addProvider(
+    "terminal",
+    "Sent terminal input",
+    (count) => `Sent terminal input ${count} times`,
+  );
+  addProvider("wait", "Waited", (count) => `Waited ${count} times`);
+  addProvider(
+    "provider_notice",
+    "Received a provider notice",
+    (count) => `Received ${count} provider notices`,
+  );
+  // A canonical tool-execution row can be the only tool representation for a
+  // provider. Avoid double-counting when the adapter also produced native
+  // TaskChatToolItems for the same executions.
+  const nativeToolCount = [...counts.values()].reduce(
+    (total, count) => total + count,
+    generic,
+  );
+  if (nativeToolCount === 0 && providerToolActions > 0) {
+    for (const [key, count] of providerToolGroups) {
+      let text: string;
+      switch (key) {
+        case "command":
+          text = count === 1 ? "Ran a command" : `Ran ${count} commands`;
+          break;
+        case "read":
+          text = count === 1 ? "Read a file" : `Read ${count} files`;
+          break;
+        case "search":
+          text = count === 1 ? "Searched once" : `Searched ${count} times`;
+          break;
+        case "file_change":
+          text = count === 1 ? "Edited a file" : `Edited ${count} files`;
+          break;
+        case "delegation":
+          text = count === 1 ? "Used a subagent" : `Used ${count} subagents`;
+          break;
+        case "wait":
+          text = count === 1 ? "Waited" : `Waited ${count} times`;
+          break;
+        case "tool_search":
+          text =
+            count === 1
+              ? "Searched available tools"
+              : `Searched available tools ${count} times`;
+          break;
+        case "paperclip_read":
+          text =
+            count === 1
+              ? "Read from Paperclip"
+              : `Read from Paperclip ${count} times`;
+          break;
+        case "task_operation":
+          text =
+            count === 1 ? "Used Paperclip" : `Used Paperclip ${count} times`;
+          break;
+        default:
+          text = count === 1 ? "Used a tool" : `Used ${count} tools`;
+      }
+      phrases.push({
+        text,
+        count,
+      });
+    }
+  }
+  if (workspaceFiles > 0)
+    phrases.push({
+      text:
+        workspaceFiles === 1
+          ? "Changed a file"
+          : `Changed ${workspaceFiles} files`,
+      count: workspaceFiles,
+    });
+  if (phrases.length > 0) {
+    const visible = phrases.slice(0, 3);
+    const hidden = phrases
+      .slice(3)
+      .reduce((total, phrase) => total + phrase.count, 0);
+    const summary = visible
+      .map((phrase, index) =>
+        index === 0
+          ? phrase.text
+          : phrase.text.charAt(0).toLowerCase() + phrase.text.slice(1),
+      )
+      .join(", ");
+    return `${summary}${hidden > 0 ? `, +${hidden} more` : ""}`;
+  }
+  const protocolCount = items.filter((item) => item.kind === "protocol").length;
+  if (protocolCount > 0)
+    return protocolCount === 1
+      ? "Runner activity"
+      : `${protocolCount} runner updates`;
+  if (items.some((item) => item.kind === "thinking")) return "Reasoning";
+  const interrupted = items.find(
+    (item) => item.kind === "marker" && item.variant === "interrupted",
+  );
+  return interrupted?.kind === "marker"
+    ? interrupted.label
+    : "No tool activity";
 }
 
-/** Segment parsed transcript rows at assistant boundaries with stable run-derived ids. */
-export function buildActivityPhases(
+/**
+ * Project one turn into its durable chronological rows.
+ *
+ * Commentary starts a sticky phase. Consecutive diagnostic activity belongs
+ * to that phase until the next commentary or runtime request. Request lifecycle
+ * updates are coalesced to their latest state but emitted at the first request
+ * slot; pending requests stay composer-only while still breaking activity
+ * grouping at that slot.
+ */
+export function buildTurnTimelineRows(
   parsed: readonly TaskChatItem[],
   running: boolean,
-): TaskChatActivityPhaseItem[] {
-  const phases: TaskChatActivityPhaseItem[] = [];
+): TaskChatTurnChildItem[] {
+  const rows: TaskChatTurnChildItem[] = [];
   let current: TaskChatActivityPhaseItem | null = null;
+  const latestRequestByKey = new Map<string, TaskChatProtocolItem>();
+  for (const item of parsed) {
+    if (item.kind !== "protocol" || item.surface !== "runtime_request")
+      continue;
+    latestRequestByKey.set(`${item.runId}:${item.requestId}`, item);
+  }
+  const seenRequests = new Set<string>();
   const ensureOpening = (seed: string) => {
     if (!current) {
-      current = { id: `${seed}:phase:opening`, kind: "activity_phase", items: [], summary: "", active: false };
-      phases.push(current);
+      current = {
+        id: `${seed}:phase:opening`,
+        kind: "activity_phase",
+        items: [],
+        summary: "",
+        active: false,
+      };
+      rows.push(current);
     }
     return current;
   };
-  const lastVisible = [...parsed].reverse().find((item) => item.kind !== "thinking");
+  const legacyReplyBoundary = [...parsed]
+    .reverse()
+    .find((item) => {
+      if (item.kind === "usage" || item.kind === "status") return false;
+      if (item.kind === "marker") {
+        return item.variant === "interrupted";
+      }
+      if (item.kind === "protocol") {
+        return (
+          item.surface === "provider_activity" ||
+          item.surface === "runtime_request"
+        );
+      }
+      return true;
+    });
   for (const item of parsed) {
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
@@ -429,7 +1520,8 @@ export function buildActivityPhases(
       // the last-visible fallback until the posted reply lands.
       const explicitFinal = item.channel === "final" || item.interstitial === false;
       const legacyTrailingReply =
-        (item.channel == null || item.channel === "unknown") && item === lastVisible;
+        (item.channel == null || item.channel === "unknown") &&
+        item === legacyReplyBoundary;
       if (!running && (explicitFinal || legacyTrailingReply)) continue;
       current = {
         id: `${item.id}:phase`,
@@ -439,15 +1531,54 @@ export function buildActivityPhases(
         summary: "",
         active: false,
       };
-      phases.push(current);
-    } else if (item.kind === "tool" || item.kind === "usage") {
+      rows.push(current);
+    } else if (item.kind === "protocol" && item.surface === "runtime_request") {
+      const key = `${item.runId}:${item.requestId}`;
+      if (seenRequests.has(key)) continue;
+      seenRequests.add(key);
+      current = null;
+      const latest = latestRequestByKey.get(key);
+      if (
+        latest?.surface === "runtime_request" &&
+        latest.status !== "pending"
+      ) {
+        rows.push(latest.id === item.id ? latest : { ...latest, id: item.id });
+      }
+    } else if (item.kind === "protocol" && item.surface === "workspace_change") {
+      current = null;
+      rows.push(item);
+    } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (
+      item.kind === "tool" ||
+      item.kind === "usage" ||
+      item.kind === "thinking" ||
+      item.kind === "marker" ||
+      item.kind === "protocol"
+    ) {
       ensureOpening(item.id).items.push(item);
     }
   }
-  for (const phase of phases) phase.summary = phaseSummary(phase.items);
-  const meaningful = phases.filter((phase) => phase.interstitial || phase.items.length > 0);
-  if (running && meaningful.length) meaningful[meaningful.length - 1].active = true;
+  const meaningful = rows.filter(
+    (row) =>
+      row.kind !== "activity_phase" || row.interstitial || row.items.length > 0,
+  );
+  for (const row of meaningful) {
+    if (row.kind === "activity_phase") row.summary = phaseSummary(row.items);
+  }
+  if (running && current && meaningful.includes(current)) current.active = true;
   return meaningful;
+}
+
+/** Segment parsed transcript rows at assistant/request boundaries. */
+export function buildActivityPhases(
+  parsed: readonly TaskChatItem[],
+  running: boolean,
+): TaskChatActivityPhaseItem[] {
+  return buildTurnTimelineRows(parsed, running).filter(
+    (item): item is TaskChatActivityPhaseItem => item.kind === "activity_phase",
+  );
 }
 
 function formatDurationLabel(ms: number): string | undefined {
@@ -467,7 +1598,9 @@ function formatTokensLabel(tokens: number): string | undefined {
 }
 
 /** First→last ts span of a transcript, or undefined when unknowable. */
-function transcriptSpanMs(entries: readonly TranscriptEntry[]): number | undefined {
+function transcriptSpanMs(
+  entries: readonly TranscriptEntry[],
+): number | undefined {
   if (entries.length < 2) return undefined;
   const first = Date.parse(entries[0].ts);
   const last = Date.parse(entries[entries.length - 1].ts);
@@ -508,7 +1641,8 @@ export function buildTurnSummary(
   }
   const durationMs = opts.durationMs ?? transcriptSpanMs(entries);
   return {
-    durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+    durationLabel:
+      durationMs != null ? formatDurationLabel(durationMs) : undefined,
     toolCount: toolIds.size,
     added,
     removed,
@@ -540,14 +1674,16 @@ export function buildMergedTurnSummary(
     all.push(...part.entries);
     if (part.failed) failed = true;
     const d = part.durationMs ?? transcriptSpanMs(part.entries);
-    if (d != null && Number.isFinite(d)) durationMs = (durationMs ?? 0) + Math.max(0, d);
+    if (d != null && Number.isFinite(d))
+      durationMs = (durationMs ?? 0) + Math.max(0, d);
   }
   // durationMs: 0 suppresses the concatenated-span fallback (which would count
   // the gap between runs); the summed label is applied over it below.
   const counts = buildTurnSummary(all, { durationMs: 0, failed });
   return {
     ...counts,
-    durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+    durationLabel:
+      durationMs != null ? formatDurationLabel(durationMs) : undefined,
   };
 }
 
@@ -598,7 +1734,10 @@ export const ISSUE_BRIEF_ITEM_ID = "issue-brief";
  * turn whose startMs predates every backbone entry (F15) lands below the
  * description bubble.
  */
-export function prependIssueBrief(items: TaskChatItem[], hasBrief: boolean): TaskChatItem[] {
+export function prependIssueBrief(
+  items: TaskChatItem[],
+  hasBrief: boolean,
+): TaskChatItem[] {
   if (!hasBrief) return items;
   return [{ id: ISSUE_BRIEF_ITEM_ID, kind: "brief" }, ...items];
 }
@@ -636,12 +1775,19 @@ export function coalesceSettledTurns(
       const meta = metaFor(item.id);
       const held = heldIdx >= 0 ? (out[heldIdx] as TaskChatTurnItem) : null;
       const heldMeta = held ? metaFor(held.id) : undefined;
-      if (held && meta && heldMeta && meta.agentKey && meta.agentKey === heldMeta.agentKey) {
+      if (
+        held &&
+        meta &&
+        heldMeta &&
+        meta.agentKey &&
+        meta.agentKey === heldMeta.agentKey
+      ) {
         out.splice(heldIdx, 1);
         const parts = [...heldMeta.parts, ...meta.parts];
         out.push({
           ...held,
           items: [...held.items, ...item.items],
+          finalResponse: item.finalResponse ?? held.finalResponse,
           animateFold: held.animateFold || item.animateFold || undefined,
           summary: buildMergedTurnSummary(parts),
         });
@@ -656,8 +1802,15 @@ export function coalesceSettledTurns(
     if (item.kind === "message" && item.author === "agent") {
       // The same agent's reply bubble sits between its runs — keep merging
       // across it. A different agent's bubble ends the run of turns.
-      const heldMeta = heldIdx >= 0 ? metaFor((out[heldIdx] as TaskChatTurnItem).id) : undefined;
-      if (heldMeta?.agentName && item.authorName && item.authorName !== heldMeta.agentName) {
+      const heldMeta =
+        heldIdx >= 0
+          ? metaFor((out[heldIdx] as TaskChatTurnItem).id)
+          : undefined;
+      if (
+        heldMeta?.agentName &&
+        item.authorName &&
+        item.authorName !== heldMeta.agentName
+      ) {
         heldIdx = -1;
       }
     } else {
@@ -694,7 +1847,10 @@ export function attachSettledTurns(
     ) {
       const meta = metaById.get(item.id);
       const sameAgent =
-        meta != null && (meta.agentName == null || prev.authorName == null || meta.agentName === prev.authorName);
+        meta != null &&
+        (meta.agentName == null ||
+          prev.authorName == null ||
+          meta.agentName === prev.authorName);
       if (sameAgent) {
         out[out.length - 1] = { ...prev, attachedTurn: item };
         continue;
@@ -744,7 +1900,8 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
         }
       }
       const target =
-        summarizeToolInput(entry.input) ?? (invocation ? clip(invocation, TARGET_MAX) : undefined);
+        summarizeToolInput(entry.input) ??
+        (invocation ? clip(invocation, TARGET_MAX) : undefined);
       const display = toolDisplayName(name);
       return {
         label: toolTaxonomy(name).verbLabel,
@@ -777,6 +1934,8 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
       return { label: "Responding", selfTalk: selfTalk || undefined };
     }
     if (entry.kind === "thinking") return { label: "Thinking" };
+    if (entry.kind === "system" && entry.text === "Reasoning started")
+      return { label: "Thinking" };
   }
   return { label: "Running" };
 }

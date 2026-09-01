@@ -46,6 +46,7 @@ function createMockSandbox(overrides: {
   recoverable?: boolean;
   workDir?: string;
   autoDestroyAt?: string | null;
+  updatedAt?: string;
 } = {}) {
   return {
     id: overrides.id ?? "sandbox-123",
@@ -57,6 +58,7 @@ function createMockSandbox(overrides: {
     // A configured provider TTL populates `autoDestroyAt` after `setTtl` +
     // `refreshData`. The default mock leaves it unset (no TTL configured).
     autoDestroyAt: overrides.autoDestroyAt ?? undefined,
+    updatedAt: overrides.updatedAt,
     getWorkDir: vi.fn().mockResolvedValue(overrides.workDir ?? "/home/daytona"),
     getUserHomeDir: vi.fn().mockResolvedValue("/home/daytona"),
     start: vi.fn().mockResolvedValue(undefined),
@@ -74,6 +76,10 @@ function createMockSandbox(overrides: {
     createSshAccess: vi.fn().mockResolvedValue({
       token: "ssh-token-secret",
       command: "ssh ssh-token-secret@ssh.app.daytona.io",
+    }),
+    getPreviewLink: vi.fn().mockResolvedValue({
+      url: "https://43127-sandbox-123.proxy.daytona.test",
+      token: "preview-token-secret",
     }),
     _experimental_createSnapshot: vi.fn().mockResolvedValue(undefined),
     fs: {
@@ -161,11 +167,90 @@ describe("Daytona sandbox provider plugin", () => {
     expect(plugin.definition.onDuplexChannelClose).toBeTypeOf("function");
   });
 
+  it("declares and returns private authenticated runner WebSocket ingress", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+    const base = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { image: "node:20", timeoutMs: 300_000, reuseLease: false },
+    };
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      ...base,
+      runId: "00000000-0000-4000-8000-000000000001",
+    });
+    const endpoint = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.({
+      ...base,
+      lease: lease!,
+      port: 43_127,
+      path: "/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+    });
+
+    expect(manifest.environmentDrivers?.[0]?.sandboxCapabilities).toMatchObject({
+      runnerWebSocketIngress: true,
+    });
+    expect(endpoint).toMatchObject({
+      kind: "authenticated_websocket",
+      websocketUrl:
+        "wss://43127-sandbox-123.proxy.daytona.test/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+      secretHeaders: [
+        { name: "X-Daytona-Preview-Token", value: "preview-token-secret" },
+      ],
+    });
+    expect(endpoint?.websocketUrl).not.toContain("preview-token-secret");
+    expect(endpoint?.websocketUrl).not.toContain("host-key");
+  });
+
+  it("keeps ingress generation independent of token rotation and changes it after a sandbox lifecycle revision", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ updatedAt: "2026-08-25T10:00:00.000Z" });
+    sandbox.getPreviewLink
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-1",
+      })
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-2",
+      })
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-3",
+      });
+    mockCreate.mockResolvedValue(sandbox);
+    const base = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { image: "node:20", timeoutMs: 300_000, reuseLease: false },
+    };
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      ...base,
+      runId: "00000000-0000-4000-8000-000000000001",
+    });
+    const request = {
+      ...base,
+      lease: lease!,
+      port: 43_127,
+      path: "/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+    };
+    const first = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    const second = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    expect(second?.generation).toBe(first?.generation);
+    expect(second?.secretHeaders).not.toEqual(first?.secretHeaders);
+
+    sandbox.updatedAt = "2026-08-25T10:05:00.000Z";
+    const restarted = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    expect(restarted?.generation).not.toBe(first?.generation);
+  });
+
   it("bumps the plugin version so the server reconciles the stored manifest", () => {
     // The bundled-plugin boot reconcile refreshes the stored manifest for an
     // existing install only when the version changes. The duplex capability needs
     // the bump to reach an existing install.
-    expect(manifest.version).toBe("0.1.5");
+    expect(manifest.version).toBe("0.1.7");
   });
 
   it("opens a duplex channel, forwards a host write, and closes it on lease release", async () => {
@@ -1074,7 +1159,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("deletes the sandbox if resume setup throws after the sandbox starts", async () => {
+  it("preserves the sandbox if resume setup throws after the sandbox starts", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-resume", state: "stopped" });
     sandbox.getWorkDir.mockRejectedValue(new Error("workdir lookup failed"));
@@ -1094,7 +1179,7 @@ describe("Daytona sandbox provider plugin", () => {
     ).rejects.toThrow("workdir lookup failed");
 
     expect(sandbox.start).toHaveBeenCalled();
-    expect(sandbox.delete).toHaveBeenCalledTimes(1);
+    expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
   it("marks missing reusable leases as expired on resume", async () => {

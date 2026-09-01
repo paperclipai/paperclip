@@ -36,6 +36,12 @@ export interface IssueChatComment extends IssueComment {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   followUpRequested?: boolean;
+  /** Causal conversation slot: the run that actually consumed this input. */
+  consumedByRunId?: string | null;
+  /** Same-turn PRP steering acknowledgement for this human input. */
+  steeredIntoRunId?: string | null;
+  conversationAnchorAt?: Date | string | null;
+  conversationAnchorSequence?: number;
 }
 
 export interface IssueChatLinkedRun {
@@ -51,6 +57,8 @@ export interface IssueChatLinkedRun {
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  scheduledRetryAt?: string | null;
+  nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -965,13 +973,17 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "tool_result") {
       const toolCallId = entry.toolUseId || `tool-result-${index}`;
       const existing = toolParts.get(toolCallId);
+      const existingResult = typeof existing?.result === "string" ? existing.result : "";
+      const result = entry.delta
+        ? `${existingResult}${entry.content ?? ""}`
+        : (entry.content || existingResult);
       const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: existing?.toolName || entry.toolName || "tool",
         args: existing?.args ?? {},
         argsText: existing?.argsText ?? "",
-        result: entry.content ?? "",
+        result,
         isError: entry.isError === true,
       };
       if (existing) {

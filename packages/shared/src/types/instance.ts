@@ -101,6 +101,8 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
+  /** Default-off rollout gate for paperclip_runner provider WebSocket ingress. */
+  enableRunnerPreviewIngress: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When

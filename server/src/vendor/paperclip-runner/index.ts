@@ -26,10 +26,13 @@ export type {
   ControlPlanePort,
   HarnessRuntimeRequestKind,
   HarnessRuntimeRequestResolution,
+  NativeAcpxAgent,
+  NativeAcpxPermissionMode,
   NativeCodexApprovalPolicy,
   NativeExecutionInput,
   NativeExecutionInputV4,
   NativeInteractionResponseEnvelope,
+  NativeOpenCodePermissionMode,
   NativePlanningContext,
   NativeRunEvent,
   NativeRunResult,
@@ -45,8 +48,12 @@ export type {
   PrpStructuredRunResult,
   PrpTerminalState,
   PrpVerificationReasonCode,
+  PrpWireConnection,
   ReplayControlPlaneEventsInput,
+  RunnerProcessHandle,
+  RunnerProcessLaunchSpec,
   StrictCompletionContractInput,
+  TransportCloseReason,
 } from "@paperclipai/paperclip-runner";
 export type DurablePrpControlPlane =
   import("@paperclipai/paperclip-runner").DurablePrpControlPlane;
@@ -90,6 +97,8 @@ export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
 export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse = runner.parsePaperclipQuestionResponse;
+export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const validatePrpEvent = runner.validatePrpEvent;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;

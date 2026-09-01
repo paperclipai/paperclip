@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -7,12 +8,18 @@ import {
   fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
   readSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, posix, resolve } from "node:path";
 import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
@@ -21,6 +28,7 @@ import type { NativeFinalizationResult } from "@paperclipai/shared";
 import type {
   HarnessRuntimeRequestResolution,
   NativeExecutionInput,
+  NativeRuntimeContextSnapshot,
   NativeSession,
   NativeSessionBackend,
   PaperclipQuestionSet,
@@ -31,13 +39,25 @@ import type {
 import {
   createNativeSessionBackend,
   createRunnerdCodexTransport,
+  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parsePaperclipQuestionSet,
+  resolveSourceCodexHome,
+  type RunnerProcessHandle,
+  type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import {
+  resolvePaperclipRunnerTransport,
+  type PaperclipRunnerTransport,
+} from "@paperclipai/adapter-utils/runner-connectivity";
 import type { Db } from "@paperclipai/db";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import {
   documentRevisions,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueDocuments,
@@ -48,6 +68,7 @@ import {
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
+import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
@@ -68,6 +89,7 @@ import {
   type NativeRunSpanScope,
   type NativeRunTrace,
 } from "./native-run-trace.js";
+import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -89,6 +111,9 @@ export class NativeCancellationPendingRecoveryError extends Error {
 }
 
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
+const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
+const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
@@ -978,6 +1003,28 @@ export async function synchronizeCompletedProviderPlan(input: {
   };
 }
 
+class SessionToolAuthorityRouter {
+  #authority: PaperclipRunnerToolAuthority;
+
+  constructor(authority: PaperclipRunnerToolAuthority) {
+    this.#authority = authority;
+  }
+
+  bind(authority: PaperclipRunnerToolAuthority): void {
+    this.#authority = authority;
+  }
+
+  definitions() {
+    return this.#authority.definitions();
+  }
+
+  execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
+    return this.#authority.execute(call);
+  }
+}
+
+const sessionToolRouters = new Map<string, SessionToolAuthorityRouter>();
+
 function nativeSessionKey(execution: NativeExecutionInput): string {
   return (
     execution.session.normalizedSessionId ??
@@ -1129,6 +1176,369 @@ function nativeSessionConfigDigest(execution: NativeExecutionInput): string {
     .digest("hex")}`;
 }
 
+function nativeHarnessEnvironmentFingerprint(
+  execution: NativeExecutionInput,
+): string {
+  return `sha256:${createHash("sha256")
+    .update(
+      canonicalJson({
+        companyId: execution.binding.companyId,
+        agentId: execution.binding.agentId,
+        issueId: execution.binding.issueId,
+        normalizedSessionId: nativeSessionKey(execution),
+        workspace: {
+          cwd: execution.workspace.cwd,
+          repoUrl: execution.workspace.repoUrl,
+          repoRef: execution.workspace.repoRef,
+          branchName: execution.workspace.branchName,
+        },
+        provider: execution.provider,
+        driverKind: execution.session.driverKind,
+      }),
+    )
+    .digest("hex")}`;
+}
+
+type NativeProviderKind = NativeExecutionInput["provider"]["kind"];
+type NativeDriverKind = NativeExecutionInput["session"]["driverKind"];
+
+export interface NativeHarnessPersistenceDirectory {
+  name: "runner" | "codex-home" | "opencode" | "acpx";
+  location: "runner" | "filesystem";
+  excludeTopLevelEntries: readonly string[];
+}
+
+export interface NativeHarnessPersistenceProfile {
+  providerKind: NativeProviderKind;
+  driverKind: NativeDriverKind;
+  directories: readonly NativeHarnessPersistenceDirectory[];
+}
+
+export interface NativeHarnessBackupManifest {
+  schema: "paperclip.native-harness-backup.v1";
+  normalizedSessionId: string;
+  runnerInstanceId: string;
+  providerKind: NativeProviderKind;
+  driverKind: NativeDriverKind;
+  providerSessionIdentity: unknown;
+  sourceProviderLeaseId: string;
+  environmentFingerprint: string;
+  runnerContractVersion: number;
+  directories: Array<{
+    name: string;
+    sha256: string;
+    bytes: number;
+  }>;
+  completedAt: string;
+}
+
+export function resolveNativeHarnessPersistenceProfile(
+  execution: NativeExecutionInput,
+): NativeHarnessPersistenceProfile {
+  const providerDirectory: NativeHarnessPersistenceDirectory | null =
+    execution.provider.kind === "codex"
+      ? {
+          name: "codex-home",
+          location: "filesystem",
+          // Codex session history lives below this home, but these files are
+          // launch-time material: auth.json is copied from the configured
+          // credential source and config.toml can contain the native MCP
+          // bearer token. Re-materialize both for a replacement sandbox
+          // instead of putting credentials into the disaster-recovery copy.
+          excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+        }
+      : execution.provider.kind === "opencode"
+        ? {
+            name: "opencode",
+            location: "filesystem",
+            excludeTopLevelEntries: [],
+          }
+        : execution.provider.kind === "acpx"
+          ? {
+              name: "acpx",
+              location: "filesystem",
+              excludeTopLevelEntries: [],
+            }
+          : null;
+  return {
+    providerKind: execution.provider.kind,
+    driverKind: execution.session.driverKind,
+    directories: [
+      { name: "runner", location: "runner", excludeTopLevelEntries: [] },
+      ...(providerDirectory ? [providerDirectory] : []),
+    ],
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([left], [right]) => left.localeCompare(right),
+    );
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function providerSessionIdentityFromRunnerState(
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    providerSessionId: state.providerSessionId ?? null,
+    providerBackendSessionId: state.providerBackendSessionId ?? null,
+    providerSessionIdentity: state.providerSessionIdentity ?? null,
+  };
+}
+
+function providerSessionIdentityIsPresent(value: unknown): boolean {
+  const identity = record(value);
+  return (
+    (identity.providerSessionId !== null &&
+      identity.providerSessionId !== undefined) ||
+    (identity.providerBackendSessionId !== null &&
+      identity.providerBackendSessionId !== undefined) ||
+    (identity.providerSessionIdentity !== null &&
+      identity.providerSessionIdentity !== undefined)
+  );
+}
+
+export function providerSessionIdentityTransitionIsAllowed(input: {
+  execution: NativeExecutionInput;
+  previous: unknown;
+  current: unknown;
+}): boolean {
+  if (canonicalJson(input.previous) === canonicalJson(input.current)) {
+    return true;
+  }
+  if (
+    input.execution.provider.kind !== "acpx" ||
+    input.execution.interactionResponses.length === 0
+  ) {
+    return false;
+  }
+
+  const previousOuter = record(input.previous);
+  const currentOuter = record(input.current);
+  const previous = record(previousOuter.providerSessionIdentity);
+  const current = record(currentOuter.providerSessionIdentity);
+  if (previous.kind !== "acpx" || current.kind !== "acpx") return false;
+
+  const stableFields = [
+    "normalizedSessionId",
+    "profileDigest",
+    "workspaceDigest",
+    "requestedModel",
+    "effectiveModel",
+    "permissionMode",
+  ] as const;
+  if (
+    current.normalizedSessionId !== nativeSessionKey(input.execution) ||
+    stableFields.some(
+      (field) =>
+        typeof previous[field] !== "string" ||
+        previous[field] !== current[field],
+    )
+  ) {
+    return false;
+  }
+
+  return (
+    typeof previous.acpxRecordId === "string" &&
+    typeof previous.backendSessionId === "string" &&
+    typeof previous.agentSessionId === "string" &&
+    typeof current.acpxRecordId === "string" &&
+    typeof current.backendSessionId === "string" &&
+    typeof current.agentSessionId === "string" &&
+    previousOuter.providerSessionId === previous.acpxRecordId &&
+    previousOuter.providerBackendSessionId === previous.backendSessionId &&
+    currentOuter.providerSessionId === current.acpxRecordId &&
+    currentOuter.providerBackendSessionId === current.backendSessionId
+  );
+}
+
+function digestBackupDirectory(directory: string): {
+  sha256: string;
+  bytes: number;
+} {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const visit = (current: string, relative: string) => {
+    const entries = readdirSync(current, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    if (entries.length === 0) hash.update(`directory:${relative}\0`);
+    for (const entry of entries) {
+      const entryPath = resolve(current, entry.name);
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const stats = lstatSync(entryPath);
+      if (entry.isDirectory()) {
+        hash.update(`directory:${entryRelative}:${stats.mode & 0o777}\0`);
+        visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`symlink:${entryRelative}:${readlinkSync(entryPath)}\0`);
+      } else if (entry.isFile()) {
+        const contents = readFileSync(entryPath);
+        bytes += contents.byteLength;
+        hash.update(
+          `file:${entryRelative}:${stats.mode & 0o777}:${contents.byteLength}\0`,
+        );
+        hash.update(contents);
+      } else {
+        throw new Error(
+          `runner_harness_backup_unsupported_entry:${entryRelative}`,
+        );
+      }
+    }
+  };
+  visit(directory, "");
+  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
+}
+
+function harnessBackupRoot(root: string): string {
+  return resolve(root, "failover-backups");
+}
+
+function harnessBackupCandidates(root: string): string[] {
+  const backupRoot = harnessBackupRoot(root);
+  return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
+}
+
+type VerifiedHarnessBackup = {
+  root: string;
+  manifest: NativeHarnessBackupManifest;
+  bytes: number;
+};
+
+export function shouldRestoreNativeHarnessBackupIntoSandbox(input: {
+  acquisitionOutcome: "created" | "resumed" | "replacement" | null;
+  reusableLeaseConfigured: boolean | null | undefined;
+  backupAvailable: boolean;
+}): boolean {
+  return (
+    input.acquisitionOutcome === "created" &&
+    input.reusableLeaseConfigured === false &&
+    input.backupAvailable
+  );
+}
+
+function compatibleNativeHarnessBackupManifests(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): Array<{ root: string; manifest: NativeHarnessBackupManifest }> {
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const expectedNames = profile.directories
+    .map((directory) => directory.name)
+    .sort();
+  const compatible: Array<{
+    root: string;
+    manifest: NativeHarnessBackupManifest;
+  }> = [];
+  for (const candidateRoot of harnessBackupCandidates(input.root)) {
+    const manifestPath = resolve(candidateRoot, "manifest.json");
+    if (!existsSync(manifestPath)) continue;
+    let manifest: NativeHarnessBackupManifest;
+    try {
+      manifest = JSON.parse(
+        readFileSync(manifestPath, "utf8"),
+      ) as NativeHarnessBackupManifest;
+    } catch {
+      continue;
+    }
+    if (
+      manifest.schema !== "paperclip.native-harness-backup.v1" ||
+      manifest.normalizedSessionId !== nativeSessionKey(input.execution) ||
+      manifest.runnerInstanceId !== input.runnerInstanceId ||
+      manifest.providerKind !== profile.providerKind ||
+      manifest.driverKind !== profile.driverKind ||
+      manifest.environmentFingerprint !==
+        nativeHarnessEnvironmentFingerprint(input.execution) ||
+      manifest.runnerContractVersion !== RUNNERD_BINARY_CONTRACT_VERSION ||
+      !providerSessionIdentityIsPresent(manifest.providerSessionIdentity) ||
+      !Array.isArray(manifest.directories)
+    )
+      continue;
+    const manifestNames = manifest.directories
+      .map((directory) => directory.name)
+      .sort();
+    if (canonicalJson(expectedNames) !== canonicalJson(manifestNames)) continue;
+    compatible.push({ root: candidateRoot, manifest });
+  }
+  return compatible;
+}
+
+export function buildNativeHarnessBackupManifest(input: {
+  backupRoot: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+  providerSessionIdentity: unknown;
+  sourceProviderLeaseId: string;
+  completedAt?: string;
+}): NativeHarnessBackupManifest {
+  if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
+    throw new Error("runner_harness_state_mismatch");
+  }
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const directories = profile.directories.map((directory) => {
+    const path = resolve(input.backupRoot, directory.name);
+    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch");
+    return { name: directory.name, ...digestBackupDirectory(path) };
+  });
+  return {
+    schema: "paperclip.native-harness-backup.v1",
+    normalizedSessionId: nativeSessionKey(input.execution),
+    runnerInstanceId: input.runnerInstanceId,
+    providerKind: profile.providerKind,
+    driverKind: profile.driverKind,
+    providerSessionIdentity: input.providerSessionIdentity,
+    sourceProviderLeaseId: input.sourceProviderLeaseId,
+    environmentFingerprint: nativeHarnessEnvironmentFingerprint(
+      input.execution,
+    ),
+    runnerContractVersion: RUNNERD_BINARY_CONTRACT_VERSION,
+    directories,
+    completedAt: input.completedAt ?? new Date().toISOString(),
+  };
+}
+
+export function verifyNativeHarnessBackup(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): VerifiedHarnessBackup | null {
+  for (const {
+    root: candidateRoot,
+    manifest,
+  } of compatibleNativeHarnessBackupManifests(input)) {
+    let bytes = 0;
+    let valid = true;
+    for (const declared of manifest.directories) {
+      const directoryPath = resolve(candidateRoot, declared.name);
+      if (!existsSync(directoryPath)) {
+        valid = false;
+        break;
+      }
+      try {
+        const digest = digestBackupDirectory(directoryPath);
+        if (
+          digest.sha256 !== declared.sha256 ||
+          digest.bytes !== declared.bytes
+        ) {
+          valid = false;
+          break;
+        }
+        bytes += digest.bytes;
+      } catch {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) return { root: candidateRoot, manifest, bytes };
+  }
+  return null;
+}
+
 function nativeSessionCheckpointDirectory(): string {
   const directory = resolve(
     resolvePaperclipInstanceRoot(),
@@ -1260,7 +1670,9 @@ export function nativeSessionFailureDisposition(
   now = new Date(),
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
-  const permanentFailure = sourceFailureCode === "native_event_replay_conflict";
+  const permanentFailure =
+    sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === "runner_remote_provider_artifact_incompatible";
   const exhausted = permanentFailure || attempt >= 3;
   return {
     phase: exhausted
@@ -1299,6 +1711,7 @@ export function nativeSessionRecoveryProjection(input: {
 export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
+  | "runner_remote_provider_artifact_incompatible"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -1314,6 +1727,9 @@ export function nativeSessionFailureSourceCode(
   | "native_event_replay_conflict"
   | "native_session_interrupted" {
   const message = error instanceof Error ? error.message : String(error);
+  if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
+    return "runner_remote_provider_artifact_incompatible";
+  }
   if (/provider_process_exited/i.test(message)) {
     return "provider_process_exited";
   }
@@ -1416,6 +1832,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const definitelyPreSession = new Set<
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
+    "runner_remote_provider_artifact_incompatible",
     "provider_process_exited",
     "provider_stdout_closed",
     "provider_process_output_closed",
@@ -2310,6 +2727,14 @@ export async function executePaperclipNativeSession(input: {
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  enableRunnerPreviewIngress?: boolean;
+  runnerPublicUrl?: string | null;
+  runnerCaBundlePath?: string | null;
+  runnerRemoteBinaryPath?: string | null;
+  runnerRemoteCodexPath?: string | null;
+  runnerRemoteCodexNpmSpec?: string | null;
+  runnerRemoteProviderPackPath?: string | null;
   enqueueWakeup?: (
     agentId: string,
     options: {
@@ -2398,6 +2823,8 @@ export async function executePaperclipNativeSession(input: {
   }
   const leaseOwner =
     input.leaseOwner ?? `${effectiveRunnerInstanceId}:${randomUUID()}`;
+  const leaseNow = new Date();
+  const leaseExpiresAt = new Date(leaseNow.getTime() + 20 * 60_000);
   let attempt: number;
   try {
     attempt = await trace.measure(
@@ -2912,7 +3339,16 @@ export async function executePaperclipNativeSession(input: {
         })
       : null;
   }
-  const runnerExecution = input.execution;
+  const runnerExecution =
+    input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
+      ? {
+          ...input.execution,
+          workspace: {
+            ...input.execution.workspace,
+            cwd: input.runnerExecutionTarget.remoteCwd,
+          },
+        }
+      : input.execution;
   const leaseRenewal = startNativeSessionExecutionLeaseRenewal({
     db: input.db,
     runId: input.execution.binding.runId,
@@ -2950,6 +3386,20 @@ export async function executePaperclipNativeSession(input: {
               createNativeSessionBackend(input.execution, {
                 runnerInstanceId: input.runnerInstanceId,
                 onSpawn: input.onSpawn,
+                opencodeEnvironment: input.runnerEnvironment ?? process.env,
+                acpxEnvironment: input.runnerEnvironment ?? process.env,
+                opencodeRuntimeDirectory: resolve(
+                  resolvePaperclipInstanceRoot(),
+                  "runtime",
+                  "paperclip-runner",
+                  "opencode",
+                ),
+                acpxRuntimeDirectory: resolve(
+                  resolvePaperclipInstanceRoot(),
+                  "runtime",
+                  "paperclip-runner",
+                  "acpx",
+                ),
               }),
             controlPlane,
             runnerInstanceId: effectiveRunnerInstanceId,
@@ -3447,6 +3897,732 @@ export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
   };
 }
 
+function processEnvironment(
+  environment: NodeJS.ProcessEnv,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+export function parseRemoteExecutableCandidate(stdout: string): string | null {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length !== 1) return null;
+  const candidate = lines[0]!;
+  if (
+    !candidate.startsWith("/") ||
+    candidate.length > 4_096 ||
+    !/^\/[A-Za-z0-9_./+@-]+$/.test(candidate)
+  ) {
+    return null;
+  }
+  return posix.normalize(candidate);
+}
+
+export function mayUsePreinstalledRunnerArtifact(
+  configuredRemoteBinaryPath: string | null | undefined,
+): boolean {
+  return !configuredRemoteBinaryPath?.trim();
+}
+
+const RUNNERD_BUILD_METADATA_SCHEMA =
+  "paperclip-runner/runnerd-build-metadata/v1";
+const RUNNERD_BINARY_CONTRACT_VERSION = 2;
+
+const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
+const REMOTE_PROVIDER_PACK_PINS = {
+  nodeMinimum: "24.11.0",
+  codex: "0.148.0",
+  opencode: "1.18.17",
+  acpx: "0.13.1",
+  claudeAcp: "0.70.0",
+  codexAcp: "1.6.2",
+} as const;
+const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
+  claude:
+    "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+  codex:
+    "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+} as const;
+
+type RemoteProviderPackManifest = {
+  schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
+  digest: string;
+  payload: {
+    pins: typeof REMOTE_PROVIDER_PACK_PINS;
+    target: { platform: string; architecture: string };
+    runnerSourceRevision: string;
+    distDigest: string;
+    bridgeDigest: string;
+    acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    artifacts: {
+      nodeCommand: { path: string; sha256: string };
+      productionLock: { path: string; sha256: string };
+      opencodeCommand: { path: string; sha256: string };
+      opencodeExecutable: { path: string; sha256: string };
+      opencodeProxy: { path: string; sha256: string };
+      acpxSidecar: { path: string; sha256: string };
+    };
+  };
+};
+
+function sha256File(path: string): string {
+  return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+}
+
+export function sha256DirectoryTree(root: string): string {
+  const hash = createHash("sha256");
+  const visit = (directory: string, prefix = "") => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`directory\0${relativePath}\n`);
+        visit(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(
+          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
+        );
+      } else {
+        throw new Error(
+          `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
+        );
+      }
+    }
+  };
+  visit(root);
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function providerPackRelativePath(value: unknown, field: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    posix.normalize(value) !== value ||
+    value.split("/").includes("..")
+  ) {
+    throw new Error(
+      `runner_remote_provider_artifact_incompatible: invalid ${field}`,
+    );
+  }
+  return value;
+}
+
+export function readRemoteProviderPackManifest(
+  packRoot: string,
+): RemoteProviderPackManifest {
+  let manifest: RemoteProviderPackManifest;
+  try {
+    manifest = JSON.parse(
+      readFileSync(resolve(packRoot, "provider-pack.json"), "utf8"),
+    ) as RemoteProviderPackManifest;
+  } catch (error) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable",
+      { cause: error },
+    );
+  }
+  const payload = manifest?.payload;
+  if (
+    manifest.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
+    !payload ||
+    canonicalJson(payload.pins) !== canonicalJson(REMOTE_PROVIDER_PACK_PINS) ||
+    canonicalJson(payload.acpxProfileDigests) !==
+      canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS) ||
+    typeof payload.target?.platform !== "string" ||
+    typeof payload.target?.architecture !== "string" ||
+    !/^[0-9a-f]{40}(?:-dirty)?$/.test(payload.runnerSourceRevision) ||
+    !/^sha256:[0-9a-f]{64}$/.test(payload.distDigest)
+  ) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider pack pins or source revision do not match",
+    );
+  }
+  const digest = `sha256:${createHash("sha256")
+    .update(canonicalJson(payload))
+    .digest("hex")}`;
+  if (manifest.digest !== digest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider pack manifest digest mismatch",
+    );
+  }
+  const artifactEntries = [
+    ["provider Node", payload.artifacts?.nodeCommand],
+    ["production lockfile", payload.artifacts?.productionLock],
+    ["OpenCode command", payload.artifacts?.opencodeCommand],
+    ["OpenCode executable", payload.artifacts?.opencodeExecutable],
+    ["OpenCode proxy", payload.artifacts?.opencodeProxy],
+    ["ACPX sidecar", payload.artifacts?.acpxSidecar],
+  ] as const;
+  for (const [label, artifact] of artifactEntries) {
+    const artifactPath = providerPackRelativePath(
+      artifact?.path,
+      `${label} path`,
+    );
+    if (
+      typeof artifact?.sha256 !== "string" ||
+      sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256
+    ) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${label} digest mismatch`,
+      );
+    }
+  }
+  if (sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
+    );
+  }
+  const bridgeDigest = `sha256:${createHash("sha256")
+    .update(payload.artifacts.opencodeProxy.sha256)
+    .update("\n")
+    .update(payload.artifacts.acpxSidecar.sha256)
+    .update("\n")
+    .update(payload.distDigest)
+    .digest("hex")}`;
+  if (payload.bridgeDigest !== bridgeDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider bridge digest mismatch",
+    );
+  }
+  return structuredClone(manifest);
+}
+
+export function assertRemoteRunnerBuildMetadata(
+  value: unknown,
+  requiredMode: "dial_wss" | "listen_ws",
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("runner_remote_artifact_metadata_invalid");
+  }
+  const metadata = value as Record<string, unknown>;
+  if (
+    metadata.schema !== RUNNERD_BUILD_METADATA_SCHEMA ||
+    metadata.binaryName !== "paperclip-runnerd" ||
+    metadata.packageName !== "@paperclipai/paperclip-runner" ||
+    metadata.binaryContractVersion !== RUNNERD_BINARY_CONTRACT_VERSION
+  ) {
+    throw new Error("runner_remote_artifact_contract_incompatible");
+  }
+  const modes = Array.isArray(metadata.prpTransportModes)
+    ? metadata.prpTransportModes
+    : [];
+  if (!modes.includes(requiredMode)) {
+    throw new Error(
+      `runner_remote_transport_capability_missing:${requiredMode}`,
+    );
+  }
+}
+
+async function stageRemoteRunnerFile(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+}): Promise<void> {
+  const runner = input.runner;
+  if (runner.syncIn) {
+    await runner.syncIn([
+      {
+        operationId: `runner-stage-${randomUUID()}`,
+        files: [
+          {
+            sourcePath: input.sourcePath,
+            targetPath: input.targetPath,
+            kind: "file",
+            mode: input.mode,
+          },
+        ],
+      },
+    ]);
+    return;
+  }
+  const bytes = readFileSync(input.sourcePath);
+  const directory = posix.dirname(input.targetPath);
+  const script =
+    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
+    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
+    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", script],
+    stdin: bytes.toString("base64"),
+    bypassSession: true,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_staging_failed");
+  }
+}
+
+function archiveExcludeArgs(entries: readonly string[]): string[] {
+  for (const entry of entries) {
+    if (entry === "." || entry === ".." || !/^[A-Za-z0-9._-]+$/.test(entry)) {
+      throw new Error("runner_remote_checkpoint_exclusion_invalid");
+    }
+  }
+  return entries.map((entry) => `--exclude=./${entry}`);
+}
+
+export async function stageRemoteRunnerDirectory(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+  excludeTopLevelEntries?: readonly string[];
+}): Promise<void> {
+  const excludeArgs = archiveExcludeArgs(input.excludeTopLevelEntries ?? []);
+  if (input.runner.syncIn) {
+    let stagingRoot: string | null = null;
+    let sourcePath = input.sourcePath;
+    try {
+      if (excludeArgs.length > 0) {
+        stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-restore-"));
+        const archive = execFileSync(
+          "tar",
+          [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
+          { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+        );
+        execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
+          input: archive,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        sourcePath = stagingRoot;
+      }
+      await input.runner.syncIn([
+        {
+          operationId: `runner-stage-dir-${randomUUID()}`,
+          files: [
+            {
+              sourcePath,
+              targetPath: input.targetPath,
+              kind: "directory",
+              mode: input.mode,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
+    }
+    return;
+  }
+  const archive = execFileSync(
+    "tar",
+    [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
+    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+  );
+  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
+  const script =
+    `umask 077; mkdir -p '${escapedTarget}' && ` +
+    `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
+    `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", script],
+    stdin: archive.toString("base64"),
+    bypassSession: true,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_directory_staging_failed");
+  }
+}
+
+async function remoteRunnerPathExists(input: {
+  runner: CommandManagedRuntimeRunner;
+  path: string;
+  kind: "file" | "directory";
+}): Promise<boolean> {
+  const escapedPath = input.path.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -${input.kind === "file" ? "f" : "d"} '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  return result.exitCode === 0 && !result.timedOut;
+}
+
+function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
+  if (archive.length > MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES) {
+    throw new Error("runner_remote_checkpoint_archive_too_large");
+  }
+  let names: string[];
+  let verboseEntries: string[];
+  try {
+    names = execFileSync("tar", ["-tzf", "-"], {
+      input: archive,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    verboseEntries = execFileSync("tar", ["-tvzf", "-"], {
+      input: archive,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+  } catch {
+    throw new Error("runner_remote_checkpoint_archive_invalid");
+  }
+  if (
+    names.length === 0 ||
+    names.length > MAX_REMOTE_CHECKPOINT_ENTRIES ||
+    verboseEntries.length !== names.length
+  ) {
+    throw new Error("runner_remote_checkpoint_archive_invalid");
+  }
+  for (const name of names) {
+    const normalized = name.replace(/^\.\//, "");
+    if (
+      name.includes("\0") ||
+      name.startsWith("/") ||
+      normalized.split("/").some((part) => part === "..")
+    ) {
+      throw new Error("runner_remote_checkpoint_archive_unsafe_path");
+    }
+  }
+  for (const entry of verboseEntries) {
+    const type = entry.trimStart()[0];
+    if (type !== "-" && type !== "d") {
+      throw new Error("runner_remote_checkpoint_archive_unsafe_entry");
+    }
+  }
+  try {
+    execFileSync("tar", ["-xOzf", "-"], {
+      input: archive,
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES,
+      timeout: 60_000,
+    });
+  } catch {
+    throw new Error("runner_remote_checkpoint_archive_expanded_too_large");
+  }
+}
+
+function assertSafeExtractedCheckpoint(root: string): void {
+  const pending = [root];
+  let entries = 0;
+  let totalBytes = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      entries += 1;
+      if (entries > MAX_REMOTE_CHECKPOINT_ENTRIES) {
+        throw new Error("runner_remote_checkpoint_too_many_entries");
+      }
+      const path = join(directory, entry.name);
+      const metadata = lstatSync(path);
+      if (
+        metadata.isSymbolicLink() ||
+        (!metadata.isDirectory() && !metadata.isFile())
+      ) {
+        throw new Error("runner_remote_checkpoint_unsafe_entry");
+      }
+      if (metadata.isDirectory()) {
+        pending.push(path);
+      } else {
+        totalBytes += metadata.size;
+        if (totalBytes > MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES) {
+          throw new Error("runner_remote_checkpoint_expanded_too_large");
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Copy a remote runner directory into durable local state.
+ *
+ * Some provider homes contain process-local scratch trees (for example Codex's
+ * `tmp/arg0` executable aliases). Those aliases can point outside the directory
+ * and are neither portable nor required to resume a provider session. When a
+ * provider supplies a native syncOut implementation, create a sibling snapshot
+ * first so the live runtime remains untouched and the provider's archive safety
+ * checks still apply to every persisted entry.
+ */
+export async function syncRemoteRunnerDirectoryOut(input: {
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+  excludeTopLevelEntries?: readonly string[];
+}): Promise<void> {
+  if (
+    !(await remoteRunnerPathExists({
+      runner: input.runner,
+      path: input.sourcePath,
+      kind: "directory",
+    }))
+  )
+    return;
+  mkdirSync(resolve(input.targetPath, ".."), { recursive: true, mode: 0o700 });
+  const excluded = input.excludeTopLevelEntries ?? [];
+  const excludeArgs = archiveExcludeArgs(excluded)
+    .map((argument) => `'${argument}'`)
+    .join(" ");
+  if (input.runner.syncOut) {
+    let syncSourcePath = input.sourcePath;
+    let snapshotPath: string | null = null;
+    if (excluded.length > 0) {
+      const checkpointId = randomUUID();
+      snapshotPath = posix.join(
+        posix.dirname(input.sourcePath),
+        `.paperclip-checkpoint-${checkpointId}`,
+      );
+      const archivePath = `${snapshotPath}.tar`;
+      const escapedSource = input.sourcePath.replaceAll("'", "'\\''");
+      const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+      const escapedArchive = archivePath.replaceAll("'", "'\\''");
+      const snapshotResult = await input.runner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          `set -e; umask 077; mkdir -p '${escapedSnapshot}'; ` +
+            `trap "rm -f '${escapedArchive}'" EXIT; ` +
+            `tar ${excludeArgs} -cf '${escapedArchive}' -C '${escapedSource}' .; ` +
+            `tar -xf '${escapedArchive}' -C '${escapedSnapshot}'`,
+        ],
+        bypassSession: true,
+        timeoutMs: 120_000,
+      });
+      if (snapshotResult.exitCode !== 0 || snapshotResult.timedOut) {
+        throw new Error("runner_remote_checkpoint_snapshot_failed");
+      }
+      syncSourcePath = snapshotPath;
+    }
+    try {
+      await input.runner.syncOut([
+        {
+          operationId: `runner-checkpoint-dir-${randomUUID()}`,
+          files: [
+            {
+              sourcePath: syncSourcePath,
+              targetPath: input.targetPath,
+              kind: "directory",
+              mode: input.mode,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      if (snapshotPath) {
+        const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+        await input.runner
+          .execute({
+            command: "sh",
+            args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
+            bypassSession: true,
+            timeoutMs: 30_000,
+          })
+          .catch(() => undefined);
+      }
+    }
+    return;
+  }
+  const escapedSource = input.sourcePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `tar ${excludeArgs} -czf - -C '${escapedSource}' . | base64`],
+    bypassSession: true,
+    timeoutMs: 120_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_checkpoint_failed");
+  }
+  const archive = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+  assertSafeRemoteCheckpointArchive(archive);
+  const parent = resolve(input.targetPath, "..");
+  const stagingRoot = mkdtempSync(join(parent, ".paperclip-checkpoint-"));
+  const stagedTarget = join(stagingRoot, "payload");
+  const previousTarget = join(
+    parent,
+    `.paperclip-checkpoint-previous-${randomUUID()}`,
+  );
+  let previousMoved = false;
+  let replacementInstalled = false;
+  try {
+    mkdirSync(stagedTarget, { recursive: true, mode: input.mode });
+    execFileSync(
+      "tar",
+      [
+        "--no-same-owner",
+        "--no-same-permissions",
+        "-xzf",
+        "-",
+        "-C",
+        stagedTarget,
+      ],
+      { input: archive, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 },
+    );
+    assertSafeExtractedCheckpoint(stagedTarget);
+    chmodSync(stagedTarget, input.mode);
+    if (existsSync(input.targetPath)) {
+      renameSync(input.targetPath, previousTarget);
+      previousMoved = true;
+    }
+    renameSync(stagedTarget, input.targetPath);
+    replacementInstalled = true;
+    if (previousMoved) {
+      rmSync(previousTarget, { recursive: true, force: true });
+      previousMoved = false;
+    }
+  } catch (error) {
+    if (
+      previousMoved &&
+      !replacementInstalled &&
+      !existsSync(input.targetPath)
+    ) {
+      try {
+        renameSync(previousTarget, input.targetPath);
+        previousMoved = false;
+      } catch {
+        // Leave the last durable checkpoint at previousTarget. Deleting it in
+        // finally would turn a failed replacement into irreversible data loss.
+      }
+    }
+    throw error;
+  } finally {
+    if (previousMoved && replacementInstalled) {
+      rmSync(previousTarget, { recursive: true, force: true });
+    }
+    rmSync(stagingRoot, { recursive: true, force: true });
+  }
+}
+
+async function readRemoteRunnerState(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+}): Promise<Record<string, unknown>> {
+  const statePath = posix.join(input.stateDirectory, "runner-state.json");
+  const escapedPath = statePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -f '${escapedPath}' && base64 < '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_state_unavailable");
+  }
+  return record(
+    JSON.parse(
+      Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
+    ),
+  );
+}
+
+function createRemoteRunnerProcessLauncher(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  remoteBinary: string;
+  runnerInstanceId: string;
+  ensureArtifact?: () => Promise<void>;
+  onSpawn?: (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  trace?: NativeRunTrace;
+  onRunnerProcessSpawned?: () => void;
+}): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
+  const runner = input.runner;
+  return (spec) => {
+    const child: RunnerProcessHandle["child"] = {
+      pid: undefined,
+      exitCode: null,
+      signalCode: null,
+      kill: () => {
+        const pattern = `--runner-id ${input.runnerInstanceId}`;
+        void runner.execute({
+          command: "pkill",
+          args: ["-f", pattern],
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        return true;
+      },
+    };
+    const completion = (async () => {
+      if (input.ensureArtifact) {
+        if (input.trace) {
+          await input.trace.measure(
+            "runner.runtime.stage",
+            input.ensureArtifact,
+            { parentName: "runner.session.startup" },
+          );
+        } else {
+          await input.ensureArtifact();
+        }
+      }
+      const launchStartedAtMs = Date.now();
+      // The provider's onSpawn callback is optional and some sandbox command
+      // runners cannot report a remote pid until after the command has begun
+      // streaming. Signal as soon as staging is complete and the launch RPC is
+      // dispatched; this is late enough to avoid preview retries during staging
+      // and early enough to avoid a callback-dependent deadlock.
+      input.onRunnerProcessSpawned?.();
+      await input.trace?.record({
+        name: "runner.process.dispatch",
+        parentName: "runner.session.startup",
+        startedAtMs: launchStartedAtMs,
+        endedAtMs: Date.now(),
+        attributes: { target: "remote" },
+      });
+      const result = await runner.execute({
+        command: input.remoteBinary,
+        args: [...spec.args],
+        cwd: input.target.remoteCwd,
+        env: processEnvironment(spec.environment),
+        timeoutMs: 62 * 60_000,
+        useSession: true,
+        onLog: input.onLog,
+        onSpawn: async (meta) => {
+          child.pid = meta.pid;
+          await input.onSpawn?.({
+            pid: meta.pid,
+            processGroupId: null,
+            startedAt: new Date().toISOString(),
+          });
+          await input.trace?.record({
+            name: "runner.process.launch",
+            parentName: "runner.session.startup",
+            startedAtMs: launchStartedAtMs,
+            endedAtMs: Date.now(),
+          });
+        },
+      });
+      child.exitCode = result.exitCode;
+      return {
+        code: result.exitCode,
+        signal: null,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
+    })();
+    return { child, completion };
+  };
+}
+
+/** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -3458,6 +4634,14 @@ export async function createRunnerdBackend(input: {
     startedAt: string;
   }) => Promise<void>;
   runnerEnvironment?: NodeJS.ProcessEnv;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  enableRunnerPreviewIngress?: boolean;
+  runnerPublicUrl?: string | null;
+  runnerCaBundlePath?: string | null;
+  runnerRemoteBinaryPath?: string | null;
+  runnerRemoteCodexPath?: string | null;
+  runnerRemoteCodexNpmSpec?: string | null;
+  runnerRemoteProviderPackPath?: string | null;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   enqueueWakeup?: (
@@ -3474,8 +4658,11 @@ export async function createRunnerdBackend(input: {
     },
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend> {
-  if (input.execution.provider.kind !== "codex") {
-    throw new Error("paperclip_runner_provider_unsupported");
+  const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  if (target.kind === "remote" && input.execution.provider.kind !== "codex") {
+    throw new Error(
+      `runner_remote_provider_artifact_incompatible: remote ${input.execution.provider.kind} is unavailable until runnerd provider dispatch is qualified`,
+    );
   }
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     companyId: input.execution.binding.companyId,
@@ -3486,86 +4673,1628 @@ export async function createRunnerdBackend(input: {
     workMode: input.execution.task.workMode,
     enqueueWakeup: input.enqueueWakeup,
   });
-  const dynamicTools = await authority.definitions();
+  const sessionScopeId = nativeSessionScopeKey(input.execution);
+  const existingRouter = sessionToolRouters.get(sessionScopeId);
+  const authorityRouter =
+    existingRouter ?? new SessionToolAuthorityRouter(authority);
+  authorityRouter.bind(authority);
+  sessionToolRouters.set(sessionScopeId, authorityRouter);
+  const dynamicTools = await authorityRouter.definitions();
   const root = runnerdStateRoot(input.execution);
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const environment = input.runnerEnvironment ?? process.env;
-
-  const archiveContinuityState = async () => {
-    const archiveRoot = resolve(
-      root,
-      "continuity-breaks",
-      `${Date.now()}-${randomUUID()}`,
+  const remoteTarget = target.kind === "remote" ? target : null;
+  const remoteCommandRunner = remoteTarget
+    ? remoteTarget.transport === "ssh"
+      ? createSshCommandManagedRuntimeRunner({
+          spec: remoteTarget.spec,
+          defaultCwd: remoteTarget.remoteCwd,
+        })
+      : remoteTarget.runner
+    : null;
+  if (remoteTarget && !remoteCommandRunner) {
+    throw new Error(
+      "runner_transport_ineligible: remote process runner is unavailable",
     );
-    mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
-    for (const name of ["control-plane", "runner", "codex-home"]) {
-      const source = resolve(root, name);
-      if (existsSync(source)) renameSync(source, resolve(archiveRoot, name));
+  }
+  const remoteRuntimeRoot = remoteTarget
+    ? posix.join(
+        remoteTarget.remoteCwd,
+        ".paperclip-runtime",
+        "paperclip-runner",
+      )
+    : null;
+  const requiresRemoteProviderPack =
+    remoteTarget !== null &&
+    (input.execution.provider.kind === "opencode" ||
+      input.execution.provider.kind === "acpx");
+  const configuredProviderPackRoot =
+    input.runnerRemoteProviderPackPath?.trim() || null;
+  let expectedProviderPackManifest: RemoteProviderPackManifest | null = null;
+  if (requiresRemoteProviderPack) {
+    if (
+      !configuredProviderPackRoot ||
+      !existsSync(configuredProviderPackRoot) ||
+      !lstatSync(configuredProviderPackRoot).isDirectory()
+    ) {
+      throw new Error(
+        "runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH with the build-owned provider pack",
+      );
+    }
+    expectedProviderPackManifest = readRemoteProviderPackManifest(
+      configuredProviderPackRoot,
+    );
+  }
+  const stagedRemoteProviderPackRoot = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "provider-pack")
+    : null;
+  let activeRemoteProviderPackRoot: string | null = null;
+  const remoteBinary = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
+    : null;
+  const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
+  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
+  if (explicitRemoteCodex && remoteCodexNpmSpec) {
+    throw new Error("runner_remote_codex_source_conflict");
+  }
+  const remoteCodexBinary =
+    remoteRuntimeRoot && input.execution.provider.kind === "codex"
+      ? remoteCodexNpmSpec
+        ? posix.join(
+            remoteRuntimeRoot,
+            "harnesses",
+            "codex",
+            "node_modules",
+            ".bin",
+            "codex",
+          )
+        : posix.join(remoteRuntimeRoot, "bin", "codex")
+      : null;
+  const remoteSessionDigest = createHash("sha256")
+    .update(nativeSessionKey(input.execution))
+    .digest("hex");
+  const remoteSessionRoot = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "sessions", remoteSessionDigest)
+    : null;
+  const remoteStateDirectory = remoteSessionRoot
+    ? posix.join(remoteSessionRoot, "runner")
+    : undefined;
+  const remoteRunnerFilesystemRoot = remoteSessionRoot
+    ? posix.join(remoteSessionRoot, "filesystem")
+    : null;
+  const persistenceProfile = resolveNativeHarnessPersistenceProfile(
+    input.execution,
+  );
+  const sandboxLeaseAcquisition =
+    remoteTarget?.transport === "sandbox"
+      ? (remoteTarget.sandboxLeaseAcquisition ?? null)
+      : null;
+  const remotePersistencePath = (
+    directory: NativeHarnessPersistenceDirectory,
+  ): string | null =>
+    directory.location === "runner"
+      ? (remoteStateDirectory ?? null)
+      : remoteRunnerFilesystemRoot
+        ? posix.join(remoteRunnerFilesystemRoot, directory.name)
+        : null;
+  const sourceRuntimeContext =
+    "runtimeContext" in input.execution ? input.execution.runtimeContext : null;
+  const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
+    remoteRunnerFilesystemRoot && sourceRuntimeContext
+      ? {
+          ...sourceRuntimeContext,
+          instructions: {
+            ...sourceRuntimeContext.instructions,
+            bundle: {
+              ...sourceRuntimeContext.instructions.bundle,
+              rootPath: posix.join(
+                remoteRunnerFilesystemRoot,
+                "context",
+                "instructions",
+              ),
+            },
+          },
+          skills: sourceRuntimeContext.skills.map((skill, index) => ({
+            ...skill,
+            bundle: {
+              ...skill.bundle,
+              rootPath: posix.join(
+                remoteRunnerFilesystemRoot,
+                "context",
+                "skills",
+                `${index}-${skill.bundle.digest.slice(0, 12)}`,
+              ),
+            },
+          })),
+        }
+      : sourceRuntimeContext;
+  let remotePrepared = false;
+  let selectedRemoteMode: "dial_wss" | "listen_ws" | null = null;
+  let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
+    null;
+  let resolveRemoteRunnerProcessSpawned: (() => void) | null = null;
+  const remoteRunnerProcessSpawned = remoteTarget
+    ? new Promise<void>((resolveSpawned) => {
+        resolveRemoteRunnerProcessSpawned = resolveSpawned;
+      })
+    : Promise.resolve();
+
+  const verifyRemoteRunner = async (
+    requiredMode: "dial_wss" | "listen_ws",
+    executable = remoteBinary,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const metadataResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--build-metadata"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (metadataResult.exitCode !== 0 || metadataResult.timedOut) {
+      throw new Error("runner_remote_artifact_verification_failed");
+    }
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error("runner_remote_artifact_metadata_invalid", {
+        cause: error,
+      });
+    }
+    assertRemoteRunnerBuildMetadata(metadata, requiredMode);
+  };
+
+  const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const versionResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (versionResult.exitCode !== 0 || versionResult.timedOut) {
+      throw new Error("runner_remote_codex_artifact_verification_failed");
+    }
+    const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
+    const version = versionOutput.match(/\bcodex-cli\s+(\d+\.\d+\.\d+)\b/)?.[1];
+    if (version !== REMOTE_PROVIDER_PACK_PINS.codex) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: expected Codex ${REMOTE_PROVIDER_PACK_PINS.codex}, received ${version ?? "an unrecognized version"}`,
+      );
     }
   };
 
-  const backend = createNativeSessionBackend(input.execution, {
+  const verifyRemoteProviderPack = async (packRoot: string) => {
+    if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
+      return;
+    const expected = Buffer.from(
+      canonicalJson(expectedProviderPackManifest),
+      "utf8",
+    ).toString("base64");
+    const providerNodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
+    );
+    const verifyScript = [
+      "const fs=require('node:fs')",
+      "const crypto=require('node:crypto')",
+      "const path=require('node:path')",
+      "const root=process.argv[1]",
+      "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
+      "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
+      "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+      "const manifest=JSON.parse(actual)",
+      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
+      "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
+      "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
+      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
+      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+      "const version=process.versions.node.split('.').map(Number)",
+      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
+      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
+      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+      "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
+      "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
+      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+    ].join(";");
+    const verified = await remoteCommandRunner.execute({
+      command: providerNodeCommand,
+      args: ["-e", verifyScript, packRoot, expected],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (verified.exitCode !== 0 || verified.timedOut) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
+      );
+    }
+    const opencodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
+    );
+    const opencodeVersion = await remoteCommandRunner.execute({
+      command: opencodeCommand,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (
+      opencodeVersion.exitCode !== 0 ||
+      opencodeVersion.timedOut ||
+      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
+    ) {
+      throw new Error(
+        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
+      );
+    }
+  };
+
+  const discoverPreinstalledProviderPack = async () => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        'for candidate in /opt/paperclip-runner/provider-pack "$HOME/.local/share/paperclip-runner/provider-pack"; do if [ -f "$candidate/provider-pack.json" ]; then printf \'%s\\n\' "$candidate"; break; fi; done',
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    return parseRemoteExecutableCandidate(result.stdout);
+  };
+
+  const discoverPreinstalledExecutable = async (
+    name: "paperclip-runnerd" | "codex",
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        `candidate="$HOME/.local/bin/${name}"; ` +
+          `if [ -x "$candidate" ]; then printf '%s\\n' "$candidate"; ` +
+          `else command -v ${name} 2>/dev/null || true; fi`,
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    return parseRemoteExecutableCandidate(result.stdout);
+  };
+
+  const linkPreinstalledExecutable = async (
+    sourcePath: string,
+    targetPath: string,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return;
+    const escapedSource = sourcePath.replaceAll("'", "'\\''");
+    const escapedTarget = targetPath.replaceAll("'", "'\\''");
+    const escapedDirectory = posix.dirname(targetPath).replaceAll("'", "'\\''");
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        `umask 077; mkdir -p '${escapedDirectory}' && ` +
+          `ln -sfn '${escapedSource}' '${escapedTarget}'`,
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error("runner_remote_preinstalled_link_failed");
+    }
+  };
+
+  const prepareRemoteRunner = async (
+    requiredMode: "dial_wss" | "listen_ws",
+  ) => {
+    if (
+      !remoteTarget ||
+      !remoteCommandRunner ||
+      !remoteBinary ||
+      remotePrepared
+    )
+      return;
+    selectedRemoteMode = requiredMode;
+    let usedPreinstalledRunner = false;
+    const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
+    if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      const preinstalledRunner = await measureNativeRunnerSpan(
+        input.trace,
+        "runner.artifact.discover",
+        () => discoverPreinstalledExecutable("paperclip-runnerd"),
+      );
+      if (preinstalledRunner) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.verify_preinstalled",
+            () => verifyRemoteRunner(requiredMode, preinstalledRunner),
+          );
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.link",
+            () => linkPreinstalledExecutable(preinstalledRunner, remoteBinary),
+          );
+          usedPreinstalledRunner = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled runnerd from the sandbox image\n",
+          );
+        } catch {
+          usedPreinstalledRunner = false;
+        }
+      }
+    }
+    if (!usedPreinstalledRunner) {
+      const sourceBinary =
+        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+      if (!existsSync(sourceBinary)) {
+        throw new Error("runner_remote_artifact_unavailable");
+      }
+      if (!explicitRemoteBinary) {
+        const platform = await remoteCommandRunner.execute({
+          command: "sh",
+          args: ["-c", "uname -s; uname -m"],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        const [remoteOs = "", remoteArch = ""] = platform.stdout
+          .trim()
+          .split(/\r?\n/);
+        const localOs =
+          process.platform === "darwin"
+            ? "Darwin"
+            : process.platform === "linux"
+              ? "Linux"
+              : process.platform;
+        const localArch =
+          process.arch === "x64"
+            ? "x86_64"
+            : process.arch === "arm64"
+              ? "aarch64"
+              : process.arch;
+        const archMatches =
+          remoteArch === localArch ||
+          (localArch === "aarch64" && remoteArch === "arm64");
+        if (
+          platform.exitCode !== 0 ||
+          platform.timedOut ||
+          remoteOs !== localOs ||
+          !archMatches
+        ) {
+          throw new Error(
+            "runner_remote_artifact_platform_mismatch: configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH for the remote OS and architecture",
+          );
+        }
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: sourceBinary,
+        targetPath: remoteBinary,
+        mode: 0o700,
+      });
+    }
+    await measureNativeRunnerSpan(input.trace, "runner.artifact.verify", () =>
+      verifyRemoteRunner(requiredMode),
+    );
+    if (remoteCodexBinary && explicitRemoteCodex) {
+      if (!existsSync(explicitRemoteCodex)) {
+        throw new Error("runner_remote_codex_artifact_unavailable");
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: explicitRemoteCodex,
+        targetPath: remoteCodexBinary,
+        mode: 0o700,
+      });
+      await verifyRemoteCodex();
+    }
+    if (remoteCodexBinary && remoteCodexNpmSpec) {
+      let usedPreinstalledCodex = false;
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (preinstalledCodex) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.verify_preinstalled",
+            () => verifyRemoteCodex(preinstalledCodex),
+          );
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.link",
+            () =>
+              linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+          );
+          usedPreinstalledCodex = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+          );
+        } catch {
+          usedPreinstalledCodex = false;
+        }
+      }
+      if (!usedPreinstalledCodex) {
+        const installRoot = posix.join(
+          remoteRuntimeRoot!,
+          "harnesses",
+          "codex",
+        );
+        const installResult = await remoteCommandRunner.execute({
+          command: "npm",
+          args: [
+            "install",
+            "--prefix",
+            installRoot,
+            "--no-audit",
+            "--no-fund",
+            remoteCodexNpmSpec,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 180_000,
+        });
+        if (installResult.exitCode !== 0 || installResult.timedOut) {
+          throw new Error("runner_remote_codex_install_failed");
+        }
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+    }
+    if (remoteCodexBinary && !explicitRemoteCodex && !remoteCodexNpmSpec) {
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (!preinstalledCodex) {
+        throw new Error(
+          "runner_remote_codex_artifact_unavailable: install codex in the sandbox image or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC",
+        );
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify_preinstalled",
+        () => verifyRemoteCodex(preinstalledCodex),
+      );
+      await measureNativeRunnerSpan(input.trace, "harness.artifact.link", () =>
+        linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+      );
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+      await input.onLog?.(
+        "stderr",
+        "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+      );
+    }
+    if (
+      requiresRemoteProviderPack &&
+      configuredProviderPackRoot &&
+      stagedRemoteProviderPackRoot
+    ) {
+      let preinstalledProviderPack = await discoverPreinstalledProviderPack();
+      if (preinstalledProviderPack) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "provider_pack.verify_preinstalled",
+            () => verifyRemoteProviderPack(preinstalledProviderPack!),
+          );
+          const escapedSource = preinstalledProviderPack.replaceAll(
+            "'",
+            "'\\''",
+          );
+          const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
+            "'",
+            "'\\''",
+          );
+          const escapedParent = posix
+            .dirname(stagedRemoteProviderPackRoot)
+            .replaceAll("'", "'\\''");
+          const linked = await remoteCommandRunner.execute({
+            command: "sh",
+            args: [
+              "-c",
+              `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
+            ],
+            cwd: remoteTarget.remoteCwd,
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (linked.exitCode !== 0 || linked.timedOut) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
+            );
+          }
+          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
+          );
+        } catch {
+          preinstalledProviderPack = null;
+        }
+      }
+      if (!preinstalledProviderPack) {
+        if (!remoteCommandRunner.syncIn) {
+          throw new Error(
+            "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
+          );
+        }
+        const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
+          "'",
+          "'\\''",
+        );
+        const cleared = await remoteCommandRunner.execute({
+          command: "sh",
+          args: ["-c", `rm -rf '${escapedPackRoot}'`],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        if (cleared.exitCode !== 0 || cleared.timedOut) {
+          throw new Error(
+            "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
+          );
+        }
+        await stageRemoteRunnerDirectory({
+          target: remoteTarget,
+          runner: remoteCommandRunner,
+          sourcePath: configuredProviderPackRoot,
+          targetPath: stagedRemoteProviderPackRoot,
+          mode: 0o700,
+        });
+        await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
+          verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        );
+        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      }
+    }
+    remotePrepared = true;
+  };
+
+  const inspectRemoteHarnessState = async (): Promise<{
+    complete: boolean;
+    runnerState: Record<string, unknown> | null;
+  }> => {
+    if (!remoteCommandRunner || !remoteStateDirectory) {
+      return { complete: false, runnerState: null };
+    }
+    const requirements = persistenceProfile.directories.flatMap((directory) => {
+      const path = remotePersistencePath(directory);
+      if (!path) return [];
+      const escaped = path.replaceAll("'", "'\\''");
+      return directory.name === "runner"
+        ? [`test -f '${escaped}/runner-state.json'`]
+        : [`test -d '${escaped}'`];
+    });
+    const escapedRunnerState = posix
+      .join(remoteStateDirectory, "runner-state.json")
+      .replaceAll("'", "'\\''");
+    const inspected = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        `${requirements.join(" && ")} && base64 < '${escapedRunnerState}'`,
+      ],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (inspected.exitCode !== 0 || inspected.timedOut) {
+      return { complete: false, runnerState: null };
+    }
+    let runnerState: Record<string, unknown>;
+    try {
+      runnerState = record(
+        JSON.parse(
+          Buffer.from(inspected.stdout.replace(/\s+/g, ""), "base64").toString(
+            "utf8",
+          ),
+        ),
+      );
+    } catch {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    if (
+      runnerState.runnerInstanceId !== input.runnerInstanceId ||
+      runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    const providerSessionIdentity =
+      providerSessionIdentityFromRunnerState(runnerState);
+    if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    const previousManifest = compatibleNativeHarnessBackupManifests({
+      root,
+      execution: input.execution,
+      runnerInstanceId: input.runnerInstanceId,
+    })[0]?.manifest;
+    if (
+      previousManifest &&
+      !providerSessionIdentityTransitionIsAllowed({
+        execution: input.execution,
+        previous: previousManifest.providerSessionIdentity,
+        current: providerSessionIdentity,
+      })
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    return { complete: true, runnerState };
+  };
+
+  const recordInPlaceHarnessReuse = async (
+    runnerState: Record<string, unknown>,
+    startedAtMs = Date.now(),
+  ) => {
+    const now = Date.now();
+    const attributes = {
+      provider: input.execution.provider.kind,
+      harness: input.execution.session.driverKind,
+      lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+      stateSource: "sandbox_filesystem",
+      bytesTransferred: 0,
+    };
+    await input.trace?.record({
+      name: "harness_state.reuse",
+      startedAtMs,
+      endedAtMs: now,
+      attributes,
+    });
+    await input.trace?.record({
+      name: "provider.session.resume",
+      startedAtMs: now,
+      endedAtMs: now,
+      attributes: {
+        provider: input.execution.provider.kind,
+        harness: input.execution.session.driverKind,
+        identityPresent: providerSessionIdentityIsPresent(
+          providerSessionIdentityFromRunnerState(runnerState),
+        ),
+      },
+    });
+  };
+
+  const recordHarnessBackupStampForCurrentLease = async (
+    backup: VerifiedHarnessBackup,
+  ) => {
+    if (remoteTarget?.transport !== "sandbox" || !remoteTarget.leaseId) {
+      return;
+    }
+    const leaseRow = await input.db
+      .select({ metadata: environmentLeases.metadata })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, remoteTarget.leaseId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!leaseRow) throw new Error("runner_harness_backup_lease_missing");
+    const stamp = createNativeHarnessBackupStamp({
+      manifestPath: resolve(backup.root, "manifest.json"),
+      normalizedSessionId: backup.manifest.normalizedSessionId,
+      runnerInstanceId: backup.manifest.runnerInstanceId,
+      completedAt: backup.manifest.completedAt,
+    });
+    const updated = await input.db
+      .update(environmentLeases)
+      .set({
+        metadata: {
+          ...(leaseRow.metadata ?? {}),
+          nativeHarnessBackup: stamp,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(environmentLeases.id, remoteTarget.leaseId))
+      .returning({ id: environmentLeases.id })
+      .then((rows) => rows[0] ?? null);
+    if (!updated) throw new Error("runner_harness_backup_lease_missing");
+  };
+
+  const restoreVerifiedHarnessBackup = async () => {
+    if (!remoteTarget || !remoteCommandRunner) {
+      throw new Error("runner_harness_backup_unavailable");
+    }
+    const backup = verifyNativeHarnessBackup({
+      root,
+      execution: input.execution,
+      runnerInstanceId: input.runnerInstanceId,
+    });
+    if (!backup) throw new Error("runner_harness_backup_unavailable");
+    await measureNativeRunnerSpan(
+      input.trace,
+      "harness_state.failover_restore",
+      async () => {
+        for (const directory of persistenceProfile.directories) {
+          const targetPath = remotePersistencePath(directory);
+          if (!targetPath) throw new Error("runner_harness_state_mismatch");
+          await stageRemoteRunnerDirectory({
+            target: remoteTarget,
+            runner: remoteCommandRunner,
+            sourcePath: resolve(backup.root, directory.name),
+            targetPath,
+            mode: 0o700,
+          });
+        }
+      },
+      {
+        attributes: {
+          provider: input.execution.provider.kind,
+          harness: input.execution.session.driverKind,
+          lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+          stateSource: "verified_failover_backup",
+          bytesTransferred: backup.bytes,
+        },
+      },
+    );
+    const restored = await inspectRemoteHarnessState();
+    if (
+      !restored.complete ||
+      !restored.runnerState ||
+      canonicalJson(
+        providerSessionIdentityFromRunnerState(restored.runnerState),
+      ) !== canonicalJson(backup.manifest.providerSessionIdentity)
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    // A deliberately non-reusable environment receives a fresh provider lease
+    // for every turn. Stamp that new lease as soon as the verified host backup
+    // has been restored so a later provider/bootstrap failure can still clean
+    // the ephemeral sandbox up without discarding the only durable copy.
+    await recordHarnessBackupStampForCurrentLease(backup);
+    return backup;
+  };
+
+  const materializeRemoteHarnessLaunchState = async () => {
+    if (!remoteTarget || !remoteCommandRunner) return;
+    for (const directory of persistenceProfile.directories) {
+      if (directory.location !== "filesystem") continue;
+      const targetPath = remotePersistencePath(directory);
+      if (!targetPath) throw new Error("runner_harness_state_mismatch");
+      const escapedTarget = targetPath.replaceAll("'", "'\\''");
+      const created = await remoteCommandRunner.execute({
+        command: "sh",
+        args: ["-c", `umask 077; install -d -m 0700 '${escapedTarget}'`],
+        bypassSession: true,
+        timeoutMs: 10_000,
+      });
+      if (created.exitCode !== 0 || created.timedOut) {
+        throw new Error("runner_remote_directory_staging_failed");
+      }
+
+      // Codex launch credentials are intentionally excluded from failover
+      // backups. Re-materialize only those launch-time files into a fresh or
+      // replacement sandbox after the durable history has been restored.
+      if (directory.name !== "codex-home") continue;
+      const localDirectory = resolve(root, directory.name);
+      for (const name of ["auth.json", "config.toml"] as const) {
+        const sourcePath = resolve(localDirectory, name);
+        if (!existsSync(sourcePath)) continue;
+        await stageRemoteRunnerFile({
+          target: remoteTarget,
+          runner: remoteCommandRunner,
+          sourcePath,
+          targetPath: posix.join(targetPath, name),
+          mode: 0o600,
+        });
+      }
+    }
+  };
+
+  const ensureRemoteRunner = async () => {
+    await measureNativeRunnerSpan(
+      input.trace,
+      "stage.sync",
+      async () => {
+        if (!selectedRemoteMode) {
+          throw new Error("runner_remote_transport_mode_unresolved");
+        }
+        try {
+          await verifyRemoteRunner(selectedRemoteMode);
+          await verifyRemoteCodex();
+          if (requiresRemoteProviderPack) {
+            if (!activeRemoteProviderPackRoot) {
+              throw new Error(
+                "runner_remote_provider_artifact_incompatible: provider pack was not prepared",
+              );
+            }
+            await verifyRemoteProviderPack(activeRemoteProviderPackRoot);
+          }
+        } catch {
+          remotePrepared = false;
+          await prepareRemoteRunner(selectedRemoteMode);
+        }
+        await measureNativeRunnerSpan(input.trace, "stage.asset.home", () =>
+          measureNativeRunnerSpan(
+            input.trace,
+            "session.checkpoint.restore",
+            async () => {
+              if (
+                remoteTarget?.transport === "sandbox" &&
+                remoteCommandRunner
+              ) {
+                const acquisitionRecordedAtMs = Date.now();
+                const backupAvailable = harnessBackupCandidates(root).some(
+                  (candidate) =>
+                    existsSync(resolve(candidate, "manifest.json")),
+                );
+                const restoreIntoCreatedSandbox =
+                  shouldRestoreNativeHarnessBackupIntoSandbox({
+                    acquisitionOutcome:
+                      sandboxLeaseAcquisition?.outcome ?? null,
+                    reusableLeaseConfigured:
+                      remoteTarget.reusableLeaseConfigured,
+                    backupAvailable,
+                  });
+                await input.trace?.record({
+                  name: "sandbox.lease.acquisition",
+                  startedAtMs: acquisitionRecordedAtMs,
+                  endedAtMs: acquisitionRecordedAtMs,
+                  attributes: {
+                    provider: remoteTarget.providerKey ?? "sandbox",
+                    harness: input.execution.session.driverKind,
+                    lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+                    outcome: sandboxLeaseAcquisition?.outcome ?? "unknown",
+                    stateSource:
+                      sandboxLeaseAcquisition?.outcome === "replacement" ||
+                      restoreIntoCreatedSandbox
+                        ? "verified_failover_backup"
+                        : sandboxLeaseAcquisition?.outcome === "resumed"
+                          ? "sandbox_filesystem"
+                          : "new_sandbox",
+                    bytesTransferred: 0,
+                  },
+                });
+                if (sandboxLeaseAcquisition?.outcome === "resumed") {
+                  const reuseStartedAtMs = Date.now();
+                  const state = await measureNativeRunnerSpan(
+                    input.trace,
+                    "sandbox.lease.resume",
+                    inspectRemoteHarnessState,
+                    {
+                      attributes: {
+                        provider: remoteTarget.providerKey ?? "sandbox",
+                        harness: input.execution.session.driverKind,
+                        lifecycleMode:
+                          input.execution.session.lifecyclePolicy.mode,
+                        outcome: "resumed",
+                      },
+                    },
+                  );
+                  if (!state.complete || !state.runnerState) {
+                    throw new Error("runner_harness_state_mismatch");
+                  }
+                  await recordInPlaceHarnessReuse(
+                    state.runnerState,
+                    reuseStartedAtMs,
+                  );
+                } else if (sandboxLeaseAcquisition?.outcome === "replacement") {
+                  await measureNativeRunnerSpan(
+                    input.trace,
+                    "sandbox.lease.replacement",
+                    restoreVerifiedHarnessBackup,
+                    {
+                      attributes: {
+                        provider: remoteTarget.providerKey ?? "sandbox",
+                        harness: input.execution.session.driverKind,
+                        lifecycleMode:
+                          input.execution.session.lifecyclePolicy.mode,
+                        outcome: "replacement",
+                        reason: sandboxLeaseAcquisition.reason ?? "unknown",
+                      },
+                    },
+                  );
+                } else if (restoreIntoCreatedSandbox) {
+                  await measureNativeRunnerSpan(
+                    input.trace,
+                    "sandbox.lease.replacement",
+                    restoreVerifiedHarnessBackup,
+                    {
+                      attributes: {
+                        provider: remoteTarget.providerKey ?? "sandbox",
+                        harness: input.execution.session.driverKind,
+                        lifecycleMode:
+                          input.execution.session.lifecyclePolicy.mode,
+                        outcome: "created",
+                        reason: "reuse_disabled",
+                      },
+                    },
+                  );
+                } else {
+                  const reuseStartedAtMs = Date.now();
+                  const state = await inspectRemoteHarnessState();
+                  if (state.complete && state.runnerState) {
+                    // Re-entry while this newly-created lease is already running (for
+                    // example a transport reconnect) still uses the in-place state.
+                    await recordInPlaceHarnessReuse(
+                      state.runnerState,
+                      reuseStartedAtMs,
+                    );
+                  } else if (backupAvailable) {
+                    // A continuation that has a durable backup but no recorded reusable
+                    // lease was not provider-confirmed lost. Never silently create a new
+                    // provider session from that ambiguous state.
+                    throw new Error("runner_harness_state_mismatch");
+                  }
+                }
+                await materializeRemoteHarnessLaunchState();
+              } else if (remoteTarget && remoteCommandRunner) {
+                // Local and generic SSH execution retain their existing checkpoint
+                // behavior. The manifest-only failover gate applies to managed sandbox
+                // replacement, where provider lease provenance is available.
+                for (const directory of persistenceProfile.directories) {
+                  const localDirectory = resolve(root, directory.name);
+                  const remoteDirectory = remotePersistencePath(directory);
+                  if (
+                    remoteDirectory &&
+                    existsSync(localDirectory) &&
+                    !(await remoteRunnerPathExists({
+                      runner: remoteCommandRunner,
+                      path:
+                        directory.name === "runner"
+                          ? posix.join(remoteDirectory, "runner-state.json")
+                          : remoteDirectory,
+                      kind: directory.name === "runner" ? "file" : "directory",
+                    }))
+                  ) {
+                    await stageRemoteRunnerDirectory({
+                      target: remoteTarget,
+                      runner: remoteCommandRunner,
+                      sourcePath: localDirectory,
+                      targetPath: remoteDirectory,
+                      mode: 0o700,
+                      excludeTopLevelEntries: directory.excludeTopLevelEntries,
+                    });
+                  }
+                }
+              }
+            },
+            {
+              attributes: {
+                mode: remoteTarget?.transport ?? "local",
+                lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+              },
+            },
+          ),
+        );
+        if (
+          remoteTarget &&
+          remoteCommandRunner &&
+          remoteRunnerFilesystemRoot &&
+          sourceRuntimeContext &&
+          remoteRuntimeContext
+        ) {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "stage.asset.runtime_context",
+            async () => {
+              await stageRemoteRunnerDirectory({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: sourceRuntimeContext.instructions.bundle.rootPath,
+                targetPath: remoteRuntimeContext.instructions.bundle.rootPath,
+                mode: 0o555,
+              });
+              for (
+                let index = 0;
+                index < sourceRuntimeContext.skills.length;
+                index += 1
+              ) {
+                await stageRemoteRunnerDirectory({
+                  target: remoteTarget,
+                  runner: remoteCommandRunner,
+                  sourcePath:
+                    sourceRuntimeContext.skills[index]!.bundle.rootPath,
+                  targetPath:
+                    remoteRuntimeContext.skills[index]!.bundle.rootPath,
+                  mode: 0o555,
+                });
+              }
+              await stageRemoteRunnerFile({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: resolve(root, "runtime-context.json"),
+                targetPath: posix.join(
+                  remoteRunnerFilesystemRoot,
+                  "runtime-context.json",
+                ),
+                mode: 0o600,
+              });
+            },
+          );
+        }
+        if (remoteTarget && remoteCommandRunner && remoteCaBundleMapping) {
+          const caBundleMapping = remoteCaBundleMapping;
+          await measureNativeRunnerSpan(
+            input.trace,
+            "stage.asset.ca_bundle",
+            () =>
+              stageRemoteRunnerFile({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: caBundleMapping.sourcePath,
+                targetPath: caBundleMapping.targetPath,
+                mode: 0o600,
+              }),
+          );
+        }
+      },
+      {
+        attributes: {
+          target: remoteTarget?.transport ?? "local",
+          lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+        },
+      },
+    );
+  };
+
+  const checkpointRemoteRunner = async () => {
+    if (
+      !remoteCommandRunner ||
+      !remoteStateDirectory ||
+      !remoteRunnerFilesystemRoot
+    )
+      return;
+    // Transport release also runs when provider bootstrap failed. In that case
+    // runnerd has no durable provider identity (and may not have created the
+    // provider persistence directory at all), so attempting a failover backup
+    // would replace the original provider error with
+    // `runner_harness_state_mismatch`. Only checkpoint a harness that runnerd
+    // has proved complete. A malformed or identity-conflicting state still
+    // throws from inspectRemoteHarnessState and therefore fails closed.
+    const checkpointable = await inspectRemoteHarnessState();
+    if (!checkpointable.complete) return;
+    const backupSpanAttributes = {
+      provider: input.execution.provider.kind,
+      harness: input.execution.session.driverKind,
+      lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+      stateSource: "sandbox_filesystem",
+      bytesTransferred: 0,
+    };
+    await measureNativeRunnerSpan(
+      input.trace,
+      "session.checkpoint.persist",
+      () =>
+        measureNativeRunnerSpan(
+          input.trace,
+          "harness_state.backup.persist",
+          async () => {
+            const runnerState = await readRemoteRunnerState({
+              runner: remoteCommandRunner,
+              stateDirectory: remoteStateDirectory,
+            });
+            if (
+              runnerState.runnerInstanceId !== input.runnerInstanceId ||
+              runnerState.normalizedSessionId !==
+                nativeSessionKey(input.execution)
+            ) {
+              throw new Error("runner_harness_state_mismatch");
+            }
+            const providerSessionIdentity =
+              providerSessionIdentityFromRunnerState(runnerState);
+            if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
+              throw new Error("runner_harness_state_mismatch");
+            }
+
+            const backupRoot = harnessBackupRoot(root);
+            mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+            const pendingRoot = resolve(backupRoot, `.pending-${randomUUID()}`);
+            mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
+            try {
+              for (const directory of persistenceProfile.directories) {
+                const sourcePath = remotePersistencePath(directory);
+                if (!sourcePath)
+                  throw new Error("runner_harness_state_mismatch");
+                const targetPath = resolve(pendingRoot, directory.name);
+                await syncRemoteRunnerDirectoryOut({
+                  runner: remoteCommandRunner,
+                  sourcePath,
+                  targetPath,
+                  mode: 0o700,
+                  excludeTopLevelEntries: directory.excludeTopLevelEntries,
+                });
+                if (!existsSync(targetPath)) {
+                  throw new Error("runner_harness_state_mismatch");
+                }
+              }
+              const manifest = buildNativeHarnessBackupManifest({
+                backupRoot: pendingRoot,
+                execution: input.execution,
+                runnerInstanceId: input.runnerInstanceId,
+                providerSessionIdentity,
+                sourceProviderLeaseId:
+                  sandboxLeaseAcquisition?.providerLeaseId ??
+                  remoteTarget?.leaseId ??
+                  input.durableEnvironmentLeaseId ??
+                  "unknown",
+              });
+              backupSpanAttributes.bytesTransferred =
+                manifest.directories.reduce(
+                  (total, directory) => total + directory.bytes,
+                  0,
+                );
+              const temporaryManifest = resolve(
+                pendingRoot,
+                "manifest.json.tmp",
+              );
+              const manifestPath = resolve(pendingRoot, "manifest.json");
+              writeFileSync(temporaryManifest, JSON.stringify(manifest), {
+                encoding: "utf8",
+                mode: 0o600,
+              });
+              renameSync(temporaryManifest, manifestPath);
+
+              const currentRoot = resolve(backupRoot, "current");
+              const previousRoot = resolve(backupRoot, "previous");
+              rmSync(previousRoot, { recursive: true, force: true });
+              let movedCurrent = false;
+              if (existsSync(currentRoot)) {
+                renameSync(currentRoot, previousRoot);
+                movedCurrent = true;
+              }
+              try {
+                renameSync(pendingRoot, currentRoot);
+                if (
+                  remoteTarget?.transport === "sandbox" &&
+                  remoteTarget.leaseId
+                ) {
+                  await recordHarnessBackupStampForCurrentLease({
+                    root: currentRoot,
+                    manifest,
+                    bytes: backupSpanAttributes.bytesTransferred,
+                  });
+                }
+              } catch (error) {
+                if (existsSync(currentRoot)) {
+                  rmSync(currentRoot, { recursive: true, force: true });
+                }
+                if (
+                  movedCurrent &&
+                  existsSync(previousRoot) &&
+                  !existsSync(currentRoot)
+                ) {
+                  renameSync(previousRoot, currentRoot);
+                }
+                throw error;
+              }
+              rmSync(previousRoot, { recursive: true, force: true });
+            } finally {
+              rmSync(pendingRoot, { recursive: true, force: true });
+            }
+          },
+          {
+            attributes: backupSpanAttributes,
+          },
+        ),
+      { parentName: "task.settle" },
+    );
+  };
+
+  const remoteProcessLauncher =
+    remoteTarget && remoteCommandRunner && remoteBinary
+      ? createRemoteRunnerProcessLauncher({
+          target: remoteTarget,
+          runner: remoteCommandRunner,
+          remoteBinary,
+          runnerInstanceId: input.runnerInstanceId,
+          ensureArtifact: ensureRemoteRunner,
+          onSpawn: input.onSpawn,
+          onLog: input.onLog,
+          trace: input.trace,
+          onRunnerProcessSpawned: () => resolveRemoteRunnerProcessSpawned?.(),
+        })
+      : undefined;
+  const runnerExecution: NativeExecutionInput = remoteTarget
+    ? {
+        ...input.execution,
+        workspace: {
+          ...input.execution.workspace,
+          cwd: remoteTarget.remoteCwd,
+        },
+      }
+    : input.execution;
+  const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
+    ? {
+        ...(input.runnerEnvironment ?? process.env),
+        HOME: remoteTarget!.remoteCwd,
+        CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
+      }
+    : (input.runnerEnvironment ?? process.env);
+  const archiveContinuityState = async () => {
+    const archiveToken = `${Date.now()}-${randomUUID()}`;
+    const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
+    mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
+    for (const name of [
+      "control-plane",
+      "runner",
+      "codex-home",
+      "opencode",
+      "acpx",
+    ]) {
+      const source = resolve(root, name);
+      if (existsSync(source)) renameSync(source, resolve(archiveRoot, name));
+    }
+    if (remoteCommandRunner && remoteSessionRoot) {
+      const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
+      const archivedRemote = `${remoteSessionRoot}.continuity-break-${archiveToken}`;
+      const escapedArchive = archivedRemote.replaceAll("'", "'\\''");
+      const result = await remoteCommandRunner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          `if test -d '${escapedSource}'; then mv '${escapedSource}' '${escapedArchive}'; fi`,
+        ],
+        bypassSession: true,
+        timeoutMs: 30_000,
+      });
+      if (result.exitCode !== 0 || result.timedOut) {
+        throw new Error("runner_continuity_break_archive_failed");
+      }
+    }
+    remotePrepared = false;
+  };
+  const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId: input.runnerInstanceId,
     onSpawn: input.onSpawn,
     dynamicTools,
-    dynamicToolHandler: (call) => authority.execute(call),
+    dynamicToolHandler: (call) => authorityRouter.execute(call),
+    acpxDynamicToolHandler: (call) => authorityRouter.execute(call),
+    opencodeRuntimeDirectory: resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "opencode",
+    ),
+    acpxRuntimeDirectory: resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "acpx",
+    ),
     codexTransportFactory: (recoveryContext) =>
       createRunnerdCodexTransport({
-        runnerBinary: resolvePaperclipRunnerBinary(),
+        provider:
+          input.execution.provider.kind === "codex"
+            ? "codex"
+            : input.execution.provider.kind === "opencode"
+              ? "opencode"
+              : input.execution.provider.kind === "acpx"
+                ? "acpx"
+                : undefined,
+        ...(input.execution.provider.kind === "acpx"
+          ? {
+              acpxAgent: input.execution.provider.agent,
+              acpxPermissionMode: input.execution.provider.permissionMode,
+              acpxPermissionModePinned:
+                input.execution.schema ===
+                "paperclip.native-execution-input.v4",
+              acpxRuntimeDirectory: remoteRunnerFilesystemRoot
+                ? posix.join(remoteRunnerFilesystemRoot, "acpx")
+                : resolve(
+                    resolvePaperclipInstanceRoot(),
+                    "runtime",
+                    "paperclip-runner",
+                    "acpx",
+                  ),
+            }
+          : {}),
+        ...(expectedProviderPackManifest && stagedRemoteProviderPackRoot
+          ? {
+              providerNodeCommand: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
+              ),
+              opencodeCommand: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts
+                  .opencodeExecutable.path,
+              ),
+              opencodeProxyPath: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.opencodeProxy
+                  .path,
+              ),
+              acpxSidecarPath: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.acpxSidecar.path,
+              ),
+            }
+          : {}),
         stateDirectory: root,
-        environment,
+        runnerStateDirectory: remoteStateDirectory,
+        readRunnerState:
+          remoteStateDirectory && remoteCommandRunner
+            ? () =>
+                readRemoteRunnerState({
+                  runner: remoteCommandRunner,
+                  stateDirectory: remoteStateDirectory,
+                })
+            : undefined,
+        runnerBinary: remoteBinary ?? resolvePaperclipRunnerBinary(),
+        codexCommand: remoteCodexBinary ?? undefined,
+        sourceCodexHome: remoteTarget
+          ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
+          : undefined,
+        runnerProcessLauncher: remoteProcessLauncher,
+        runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
+        environment: effectiveRunnerEnvironment,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:
           "runtimeContext" in input.execution
             ? input.execution.runtimeContext
             : null,
+        runnerRuntimeContext: remoteRuntimeContext,
+        runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
+        opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
+          ? posix.join(remoteRunnerFilesystemRoot, "opencode")
+          : undefined,
         resumeDynamicTools: dynamicTools,
-        providerRecoveryPolicy: recoveryContext?.providerRecoveryPolicy,
+        providerRecoveryPolicy:
+          recoveryContext?.providerRecoveryPolicy ??
+          (input.execution.provider.kind === "acpx" &&
+          input.execution.interactionResponses.length > 0
+            ? "allow_replacement_after_governed_wait"
+            : undefined),
         prpIdentity: {
           runnerInstanceId: input.runnerInstanceId,
           environmentLeaseId:
             input.durableEnvironmentLeaseId ??
             input.execution.binding.executionWorkspaceId,
           runId: input.execution.binding.runId,
-          normalizedSessionId: nativeSessionKey(input.execution),
+          normalizedSessionId:
+            input.execution.session.normalizedSessionId ??
+            `session-${input.execution.binding.runId}`,
           turnId: `turn-${input.execution.binding.runId}`,
           itemId: `item-${input.execution.binding.runId}`,
         },
-        controlPlaneRegistration: async (controlPlaneAuthority) => {
-          const selectedAtMs = Date.now();
-          await input.trace?.record({
-            name: "runner.transport.selected",
-            parentName: "runner.transport.connect",
-            startedAtMs: selectedAtMs,
-            endedAtMs: selectedAtMs,
-            attributes: {
-              mode: "local_loopback",
-              connectionOwner: "runnerd",
-            },
-          });
-          await input.onLog?.(
-            "stderr",
-            "[paperclip-runner] transport mode=local_loopback state=connecting\n",
-          );
-          const registration = await measureNativeRunnerSpan(
+        controlPlaneRegistration: (authority) =>
+          measureNativeRunnerSpan(
             input.trace,
-            "runner.prp.route.register",
-            () =>
-              registerRunnerPrpAuthority({
-                companyId: input.execution.binding.companyId,
-                runId: input.execution.binding.runId,
-                authority: controlPlaneAuthority,
-              }),
-            { parentName: "runner.transport.connect" },
-          );
-          return {
-            ...registration,
-            startupFailureCode: "runner_local_connect_failed" as const,
-          };
-        },
+            "runner.transport.connect",
+            async () => {
+              if (target.kind === "local") {
+                const selectedAtMs = Date.now();
+                await input.trace?.record({
+                  name: "runner.transport.selected",
+                  parentName: "runner.transport.connect",
+                  startedAtMs: selectedAtMs,
+                  endedAtMs: selectedAtMs,
+                  attributes: {
+                    mode: "local_loopback",
+                    connectionOwner: "runnerd",
+                  },
+                });
+                await input.onLog?.(
+                  "stderr",
+                  "[paperclip-runner] transport mode=local_loopback state=connecting\n",
+                );
+                const registration = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.prp.route.register",
+                  () =>
+                    registerRunnerPrpAuthority({
+                      companyId: input.execution.binding.companyId,
+                      runId: input.execution.binding.runId,
+                      authority,
+                    }),
+                );
+                return {
+                  ...registration,
+                  startupFailureCode: "runner_local_connect_failed" as const,
+                };
+              }
+
+              const requiredMode =
+                target.transport === "sandbox" &&
+                target.effectiveCapabilities?.runnerWebSocketIngress === true
+                  ? "listen_ws"
+                  : "dial_wss";
+              if (
+                requiredMode === "listen_ws" &&
+                input.enableRunnerPreviewIngress !== true
+              ) {
+                throw new Error("runner_ingress_unavailable");
+              }
+              let transport: PaperclipRunnerTransport;
+              if (requiredMode === "dial_wss") {
+                // Validate eligibility before staging any artifact.
+                transport = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.transport.resolve",
+                  () =>
+                    resolvePaperclipRunnerTransport({
+                      target,
+                      runId: input.execution.binding.runId,
+                      localConnectUrl: "ws://127.0.0.1/unused",
+                      runnerPublicUrl: input.runnerPublicUrl,
+                      runnerCaBundlePath: input.runnerCaBundlePath,
+                      enableRunnerPreviewIngress:
+                        input.enableRunnerPreviewIngress === true,
+                    }),
+                );
+                if (
+                  transport.mode === "direct_outbound" &&
+                  transport.caBundlePath &&
+                  !existsSync(transport.caBundlePath)
+                ) {
+                  throw new Error(
+                    "runner_direct_wss_failed: configured runner CA bundle is unavailable",
+                  );
+                }
+                await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.artifact.prepare",
+                  () => prepareRemoteRunner(requiredMode),
+                );
+              } else {
+                await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.artifact.prepare",
+                  () => prepareRemoteRunner(requiredMode),
+                );
+                // Provider endpoint acquisition happens only after runnerd is staged
+                // and its listener capability has been verified.
+                transport = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.ingress.acquire",
+                  () =>
+                    resolvePaperclipRunnerTransport({
+                      target,
+                      runId: input.execution.binding.runId,
+                      localConnectUrl: "ws://127.0.0.1/unused",
+                      runnerPublicUrl: input.runnerPublicUrl,
+                      runnerCaBundlePath: input.runnerCaBundlePath,
+                      enableRunnerPreviewIngress: true,
+                    }),
+                );
+              }
+
+              const selectedAtMs = Date.now();
+              await input.trace?.record({
+                name: "runner.transport.selected",
+                parentName: "runner.transport.connect",
+                startedAtMs: selectedAtMs,
+                endedAtMs: selectedAtMs,
+                attributes: {
+                  mode: transport.mode,
+                  connectionOwner:
+                    transport.mode === "provider_ingress"
+                      ? "paperclip"
+                      : "runnerd",
+                },
+              });
+
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] transport mode=${transport.mode} state=connecting\n`,
+              );
+
+              if (transport.mode === "direct_outbound") {
+                const inbound = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.prp.route.register",
+                  () =>
+                    registerRunnerPrpAuthority({
+                      companyId: input.execution.binding.companyId,
+                      runId: input.execution.binding.runId,
+                      authority,
+                    }),
+                  { parentName: "runner.transport.connect" },
+                );
+                let caBundlePath = transport.caBundlePath;
+                if (caBundlePath && remoteBinary) {
+                  const remoteCaBundlePath = posix.join(
+                    posix.dirname(remoteBinary),
+                    "runner-ca-bundle.pem",
+                  );
+                  remoteCaBundleMapping = {
+                    sourcePath: caBundlePath,
+                    targetPath: remoteCaBundlePath,
+                  };
+                  caBundlePath = remoteCaBundlePath;
+                }
+                return {
+                  connection: {
+                    mode: "connect" as const,
+                    connectUrl: transport.connectUrl,
+                    ...(caBundlePath ? { caBundlePath } : {}),
+                  },
+                  startupFailureCode: "runner_direct_wss_failed" as const,
+                  release: async () => {
+                    await inbound.release();
+                    await checkpointRemoteRunner();
+                  },
+                };
+              }
+
+              if (transport.mode !== "provider_ingress") {
+                throw new Error("runner_transport_mode_changed_after_dispatch");
+              }
+              let outbound: ReturnType<typeof connectRunnerPrpIngress> | null =
+                null;
+              let activation: Promise<void> | null = null;
+              return {
+                connection: {
+                  mode: "listen" as const,
+                  listenAddress: transport.listenAddress,
+                  listenPort: transport.listenPort,
+                  listenPath: transport.listenPath,
+                },
+                activate: () => {
+                  activation = measureNativeRunnerSpan(
+                    input.trace,
+                    "runner.transport.activation",
+                    async () => {
+                      await measureNativeRunnerSpan(
+                        input.trace,
+                        "runner.ingress.wait_for_process",
+                        () => remoteRunnerProcessSpawned,
+                      );
+                      outbound = connectRunnerPrpIngress({
+                        authority,
+                        endpoint: transport.ingress,
+                        onStateChange: (state, failureCode) => {
+                          void input.onLog?.(
+                            "stderr",
+                            `[paperclip-runner] transport mode=provider_ingress state=${state}${failureCode ? ` failure=${failureCode}` : ""}\n`,
+                          );
+                        },
+                      });
+                    },
+                    { parentName: "runner.session.startup" },
+                  );
+                },
+                ready: async () => {
+                  await measureNativeRunnerSpan(
+                    input.trace,
+                    "runner.transport.ready",
+                    async () => {
+                      await activation;
+                      if (!outbound)
+                        throw new Error("runner_ingress_unavailable");
+                      await measureNativeRunnerSpan(
+                        input.trace,
+                        "runner.prp.authenticate",
+                        () => outbound!.ready,
+                      );
+                    },
+                    { parentName: "runner.session.startup" },
+                  );
+                },
+                get failure() {
+                  return outbound?.failure;
+                },
+                startupFailureCode: "runner_ingress_unavailable" as const,
+                release: async () => {
+                  if (outbound) await outbound.close();
+                  else await transport.ingress.close();
+                  await checkpointRemoteRunner();
+                },
+              };
+            },
+          ),
       }).transport,
   });
-
   return {
     descriptor: () => backend.descriptor(),
     openSession: (sessionInput) => backend.openSession(sessionInput),

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,9 +14,14 @@ import type {
   PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
+import {
+  createNativeHarnessBackupStamp,
+  verifyNativeHarnessBackupStamp,
+} from "./native-harness-backup-stamp.js";
 
 type BackendFactoryOptions = {
   runnerInstanceId?: string;
+  acpxRuntimeDirectory?: string;
   codexTransportFactory?: () => unknown;
   dynamicToolHandler?: (call: unknown) => Promise<unknown>;
   onSpawn?: (meta: {
@@ -102,24 +108,829 @@ vi.mock("./native-codex-runner.js", () => ({
 import {
   continuingPendingInteractionIds,
   buildNativeProviderEnvironment,
+  buildNativeHarnessBackupManifest,
   cancelNativeSession,
   createGovernedWaitEventObservation,
   createRunnerdBackend,
   executePaperclipNativeSession,
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
+  assertRemoteRunnerBuildMetadata,
   nativeSessionFailureDisposition,
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
+  parseRemoteExecutableCandidate,
+  mayUsePreinstalledRunnerArtifact,
+  nativeUsageCostUsd,
+  normalizeNativeUsage,
+  readRemoteProviderPackManifest,
+  providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
   runtimeQuestionFallbackFromEvent,
   resolveNativeRuntimeRequest,
+  resolveNativeHarnessPersistenceProfile,
   semanticProviderPlanMarkdown,
+  sha256DirectoryTree,
+  stageRemoteRunnerDirectory,
   steerNativeSession,
+  syncRemoteRunnerDirectoryOut,
+  verifyNativeHarnessBackup,
+  shouldRestoreNativeHarnessBackupIntoSandbox,
 } from "./native-session-executor.js";
+
+describe("native provider usage normalization", () => {
+  it("reads remote runner run-delta tokens and provider cost", () => {
+    const usage = {
+      total: {
+        inputTokens: 20_000,
+        outputTokens: 500,
+        cacheReadTokens: 8_000,
+        providerCostUsd: 0.12,
+      },
+      runDelta: {
+        inputTokens: 4_200,
+        outputTokens: 180,
+        cacheReadTokens: 1_500,
+        providerCostUsd: 0.031,
+      },
+    };
+    expect(normalizeNativeUsage(usage)).toEqual({
+      inputTokens: 4_200,
+      outputTokens: 180,
+      cachedInputTokens: 1_500,
+    });
+    expect(nativeUsageCostUsd(usage)).toBe(0.031);
+  });
+
+  it("reads ACPX cumulative usage and a USD cost object", () => {
+    const usage = {
+      cumulative: {
+        inputTokens: 3_000,
+        outputTokens: 240,
+        cachedReadTokens: 900,
+      },
+      cost: { amount: 0.044, currency: "USD" },
+    };
+    expect(normalizeNativeUsage(usage)).toEqual({
+      inputTokens: 3_000,
+      outputTokens: 240,
+      cachedInputTokens: 900,
+    });
+    expect(nativeUsageCostUsd(usage)).toBe(0.044);
+  });
+
+  it("does not treat a non-USD ACPX amount as dollars", () => {
+    expect(
+      nativeUsageCostUsd({ cost: { amount: 1.25, currency: "EUR" } }),
+    ).toBeUndefined();
+  });
+});
+
+describe("remote provider pack manifest", () => {
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value && typeof value === "object") {
+      const object = value as Record<string, unknown>;
+      return `{${Object.keys(object)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+
+  it("accepts a fully digested pack and rejects artifact tampering", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-provider-pack-"));
+    await mkdir(join(root, "dist", "cli"), { recursive: true });
+    await mkdir(join(root, "node_modules", "node", "bin"), { recursive: true });
+    await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
+    await mkdir(join(root, "node_modules", "opencode-ai", "bin"), {
+      recursive: true,
+    });
+    const proxy = "export const proxy = true;\n";
+    const sidecar = "export const sidecar = true;\n";
+    const node = "provider-node\n";
+    const lockfile = "lockfileVersion: '9.0'\n";
+    const opencodeCommand = "#!/bin/sh\n";
+    const opencodeExecutable = "opencode-binary\n";
+    await writeFile(
+      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      proxy,
+    );
+    await writeFile(
+      join(root, "dist", "cli", "acpx-runtime-sidecar.js"),
+      sidecar,
+    );
+    await writeFile(join(root, "node_modules", "node", "bin", "node"), node);
+    await writeFile(join(root, "pnpm-lock.yaml"), lockfile);
+    await writeFile(
+      join(root, "node_modules", ".bin", "opencode"),
+      opencodeCommand,
+    );
+    await writeFile(
+      join(root, "node_modules", "opencode-ai", "bin", "opencode.exe"),
+      opencodeExecutable,
+    );
+    const digest = (value: string) =>
+      `sha256:${createHash("sha256").update(value).digest("hex")}`;
+    const proxySha = `sha256:${createHash("sha256").update(proxy).digest("hex")}`;
+    const sidecarSha = `sha256:${createHash("sha256").update(sidecar).digest("hex")}`;
+    const payload = {
+      pins: {
+        nodeMinimum: "24.11.0",
+        codex: "0.148.0",
+        opencode: "1.18.17",
+        acpx: "0.13.1",
+        claudeAcp: "0.70.0",
+        codexAcp: "1.6.2",
+      },
+      target: { platform: "linux", architecture: "x64" },
+      runnerSourceRevision: "1".repeat(40),
+      distDigest: sha256DirectoryTree(join(root, "dist")),
+      bridgeDigest: "",
+      acpxProfileDigests: {
+        claude:
+          "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+        codex:
+          "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+      },
+      artifacts: {
+        nodeCommand: {
+          path: "node_modules/node/bin/node",
+          sha256: digest(node),
+        },
+        productionLock: { path: "pnpm-lock.yaml", sha256: digest(lockfile) },
+        opencodeCommand: {
+          path: "node_modules/.bin/opencode",
+          sha256: digest(opencodeCommand),
+        },
+        opencodeExecutable: {
+          path: "node_modules/opencode-ai/bin/opencode.exe",
+          sha256: digest(opencodeExecutable),
+        },
+        opencodeProxy: {
+          path: "dist/cli/opencode-app-server-proxy.js",
+          sha256: proxySha,
+        },
+        acpxSidecar: {
+          path: "dist/cli/acpx-runtime-sidecar.js",
+          sha256: sidecarSha,
+        },
+      },
+    };
+    payload.bridgeDigest = `sha256:${createHash("sha256")
+      .update(proxySha)
+      .update("\n")
+      .update(sidecarSha)
+      .update("\n")
+      .update(payload.distDigest)
+      .digest("hex")}`;
+    await writeFile(
+      join(root, "provider-pack.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/remote-provider-pack/v1",
+        digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
+        payload,
+      }),
+    );
+    expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
+      "1.18.17",
+    );
+    await writeFile(
+      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      "tampered\n",
+    );
+    expect(() => readRemoteProviderPackManifest(root)).toThrow(
+      "OpenCode proxy digest mismatch",
+    );
+    await writeFile(
+      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      proxy,
+    );
+    await writeFile(
+      join(root, "dist", "cli", "transitive-runtime.js"),
+      "changed transitive module\n",
+    );
+    expect(() => readRemoteProviderPackManifest(root)).toThrow(
+      "provider dist tree digest mismatch",
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("native harness persistence profiles", () => {
+  const profile = (provider: Record<string, unknown>, driverKind: string) =>
+    resolveNativeHarnessPersistenceProfile({
+      provider,
+      session: {
+        driverKind,
+        normalizedSessionId: "session",
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+    } as unknown as NativeExecutionInputV1);
+
+  it.each([
+    ["codex", { kind: "codex" }, "codex_app_server", ["runner", "codex-home"]],
+    [
+      "opencode",
+      { kind: "opencode" },
+      "opencode_server",
+      ["runner", "opencode"],
+    ],
+    [
+      "acpx pi",
+      { kind: "acpx", agent: "pi" },
+      "acpx_runtime",
+      ["runner", "acpx"],
+    ],
+    [
+      "acpx claude",
+      { kind: "acpx", agent: "claude" },
+      "acpx_runtime",
+      ["runner", "acpx"],
+    ],
+    [
+      "acpx codex",
+      { kind: "acpx", agent: "codex" },
+      "acpx_runtime",
+      ["runner", "acpx"],
+    ],
+  ])(
+    "declares the complete %s recovery state",
+    (_name, provider, driver, directories) => {
+      expect(
+        profile(
+          provider as Record<string, unknown>,
+          driver as string,
+        ).directories.map((directory) => directory.name),
+      ).toEqual(directories);
+    },
+  );
+
+  it("excludes disposable Codex scratch trees and launch-time credentials", () => {
+    const codex = profile({ kind: "codex" }, "codex_app_server");
+    expect(
+      codex.directories.find((directory) => directory.name === "codex-home"),
+    ).toMatchObject({
+      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+    });
+  });
+});
+
+describe("verified native harness backups", () => {
+  const backupExecution = {
+    provider: { kind: "codex", model: "gpt-5.6-sol", approvalPolicy: "never" },
+    binding: {
+      companyId: "company",
+      runId: "run",
+      issueId: "issue",
+      agentId: "agent",
+      executionWorkspaceId: "workspace",
+    },
+    workspace: {
+      cwd: "/workspace",
+      repoUrl: "https://example.test/repo.git",
+      repoRef: "main",
+      branchName: "paperclip/test",
+    },
+    session: {
+      normalizedSessionId: "native-session",
+      driverKind: "codex_app_server",
+      protocolVersion: 1,
+      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    },
+  } as unknown as NativeExecutionInputV1;
+
+  const acpxIdentity = (suffix: string) => ({
+    providerSessionId: `record-${suffix}`,
+    providerBackendSessionId: `backend-${suffix}`,
+    providerSessionIdentity: {
+      kind: "acpx",
+      normalizedSessionId: "native-session",
+      acpxRecordId: `record-${suffix}`,
+      backendSessionId: `backend-${suffix}`,
+      agentSessionId: `agent-session-${suffix}`,
+      profileDigest: "sha256:profile",
+      workspaceDigest: "sha256:workspace",
+      requestedModel: "claude-sonnet-5",
+      effectiveModel: "claude-sonnet-5",
+      permissionMode: "approve-all",
+    },
+  });
+
+  it("allows only identity-stable ACPX rotation after a governed interaction", () => {
+    const execution = {
+      ...backupExecution,
+      provider: {
+        kind: "acpx",
+        agent: "claude",
+        model: "claude-sonnet-5",
+      },
+      session: {
+        ...backupExecution.session,
+        driverKind: "acpx_runtime",
+      },
+      interactionResponses: [{ interactionId: "interaction-1" }],
+    } as unknown as NativeExecutionInputV1;
+    const previous = acpxIdentity("previous");
+    const current = acpxIdentity("current");
+
+    expect(
+      providerSessionIdentityTransitionIsAllowed({
+        execution,
+        previous,
+        current,
+      }),
+    ).toBe(true);
+    expect(
+      providerSessionIdentityTransitionIsAllowed({
+        execution: {
+          ...execution,
+          interactionResponses: [],
+        } as unknown as NativeExecutionInputV1,
+        previous,
+        current,
+      }),
+    ).toBe(false);
+    expect(
+      providerSessionIdentityTransitionIsAllowed({
+        execution,
+        previous,
+        current: {
+          ...current,
+          providerSessionIdentity: {
+            ...current.providerSessionIdentity,
+            workspaceDigest: "sha256:different-workspace",
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      providerSessionIdentityTransitionIsAllowed({
+        execution,
+        previous,
+        current: {
+          ...current,
+          providerBackendSessionId: "unbound-backend",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("restores a verified continuation into an intentionally fresh non-reusable sandbox", () => {
+    expect(
+      shouldRestoreNativeHarnessBackupIntoSandbox({
+        acquisitionOutcome: "created",
+        reusableLeaseConfigured: false,
+        backupAvailable: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRestoreNativeHarnessBackupIntoSandbox({
+        acquisitionOutcome: "created",
+        reusableLeaseConfigured: true,
+        backupAvailable: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRestoreNativeHarnessBackupIntoSandbox({
+        acquisitionOutcome: "created",
+        reusableLeaseConfigured: false,
+        backupAvailable: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts a complete digest-matched backup and rejects corruption", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-harness-backup-"));
+    try {
+      const current = join(root, "failover-backups", "current");
+      await mkdir(join(current, "runner"), { recursive: true });
+      await mkdir(join(current, "codex-home", "sessions"), { recursive: true });
+      await writeFile(
+        join(current, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      await writeFile(
+        join(current, "codex-home", "sessions", "thread.jsonl"),
+        "thread-state",
+      );
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: current,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+        completedAt: "2026-08-26T00:00:00.000Z",
+      });
+      await writeFile(join(current, "manifest.json"), JSON.stringify(manifest));
+
+      expect(
+        verifyNativeHarnessBackup({
+          root,
+          execution: backupExecution,
+          runnerInstanceId: "runner-1",
+        }),
+      ).toMatchObject({
+        root: current,
+        manifest: {
+          sourceProviderLeaseId: "sandbox-1",
+          directories: [
+            expect.objectContaining({ name: "runner" }),
+            expect.objectContaining({ name: "codex-home" }),
+          ],
+        },
+      });
+
+      const continuationExecution = {
+        ...backupExecution,
+        binding: {
+          ...backupExecution.binding,
+          runId: "run-2",
+          executionWorkspaceId: "run-2",
+        },
+      } as NativeExecutionInputV1;
+      expect(
+        verifyNativeHarnessBackup({
+          root,
+          execution: continuationExecution,
+          runnerInstanceId: "runner-1",
+        }),
+      ).not.toBeNull();
+
+      await writeFile(
+        join(current, "codex-home", "sessions", "thread.jsonl"),
+        "corrupt",
+      );
+      expect(
+        verifyNativeHarnessBackup({
+          root,
+          execution: backupExecution,
+          runnerInstanceId: "runner-1",
+        }),
+      ).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a backup whose provider identity or harness contract changed", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "paperclip-harness-backup-identity-"),
+    );
+    try {
+      const current = join(root, "failover-backups", "current");
+      await mkdir(join(current, "runner"), { recursive: true });
+      await mkdir(join(current, "codex-home"), { recursive: true });
+      await writeFile(
+        join(current, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      expect(() =>
+        buildNativeHarnessBackupManifest({
+          backupRoot: current,
+          execution: backupExecution,
+          runnerInstanceId: "runner-1",
+          providerSessionIdentity: {
+            providerSessionId: null,
+            providerBackendSessionId: null,
+            providerSessionIdentity: null,
+          },
+          sourceProviderLeaseId: "sandbox-1",
+        }),
+      ).toThrow("runner_harness_state_mismatch");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies the lease stamp and all backup directory digests before replacement", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-harness-stamp-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    try {
+      const sessionRoot = join(
+        stateBase,
+        createHash("sha256").update("native-session").digest("hex"),
+      );
+      const current = join(sessionRoot, "failover-backups", "current");
+      await mkdir(join(current, "runner"), { recursive: true });
+      await mkdir(join(current, "codex-home", "sessions"), { recursive: true });
+      await writeFile(
+        join(current, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      await writeFile(
+        join(current, "codex-home", "sessions", "thread.jsonl"),
+        "thread-state",
+      );
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: current,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+      });
+      const manifestPath = join(current, "manifest.json");
+      await writeFile(manifestPath, JSON.stringify(manifest));
+      const stamp = createNativeHarnessBackupStamp({
+        manifestPath,
+        normalizedSessionId: "native-session",
+        runnerInstanceId: "runner-1",
+        completedAt: manifest.completedAt,
+      });
+
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
+      await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("remote provider checkpoint snapshots", () => {
+  it("excludes Codex scratch and credential state without mutating the live provider home", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      });
+    const syncOut = vi.fn(
+      async (
+        _operations: Array<{
+          files: Array<{
+            sourcePath: string;
+            targetPath: string;
+            kind: "file" | "directory";
+            mode?: number;
+          }>;
+        }>,
+      ) => undefined,
+    );
+
+    await syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/codex-home",
+      targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
+      mode: 0o700,
+      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+    });
+
+    expect(execute).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        args: ["-c", "test -d '/remote/session/filesystem/codex-home'"],
+      }),
+    );
+    const snapshotCommand = String(execute.mock.calls[1]?.[0]?.args?.[1]);
+    expect(snapshotCommand).toContain("'--exclude=./tmp'");
+    expect(snapshotCommand).toContain("'--exclude=./.tmp'");
+    expect(snapshotCommand).toContain("'--exclude=./auth.json'");
+    expect(snapshotCommand).toContain("'--exclude=./config.toml'");
+    expect(snapshotCommand).toContain(
+      "-C '/remote/session/filesystem/codex-home'",
+    );
+    expect(snapshotCommand).not.toContain(
+      "rm -rf -- '/remote/session/filesystem/codex-home'",
+    );
+
+    const batch = syncOut.mock.calls[0]?.[0]?.[0];
+    expect(batch?.files[0]).toMatchObject({
+      sourcePath: expect.stringMatching(
+        /^\/remote\/session\/filesystem\/\.paperclip-checkpoint-/,
+      ),
+      targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
+      kind: "directory",
+      mode: 0o700,
+    });
+    expect(String(execute.mock.calls[2]?.[0]?.args?.[1])).toMatch(
+      /^rm -rf -- '\/remote\/session\/filesystem\/\.paperclip-checkpoint-/,
+    );
+  });
+
+  it("rejects non-top-level checkpoint exclusions", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    });
+    await expect(
+      syncRemoteRunnerDirectoryOut({
+        runner: { execute, syncOut: vi.fn() } as never,
+        sourcePath: "/remote/codex-home",
+        targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
+        mode: 0o700,
+        excludeTopLevelEntries: ["../outside"],
+      }),
+    ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
+  });
+
+  it("rejects unsafe fallback archives without replacing durable state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-checkpoint-unsafe-"));
+    const archiveSource = join(root, "archive-source");
+    const targetPath = join(root, "durable-target");
+    try {
+      await mkdir(archiveSource, { recursive: true });
+      await mkdir(targetPath, { recursive: true });
+      await writeFile(join(targetPath, "preserved.txt"), "preserved");
+      await symlink("/etc/passwd", join(archiveSource, "host-secret"));
+      const archive = execFileSync(
+        "tar",
+        ["-czf", "-", "-C", archiveSource, "."],
+        { maxBuffer: 8 * 1024 * 1024 },
+      );
+      const execute = vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          timedOut: false,
+          stdout: archive.toString("base64"),
+          stderr: "",
+        });
+
+      await expect(
+        syncRemoteRunnerDirectoryOut({
+          runner: { execute } as never,
+          sourcePath: "/remote/codex-home",
+          targetPath,
+          mode: 0o700,
+        }),
+      ).rejects.toThrow("runner_remote_checkpoint_archive_unsafe_entry");
+      await expect(access(join(targetPath, "preserved.txt"))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("remote provider checkpoint restores", () => {
+  it("does not upload excluded Codex scratch trees or credentials", async () => {
+    const sourcePath = await mkdtemp(
+      join(tmpdir(), "paperclip-codex-restore-source-"),
+    );
+    try {
+      await mkdir(join(sourcePath, "sessions"), { recursive: true });
+      await mkdir(join(sourcePath, ".tmp"), { recursive: true });
+      await writeFile(
+        join(sourcePath, "sessions", "thread.jsonl"),
+        "durable session",
+      );
+      await writeFile(
+        join(sourcePath, ".tmp", "scratch.bin"),
+        "disposable scratch",
+      );
+      await writeFile(join(sourcePath, "auth.json"), "credential");
+      await writeFile(join(sourcePath, "config.toml"), "bearer token");
+      const syncIn = vi.fn(
+        async (
+          operations: Array<{
+            files: Array<{ sourcePath: string }>;
+          }>,
+        ) => {
+          const stagedPath = operations[0]!.files[0]!.sourcePath;
+          expect(stagedPath).not.toBe(sourcePath);
+          await expect(
+            access(join(stagedPath, "sessions", "thread.jsonl")),
+          ).resolves.toBeUndefined();
+          await expect(
+            access(join(stagedPath, ".tmp", "scratch.bin")),
+          ).rejects.toThrow();
+          await expect(access(join(stagedPath, "auth.json"))).rejects.toThrow();
+          await expect(
+            access(join(stagedPath, "config.toml")),
+          ).rejects.toThrow();
+        },
+      );
+
+      await stageRemoteRunnerDirectory({
+        target: {
+          kind: "remote",
+          transport: "provider",
+          remoteCwd: "/remote",
+          runner: { syncIn } as never,
+        } as never,
+        runner: { syncIn } as never,
+        sourcePath,
+        targetPath: "/remote/codex-home",
+        mode: 0o700,
+        excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      });
+
+      expect(syncIn).toHaveBeenCalledOnce();
+    } finally {
+      await rm(sourcePath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("remote preinstalled executable discovery", () => {
+  it("accepts one normalized absolute executable path", () => {
+    expect(
+      parseRemoteExecutableCandidate(
+        "/home/daytona/.local/bin/paperclip-runnerd\n",
+      ),
+    ).toBe("/home/daytona/.local/bin/paperclip-runnerd");
+  });
+
+  it.each([
+    "paperclip-runnerd\n",
+    "/safe/path\n/unexpected/second-line\n",
+    "/safe/path with spaces\n",
+    "/safe/path;touch-bad\n",
+  ])("rejects ambiguous or shell-active output: %j", (stdout) => {
+    expect(parseRemoteExecutableCandidate(stdout)).toBeNull();
+  });
+
+  it("does not accept a merely contract-compatible runnerd when a build-owned artifact is configured", () => {
+    expect(
+      mayUsePreinstalledRunnerArtifact("/artifacts/paperclip-runnerd"),
+    ).toBe(false);
+    expect(mayUsePreinstalledRunnerArtifact("  ")).toBe(true);
+    expect(mayUsePreinstalledRunnerArtifact(undefined)).toBe(true);
+  });
+});
+
+describe("remote runner build metadata", () => {
+  const current = {
+    schema: "paperclip-runner/runnerd-build-metadata/v1",
+    binaryName: "paperclip-runnerd",
+    packageName: "@paperclipai/paperclip-runner",
+    binaryContractVersion: 2,
+    prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
+  };
+
+  it("accepts the current contract with the required transport", () => {
+    expect(() =>
+      assertRemoteRunnerBuildMetadata(current, "listen_ws"),
+    ).not.toThrow();
+  });
+
+  it("fails before dispatch when a preinstalled runner uses the stale contract", () => {
+    expect(() =>
+      assertRemoteRunnerBuildMetadata(
+        {
+          ...current,
+          binaryContractVersion: 1,
+        },
+        "listen_ws",
+      ),
+    ).toThrow("runner_remote_artifact_contract_incompatible");
+  });
+
+  it("requires the selected transport without falling through", () => {
+    expect(() =>
+      assertRemoteRunnerBuildMetadata(
+        {
+          ...current,
+          prpTransportModes: ["dial_wss"],
+        },
+        "listen_ws",
+      ),
+    ).toThrow("runner_remote_transport_capability_missing:listen_ws");
+  });
+});
+
 
 describe("runtime question fallback", () => {
   const questionSet = {
@@ -1691,6 +2502,13 @@ describe("native session bounded recovery", () => {
         new Error("provider_request_timeout: provider=codex stage=turn.start"),
       ),
     ).toBe("provider_request_timeout");
+    expect(
+      nativeSessionFailureSourceCode(
+        new Error(
+          "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
+        ),
+      ),
+    ).toBe("runner_remote_provider_artifact_incompatible");
   });
 
   it("retries the same run twice and stops at the third failed attempt", () => {
@@ -1715,6 +2533,17 @@ describe("native session bounded recovery", () => {
     ).toEqual({
       phase: "terminal_failure",
       failureCode: "native_event_replay_conflict",
+      nextAttemptAt: null,
+    });
+    expect(
+      nativeSessionFailureDisposition(
+        1,
+        now,
+        "runner_remote_provider_artifact_incompatible",
+      ),
+    ).toEqual({
+      phase: "terminal_failure",
+      failureCode: "runner_remote_provider_artifact_incompatible",
       nextAttemptAt: null,
     });
   });
@@ -1947,6 +2776,210 @@ describe("runnerd provider runtime wiring", () => {
     await expect(secondOptions.dynamicToolHandler!({})).resolves.toEqual({
       runId: "run-second",
     });
+  });
+
+  it("uses the remote workspace for both the runner backend and native session", async () => {
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    const remoteExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run-remote-workspace-test" },
+      task: {
+        identifier: "DOT-REMOTE",
+        title: "Remote workspace test",
+        description: null,
+        prompt: "Verify the remote workspace.",
+        workMode: "standard",
+      },
+      workspace: {
+        cwd: "/host/paperclip-workspace",
+        repoUrl: null,
+        repoRef: null,
+        branchName: null,
+      },
+      session: {
+        normalizedSessionId: "remote-workspace-session",
+        driverKind: "codex_app_server",
+        protocolVersion: 2,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+      provider: {
+        kind: "codex",
+        model: null,
+        approvalPolicy: "never",
+      },
+      executionMode: "default",
+      planningContext: null,
+      interactionResponses: [],
+      credentialBindings: [],
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+    state.execute.mockReset().mockResolvedValue({
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: "turn",
+      normalizedSessionId: "session",
+      providerSessionId: null,
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+    });
+
+    await executePaperclipNativeSession({
+      db: leaseDb(remoteExecution),
+      execution: remoteExecution,
+      runnerInstanceId: "runner",
+      useRunnerd: true,
+      runnerExecutionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd,
+        spec: {
+          host: "runner.internal",
+          port: 22,
+          username: "runner",
+          remoteWorkspacePath: remoteCwd,
+          remoteCwd,
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      runnerPublicUrl: "wss://paperclip.example.test",
+    });
+
+    expect(state.createBackend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: expect.objectContaining({ cwd: remoteCwd }),
+      }),
+      expect.any(Object),
+    );
+    expect(state.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          workspace: expect.objectContaining({ cwd: remoteCwd }),
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    ["opencode", { kind: "opencode", model: null }, "opencode_server"],
+    [
+      "acpx",
+      { kind: "acpx", agent: "codex", model: null },
+      "acpx_runtime",
+    ],
+  ])(
+    "fails closed before launching the remote %s provider",
+    async (providerKind, provider, driverKind) => {
+      const remoteCwd = "/home/daytona/paperclip-workspace";
+      const remoteProviderExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          runId: `run-remote-${providerKind}-rejected`,
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: `remote-${providerKind}-rejected`,
+          driverKind,
+        },
+        provider,
+      } as unknown as NativeExecutionInputV1;
+      state.createBackend.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(remoteProviderExecution),
+          execution: remoteProviderExecution,
+          runnerInstanceId: "runner",
+          runnerExecutionTarget: {
+            kind: "remote",
+            transport: "ssh",
+            remoteCwd,
+            spec: {
+              host: "runner.internal",
+              port: 22,
+              username: "runner",
+              remoteWorkspacePath: remoteCwd,
+              remoteCwd,
+              privateKey: null,
+              knownHosts: null,
+              strictHostKeyChecking: true,
+            },
+          },
+        }),
+      ).rejects.toThrow(
+        `runner_remote_provider_artifact_incompatible: remote ${providerKind} is unavailable until runnerd provider dispatch is qualified`,
+      );
+      expect(state.createBackend).not.toHaveBeenCalled();
+    },
+  );
+
+  it("passes the isolated ACPX runtime directory to the native backend factory", async () => {
+    const acpxExecution = {
+      ...execution,
+      schema: "paperclip.native-execution-input.v3",
+      task: {
+        identifier: "DOT-ACPX",
+        title: "ACPX task",
+        description: null,
+        prompt: "Complete the ACPX task.",
+        workMode: "standard",
+      },
+      workspace: {
+        cwd: "/tmp/acpx-native",
+        repoUrl: null,
+        repoRef: null,
+        branchName: null,
+      },
+      session: {
+        normalizedSessionId: "acpx-session",
+        driverKind: "acpx_runtime",
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+      provider: {
+        kind: "acpx",
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionPolicy: "interactive",
+        profile: {
+          driverKind: "acpx_runtime",
+          protocolVersion: 1,
+          acpxVersion: "0.13.1",
+          agent: "codex",
+          agentProfileVersion: 1,
+          agentServerPackage: "@agentclientprotocol/codex-acp",
+          agentServerVersion: "1.6.2",
+          agentRuntimePackage: null,
+          agentRuntimeVersion: null,
+          commandDigest: "sha256:test",
+        },
+      },
+      executionMode: "default",
+      planningContext: null,
+      interactionResponses: [],
+      credentialBindings: [],
+      runtimeContext: {},
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(acpxExecution),
+      execution: acpxExecution,
+      runnerInstanceId: "runner",
+    });
+
+    expect(state.createBackend).toHaveBeenCalledWith(
+      acpxExecution,
+      expect.objectContaining({
+        acpxRuntimeDirectory: expect.stringContaining(
+          "/runtime/paperclip-runner/acpx",
+        ),
+        acpxDynamicToolHandler: expect.any(Function),
+      }),
+    );
   });
 
 });

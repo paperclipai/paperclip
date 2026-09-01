@@ -1,8 +1,13 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Check, ChevronRight, X } from "lucide-react";
-import type { TaskChatTurnItem, TaskChatTurnChildItem } from "./task-chat-model";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import type {
+  TaskChatTurnItem,
+  TaskChatTurnChildItem,
+} from "./task-chat-model";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
+import { TaskChatAgentIdentity } from "./TaskChatBubble";
 
 interface TaskChatTurnProps {
   item: TaskChatTurnItem;
@@ -23,11 +28,17 @@ interface TaskChatTurnProps {
 }
 
 /** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k tokens". */
-export function turnSummaryMetrics(summary: TaskChatTurnItem["summary"]): string {
+export function turnSummaryMetrics(
+  summary: TaskChatTurnItem["summary"],
+): string {
   const parts: string[] = [];
   if (summary.durationLabel) parts.push(summary.durationLabel);
-  if (summary.toolCount > 0) parts.push(`${summary.toolCount} tool${summary.toolCount === 1 ? "" : "s"}`);
-  if (summary.added > 0 || summary.removed > 0) parts.push(`+${summary.added} −${summary.removed}`);
+  if (summary.toolCount > 0)
+    parts.push(
+      `${summary.toolCount} tool${summary.toolCount === 1 ? "" : "s"}`,
+    );
+  if (summary.added > 0 || summary.removed > 0)
+    parts.push(`+${summary.added} −${summary.removed}`);
   if (summary.tokensLabel) parts.push(summary.tokensLabel);
   return parts.join(" · ");
 }
@@ -40,7 +51,8 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
 }
 
 /**
- * One agent turn's activity behind a single expandable header row.
+ * One agent turn's activity behind a single expandable header row. Paperclip
+ * Runner turns opt into the chronological-timeline branch below instead.
  *
  * While the turn is live and carries `liveStatus`, that status line (whimsy or
  * taxonomy gerund + elapsed + tokens) IS the turn: one parent row, collapsed
@@ -57,11 +69,91 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
  * `liveStatus` (harness fixtures) renders its children expanded with no header
  * and folds when it settles.
  */
-export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: TaskChatTurnProps) {
+export function TaskChatTurn({
+  item,
+  renderChild,
+  timestampPrefix,
+  leading,
+}: TaskChatTurnProps) {
   const parentRow = !item.settled && item.liveStatus != null;
+  // The new Paperclip Runner task surface owns one durable chronological
+  // timeline. The Worked/Stopped row is its stable header, so it stays directly
+  // below the preceding human bubble and above commentary, activity phases,
+  // request receipts, and plan artifacts. The classic task interface continues
+  // to use the run-wide fold below.
+  if (item.standaloneHeader) {
+    return (
+      <div
+        data-testid="task-chat-turn"
+        data-settled={item.settled ? "true" : "false"}
+      >
+        <div
+          className="flex min-h-8 w-full min-w-0 items-center gap-2 pb-1 pt-1.5 text-sm text-muted-foreground"
+          data-testid="task-chat-turn-summary"
+          data-turn-position="identity"
+        >
+          {item.agentName ? (
+            <TaskChatAgentIdentity
+              agentName={item.agentName}
+              agentIcon={item.agentIcon}
+            />
+          ) : null}
+          <span className="min-w-0 truncate">
+            {item.summary.durationLabel
+              ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+              : item.summary.failed
+                ? "Stopped"
+                : "Worked"}
+          </span>
+        </div>
+        {item.items.length > 0 ? (
+          <div
+            className="flex min-w-0 flex-col gap-2 py-1"
+            data-testid="task-chat-turn-timeline"
+          >
+            {item.items.map((child) => (
+              <div
+                className="min-w-0"
+                key={child.id}
+                data-testid="task-chat-turn-timeline-row"
+                data-timeline-row-id={child.id}
+              >
+                {renderChild(child)}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {item.finalResponse ? (
+          <div className="w-full" data-testid="task-chat-final-response">
+            <div
+              className="break-words px-1 py-2 text-sm text-foreground"
+              data-testid="task-chat-agent-bubble"
+            >
+              <MarkdownBody softBreaks linkIssueReferences>
+                {item.finalResponse.text}
+              </MarkdownBody>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+  const persistentItems = item.settled
+    ? item.items.filter(
+        (child) =>
+          child.kind === "protocol" && child.surface === "runtime_request",
+      )
+    : [];
+  const persistentItemIds = new Set(persistentItems.map((child) => child.id));
+  const foldedItems =
+    persistentItems.length > 0
+      ? item.items.filter((child) => !persistentItemIds.has(child.id))
+      : item.items;
   // Parent-row live turns and settled turns start as their one-line header;
   // only the headerless legacy live turn starts expanded.
-  const [open, setOpen] = useState(() => !item.settled && item.liveStatus == null);
+  const [open, setOpen] = useState(
+    () => !item.settled && item.liveStatus == null,
+  );
   const [prevSettled, setPrevSettled] = useState(item.settled);
   const [wasParentRow, setWasParentRow] = useState(parentRow);
 
@@ -76,7 +168,7 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
     if (item.settled && !wasParentRow) setOpen(false);
   }
 
-  const expandable = item.items.length > 0;
+  const expandable = foldedItems.length > 0;
   const folded = (item.settled || parentRow) && !open;
   const SummaryIcon = item.summary.failed ? X : Check;
 
@@ -85,29 +177,54 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
       type="button"
       onClick={() => setOpen((o) => !o)}
       aria-expanded={open}
-      className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      className={cn(
+        "group flex w-full items-center gap-2 px-1 text-muted-foreground transition-colors hover:text-foreground",
+        item.standaloneHeader
+          ? "border-b border-border/70 py-2 text-sm"
+          : "py-0.5 text-xs",
+      )}
       data-testid="task-chat-turn-summary"
     >
-      <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} aria-hidden />
       {timestampPrefix ? (
         <>
           <span className="text-(length:--text-micro)">{timestampPrefix}</span>
-          <span aria-hidden className="text-(length:--text-micro)">·</span>
+          <span aria-hidden className="text-(length:--text-micro)">
+            ·
+          </span>
         </>
       ) : null}
-      <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
-      <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
-      {turnSummaryMetrics(item.summary) ? (
+      {!item.standaloneHeader ? (
+        <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
+      ) : null}
+      <span>
+        {item.standaloneHeader && item.summary.durationLabel
+          ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+          : item.summary.failed
+            ? "Stopped"
+            : "Worked"}
+      </span>
+      {!item.standaloneHeader && turnSummaryMetrics(item.summary) ? (
         // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the
         // DOM (and the accessible tree) but fades in only on hover/focus so the
         // settled line reads as "2:34 PM · ✓ Worked" at rest. Revealed too when
         // the fold is open, so the metrics don't vanish while you read below.
-        <span className="tc-turn-metrics" data-visible={open ? "true" : "false"}>
+        <span
+          className="tc-turn-metrics"
+          data-visible={open ? "true" : "false"}
+        >
           <span className="min-w-0 overflow-hidden whitespace-nowrap font-mono text-(length:--text-micro)">
             {turnSummaryMetrics(item.summary)}
           </span>
         </span>
       ) : null}
+      <ChevronRight
+        className={cn(
+          "h-3 w-3 shrink-0 transition-transform",
+          item.standaloneHeader && "ml-auto",
+          open ? "rotate-90" : null,
+        )}
+        aria-hidden
+      />
     </button>
   ) : parentRow ? (
     // The pill renders the expand button itself, wrapped around only the
@@ -122,7 +239,10 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
   ) : null;
 
   return (
-    <div data-testid="task-chat-turn" data-settled={item.settled ? "true" : "false"}>
+    <div
+      data-testid="task-chat-turn"
+      data-settled={item.settled ? "true" : "false"}
+    >
       {leading ? (
         // Actions ride the header row (items-center matches them to the summary
         // line), and the fold below is a separate sibling — so expanding the
@@ -134,15 +254,29 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
       ) : (
         header
       )}
-      <div className="tc-turn-fold" data-folded={folded ? "true" : "false"} aria-hidden={folded}>
+      <div
+        className="tc-turn-fold"
+        data-folded={folded ? "true" : "false"}
+        aria-hidden={folded}
+      >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {item.items.map((child) => (
+            {foldedItems.map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>
         </div>
       </div>
+      {persistentItems.length > 0 ? (
+        <div
+          className="flex flex-col gap-2 pt-2"
+          data-testid="task-chat-turn-persistent-history"
+        >
+          {persistentItems.map((child) => (
+            <div key={child.id}>{renderChild(child)}</div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

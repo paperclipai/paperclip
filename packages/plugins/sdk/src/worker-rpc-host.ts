@@ -88,6 +88,7 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
@@ -1640,6 +1641,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentRunnerIngressEndpoint":
+        return handleEnvironmentRunnerIngressEndpoint(
+          params as PluginEnvironmentRunnerIngressEndpointParams,
+        );
+
       case "environmentSyncIn":
         return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
 
@@ -1729,6 +1735,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      supportedMethods.push("environmentRunnerIngressEndpoint");
+    }
     if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
     if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
     if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
@@ -2041,6 +2050,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ) {
+    if (!plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      throw methodNotImplemented("environmentRunnerIngressEndpoint");
+    }
+    return plugin.definition.onEnvironmentRunnerIngressEndpoint(params);
   }
 
   async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {

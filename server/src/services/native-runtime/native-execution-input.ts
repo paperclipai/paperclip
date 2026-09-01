@@ -1,12 +1,18 @@
 import type {
+  NativeAcpxAgent,
+  NativeAcpxPermissionMode,
   NativeCodexApprovalPolicy,
   NativeExecutionInputV4,
   NativeInteractionResponseEnvelope,
+  NativeOpenCodePermissionMode,
   NativePlanningContext,
   NativeRuntimeContextSnapshot,
   StrictCompletionContractInput,
 } from "../../vendor/paperclip-runner/index.js";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import {
+  parseNativeExecutionInput,
+  resolveQualifiedAcpxProfile,
+} from "../../vendor/paperclip-runner/index.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
@@ -38,7 +44,11 @@ export function buildNativeExecutionInput(input: {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
+  provider?: "codex" | "opencode" | "acpx";
+  acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
+  opencodePermissionMode?: NativeOpenCodePermissionMode;
+  acpxPermissionMode?: NativeAcpxPermissionMode;
   model?: string | null;
   lifecyclePolicy?: NativeExecutionInputV4["session"]["lifecyclePolicy"];
   executionMode?: "default" | "plan";
@@ -57,6 +67,12 @@ export function buildNativeExecutionInput(input: {
   }
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
+  const acpxProfile = input.provider === "acpx"
+    ? resolveQualifiedAcpxProfile(
+        input.acpxAgent ?? "pi",
+        input.model ?? "",
+      )
+    : null;
   const wakePrompt = renderPaperclipWakePrompt(input.wakePayload, {
     resumedSession: input.resumedSession === true,
     suppressIssueDescription: input.taskPrompt.trim().length > 0,
@@ -90,15 +106,44 @@ export function buildNativeExecutionInput(input: {
     },
     session: {
       normalizedSessionId: input.normalizedSessionId,
-      driverKind: "codex_app_server",
+      driverKind: input.provider === "opencode"
+        ? "opencode_server"
+        : input.provider === "acpx"
+          ? "acpx_runtime"
+          : "codex_app_server",
       protocolVersion: 1,
       lifecyclePolicy: input.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     },
-    provider: {
-      kind: "codex",
-      model: input.model ?? null,
-      approvalPolicy: input.codexApprovalPolicy ?? "never",
-    },
+    provider: input.provider === "acpx"
+      ? {
+          kind: "acpx",
+          agent: acpxProfile!.agent,
+          model: input.model,
+          permissionMode: input.acpxPermissionMode ?? "approve-all",
+          profile: {
+            driverKind: acpxProfile!.driverKind,
+            protocolVersion: acpxProfile!.protocolVersion,
+            acpxVersion: acpxProfile!.acpxVersion,
+            agent: acpxProfile!.agent,
+            agentProfileVersion: acpxProfile!.agentProfileVersion,
+            agentServerPackage: acpxProfile!.agentServerPackage,
+            agentServerVersion: acpxProfile!.agentServerVersion,
+            agentRuntimePackage: acpxProfile!.agentRuntimePackage,
+            agentRuntimeVersion: acpxProfile!.agentRuntimeVersion,
+            commandDigest: acpxProfile!.commandDigest,
+          },
+        }
+      : input.provider === "opencode"
+        ? {
+            kind: "opencode",
+            model: input.model,
+            permissionMode: input.opencodePermissionMode ?? "allow",
+          }
+        : {
+            kind: "codex",
+            model: input.model ?? null,
+            approvalPolicy: input.codexApprovalPolicy ?? "never",
+          },
     completionContract: input.completionContract,
     interactionResponses: input.interactionResponses ?? [],
     credentialBindings: [],

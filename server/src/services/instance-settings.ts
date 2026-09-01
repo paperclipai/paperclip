@@ -249,6 +249,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
@@ -288,6 +289,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,

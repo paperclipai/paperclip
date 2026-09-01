@@ -392,7 +392,10 @@ import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
-import { environmentRuntimeService } from "./environment-runtime.js";
+import {
+  environmentRuntimeService,
+  type ProviderResourceDisposition,
+} from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
@@ -1672,6 +1675,48 @@ export function leaseReleaseStatusForRunStatus(
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
   if (status === "cancelled") return "expired";
   return status === "failed" || status === "timed_out" ? "failed" : "released";
+}
+
+export interface NativeSandboxLifecycle {
+  runnerProcess: "per_turn" | "warm";
+  sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
+  failoverBackup: "verified";
+}
+
+export function resolveNativeSandboxLifecycle(input: {
+  adapterType: string;
+  lifecyclePolicy:
+    | { mode: "per_turn"; idleTimeoutMs: null }
+    | { mode: "warm"; idleTimeoutMs: number };
+  target: {
+    kind: "local" | "remote";
+    transport?: string;
+    reusableLeaseConfigured?: boolean;
+    effectiveCapabilities?: { reusableLeases: boolean } | null;
+  } | null;
+}): NativeSandboxLifecycle | null {
+  if (
+    input.adapterType !== "paperclip_runner" ||
+    input.target?.kind !== "remote" ||
+    input.target.transport !== "sandbox"
+  )
+    return null;
+  const reusableLease =
+    input.target.reusableLeaseConfigured === true &&
+    input.target.effectiveCapabilities?.reusableLeases === true;
+  if (input.lifecyclePolicy.mode === "warm" && !reusableLease) {
+    throw new Error("runner_warm_lifecycle_requires_reusable_provider_lease");
+  }
+  return {
+    runnerProcess: input.lifecyclePolicy.mode,
+    sandboxResource:
+      input.lifecyclePolicy.mode === "warm"
+        ? "keep_running"
+        : reusableLease
+          ? "stop_and_reuse"
+          : "destroy_after_turn",
+    failoverBackup: "verified",
+  };
 }
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
@@ -8611,6 +8656,13 @@ export function heartbeatService(
     agentId: string;
     status: string | null | undefined;
     failureReason?: string | null;
+    providerResourceDisposition?: ProviderResourceDisposition;
+    nativeLifecycleTelemetry?: {
+      provider: string;
+      harness: string;
+      lifecycleMode: "per_turn" | "warm";
+      sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
+    };
   }) {
     const releaseResult = await envOrchestrator
       .releaseForRun({
@@ -8619,6 +8671,8 @@ export function heartbeatService(
         agentId: input.agentId,
         status: leaseReleaseStatusForRunStatus(input.status),
         failureReason: input.failureReason ?? undefined,
+        providerResourceDisposition: input.providerResourceDisposition,
+        nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {
         logger.warn(
@@ -17408,6 +17462,17 @@ export function heartbeatService(
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
     let nativeSessionResumeScheduled = false;
+    let providerResourceDispositionForRun:
+      ProviderResourceDisposition | undefined;
+    let nativeLifecycleTelemetryForRun:
+      | {
+          provider: string;
+          harness: string;
+          lifecycleMode: "per_turn" | "warm";
+          sandboxResource:
+            "keep_running" | "stop_and_reuse" | "destroy_after_turn";
+        }
+      | undefined;
     let providerTraceCapture: Awaited<
       ReturnType<typeof traceStore.prepare>
     > | null = null;
@@ -19879,7 +19944,26 @@ export function heartbeatService(
                       : 300_000,
                 }
               : { mode: "per_turn" as const, idleTimeoutMs: null };
-          const effectiveLifecyclePolicy = agentLifecyclePolicy;
+          const environmentLifecyclePolicy =
+            executionTarget?.kind === "remote" &&
+            executionTarget.transport === "sandbox"
+              ? executionTarget.runnerLifecyclePolicy ?? null
+              : null;
+          const effectiveLifecyclePolicy =
+            environmentLifecyclePolicy ?? agentLifecyclePolicy;
+          if (
+            effectiveLifecyclePolicy.mode === "warm" &&
+            executionTarget?.kind === "remote" &&
+            executionTarget.transport === "sandbox" &&
+            (
+              executionTarget.reusableLeaseConfigured !== true ||
+              executionTarget.effectiveCapabilities?.reusableLeases !== true
+            )
+          ) {
+            throw new Error(
+              "runner_warm_environment_requires_reusable_lease",
+            );
+          }
           const persistedProfile = persistedRunnerProfile;
           if (persistedNativeExecutionInput) {
             nativeExecution = persistedNativeExecutionInput;
@@ -19977,10 +20061,30 @@ export function heartbeatService(
                         : {},
                     }
                   : null,
+              provider:
+                nativeRuntimeResolution.profile.backend === "opencode_server"
+                  ? "opencode"
+                  : nativeRuntimeResolution.profile.backend === "acpx_runtime"
+                    ? "acpx"
+                    : "codex",
+              ...(nativeRuntimeResolution.profile.backend === "acpx_runtime"
+                ? {
+                    acpxAgent: parseObject(runtimeConfig).acpxAgent as
+                      "pi" | "claude" | "codex",
+                  }
+                : {}),
               codexApprovalPolicy: resolvePaperclipRunnerPermissionMode(
                 "codex",
                 parseObject(agent.adapterConfig).codexPermissionMode,
               ) as "never" | "on-request" | "untrusted",
+              opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
+                "opencode",
+                parseObject(runtimeConfig).opencodePermissionMode,
+              ) as "allow" | "ask" | "deny",
+              acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
+                "acpx",
+                parseObject(runtimeConfig).acpxPermissionMode,
+              ) as "approve-all" | "approve-reads" | "deny-all",
               model:
                 typeof parseObject(agent.adapterConfig).model === "string"
                   ? String(parseObject(agent.adapterConfig).model)
@@ -20015,6 +20119,44 @@ export function heartbeatService(
               }
             }
           }
+          const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
+            adapterType: agent.adapterType,
+            lifecyclePolicy: nativeExecution.session.lifecyclePolicy,
+            target: executionTarget,
+          });
+          if (nativeSandboxLifecycle) {
+            nativeLifecycleTelemetryForRun = {
+              provider: nativeExecution.provider.kind,
+              harness: nativeExecution.session.driverKind,
+              lifecycleMode: nativeExecution.session.lifecyclePolicy.mode,
+              sandboxResource: nativeSandboxLifecycle.sandboxResource,
+            };
+            const selectedLifecycleSpan = getStartupTracer(
+              "paperclip.environment-lifecycle",
+            ).startSpan("sandbox.lifecycle.selected", {
+              attributes: {
+                "paperclip.native.span.provider": nativeExecution.provider.kind,
+                "paperclip.native.span.harness":
+                  nativeExecution.session.driverKind,
+                "paperclip.native.span.lifecycle_mode":
+                  nativeExecution.session.lifecyclePolicy.mode,
+                "paperclip.native.span.sandbox_resource":
+                  nativeSandboxLifecycle.sandboxResource,
+                "paperclip.native.span.outcome": "selected",
+                "paperclip.native.span.bytes_transferred": 0,
+              },
+            });
+            selectedLifecycleSpan.end();
+          }
+          providerResourceDispositionForRun =
+            nativeSandboxLifecycle?.sandboxResource === "keep_running"
+              ? "keep_running"
+              : nativeSandboxLifecycle?.sandboxResource === "stop_and_reuse"
+                ? "stop_and_retain"
+                : nativeSandboxLifecycle?.sandboxResource ===
+                    "destroy_after_turn"
+                  ? "destroy"
+                  : undefined;
           await db.transaction(async (tx) => {
             const lockedRun = await tx
               .select()
@@ -20473,6 +20615,27 @@ export function heartbeatService(
                           }
                         : {}),
                     },
+                    runnerExecutionTarget: executionTarget,
+                    enableRunnerPreviewIngress:
+                      resolvedInstanceSettings.experimental
+                        .enableRunnerPreviewIngress === true,
+                    runnerPublicUrl:
+                      runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
+                    runnerCaBundlePath:
+                      runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
+                      null,
+                    runnerRemoteBinaryPath:
+                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
+                      null,
+                    runnerRemoteCodexPath:
+                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
+                      null,
+                    runnerRemoteCodexNpmSpec:
+                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
+                      null,
+                    runnerRemoteProviderPackPath:
+                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
+                      null,
                     enqueueWakeup,
                     onSpawn: async (meta) => {
                       markDispatchStarted();
@@ -21786,6 +21949,8 @@ export function heartbeatService(
           agentId: run.agentId,
           status: latestRun?.status,
           failureReason: latestRun?.error ?? undefined,
+          providerResourceDisposition: providerResourceDispositionForRun,
+          nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
         });
         await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
       }

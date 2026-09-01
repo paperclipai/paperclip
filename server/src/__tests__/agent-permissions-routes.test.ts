@@ -42,11 +42,13 @@ const baseAgent = {
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getConfigRevision: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
   update: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -288,11 +290,13 @@ describe.sequential("agent permission routes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockAgentService.getById.mockReset();
+    mockAgentService.getConfigRevision.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -332,6 +336,7 @@ describe.sequential("agent permission routes", () => {
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAgentService.getConfigRevision.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -568,6 +573,63 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows instance administrators to create and hire with raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const body = {
+      name: "Trace capture agent",
+      adapterType: "process",
+      runtimeConfig: { debug: { providerTrace: "raw" } },
+    };
+
+    const createResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send(body),
+    );
+    const hireResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agent-hires`)
+        .send(body),
+    );
+
+    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(201);
+    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin rollback into raw provider trace capture", async () => {
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      afterConfig: {
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const response = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(
+        `/api/agents/${agentId}/config-revisions/33333333-3333-4333-8333-333333333333/rollback`,
+      ),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
   });
 
   it("blocks api key creation for authenticated company members without agent admin permission", async () => {

@@ -15,6 +15,7 @@ import type {
 } from "@paperclipai/shared";
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
 import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import type {
   CommandManagedDuplexChannel,
 } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -34,6 +35,7 @@ import {
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { verifyNativeHarnessBackupStamp } from "./native-runtime/native-harness-backup-stamp.js";
 import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
@@ -107,6 +109,7 @@ export const SANDBOX_CAPABILITY_KEYS = [
   "incrementalSessionOutput",
   "concurrentSyncOperations",
   "duplexCommandStream",
+  "runnerWebSocketIngress",
 ] as const;
 
 export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
@@ -124,6 +127,7 @@ const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Se
   "incrementalSessionOutput",
   "concurrentSyncOperations",
   "duplexCommandStream",
+  "runnerWebSocketIngress",
 ]);
 
 /**
@@ -180,6 +184,7 @@ const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, read
   incrementalSessionOutput: [["environmentExecute"]],
   concurrentSyncOperations: [["environmentSyncIn"], ["environmentSyncOut"]],
   duplexCommandStream: [["duplexChannelOpen"]],
+  runnerWebSocketIngress: [["environmentRunnerIngressEndpoint"]],
 };
 
 function capabilityIsVerified(
@@ -290,6 +295,7 @@ export function classifyEnvironmentCapabilities(input: {
     incrementalSessionOutput: resolve("incrementalSessionOutput"),
     concurrentSyncOperations: resolve("concurrentSyncOperations"),
     duplexCommandStream: resolve("duplexCommandStream"),
+    runnerWebSocketIngress: resolve("runnerWebSocketIngress"),
   };
 }
 
@@ -556,6 +562,12 @@ export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriv
   command: readonly string[];
 }
 
+export interface EnvironmentDriverRunnerIngressInput
+  extends EnvironmentDriverLeaseInput {
+  port: number;
+  path: string;
+}
+
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
@@ -583,6 +595,9 @@ export interface EnvironmentRuntimeDriver {
   openDuplexChannel?(
     input: EnvironmentDriverOpenDuplexChannelInput,
   ): Promise<CommandManagedDuplexChannel>;
+  getRunnerIngressEndpoint?(
+    input: EnvironmentDriverRunnerIngressInput,
+  ): Promise<RunnerIngressEndpoint>;
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
@@ -678,11 +693,56 @@ export class SandboxOrphanCleanupWriteError extends Error {
   }
 }
 
+/** A reusable sandbox could not be resumed, but has not been proven lost. */
+export class ReusableSandboxResumeError extends Error {
+  readonly provider: string;
+  readonly providerLeaseId: string;
+
+  constructor(input: {
+    provider: string;
+    providerLeaseId: string;
+    cause?: unknown;
+  }) {
+    super(
+      `Reusable sandbox lease "${input.providerLeaseId}" could not be resumed; ` +
+        "the lease was preserved and no replacement was created.",
+      input.cause === undefined ? undefined : { cause: input.cause },
+    );
+    this.name = "ReusableSandboxResumeError";
+    this.provider = input.provider;
+    this.providerLeaseId = input.providerLeaseId;
+  }
+}
+
+export class RunnerHarnessBackupUnavailableError extends Error {
+  readonly providerLeaseId: string;
+
+  constructor(providerLeaseId: string) {
+    super(
+      `runner_harness_backup_unavailable: reusable sandbox "${providerLeaseId}" ` +
+        "was confirmed lost, but no complete verified failover backup is available",
+    );
+    this.name = "RunnerHarnessBackupUnavailableError";
+    this.providerLeaseId = providerLeaseId;
+  }
+}
+
 export interface EnvironmentRuntimeLeaseRecord {
   environment: Environment;
   lease: EnvironmentLease;
   leaseContext: ReturnType<typeof buildEnvironmentLeaseContext>;
 }
+
+/**
+ * Host-side decision for the provider resource after a run. This is kept
+ * separate from heartbeat status: a failed turn can still leave a reusable
+ * sandbox resumable, while a disposable successful turn must destroy it.
+ * An omitted disposition preserves the legacy adapter behavior.
+ */
+export type ProviderResourceDisposition =
+  | "keep_running"
+  | "stop_and_retain"
+  | "destroy";
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
@@ -702,6 +762,24 @@ const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function transientSandboxResumeFailure(error: unknown): boolean {
+  const candidate = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  const status = typeof candidate.status === "number"
+    ? candidate.status
+    : typeof candidate.statusCode === "number"
+      ? candidate.statusCode
+      : null;
+  if (status === 429 || (status !== null && status >= 500)) return true;
+  const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
+  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENETUNREACH"].includes(code)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return /\b(timeout|timed out|rate limit|temporar|network|connection reset|service unavailable)\b/.test(message);
 }
 
 function getLeaseDriverKey(
@@ -1794,23 +1872,40 @@ function createSandboxEnvironmentDriver(
           : null;
 
         let providerLease: PluginEnvironmentLease | null = null;
+        let replacementReason:
+          | "not_found"
+          | "expired"
+          | "identity_mismatch"
+          | "resume_failed"
+          | undefined;
         if (reusableLease?.providerLeaseId) {
           // The `supportsReusableLeases` check above reads a snapshot of the
           // worker methods. The runtime then does asynchronous database work
           // (list, fingerprint, obsolete-lease cleanup) before this dispatch. A
           // worker restart in that window can drop `environmentResumeLease`
           // while the snapshot still marks the method verified. Re-check the
-          // live worker here and fail closed when the method is absent: skip the
-          // resume, destroy the stale reusable lease, and acquire a fresh lease
-          // below. The runtime never dispatches a resume the live worker cannot
-          // serve.
+          // live worker here and fail closed when the method is absent. The
+          // runtime preserves the recorded lease and never dispatches a resume
+          // the live worker cannot serve.
           const workerVerifiesResume = pluginWorkerVerifiesLifecycleMethod(
             pluginProvider.resolved.plugin.id,
             "environmentResumeLease",
           );
-          if (workerVerifiesResume) {
-            try {
-              const resumed = await pluginWorkerManager.call(
+          if (!workerVerifiesResume) {
+            throw new ReusableSandboxResumeError({
+              provider: parsed.config.provider,
+              providerLeaseId: reusableLease.providerLeaseId,
+            });
+          }
+          try {
+            const resumeDeadline = Date.now() + 60_000;
+            const configuredResumeTimeoutMs =
+              resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000;
+            let retryDelayMs = 250;
+            let resumed: PluginEnvironmentLease;
+            while (true) {
+              try {
+                resumed = await pluginWorkerManager.call(
                   pluginProvider.resolved.plugin.id,
                   "environmentResumeLease",
                   {
@@ -1822,21 +1917,65 @@ function createSandboxEnvironmentDriver(
                     providerLeaseId: reusableLease.providerLeaseId,
                     leaseMetadata: reusableLease.metadata ?? undefined,
                   },
-                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                  Math.min(
+                    configuredResumeTimeoutMs,
+                    Math.max(1, resumeDeadline - Date.now()),
+                  ),
                 );
-              providerLease =
-                typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
-                  ? resumed
-                  : null;
-            } catch {
-              providerLease = null;
+                break;
+              } catch (error) {
+                if (
+                  !transientSandboxResumeFailure(error) ||
+                  Date.now() + retryDelayMs * 1.25 >= resumeDeadline
+                ) throw error;
+                const jitteredDelayMs = Math.max(
+                  1,
+                  Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
+                );
+                await delay(jitteredDelayMs);
+                retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+              }
             }
+            providerLease =
+              typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
+                ? resumed
+                : null;
+            if (!providerLease) {
+              const sentinel = isRecord(resumed.metadata?.workspaceSentinel)
+                ? resumed.metadata.workspaceSentinel
+                : null;
+              replacementReason = sentinel && sentinel.result !== "matched"
+                ? "identity_mismatch"
+                : resumed.metadata?.expired === true
+                  ? "not_found"
+                  : "expired";
+            }
+          } catch (error) {
+            throw new ReusableSandboxResumeError({
+              provider: parsed.config.provider,
+              providerLeaseId: reusableLease.providerLeaseId,
+              cause: error,
+            });
           }
           if (!providerLease) {
+            if (
+              input.adapterType === "paperclip_runner" &&
+              !verifyNativeHarnessBackupStamp(
+                reusableLease.metadata?.nativeHarnessBackup,
+                reusableLease.providerLeaseId,
+              )
+            ) {
+              throw new RunnerHarnessBackupUnavailableError(
+                reusableLease.providerLeaseId,
+              );
+            }
+            // The verified, lease-bound backup authorizes destructive
+            // replacement. Keep the existing sandbox intact when validation
+            // fails so the only recoverable provider state is not lost.
             await destroyReusableSandboxLease({
               environment: input.environment,
               lease: reusableLease,
-              failureReason: workerVerifiesResume ? "resume_failed" : "resume_capability_lost",
+              failureReason: replacementReason ?? "resume_failed",
             });
           }
         }
@@ -1906,6 +2045,21 @@ function createSandboxEnvironmentDriver(
           sandboxProviderPlugin: true,
           ...sandboxConfigForLeaseMetadata(storedConfig),
           ...sanitizedProviderMetadata,
+          sandboxLeaseAcquisition: providerLease
+            ? {
+                outcome: "resumed",
+              }
+            : reusableLease?.providerLeaseId
+              ? {
+                  outcome: "replacement",
+                  reason: replacementReason ?? "resume_failed",
+                }
+              : {
+                  outcome: "created",
+                },
+          ...(reusableLease?.metadata?.nativeHarnessBackup
+            ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
+            : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
         try {
@@ -2072,10 +2226,10 @@ function createSandboxEnvironmentDriver(
         });
       } catch (error) {
         if (reusableLease) {
-          await destroyReusableSandboxLease({
-            environment: input.environment,
-            lease: reusableLease,
-            failureReason: "resume_failed",
+          throw new ReusableSandboxResumeError({
+            provider: parsed.config.provider,
+            providerLeaseId: reusableLease.providerLeaseId!,
+            cause: error,
           });
         }
         throw error;
@@ -2112,6 +2266,22 @@ function createSandboxEnvironmentDriver(
         driver: input.environment.driver,
         executionWorkspaceMode: input.executionWorkspaceMode,
         ...providerLease.metadata,
+        sandboxLeaseAcquisition:
+          reusableLease && providerLease.providerLeaseId === reusableLease.providerLeaseId
+            ? {
+                outcome: "resumed",
+              }
+            : reusableLease?.providerLeaseId
+              ? {
+                  outcome: "replacement",
+                  reason: "resume_failed",
+                }
+              : {
+                  outcome: "created",
+                },
+        ...(reusableLease?.metadata?.nativeHarnessBackup
+          ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
+          : {}),
         ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
       };
       try {
@@ -2573,6 +2743,91 @@ function createSandboxEnvironmentDriver(
       return await resolveSandboxCapabilitiesForLease(input);
     },
 
+    async getRunnerIngressEndpoint(input) {
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+        throw new Error("Sandbox driver does not support runner ingress for this lease.");
+      }
+      const pluginId = readString(input.lease.metadata.pluginId);
+      const providerKey = readString(input.lease.metadata.provider);
+      if (!pluginId || !providerKey || !input.lease.providerLeaseId) {
+        throw new Error("Sandbox runner ingress is missing its provider identity.");
+      }
+      const config = await resolvePluginSandboxRuntimeConfig({
+        environment: input.environment,
+        lease: input.lease,
+        provider: providerKey,
+      });
+      const sanitizedConfig = stripSandboxProviderEnvelope(
+        config as SandboxEnvironmentConfig,
+      );
+      const acquire = async (): Promise<RunnerIngressEndpoint> => {
+        const result = await pluginWorkerManager.call(
+          pluginId,
+          "environmentRunnerIngressEndpoint",
+          {
+            driverKey: providerKey,
+            companyId: input.lease.companyId,
+            environmentId: input.environment.id,
+            issueId: input.lease.issueId,
+            config: sanitizedConfig,
+            lease: {
+              providerLeaseId: input.lease.providerLeaseId,
+              metadata: input.lease.metadata ?? undefined,
+              expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+            },
+            port: input.port,
+            path: input.path,
+          },
+          resolvePluginSandboxRpcTimeoutMs(sanitizedConfig),
+        );
+        const endpointUrl = new URL(result.websocketUrl);
+        if (
+          result.kind !== "authenticated_websocket" ||
+          endpointUrl.protocol !== "wss:" ||
+          endpointUrl.username ||
+          endpointUrl.password ||
+          endpointUrl.search ||
+          endpointUrl.hash ||
+          endpointUrl.pathname !== input.path ||
+          !result.generation
+        ) {
+          throw new Error("Sandbox provider returned an invalid runner ingress endpoint.");
+        }
+        const secretHeaders = result.secretHeaders.map((header) => {
+          if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header.name) || !header.value) {
+            throw new Error("Sandbox provider returned an invalid runner ingress secret header.");
+          }
+          const secretHeader = { name: header.name } as {
+            name: string;
+            readonly value: string;
+            toJSON(): { name: string; value: "[REDACTED]" };
+          };
+          Object.defineProperty(secretHeader, "value", {
+            enumerable: false,
+            configurable: false,
+            writable: false,
+            value: header.value,
+          });
+          Object.defineProperty(secretHeader, "toJSON", {
+            enumerable: false,
+            configurable: false,
+            writable: false,
+            value: () => ({ name: header.name, value: "[REDACTED]" as const }),
+          });
+          return Object.freeze(secretHeader);
+        });
+        return {
+          kind: "authenticated_websocket",
+          websocketUrl: endpointUrl.toString(),
+          secretHeaders: Object.freeze(secretHeaders),
+          generation: result.generation,
+          refresh: acquire,
+          close: async () => undefined,
+        };
+      };
+      return await acquire();
+    },
+
     async destroyRunLease(input) {
       return await destroyReusableSandboxLease({
         environment: input.environment,
@@ -2897,6 +3152,8 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "remoteCwd",
   "shellCommand",
   "sandboxProviderPlugin",
+  "sandboxLeaseAcquisition",
+  "nativeHarnessBackup",
 ]);
 
 // Drop the host-internal and per-lease runtime keys from a sandbox config
@@ -3386,6 +3643,7 @@ export function environmentRuntimeService(
       heartbeatRunId: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
+      providerResourceDisposition?: ProviderResourceDisposition,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -3413,14 +3671,72 @@ export function environmentRuntimeService(
           if (!environment) continue;
 
           const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+          if (
+            providerResourceDisposition === "keep_running" &&
+            leaseSnapshot.leasePolicy === "reuse_by_environment"
+          ) {
+            const lease = await environmentsSvc.releaseLease(
+              leaseRow.id,
+              "retained",
+              { cleanupStatus: "success" },
+            );
+            if (lease) {
+              released.push({
+                environment,
+                lease,
+                leaseContext: {
+                  executionWorkspaceId: lease.executionWorkspaceId,
+                  executionWorkspaceMode:
+                    (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+                },
+              });
+            }
+            continue;
+          }
           const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-          const lease = driver
-            ? await driver.releaseRunLease({
+          if (
+            providerResourceDisposition === "keep_running" &&
+            leaseSnapshot.leasePolicy !== "reuse_by_environment"
+          ) {
+            throw new Error(
+              `Cannot keep non-reusable environment lease "${leaseSnapshot.id}" running.`,
+            );
+          }
+          if (
+            providerResourceDisposition === "destroy" &&
+            leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
+            (!leaseSnapshot.providerLeaseId ||
+              !verifyNativeHarnessBackupStamp(
+                leaseSnapshot.metadata.nativeHarnessBackup,
+                leaseSnapshot.providerLeaseId,
+              ))
+          ) {
+            throw new RunnerHarnessBackupUnavailableError(
+              leaseSnapshot.providerLeaseId ?? leaseSnapshot.id,
+            );
+          }
+          const lease = providerResourceDisposition === "destroy" && driver?.destroyRunLease
+            ? await driver.destroyRunLease({
                 environment,
                 lease: leaseSnapshot,
-                status,
+                failureReason: "paperclip_runner_destroy_after_turn",
               })
-            : await environmentsSvc.releaseLease(leaseRow.id, status);
+            : driver
+              ? await driver.releaseRunLease({
+                  environment,
+                  lease: leaseSnapshot,
+                  // A stopped reusable provider resource must remain eligible
+                  // for exact-lease resume independently of turn outcome.
+                  status:
+                    providerResourceDisposition === "stop_and_retain" &&
+                    leaseSnapshot.leasePolicy === "reuse_by_environment"
+                      ? "released"
+                      : status,
+                })
+              : await environmentsSvc.releaseLease(
+                  leaseRow.id,
+                  providerResourceDisposition === "destroy" ? "expired" : status,
+                );
           if (!lease) continue;
 
           released.push({
@@ -3762,6 +4078,26 @@ export function environmentRuntimeService(
         throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
       }
       return await driver.openDuplexChannel(input);
+    },
+
+    async getRunnerIngressEndpoint(
+      input: EnvironmentDriverRunnerIngressInput,
+    ): Promise<RunnerIngressEndpoint> {
+      const driver = requireDriverKey(
+        getLeaseDriverKey(input.lease, input.environment),
+      );
+      const effective = await driver.resolveCapabilities(input);
+      if (effective.runnerWebSocketIngress !== true) {
+        throw new Error(
+          "Sandbox lease does not grant runner WebSocket ingress.",
+        );
+      }
+      if (!driver.getRunnerIngressEndpoint) {
+        throw new Error(
+          `Environment driver "${driver.driver}" does not support runner ingress.`,
+        );
+      }
+      return await driver.getRunnerIngressEndpoint(input);
     },
   };
 }

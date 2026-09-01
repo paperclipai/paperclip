@@ -16,6 +16,7 @@ const ALL_PROVIDER_METHODS = [
   "environmentSyncIn",
   "environmentSyncOut",
   "duplexChannelOpen",
+  "environmentRunnerIngressEndpoint",
 ];
 
 describe("general capability classifier", () => {
@@ -34,6 +35,7 @@ describe("general capability classifier", () => {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
         duplexCommandStream: true,
+        runnerWebSocketIngress: true,
       },
       supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities,
     });
@@ -96,6 +98,7 @@ describe("general capability classifier", () => {
           incrementalSessionOutput: true,
           concurrentSyncOperations: true,
           duplexCommandStream: true,
+          runnerWebSocketIngress: true,
         },
         supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
       });

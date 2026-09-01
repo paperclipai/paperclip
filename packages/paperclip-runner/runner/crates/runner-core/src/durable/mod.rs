@@ -98,6 +98,7 @@ pub fn capture_bootstrap_ticket() -> Result<Option<BootstrapTicket>, DurableRunn
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerConfig {
     pub connect_url: String,
+    pub ca_bundle_path: Option<PathBuf>,
     pub state_dir: PathBuf,
     pub runner_instance_id: String,
     pub environment_lease_id: String,
@@ -111,6 +112,7 @@ pub struct DurableRunnerConfig {
     pub p0_reserve_bytes: usize,
     pub max_frame_bytes: usize,
     pub reconnect_delay: Duration,
+    pub reconnect_grace: Option<Duration>,
     pub max_runtime: Duration,
 }
 
@@ -172,6 +174,11 @@ impl DurableRunnerConfig {
                 "reconnect delay must be between one millisecond and 60 seconds",
             ));
         }
+        if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
+            return Err(DurableRunnerError::invalid(
+                "reconnect grace must be non-zero when configured",
+            ));
+        }
         if self.max_runtime > Duration::from_secs(7 * 24 * 60 * 60) {
             return Err(DurableRunnerError::invalid(
                 "durable runner max runtime must not exceed seven days",
@@ -188,6 +195,7 @@ mod tests {
     fn config() -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: "ws://127.0.0.1/runner".to_owned(),
+            ca_bundle_path: None,
             state_dir: PathBuf::from("state"),
             runner_instance_id: "runner-1".to_owned(),
             environment_lease_id: "lease-1".to_owned(),
@@ -201,6 +209,7 @@ mod tests {
             p0_reserve_bytes: 64 * 1024,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
         }
     }

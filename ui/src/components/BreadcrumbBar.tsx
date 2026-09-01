@@ -12,7 +12,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
@@ -24,11 +24,18 @@ function CrumbIdentifier({ identifier }: { identifier?: string }) {
   return <span className="shrink-0 font-mono text-muted-foreground">{identifier}</span>;
 }
 
-function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
+function GlobalToolbar({
+  context,
+  pageToolbar,
+}: {
+  context: GlobalToolbarContext;
+  pageToolbar?: ReactNode;
+}) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1 pl-2 empty:hidden">
+      {pageToolbar}
       {slots.length > 0 ? (
         <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
       ) : null}
@@ -40,7 +47,7 @@ function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
 }
 
 export function BreadcrumbBar() {
-  const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
+  const { breadcrumbs, breadcrumbToolbar, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
 
@@ -52,7 +59,12 @@ export function BreadcrumbBar() {
     [selectedCompanyId, selectedCompany?.issuePrefix],
   );
 
-  const globalToolbarSlots = <GlobalToolbar context={globalToolbarSlotContext} />;
+  const globalToolbarSlots = (
+    <GlobalToolbar
+      context={globalToolbarSlotContext}
+      pageToolbar={isMobile ? null : breadcrumbToolbar}
+    />
+  );
 
   if (isMobile && mobileToolbar) {
     return (

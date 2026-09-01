@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 
 import { cancelHeartbeatNativeRun } from "../services/heartbeat.js";
+import { resolveNativeCancellationStatus } from "../services/native-runtime/native-session-executor.js";
 
 describe("native heartbeat cancellation authority", () => {
   it("does not enter native cancellation for a direct-adapter run", async () => {
@@ -53,5 +54,32 @@ describe("native heartbeat cancellation authority", () => {
       runtimeMode: "native",
       cancel,
     })).rejects.toThrow("native_cancellation_outcome_not_audited");
+  });
+
+  it("keeps generalized executor cancellation scoped to the requested authority", () => {
+    expect(resolveNativeCancellationStatus({
+      scope: "run",
+      priorIssueStatus: "in_progress",
+      agentId: "remote-runner",
+    })).toMatchObject({
+      statusAction: "preserve",
+      toStatus: "in_progress",
+      reasonCode: "cancellation_run_only",
+      effects: [{ kind: "release_run_resources" }],
+    });
+
+    expect(resolveNativeCancellationStatus({
+      scope: "issue",
+      priorIssueStatus: "in_progress",
+      agentId: "remote-runner",
+    })).toMatchObject({
+      statusAction: "cancelled",
+      toStatus: "cancelled",
+      reasonCode: "cancellation_issue_authorized",
+      effects: [
+        { kind: "release_checkout" },
+        { kind: "cancel_continuations" },
+      ],
+    });
   });
 });

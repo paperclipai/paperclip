@@ -119,8 +119,22 @@ export {
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
 } from "./paperclip-runner-permissions.js";
+export {
+  PAPERCLIP_RUNNER_INGRESS_PORT,
+  PAPERCLIP_RUNNER_CONNECT_PATH_PREFIX,
+  PaperclipRunnerTransportError,
+  buildDirectRunnerConnectUrl,
+  resolvePaperclipRunnerTransport,
+} from "./runner-connectivity.js";
 export type {
+  SecretHeader,
+  RunnerIngressEndpoint,
+  PaperclipRunnerTransport,
+} from "./runner-connectivity.js";
+export type {
+  AcpxPermissionMode,
   CodexPermissionMode,
+  OpenCodePermissionMode,
   PaperclipRunnerPermissionCapability,
   PaperclipRunnerPermissionMode,
   PaperclipRunnerPermissionOption,
