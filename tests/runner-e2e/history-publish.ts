@@ -34,13 +34,7 @@ const PUBLISH_ROOT_FILES = new Set([
   "normalized-results.json",
   "summary.md",
 ]);
-const PUBLIC_EVIDENCE_EXTENSIONS = new Set([
-  ".json",
-  ".log",
-  ".md",
-  ".txt",
-  ".xml",
-]);
+const PUBLIC_EVIDENCE_EXTENSIONS = new Set([".json", ".log", ".md", ".txt"]);
 const PRIVATE_EVIDENCE_DIRECTORIES = new Set([
   "blob-report",
   "html-report",

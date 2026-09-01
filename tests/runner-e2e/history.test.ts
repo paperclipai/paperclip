@@ -196,6 +196,10 @@ describe("historical publication security", () => {
     await writeFile(path.join(evidenceDirectory, "final-state.png"), "png");
     await writeFile(path.join(evidenceDirectory, "failure.webm"), "webm");
     await writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />");
+    await writeFile(
+      path.join(evidenceDirectory, "junit.xml"),
+      "<?xml-stylesheet href='https://example.test/private.xsl'?>",
+    );
     await writeFile(path.join(evidenceDirectory, "result.json"), "{}\n");
     await mkdir(path.join(evidenceDirectory, "snapshots"));
     await writeFile(
@@ -236,6 +240,9 @@ describe("historical publication security", () => {
     ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "unsafe.svg")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "junit.xml")),
     ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "html-report", "index.html")),
@@ -295,6 +302,7 @@ describe("historical publication security", () => {
 
   it("rejects non-allowlisted files and fingerprints an immutable bundle", async () => {
     expect(isHistoricalBundlePathAllowed("normalized-results.json")).toBe(true);
+    expect(isHistoricalBundlePathAllowed("junit.xml")).toBe(true);
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/final-state.png",
@@ -308,6 +316,11 @@ describe("historical publication security", () => {
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/unsafe.svg",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/junit.xml",
       ),
     ).toBe(false);
     expect(

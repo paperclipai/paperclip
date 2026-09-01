@@ -121,7 +121,9 @@ CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
 usage, costs, normalized results, and allowlisted inert structured per-attempt
 evidence are expected public data. Screenshots, video, archives, generated
 Playwright/blob/HTML report trees, credentials, Paperclip homes, databases,
-workspaces, master keys, raw logs, and unallowlisted files are not.
+workspaces, master keys, raw/unredacted logs, and unallowlisted files are not.
+Only allowlisted `.log` copies that passed exact-value/key-shape scanning and
+redaction may cross the public boundary.
 
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, access-controlled boundary. Text is exact-value and key-shape
@@ -132,11 +134,14 @@ active content.
 
 Before permanent publication, the campaign publisher prunes raster/video
 files, archives, and generated report trees. It then regenerates the dashboard
-from the remaining allowlisted `.json`, `.log`, `.md`, `.txt`, and `.xml`
-evidence and accepts only that dashboard, normalized JSON/JUnit/summary, fixed
-branding assets, and the inert structured evidence paths. The same pruned tree
-feeds both S3/CloudFront history and the optional GitHub Pages artifact. A leak
-fails the cell and withholds the unsafe file.
+from the remaining allowlisted `.json`, `.log`, `.md`, and `.txt` evidence and
+accepts only that dashboard, normalized JSON/JUnit/summary, fixed
+branding assets, and the inert structured evidence paths. Per-attempt XML is
+excluded because browsers can process XML/XSLT; the only public XML is the
+root `junit.xml`, which the report aggregator constructs from fixed markup and
+XML-escaped fields. The same pruned tree feeds both S3/CloudFront history and
+the optional GitHub Pages artifact. A leak fails the cell and withholds the
+unsafe file.
 
 Rotate the affected credential immediately if a secret-scanning failure or
 unexpected public object is observed. Preserve the access-controlled Actions

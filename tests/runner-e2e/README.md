@@ -190,9 +190,12 @@ Permanent public history has a narrower boundary. Before uploading to S3 or
 packaging the optional GitHub Pages artifact, the publisher removes raster and
 video evidence, archives, and the generated Playwright/blob/HTML report trees.
 It then regenerates the dashboard against only the remaining allowlisted,
-inert structured per-attempt evidence (`.json`, `.log`, `.md`, `.txt`, and
-`.xml`). Public dashboards therefore contain results and accounting but no
-attempt screenshots, videos, traces, or generated Playwright reports.
+inert structured per-attempt evidence (`.json`, `.log`, `.md`, and `.txt`).
+Per-attempt XML is excluded because browsers can process XML/XSLT. The root
+`junit.xml` remains public because the report aggregator builds it from fixed
+markup and XML-escaped fields. Public dashboards therefore contain results and
+accounting but no attempt screenshots, videos, traces, or generated Playwright
+reports.
 
 ### Billing interpretation
 
@@ -315,7 +318,9 @@ The publisher prunes screenshots, video, archives, and generated report trees,
 then regenerates the public dashboard before either the CloudFront-backed S3
 history or optional Pages artifact is created. Public per-attempt evidence is
 limited to allowlisted inert structured text. Databases, Paperclip homes,
-workspaces, raw logs, credentials, and visual evidence are never published.
+workspaces, raw/unredacted logs, credentials, and visual evidence are never
+published. Sanitized allowlisted `.log` copies may be public only after
+exact-value/key-shape scanning and redaction.
 
 See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.

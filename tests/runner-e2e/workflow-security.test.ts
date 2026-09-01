@@ -48,5 +48,17 @@ describe("public repository paid workflow security", () => {
     expect(publisher).toContain("RUNNER_E2E_HISTORY_AWS_ROLE_ARN");
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
+    expect(workflow).toContain("history_source_ready");
+    expect(workflow).toContain(
+      "Verify history source report and private screenshot evidence",
+    );
+    expect(workflow).toContain("private_screenshot=");
+    expect(workflow).toContain("Publish pruned immutable history");
+    expect(workflow).toContain("Publish latest structured dashboard");
+    expect(workflow).not.toContain("dashboard_ready");
+    expect(workflow).not.toContain("Publish latest screenshot dashboard");
+    expect(
+      workflow.indexOf("pnpm test:e2e:runner:history:publish"),
+    ).toBeLessThan(workflow.indexOf("actions/upload-pages-artifact@"));
   });
 });

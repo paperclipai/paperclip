@@ -293,4 +293,66 @@ describe("runner E2E report aggregation", () => {
       evidenceValid: true,
     });
   });
+
+  it("constructs the public root JUnit from fixed markup and escaped fields", async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), "runner-e2e-report-junit-test-"),
+    );
+    cleanupDirectories.push(root);
+    const executionId = "legacy-codex.local.message-marker";
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, "result.json"),
+      JSON.stringify({
+        schema: "paperclip.runner-e2e.result/v1",
+        executionId,
+        attempt: 1,
+        status: "failed",
+        failureClass: "candidate_failure",
+        error: `provider said \"><script>alert(1)</script>&`,
+        profileId: "legacy-codex",
+        environmentId: "local",
+        caseId: "message-marker",
+        provider: "codex",
+        model: "fixture-model",
+        runtimeMode: "legacy",
+        startedAt: "2026-08-26T00:00:00.000Z",
+        finishedAt: "2026-08-26T00:00:01.000Z",
+        durationMs: 1_000,
+        cleanup: "passed",
+      } satisfies RunnerE2EResult),
+    );
+    await writeFile(
+      path.join(directory, "evidence-manifest.json"),
+      JSON.stringify({ files: [], leaks: [], missing: [] }),
+    );
+    const output = path.join(root, "merged");
+
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"),
+          path.join(repositoryRoot, "tests/runner-e2e/report.ts"),
+        ],
+        {
+          cwd: repositoryRoot,
+          env: {
+            ...process.env,
+            PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root,
+            PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+            PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]),
+          },
+        },
+      ),
+    ).rejects.toBeDefined();
+
+    const junit = await readFile(path.join(output, "junit.xml"), "utf8");
+    expect(junit).toContain(
+      `message="provider said &quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;"`,
+    );
+    expect(junit).not.toContain("<script>");
+    expect(junit).not.toContain("<?xml-stylesheet");
+  });
 });
