@@ -36,6 +36,9 @@ const apiPrefixes: Record<string, string> = {
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
   "folders.ts": "/api",
+  "formal-qa-policies.ts": "/api",
+  "formal-qa-preparations.ts": "/api",
+  "formal-qa-reviews.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
   "inbox-agent-policy.ts": "/api",
@@ -217,6 +220,14 @@ describe("openapi routes", () => {
       },
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    expect(res.body.paths["/api/projects/{id}/formal-qa-policy"].put["x-paperclip-authorization"]).toEqual({
+      actor: "board",
+      instanceAdmin: true,
+    });
+    expect(res.body.paths["/api/projects/{id}/formal-qa-policy"].put.responses["201"]).toBeDefined();
+    expect(res.body.paths["/api/companies/{companyId}/formal-qa-reviews"].get.summary).toBe(
+      "List sealed Formal-QA review receipts for a company",
+    );
     expect(
       Object.keys(
         res.body.paths["/api/issues/{id}/work-products/{workProductId}/review-document"].post.responses,

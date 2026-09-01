@@ -19,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { formalQaPreparationRoutes } from "../routes/formal-qa-preparations.js";
+import { formalQaPolicyRoutes } from "../routes/formal-qa-policies.js";
 import { formalQaReviewRoutes } from "../routes/formal-qa-reviews.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -53,6 +54,7 @@ function createApp(db: ReturnType<typeof createDb>, actor: Express.Request["acto
     next();
   });
   app.use("/api", formalQaPreparationRoutes(db));
+  app.use("/api", formalQaPolicyRoutes(db));
   app.use("/api", formalQaReviewRoutes(db));
   app.use(errorHandler);
   return app;
@@ -107,6 +109,7 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       name: "formal-qa-reviewer",
       role: "reviewer",
       status: "idle",
+      adapterType: "codex_local",
     });
     await db.insert(formalQaPolicies).values({
       companyId,
@@ -121,7 +124,7 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       createdByUserId: "board-user",
       updatedByUserId: "board-user",
     });
-    return { companyId, projectId, workspaceId };
+    return { companyId, projectId, workspaceId, reviewerAgentId };
   }
 
   function payload(projectId: string, workspaceId: string, idempotencyKey = "operation-1") {
@@ -191,5 +194,30 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     expect(wrongWorkspace.status).toBe(409);
     expect(wrongWorkspace.body.details.code).toBe("formal_qa_policy_unavailable");
     expect(agentIssue.status).toBe(403);
+  });
+
+  it("accepts only a Codex local reviewer in the instance-admin policy", async () => {
+    const { companyId, projectId, workspaceId, reviewerAgentId } = await seed();
+    await db.delete(formalQaPolicies);
+    const app = createApp(db, boardActor(companyId));
+    const policy = {
+      projectWorkspaceId: workspaceId,
+      reviewerAgentId,
+      repository: "vivus-tech/music-tracker",
+      requiredWorkflowId: "99",
+      requiredCheckName: "PR Policy",
+      requiredCheckAppId: 15368,
+      enabled: true,
+    };
+
+    const created = await request(app).put(`/api/projects/${projectId}/formal-qa-policy`).send(policy);
+    expect(created.status).toBe(201);
+    expect(created.body.policy.version).toBe(1);
+
+    await db.delete(formalQaPolicies);
+    await db.update(agents).set({ adapterType: "claude_local" });
+    const unsupported = await request(app).put(`/api/projects/${projectId}/formal-qa-policy`).send(policy);
+    expect(unsupported.status).toBe(409);
+    expect(unsupported.body.details.code).toBe("formal_qa_reviewer_adapter_unsupported");
   });
 });

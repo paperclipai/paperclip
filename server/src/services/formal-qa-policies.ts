@@ -43,10 +43,15 @@ export function formalQaPolicyService(db: Db) {
         eq(projectWorkspaces.id, input.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId), eq(projectWorkspaces.projectId, input.projectId),
       )).limit(1);
       if (!workspace || canonicalRepository(workspace.repoUrl ?? "") !== repository) throw notFound("Project workspace does not match the Formal-QA repository");
-      const [reviewer] = await tx.select({ id: agents.id }).from(agents).where(and(
+      const [reviewer] = await tx.select({ id: agents.id, adapterType: agents.adapterType }).from(agents).where(and(
         eq(agents.id, input.reviewerAgentId), eq(agents.companyId, input.companyId),
       )).limit(1);
       if (!reviewer) throw notFound("Formal-QA reviewer agent was not found in this company");
+      if (reviewer.adapterType !== "codex_local") {
+        throw conflict("Formal-QA reviewer agent must use the Codex local adapter", {
+          code: "formal_qa_reviewer_adapter_unsupported",
+        });
+      }
       const [existing] = await tx.select().from(formalQaPolicies).where(eq(formalQaPolicies.projectWorkspaceId, input.projectWorkspaceId)).limit(1);
       if (existing && samePolicy(existing, input, repository)) return { policy: existing, replayed: true };
       if (existing) {

@@ -42,8 +42,9 @@ import {
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
-  // Formal-QA preparation
+  // Formal-QA
   createFormalQaPreparationSchema,
+  upsertFormalQaPolicySchema,
   // Company
   createCompanySchema,
   updateCompanySchema,
@@ -1012,6 +1013,8 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
+  "GET /api/projects/{id}/formal-qa-policy",
+  "PUT /api/projects/{id}/formal-qa-policy",
 ]);
 
 const CREATED_OPERATIONS = new Set([
@@ -2903,7 +2906,7 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
-// ─── Formal-QA preparation ─────────────────────────────────────────────────
+// ─── Formal-QA ─────────────────────────────────────────────────────────────
 
 registry.registerPath({
   method: "get",
@@ -2936,6 +2939,59 @@ registry.registerPath({
   summary: "Get a Formal-QA preparation receipt",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/formal-qa-policy",
+  tags: ["formal-qa"],
+  summary: "Get the versioned Formal-QA policy for a project",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/formal-qa-policy",
+  tags: ["formal-qa"],
+  summary: "Create or replace the versioned Formal-QA policy for a project workspace",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(upsertFormalQaPolicySchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/formal-qa-reviews",
+  tags: ["formal-qa"],
+  summary: "List sealed Formal-QA review receipts for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      preparationId: z.string().optional(),
+      limit: z.number().int().positive().max(200).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/formal-qa-reviews/{id}",
+  tags: ["formal-qa"],
+  summary: "Get a sealed Formal-QA review receipt",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── Routines ────────────────────────────────────────────────────────────────

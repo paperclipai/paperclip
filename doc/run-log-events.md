@@ -23,6 +23,27 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Formal-QA Run-Log Events
+
+The dedicated Formal-QA heartbeat lane writes lifecycle records to the sealed
+review run. These records describe the execution envelope. They never contain
+repository file bytes, search excerpts, provider output, prompts, credentials,
+checkout paths, or arbitrary provider payloads.
+
+| Event type | Level | Payload |
+| --- | --- | --- |
+| `formal_qa.review_started` | `info` | The review ID, exact head SHA, and review-contract digest. |
+| `formal_qa.provider_log` | `info` or `warn` | No payload. The message states that provider diagnostics were redacted. |
+| `formal_qa.<provider event>` | Provider level | Only `{ "schema": "paperclip.formal-qa-event-metadata/v1" }`. The event name is bounded to 100 provider-supplied characters after the prefix. |
+| `formal_qa.review_finished` | `info` or `error` | The review ID, terminal status, and decision digest when one exists. |
+| `formal_qa.process_loss_requeued` | `warn` | The review ID and bounded retry attempt. |
+| `formal_qa.process_loss_exhausted` | `error` | The review ID and final retry attempt. |
+
+The lane permits one process-loss retry for the same sealed run only after it
+revalidates live policy, expiry, and checkout authority. A second process loss
+fails the run closed. These records are run-log-only. They do not publish a
+GitHub status, merge a pull request, or create a Paperclip Telemetry export.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up
