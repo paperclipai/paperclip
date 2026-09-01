@@ -892,6 +892,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/decision-training",
   "GET /api/companies/{companyId}/decision-training/export.jsonl",
   "GET /api/decision-training/{id}",
+  "GET /api/adapters",
   "GET /api/adapters/{type}",
   "GET /api/adapters/{type}/config-schema",
   "GET /api/adapters/{type}/ui-parser.js",
@@ -1091,6 +1092,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PUT /api/sidebar-preferences/me",
   "GET /api/companies/{companyId}/sidebar-preferences/me",
   "PUT /api/companies/{companyId}/sidebar-preferences/me",
+  // The create route's guard is callback-shaped — the start spine awaits
+  // `deriveOwner`, which is `assertCanManageAdapterLogin` and opens with
+  // `assertBoard` — so the drift scan cannot see it; kept here by hand.
+  "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
   "GET /api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}",
   "POST /api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}/cancel",
 ]);
@@ -1115,6 +1120,25 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "GET /api/heartbeat-runs/{runId}/provider-trace/download",
   "POST /api/tools/oauth/cloud-connector/enrollment",
   "GET /api/tools/oauth/cloud-connector/enrollment-callback",
+  // Environment management: every write/admin handler in `environments.ts` opens
+  // with `assertCanAccessInstanceEnvironments`, which matches `assertInstanceAdmin`
+  // exactly (board actor, then local-implicit or instance admin).
+  "POST /api/companies/{companyId}/environments",
+  "POST /api/companies/{companyId}/environments/probe-config",
+  "GET /api/environments/{id}/delete-blast-radius",
+  "GET /api/environments/{id}/secret-refs",
+  "PATCH /api/environments/{id}",
+  "DELETE /api/environments/{id}",
+  "POST /api/environments/{id}/probe",
+  "GET /api/environments/{environmentId}/custom-image-template",
+  "DELETE /api/environments/{environmentId}/custom-image-template",
+  "POST /api/environments/{environmentId}/custom-image-template/relink",
+  "POST /api/environments/{environmentId}/custom-image-template/rollback",
+  "POST /api/environments/{environmentId}/custom-image-setup-sessions",
+  "GET /api/environment-custom-image-setup-sessions/{sessionId}",
+  "POST /api/environment-custom-image-setup-sessions/{sessionId}/cancel",
+  "POST /api/environment-custom-image-setup-sessions/{sessionId}/finish",
+  "POST /api/environment-custom-image-setup-sessions/{sessionId}/terminal-session-token",
 ]);
 
 const CREATED_OPERATIONS = new Set([
@@ -8355,6 +8379,16 @@ export function buildOpenApiDocument(): any {
 }
 
 export const buildOpenApiSpec = buildOpenApiDocument;
+
+// Exported for the drift guard in `__tests__/openapi-routes.test.ts`: an entry
+// that stops matching a served operation is dead — `resolveOperationAuthLevel`
+// silently falls through to `authenticated` for unmatched keys, so a renamed
+// path or a typo would downgrade the published authorization without any test
+// noticing. The guard asserts every entry still keys into the spec.
+export const AUTH_TABLE_OPERATIONS = {
+  board: BOARD_ONLY_OPERATIONS,
+  instanceAdmin: INSTANCE_ADMIN_OPERATIONS,
+} as const;
 
 export function openApiRoutes() {
   const router = Router();
