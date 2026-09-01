@@ -170,15 +170,20 @@ function maskLiterals(source: string) {
     if (/[A-Za-z0-9_$]/.test(out[j])) {
       let k = j;
       while (k >= 0 && /[A-Za-z0-9_$]/.test(out[k])) k--;
+      // A property access spelled like a keyword — `q.in`, `p.of` — is a value,
+      // not the keyword: check what precedes the word before trusting the list.
+      if (k >= 0 && out[k] === ".") return false;
       return regexPrecedingKeywords.has(out.slice(k + 1, j + 1).join(""));
     }
     // A postfix `++`/`--` ends a value, so `n++ / 2` divides; reading it as a
     // regex would silently mask the rest of the line without unbalancing a brace.
     if ((out[j] === "+" || out[j] === "-") && out[j - 1] === out[j]) return false;
-    // `}` is ambiguous (object literal vs block end); treat it as ending a value.
-    // No route file opens a regex right after a block close, and misreading a
-    // real regex as division leaves its text unmasked, which unbalances loudly.
-    return !")]}".includes(out[j]);
+    // A closing quote ends a string value (`"100" / rate` divides) — quote
+    // characters survive masking, so they are visible here. `}` is ambiguous
+    // (object literal vs block end); treat it as ending a value too. No route
+    // file opens a regex right after a block close, and misreading a real regex
+    // as division leaves its text unmasked, which unbalances loudly.
+    return !")]}\"'`".includes(out[j]);
   };
 
   const blocks: string[] = [];
@@ -508,8 +513,10 @@ function isUnconditionalStatement(source: string, at: number) {
   const target = source.slice(start + 1, j);
   // A braceless `else y = assertBoard(req)` reaches the back-scan with a clean
   // target (the `if` block's `}` stops it before the condition's parens), so
-  // control-flow keywords in the target disqualify it explicitly.
-  return !/[(?]|&&|\|\||\b(?:else|case|default|do)\b/.test(target);
+  // control-flow keywords in the target disqualify it explicitly. A `)` in the
+  // target means the statement hangs off a paren header — the back-scan stops at
+  // a three-clause `for` header's last `;`, leaving ` i++) x ` as the target.
+  return !/[()?]|&&|\|\||\b(?:else|case|default|do)\b/.test(target);
 }
 
 /**
@@ -602,9 +609,11 @@ function arrowFunctionBodyStart(source: string) {
 // identifier against the same file and analyze the function it names.
 function namedHandlerAssertsBoard(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
   const args = registrationArguments(masked, registrationIndex);
-  if (args === null || args.includes("=>")) return false;
-  // A prettier-wrapped registration carries a trailing comma, leaving an empty
-  // final segment; the handler is the last non-empty one.
+  if (args === null) return false;
+  // The handler is the last non-empty comma segment (a prettier trailing comma
+  // leaves an empty one). An arrow elsewhere in the arguments — an inline
+  // middleware before a named handler — is fine: any fragment of it fails the
+  // identifier test below, so only a clean trailing identifier is resolved.
   const handlerName =
     args
       .split(",")
@@ -918,10 +927,20 @@ describe("openapi routes", () => {
       .toContain("viaReturn");
     expect([...closure("function condReturn(req: Request) { if (x) return assertBoard(req); }")])
       .not.toContain("condReturn");
-    // A division after a postfix increment must not be read as a regex literal:
-    // the masker would silently blank the assertion that shares its line.
+    // Divisions must not be read as regex literals — the masker would silently
+    // blank the assertion sharing the line: after a postfix increment, after a
+    // closing string quote, and after a property access spelled like a
+    // regex-preceding keyword.
     expect([...closure("function afterDivision(req: Request) { n++; const a = n++ / 2; assertBoard(req); }")])
       .toContain("afterDivision");
+    expect([...closure('function divAfterString(req: Request) { const n = "100" / rate; assertBoard(req); }')])
+      .toContain("divAfterString");
+    expect([...closure("function propKeyword(req: Request) { const half = q.in / 2; assertBoard(req); }")])
+      .toContain("propKeyword");
+    // A three-clause `for` header can run its body zero times; an assignment
+    // hanging off it is conditional.
+    expect([...closure("function forHeader(req: Request) { for (let i = 0; i < n; i++) x = assertBoard(req); }")])
+      .not.toContain("forHeader");
     // A prettier-wrapped call — newline and deep indentation between `(` and the
     // argument — is still the same unconditional call.
     expect([...closure("function wrapped(req: Request) { assertBoard(\n              req,\n            ); }")])
@@ -981,6 +1000,15 @@ describe("openapi routes", () => {
       function wrappedHandler(req: Request, res: Response) { assertBoard(req); res.json({}); }
     `);
     expect(namedHandlerAssertsBoard(wrapped, wrapped.indexOf("router.get"), names)).toBe(true);
+
+    // An inline arrow middleware before a named handler must not stop the named
+    // handler from being resolved — and an arrow in final position still fails
+    // the identifier test rather than being mistaken for a name.
+    const arrowThenNamed = maskLiterals(`
+      router.get("/x", (req, res, next) => { next(); }, namedAfterArrow);
+      function namedAfterArrow(req: Request, res: Response) { assertBoard(req); res.json({}); }
+    `);
+    expect(namedHandlerAssertsBoard(arrowThenNamed, arrowThenNamed.indexOf("router.get"), names)).toBe(true);
 
     // The neighbouring-helper mis-attribution. `/thing` runs `namedHandler`, which
     // asserts nothing; the arrow-bodied `helper` below it does assert. Scanning from
