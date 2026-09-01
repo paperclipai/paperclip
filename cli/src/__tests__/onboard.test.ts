@@ -109,6 +109,7 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_BIND_HOST;
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
     delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    delete process.env.PAPERCLIP_NO_BROWSER;
     delete process.env.HOST;
     runCommandMock.mockReset();
   });
@@ -139,7 +140,7 @@ describe("onboard", () => {
     expect(fs.existsSync(path.join(path.dirname(fixture.configPath), ".env"))).toBe(true);
   });
 
-  it("does not opt into opening a browser when --yes starts an existing setup", async () => {
+  it("does not opt into opening a browser for a non-interactive existing setup", async () => {
     const fixture = createExistingConfigFixture();
 
     await onboard({ config: fixture.configPath, yes: true });
@@ -148,13 +149,57 @@ describe("onboard", () => {
     expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
   });
 
-  it("does not opt into opening a browser when --yes starts a fresh setup", async () => {
-    const configPath = createFreshConfigPath();
+  it.each([
+    ["existing", () => createExistingConfigFixture().configPath],
+    ["fresh", () => createFreshConfigPath()],
+  ])("opens the browser once while an interactive %s setup starts", async (_label, configPathForTest) => {
+    const configPath = configPathForTest();
+    const stdinIsTTY = process.stdin.isTTY;
+    const stdoutIsTTY = process.stdout.isTTY;
+    let openOnListenDuringRun: string | undefined;
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    runCommandMock.mockImplementation(async () => {
+      openOnListenDuringRun = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    });
 
-    await onboard({ config: configPath, yes: true });
+    try {
+      await onboard({ config: configPath, yes: true });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+    }
 
     expect(runCommandMock).toHaveBeenCalledWith({ config: configPath, repair: true, yes: true });
+    expect(openOnListenDuringRun).toBe("true");
     expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
+  });
+
+  it.each([
+    ["PAPERCLIP_NO_BROWSER", "1"],
+    ["PAPERCLIP_OPEN_ON_LISTEN", "false"],
+  ])("respects the interactive browser opt-out %s", async (key, value) => {
+    const configPath = createFreshConfigPath();
+    const stdinIsTTY = process.stdin.isTTY;
+    const stdoutIsTTY = process.stdout.isTTY;
+    let openOnListenDuringRun: string | undefined;
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    process.env[key] = value;
+    runCommandMock.mockImplementation(async () => {
+      openOnListenDuringRun = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    });
+
+    try {
+      await onboard({ config: configPath, yes: true });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+    }
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: configPath, repair: true, yes: true });
+    expect(openOnListenDuringRun).not.toBe("true");
+    expect(process.env[key]).toBe(value);
   });
 
   it("backs up invalid config bytes and refuses --yes replacement", async () => {

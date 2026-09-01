@@ -73,6 +73,26 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
   );
 });
 
+test("published canaries are gated by the exact-version onboarding browser smoke", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  assert.match(
+    releaseWorkflow,
+    /publish_canary:[\s\S]*?outputs:\n\s+canary_version: \$\{\{ steps\.canary_tag\.outputs\.version \}\}/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: needs\.publish_canary\.result == 'success'/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
+  );
+  assert.match(releaseWorkflow, /test:canary-onboarding-smoke/);
+  assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
+  assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
+});
+
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
