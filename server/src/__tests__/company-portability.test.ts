@@ -5748,7 +5748,6 @@ describe("company portability", () => {
         },
         heartbeat: {
           enabled: false,
-          intervalSec: 3600,
           maxConcurrentRuns: 20,
         },
       },
