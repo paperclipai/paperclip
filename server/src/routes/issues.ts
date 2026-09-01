@@ -11892,6 +11892,65 @@ export function issueRoutes(
       let queue: IssueQueuedCommentQueue;
       try {
         queue = await db.transaction(async (tx) => {
+          // A client can lose the successful response after the final queued
+          // message cancels its wake. Lock the original queue and target run
+          // first so that the persisted acknowledgement remains a durable
+          // idempotency record even when no pending queue remains.
+          await tx
+            .select({ id: issueRows.id })
+            .from(issueRows)
+            .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
+            .for("update");
+          const retryWake = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.id, req.body.queueId),
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              issue.assigneeAgentId
+                ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId)
+                : undefined,
+            ))
+            .for("update")
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const retryRun = retryWake && readObject(retryWake.payload).issueId === issue.id
+            ? await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.id, req.body.targetRunId),
+                eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, retryWake.agentId),
+              ))
+              .for("update")
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const retryRunContext = readObject(retryRun?.contextSnapshot);
+          const retryRunResult = readObject(retryRun?.resultJson);
+          const retryAcknowledgements = readObject(
+            retryRunResult.queuedSteeringAcknowledgements,
+          );
+          const retryAcknowledgement = readObject(retryAcknowledgements[commentId]);
+          if (
+            retryRun
+            && (retryRunContext.issueId === issue.id || retryRunContext.taskId === issue.id)
+            && retryAcknowledgement.status === "acknowledged"
+            && retryAcknowledgement.queueId === req.body.queueId
+          ) {
+            duplicate = true;
+            acknowledgedTurnId = typeof retryAcknowledgement.turnId === "string"
+              ? retryAcknowledgement.turnId
+              : null;
+            return buildQueuedCommentQueue({
+              executor: tx,
+              issue,
+              activeRun: retryRun.status === "running" ? retryRun : null,
+              actor,
+            });
+          }
+
           const locked = await lockQueuedCommentState({
             tx,
             issue,
@@ -11972,6 +12031,7 @@ export function issueRoutes(
                   ...acknowledgements,
                   [commentId]: {
                     status: "acknowledged",
+                    queueId: req.body.queueId,
                     turnId: acknowledgement.turnId,
                     acknowledgedAt: now.toISOString(),
                   },

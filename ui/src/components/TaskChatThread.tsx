@@ -727,11 +727,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const transcriptByRun = useMemo(() => {
     const next = new Map(logTranscriptByRun);
     for (const run of nativeRuns) {
+      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
       const nativeTranscript = nativeTranscriptByRun.get(run.id) ?? [];
-      if (nativeTranscript.length > 0) next.set(run.id, nativeTranscript);
+      const nativeEventsUnavailable = nativeTranscriptErrorsByRun.has(run.id);
+      if (
+        nativeTranscript.length > 0
+        && (!nativeEventsUnavailable || logTranscript.length === 0)
+      ) {
+        next.set(run.id, nativeTranscript);
+      }
     }
     return next;
-  }, [logTranscriptByRun, nativeRuns, nativeTranscriptByRun]);
+  }, [
+    logTranscriptByRun,
+    nativeRuns,
+    nativeTranscriptByRun,
+    nativeTranscriptErrorsByRun,
+  ]);
 
   // The single in-flight run whose turn we stream live (non-terminal).
   const liveRun = useMemo(() => {
@@ -1664,7 +1676,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailActivityUnavailable = Boolean(
     tailRunId
       && nativeTranscriptErrorsByRun.has(tailRunId)
-      && tailAllEntries.length === 0
+      && (logTranscriptByRun.get(tailRunId)?.length ?? 0) === 0
       && !logsAreInitiallyHydrating,
   );
   const tailTimelineAnchors = tailRunId

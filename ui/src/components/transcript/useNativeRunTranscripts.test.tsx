@@ -22,6 +22,14 @@ function Probe() {
   );
 }
 
+function MultiRunProbe() {
+  useNativeRunTranscripts([
+    { id: "failed-run", status: "succeeded", runtimeMode: "native" },
+    { id: "healthy-run", status: "succeeded", runtimeMode: "native" },
+  ]);
+  return null;
+}
+
 describe("useNativeRunTranscripts", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -56,5 +64,25 @@ describe("useNativeRunTranscripts", () => {
     });
     expect(eventsMock).toHaveBeenCalledTimes(2);
     expect(container.textContent).toBe("");
+  });
+
+  it("retries only terminal runs whose event request failed", async () => {
+    eventsMock.mockImplementation((runId: string) => (
+      runId === "failed-run"
+        ? Promise.reject(new Error("event endpoint unavailable"))
+        : Promise.resolve([])
+    ));
+
+    await act(async () => {
+      root.render(<MultiRunProbe />);
+      await Promise.resolve();
+    });
+    expect(eventsMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(eventsMock).toHaveBeenCalledTimes(3);
+    expect(eventsMock.mock.calls.at(-1)?.[0]).toBe("failed-run");
   });
 });

@@ -500,6 +500,54 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("Visible from the runner log fallback.");
   });
 
+  it("uses a fresher live log when native event polling fails after earlier events", () => {
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Stale native activity.",
+        channel: "progress",
+      },
+    ]);
+    nativeTranscriptState.errorsByRun.set("native-run", {
+      message: "event endpoint unavailable",
+      failedAt: "2026-08-25T18:00:02.000Z",
+    });
+    transcriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:03.000Z",
+        text: "Fresh activity from the runner log.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-run",
+          runtimeMode: "native",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Fresh activity from the runner log.");
+    expect(container.textContent).not.toContain("Stale native activity.");
+    expect(container.textContent).not.toContain("temporarily unavailable");
+  });
+
   it("keeps legacy channel-less native messages readable across settlement", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       {

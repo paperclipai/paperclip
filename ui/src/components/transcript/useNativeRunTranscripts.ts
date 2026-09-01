@@ -42,10 +42,10 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     let cancelled = false;
     let timer: number | null = null;
 
-    const refresh = async () => {
+    const refresh = async (runsToRefresh: readonly NativeRunTranscriptSource[]) => {
       const updates = new Map<string, HeartbeatRunEvent[]>();
       const errors = new Map<string, NativeRunTranscriptError>();
-      await Promise.all(nativeRuns.map(async (run) => {
+      await Promise.all(runsToRefresh.map(async (run) => {
         try {
           let cursor = cursorByRunRef.current.get(run.id) ?? 0;
           const incoming: HeartbeatRunEvent[] = [];
@@ -96,11 +96,17 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
       });
 
       if (nativeRuns.some((run) => isLive(run.status)) || errors.size > 0) {
-        timer = window.setTimeout(refresh, EVENT_POLL_INTERVAL_MS);
+        const retryRuns = nativeRuns.filter(
+          (run) => isLive(run.status) || errors.has(run.id),
+        );
+        timer = window.setTimeout(
+          () => void refresh(retryRuns),
+          EVENT_POLL_INTERVAL_MS,
+        );
       }
     };
 
-    void refresh();
+    void refresh(nativeRuns);
     return () => {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);

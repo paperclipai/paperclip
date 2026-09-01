@@ -432,6 +432,69 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(queueAfterFailure.body.entries.map((entry: any) => entry.comment.id)).toEqual(seeded.commentIds);
   });
 
+  it("returns the persisted acknowledgement when the final steering response is retried", async () => {
+    const seeded = await seedQueue();
+    await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date("2026-08-22T15:04:00.000Z"),
+        payload: {
+          issueId: seeded.issueId,
+          commentId: seeded.commentIds[0],
+          _paperclipWakeContext: {
+            commentId: seeded.commentIds[0],
+            wakeCommentId: seeded.commentIds[0],
+            wakeCommentIds: [seeded.commentIds[0]],
+          },
+        },
+      })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          queuedSteeringAcknowledgements: {
+            [seeded.commentIds[0]]: {
+              status: "acknowledged",
+              queueId: seeded.wakeId,
+              turnId: "turn-acknowledged",
+              acknowledgedAt: "2026-08-22T15:04:00.000Z",
+            },
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    const retried = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({
+        queueId: seeded.wakeId,
+        targetRunId: seeded.runId,
+        revision: "response-was-lost-before-the-client-stored-the-revision",
+      });
+
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body).toMatchObject({
+      issueId: seeded.issueId,
+      queueId: null,
+      state: null,
+      entries: [],
+    });
+    const activity = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_steered"))
+      .then((rows) => rows[0]);
+    expect(activity?.details).toMatchObject({
+      commentId: seeded.commentIds[0],
+      targetRunId: seeded.runId,
+      turnId: "turn-acknowledged",
+      duplicate: true,
+    });
+  });
+
   it("keeps queue edits available during handoff but rejects stale same-turn steering", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))
