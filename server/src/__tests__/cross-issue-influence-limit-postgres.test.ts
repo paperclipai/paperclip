@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -32,6 +33,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -148,6 +150,15 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       responsibleUserId: "board-user",
       contextSnapshot: {},
     });
+    await db.insert(issues).values({
+      id: issueA,
+      companyId,
+      title: "Checked-out heartbeat issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
 
     // First write of the run's life, against the issue it checked out (A):
     // must succeed and must not be treated as a cross-issue write.
@@ -196,6 +207,61 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId));
     expect(runAfter?.contextSnapshot).toMatchObject({ issueId: issueA, source: "first_write_bind" });
+  });
+
+  it("refuses to bind an unscoped run to a target it has not checked out", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const uncheckedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unscoped Wake Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values({
+      id: uncheckedIssueId,
+      companyId,
+      title: "Unclaimed target",
+      status: "todo",
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: uncheckedIssueId,
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+
+    const [runAfter] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(runAfter?.contextSnapshot).toEqual({});
   });
 
   it("bindCheckoutRunSourceIssueIfUnset binds the calling actor's own run at checkout time, and never overwrites an already-bound run", async () => {
