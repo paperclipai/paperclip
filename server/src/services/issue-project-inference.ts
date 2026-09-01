@@ -30,11 +30,10 @@ export interface ProjectRepoWorkspace {
 }
 
 /**
- * Longest repo path we will consider when a text URL points *into* a repo
- * (`.../blob/main/src/x.ts`). Deep enough for a nested host namespace, shallow
- * enough that scanning stays trivial.
+ * Shallowest repo path that can be one: `owner/repo`. Depth beyond this comes
+ * from the workspace rows themselves — see `candidateRepoIdentities`.
  */
-const MAX_REPO_PATH_SEGMENTS = 5;
+const MIN_REPO_PATH_SEGMENTS = 2;
 
 const SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const SCHEME_URL_PATTERN = /\b(?:https?|ssh|git):\/\/[^\s<>"'`)\]}]+/gi;
@@ -113,16 +112,22 @@ export function normalizeRepoIdentity(raw: string): string | null {
  * *into* a repo carries the repo path plus extra segments (`/blob/main/...`),
  * and only the workspace row knows where the repo path ends — so emit each
  * prefix and let the match decide.
+ *
+ * `maxDepth` is the deepest identity the workspace rows actually hold, not a
+ * constant: a prefix deeper than that can never match, and a cap shallower than
+ * that would make a deeply nested repo — a GitLab subgroup, say — unreachable
+ * from text while `normalizeRepoIdentity` still indexes it at full depth. Both
+ * sides read their bound from the same rows, so they cannot drift apart.
  */
-function candidateRepoIdentities(raw: string): string[] {
+function candidateRepoIdentities(raw: string, maxDepth: number): string[] {
   const split = splitRemote(raw);
   if (!split) return [];
   const segments = repoPathSegments(split.path);
   if (!segments) return [];
 
   const identities: string[] = [];
-  const depth = Math.min(segments.length, MAX_REPO_PATH_SEGMENTS);
-  for (let length = 2; length <= depth; length += 1) {
+  const depth = Math.min(segments.length, maxDepth);
+  for (let length = MIN_REPO_PATH_SEGMENTS; length <= depth; length += 1) {
     const prefix = segments.slice(0, length);
     prefix[prefix.length - 1] = stripGitSuffix(prefix[prefix.length - 1]!);
     if (prefix[prefix.length - 1]!.length === 0) continue;
@@ -168,6 +173,7 @@ export function matchProjectIdByRepoReference(input: {
 
   const repoIdentityToProjectIds = new Map<string, Set<string>>();
   const workspaceCwds: Array<{ cwd: string; projectId: string }> = [];
+  let deepestIndexedIdentity = MIN_REPO_PATH_SEGMENTS;
   for (const workspace of input.workspaces) {
     if (workspace.repoUrl) {
       const identity = normalizeRepoIdentity(workspace.repoUrl);
@@ -175,6 +181,9 @@ export function matchProjectIdByRepoReference(input: {
         const owners = repoIdentityToProjectIds.get(identity) ?? new Set<string>();
         owners.add(workspace.projectId);
         repoIdentityToProjectIds.set(identity, owners);
+        // The host is one segment of the identity and is not part of the repo path.
+        const pathDepth = identity.split("/").length - 1;
+        if (pathDepth > deepestIndexedIdentity) deepestIndexedIdentity = pathDepth;
       }
     }
     if (workspace.cwd) {
@@ -191,7 +200,7 @@ export function matchProjectIdByRepoReference(input: {
     ...collectMatches(SCP_REMOTE_PATTERN, text),
   ];
   for (const token of remoteTokens) {
-    for (const identity of candidateRepoIdentities(token)) {
+    for (const identity of candidateRepoIdentities(token, deepestIndexedIdentity)) {
       for (const projectId of repoIdentityToProjectIds.get(identity) ?? []) {
         matchedProjectIds.add(projectId);
       }

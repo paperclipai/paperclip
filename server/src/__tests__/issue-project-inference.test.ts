@@ -73,6 +73,34 @@ describe("matchProjectIdByRepoReference", () => {
     ).toBe("project-paperclip");
   });
 
+  it("matches a repo nested deeper than the shallow-prefix scan", () => {
+    // A GitLab subgroup path can run past the depth a `/blob/main/...` URL needs.
+    // The workspace identity keeps every segment, so the text scan has to be able
+    // to reach the same depth or a description naming the repo exactly never matches.
+    const deep = [
+      { projectId: "project-deep", repoUrl: "https://gitlab.example.com/org/div/team/squad/svc/api.git", cwd: null },
+    ];
+    expect(
+      matchProjectIdByRepoReference({
+        text: "Ships from https://gitlab.example.com/org/div/team/squad/svc/api",
+        workspaces: deep,
+      }),
+    ).toBe("project-deep");
+  });
+
+  it("does not let a deep workspace repo match a shorter prefix of its path", () => {
+    // Reaching deeper must not also match upward: `org/div` is a group, not the repo.
+    const deep = [
+      { projectId: "project-deep", repoUrl: "https://gitlab.example.com/org/div/team/squad/svc/api.git", cwd: null },
+    ];
+    expect(
+      matchProjectIdByRepoReference({
+        text: "Ships from https://gitlab.example.com/org/div",
+        workspaces: deep,
+      }),
+    ).toBeNull();
+  });
+
   it("matches an absolute path that is the workspace cwd", () => {
     expect(
       matchProjectIdByRepoReference({
