@@ -516,6 +516,23 @@ describe("AppDetail", () => {
     expect(container.querySelector("section.bg-card")).toBeNull();
   });
 
+  it("counts only active catalog entries as available actions", async () => {
+    mockParams.tab = "permissions";
+    listCatalogMock.mockResolvedValue({
+      catalog: [
+        catalogEntry(),
+        catalogEntry({ id: "catalog-disabled", toolName: "disabled_action", status: "disabled" }),
+        catalogEntry({ id: "catalog-quarantined", toolName: "pending_action", status: "quarantined" }),
+        catalogEntry({ id: "catalog-removed", toolName: "removed_action", status: "removed" }),
+      ],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("1 action available");
+    expect(container.textContent).not.toContain("2 actions available");
+  });
+
   it("redirects the legacy Advanced route to Setup", async () => {
     mockParams.tab = "advanced";
 

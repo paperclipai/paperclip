@@ -4999,6 +4999,7 @@ describeEmbeddedPostgres("tool access service", () => {
         healthStatus: "ok",
         config: {
           sourceTemplateKey: "google-drive",
+          quarantineNewEntries: true,
           oauth: {
             strategy: "paperclip_cloud_connector",
             provider: "google-drive",
@@ -5009,9 +5010,26 @@ describeEmbeddedPostgres("tool access service", () => {
         },
       });
       expect(callback.body.catalog).toEqual(expect.arrayContaining([
-        expect.objectContaining({ toolName: "search_files", status: "quarantined", riskLevel: "read" }),
+        expect.objectContaining({ toolName: "search_files", status: "active", riskLevel: "read" }),
         expect.objectContaining({ toolName: "create_file", status: "disabled", riskLevel: "write" }),
       ]));
+      const [profileRow] = await db.select().from(toolProfiles).where(eq(
+        toolProfiles.profileKey,
+        `app:${connected.connectionId}`,
+      ));
+      const profileEntries = await db.select().from(toolProfileEntries).where(eq(
+        toolProfileEntries.profileId,
+        profileRow!.id,
+      ));
+      expect(profileEntries).toHaveLength(1);
+      expect(profileEntries[0]).toMatchObject({
+        catalogEntryId: callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "search_files").id,
+        effect: "include",
+      });
+      await expect(db.select().from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.connectionId, connected.connectionId),
+        eq(toolConnectionInstalls.targetType, "company"),
+      ))).resolves.toHaveLength(1);
 
       const [grant] = await db.select().from(connectionGrants).where(and(
         eq(connectionGrants.connectionId, connected.connectionId),
@@ -5060,6 +5078,396 @@ describeEmbeddedPostgres("tool access service", () => {
       });
       expect(JSON.stringify(activity?.details)).not.toContain(userId);
       expect(JSON.stringify(activity?.details)).not.toContain("token");
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("activates allowed Drive write actions with recommended approval defaults after a managed callback", async () => {
+    const company = await createCompany(db);
+    const userId = `drive-write-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const profile = "drive.write" as const;
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([
+      { name: "search_files", annotations: { readOnlyHint: true } },
+      { name: "create_file", annotations: { readOnlyHint: false } },
+      { name: "delete_file", annotations: { destructiveHint: true } },
+    ]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-write",
+        grantKind: "user",
+        name: "Drive managed write",
+      }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const app = createRouteApp(
+        db,
+        boardSessionActor(company.id, "owner", userId),
+        undefined,
+        { paperclipCloudConnector: connector },
+      );
+
+      const callback = await request(app)
+        .get("/api/tools/oauth/cloud-connector/callback")
+        .query({ state, claim_id: "drive-write-claim" })
+        .set("accept", "application/json");
+
+      expect(callback.status).toBe(200);
+      expect(callback.body.connection.config.quarantineNewEntries).toBe(true);
+      expect(callback.body.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "active", riskLevel: "read" }),
+        expect.objectContaining({ toolName: "create_file", status: "active", riskLevel: "write" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled", riskLevel: "destructive" }),
+      ]));
+      const [profileRow] = await db.select().from(toolProfiles).where(eq(
+        toolProfiles.profileKey,
+        `app:${connected.connectionId}`,
+      ));
+      const profileEntries = await db.select().from(toolProfileEntries).where(eq(
+        toolProfileEntries.profileId,
+        profileRow!.id,
+      ));
+      expect(profileEntries.map((entry) => entry.catalogEntryId).sort()).toEqual(
+        callback.body.catalog
+          .filter((entry: { status: string }) => entry.status === "active")
+          .map((entry: { id: string }) => entry.id)
+          .sort(),
+      );
+      const searchEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "search_files");
+      const createEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "create_file");
+      const [approvalPolicy] = await db.select().from(toolPolicies).where(and(
+        eq(toolPolicies.companyId, company.id),
+        eq(toolPolicies.enabled, true),
+      ));
+      expect(approvalPolicy).toMatchObject({
+        policyType: "require_approval",
+        selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
+      });
+      await expect(db.select().from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.connectionId, connected.connectionId),
+        eq(toolConnectionInstalls.targetType, "company"),
+      ))).resolves.toHaveLength(1);
+
+      const agent = await createAgent(db, company.id);
+      await db.delete(toolProfileEntries).where(and(
+        eq(toolProfileEntries.profileId, profileRow!.id),
+        eq(toolProfileEntries.catalogEntryId, searchEntry.id),
+      ));
+      await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, profileRow!.id));
+      await db.insert(toolProfileBindings).values({
+        companyId: company.id,
+        profileId: profileRow!.id,
+        targetType: "agent",
+        targetId: agent.id,
+      });
+      await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, profileRow!.id));
+      await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, approvalPolicy!.id));
+
+      mockToolsList([
+        { name: "search_files", description: "Search files with a changed contract.", annotations: { readOnlyHint: true } },
+        { name: "create_file", annotations: { readOnlyHint: false } },
+        { name: "copy_file", annotations: { readOnlyHint: false } },
+        { name: "delete_file", annotations: { destructiveHint: true } },
+      ]);
+      const reconnect = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const reconnectState = new URL(reconnect.authorizationUrl).searchParams.get("state")!;
+      const reconnected = await request(app)
+        .get("/api/tools/oauth/cloud-connector/callback")
+        .query({ state: reconnectState, claim_id: "drive-write-reconnect-claim" })
+        .set("accept", "application/json");
+
+      expect(reconnected.status).toBe(200);
+      expect(reconnected.body.connection.config.quarantineNewEntries).toBe(true);
+      expect(reconnected.body.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "quarantined" }),
+        expect.objectContaining({ toolName: "create_file", status: "active" }),
+        expect.objectContaining({ toolName: "copy_file", status: "quarantined" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled" }),
+      ]));
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.id, profileRow!.id)))
+        .resolves.toEqual([expect.objectContaining({ status: "archived" })]);
+      await expect(db.select().from(toolProfileEntries).where(eq(
+        toolProfileEntries.profileId,
+        profileRow!.id,
+      ))).resolves.toEqual([
+        expect.objectContaining({ catalogEntryId: createEntry.id, effect: "include" }),
+      ]);
+      await expect(db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId,
+        profileRow!.id,
+      ))).resolves.toEqual([
+        expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+      ]);
+      await expect(db.select().from(toolPolicies).where(eq(toolPolicies.id, approvalPolicy!.id)))
+        .resolves.toEqual([expect.objectContaining({ enabled: false })]);
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("keeps a managed draft retryable when recommended-default finalization fails", async () => {
+    const company = await createCompany(db);
+    const userId = `drive-finalize-failure-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "drive.write");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([
+      { name: "search_files", annotations: { readOnlyHint: true } },
+      { name: "create_file", annotations: { readOnlyHint: false } },
+      { name: "delete_file", annotations: { destructiveHint: true } },
+    ]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-write",
+        grantKind: "user",
+        name: "Drive managed finalize failure",
+      }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const originalTransaction = db.transaction.bind(db);
+      let transactionCount = 0;
+      const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (operation, config) => {
+        transactionCount += 1;
+        if (transactionCount === 2) throw new Error("recommended defaults failed");
+        return originalTransaction(operation, config);
+      }) as typeof db.transaction);
+
+      await expect(service.completePaperclipCloudConnectorCallback({
+        state,
+        claimId: "drive-finalize-failure-claim",
+        actor,
+      })).rejects.toThrow("recommended defaults failed");
+
+      await expect(db.select().from(toolCatalogEntries).where(eq(
+        toolCatalogEntries.connectionId,
+        connected.connectionId,
+      ))).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "quarantined" }),
+        expect.objectContaining({ toolName: "create_file", status: "quarantined" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled" }),
+      ]));
+      await expect(db.select().from(toolProfiles).where(eq(
+        toolProfiles.profileKey,
+        `app:${connected.connectionId}`,
+      ))).resolves.toHaveLength(0);
+      await expect(service.getConnection(connected.connectionId)).resolves.toMatchObject({
+        status: "draft",
+        enabled: false,
+        config: { quarantineNewEntries: true },
+      });
+      await expect(db.select().from(toolApplications).where(eq(
+        toolApplications.id,
+        connected.application.id,
+      ))).resolves.toEqual([expect.objectContaining({ status: "draft" })]);
+
+      transactionSpy.mockRestore();
+      const retry = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const completed = await service.completePaperclipCloudConnectorCallback({
+        state: new URL(retry.authorizationUrl).searchParams.get("state")!,
+        claimId: "drive-finalize-retry-claim",
+        actor,
+      });
+
+      expect(completed.connection).toMatchObject({
+        status: "active",
+        enabled: true,
+        config: { quarantineNewEntries: true },
+      });
+      expect(completed.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "active" }),
+        expect.objectContaining({ toolName: "create_file", status: "active" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled" }),
+      ]));
+      const [profileRow] = await db.select().from(toolProfiles).where(eq(
+        toolProfiles.profileKey,
+        `app:${connected.connectionId}`,
+      ));
+      const activeEntryIds = completed.catalog
+        .filter((entry) => entry.status === "active")
+        .map((entry) => entry.id)
+        .sort();
+      await expect(db.select().from(toolProfileEntries).where(eq(
+        toolProfileEntries.profileId,
+        profileRow!.id,
+      )).then((rows) => rows.map((entry) => entry.catalogEntryId).sort()))
+        .resolves.toEqual(activeEntryIds);
+      await expect(db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId,
+        profileRow!.id,
+      ))).resolves.toEqual([
+        expect.objectContaining({ targetType: "company", targetId: company.id }),
+      ]);
+      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
+      await expect(db.select().from(toolPolicies).where(and(
+        eq(toolPolicies.companyId, company.id),
+        eq(toolPolicies.enabled, true),
+      ))).resolves.toEqual([
+        expect.objectContaining({
+          policyType: "require_approval",
+          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
+        }),
+      ]);
+      await expect(db.select().from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.connectionId, connected.connectionId),
+        eq(toolConnectionInstalls.targetType, "company"),
+      ))).resolves.toHaveLength(1);
+      await expect(db.select().from(toolApplications).where(eq(
+        toolApplications.id,
+        connected.application.id,
+      ))).resolves.toEqual([expect.objectContaining({ status: "active" })]);
+
+      mockToolsList([
+        { name: "search_files", description: "Changed after retry.", annotations: { readOnlyHint: true } },
+        { name: "create_file", annotations: { readOnlyHint: false } },
+        { name: "copy_file", annotations: { readOnlyHint: false } },
+        { name: "delete_file", annotations: { destructiveHint: true } },
+      ]);
+      const futureRefresh = await service.refreshCatalog(connected.connectionId, actor);
+      expect(futureRefresh.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "quarantined" }),
+        expect.objectContaining({ toolName: "create_file", status: "active" }),
+        expect.objectContaining({ toolName: "copy_file", status: "quarantined" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled" }),
+      ]));
+      expect(futureRefresh.connection.config.quarantineNewEntries).toBe(true);
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("rebuilds managed defaults when a removed connection is revived with its archived profile retained", async () => {
+    const company = await createCompany(db);
+    const userId = `drive-revival-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "drive.write");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([
+      { name: "search_files", annotations: { readOnlyHint: true } },
+      { name: "create_file", annotations: { readOnlyHint: false } },
+      { name: "delete_file", annotations: { destructiveHint: true } },
+    ]);
+
+    try {
+      const first = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-write",
+        grantKind: "user",
+        name: "Drive managed revival",
+      }, actor);
+      const firstStart = await service.startOAuth(company.id, first.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      await service.completePaperclipCloudConnectorCallback({
+        state: new URL(firstStart.authorizationUrl).searchParams.get("state")!,
+        claimId: "drive-revival-first-claim",
+        actor,
+      });
+      const [retainedProfile] = await db.select().from(toolProfiles).where(eq(
+        toolProfiles.profileKey,
+        `app:${first.connectionId}`,
+      ));
+      await db.insert(toolMcpGateways).values({
+        companyId: company.id,
+        name: `Retained managed gateway ${randomUUID()}`,
+        slug: `retained-managed-${randomUUID()}`,
+        profileId: retainedProfile!.id,
+        status: "active",
+      });
+      await service.archiveConnection(first.connectionId, company.id, actor);
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.id, retainedProfile!.id)))
+        .resolves.toEqual([expect.objectContaining({ status: "archived" })]);
+
+      const revived = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-write",
+        grantKind: "user",
+        name: "Drive managed revival",
+      }, actor);
+      expect(revived.connectionId).toBe(first.connectionId);
+      expect(revived.connection).toMatchObject({ status: "draft", enabled: false });
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.id, retainedProfile!.id)))
+        .resolves.toEqual([expect.objectContaining({ status: "archived" })]);
+
+      const revivedStart = await service.startOAuth(company.id, revived.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const completed = await service.completePaperclipCloudConnectorCallback({
+        state: new URL(revivedStart.authorizationUrl).searchParams.get("state")!,
+        claimId: "drive-revival-second-claim",
+        actor,
+      });
+
+      expect(completed.connection).toMatchObject({
+        status: "active",
+        enabled: true,
+        config: { quarantineNewEntries: true },
+      });
+      expect(completed.catalog).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_files", status: "active" }),
+        expect.objectContaining({ toolName: "create_file", status: "active" }),
+        expect.objectContaining({ toolName: "delete_file", status: "disabled" }),
+      ]));
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.id, retainedProfile!.id)))
+        .resolves.toEqual([expect.objectContaining({ status: "active" })]);
+      const revivedEntries = await db.select().from(toolProfileEntries).where(eq(
+        toolProfileEntries.profileId,
+        retainedProfile!.id,
+      ));
+      expect(revivedEntries.map((entry) => entry.catalogEntryId).sort()).toEqual(
+        completed.catalog
+          .filter((entry) => entry.status === "active")
+          .map((entry) => entry.id)
+          .sort(),
+      );
+      await expect(db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId,
+        retainedProfile!.id,
+      ))).resolves.toEqual([
+        expect.objectContaining({ targetType: "company", targetId: company.id }),
+      ]);
+      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
+      await expect(db.select().from(toolPolicies).where(and(
+        eq(toolPolicies.companyId, company.id),
+        eq(toolPolicies.enabled, true),
+      ))).resolves.toEqual([
+        expect.objectContaining({
+          policyType: "require_approval",
+          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
+        }),
+      ]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
