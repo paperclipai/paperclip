@@ -865,6 +865,46 @@ describe("Capability live runnerd and Codex session", () => {
     });
   });
 
+  it("persists a resumed turnTimeoutMs override so a later resume that omits it keeps the value", async () => {
+    const state = providerState();
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const sessionId = "session-turn-timeout-persists";
+    const firstService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    await firstService.create({
+      runId: "run-turn-timeout-persists",
+      sessionId,
+      attemptId: "attempt-first",
+    });
+
+    const secondService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const secondResume = await secondService.resume({
+      sessionId,
+      attemptId: "attempt-second",
+      resumeOf: "attempt-first",
+      turnTimeoutMs: 5_000,
+    });
+    expect(secondResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+
+    const thirdService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const thirdResume = await thirdService.resume({
+      sessionId,
+      attemptId: "attempt-third",
+      resumeOf: "attempt-second",
+    });
+    expect(thirdResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+  });
+
   it("replays only a durable duplicate after restore reconciles the provider turn as interrupted", async () => {
     const state = providerState();
     const store = new InMemoryCapabilityLiveSessionStore();
