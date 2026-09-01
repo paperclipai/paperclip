@@ -226,7 +226,10 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     const target = await resolveEnvironmentExecutionTarget({
       db: {} as never,
       companyId: "company-1",
-      adapterType: "paperclip_runner",
+      // This substrate PR does not advertise remote paperclip_runner support
+      // until the Rust WSS transport lands. A supported direct adapter exercises
+      // the same host-owned acquisition contract without widening rollout here.
+      adapterType: "codex_local",
       environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
       leaseId: "lease-row-1",
       leaseMetadata: {

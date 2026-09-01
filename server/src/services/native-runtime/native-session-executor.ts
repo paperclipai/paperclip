@@ -1670,7 +1670,9 @@ export function nativeSessionFailureDisposition(
   now = new Date(),
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
-  const permanentFailure = sourceFailureCode === "native_event_replay_conflict";
+  const permanentFailure =
+    sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === "runner_remote_provider_artifact_incompatible";
   const exhausted = permanentFailure || attempt >= 3;
   return {
     phase: exhausted
@@ -3337,7 +3339,16 @@ export async function executePaperclipNativeSession(input: {
         })
       : null;
   }
-  const runnerExecution = input.execution;
+  const runnerExecution =
+    input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
+      ? {
+          ...input.execution,
+          workspace: {
+            ...input.execution.workspace,
+            cwd: input.runnerExecutionTarget.remoteCwd,
+          },
+        }
+      : input.execution;
   const leaseRenewal = startNativeSessionExecutionLeaseRenewal({
     db: input.db,
     runId: input.execution.binding.runId,
@@ -4662,12 +4673,12 @@ export async function createRunnerdBackend(input: {
     workMode: input.execution.task.workMode,
     enqueueWakeup: input.enqueueWakeup,
   });
-  const sessionId = nativeSessionKey(input.execution);
-  const existingRouter = sessionToolRouters.get(sessionId);
+  const sessionScopeId = nativeSessionScopeKey(input.execution);
+  const existingRouter = sessionToolRouters.get(sessionScopeId);
   const authorityRouter =
     existingRouter ?? new SessionToolAuthorityRouter(authority);
   authorityRouter.bind(authority);
-  sessionToolRouters.set(sessionId, authorityRouter);
+  sessionToolRouters.set(sessionScopeId, authorityRouter);
   const dynamicTools = await authorityRouter.definitions();
   const root = runnerdStateRoot(input.execution);
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -6019,7 +6030,7 @@ export async function createRunnerdBackend(input: {
                   stateDirectory: remoteStateDirectory,
                 })
             : undefined,
-        runnerBinary: remoteBinary ?? undefined,
+        runnerBinary: remoteBinary ?? resolvePaperclipRunnerBinary(),
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
           ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
