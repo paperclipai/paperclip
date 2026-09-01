@@ -326,6 +326,7 @@ import {
 } from "./heartbeat-run-runtime-status.js";
 import {
   findMissingHotRestartSnapshotRunIds,
+  readProcessStartedAt,
   readHotRestartIntent,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
@@ -6716,6 +6717,37 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+async function linuxProcessGroupContainsRunIdentity(processGroupId: number, runId: string) {
+  if (process.platform !== "linux") return false;
+
+  let entries: Array<{ isDirectory: () => boolean; name: string }>;
+  try {
+    entries = await fs.readdir("/proc", { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  const expectedRunIdentity = `PAPERCLIP_RUN_ID=${runId}`;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    try {
+      const stat = await fs.readFile(`/proc/${entry.name}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) continue;
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const memberProcessGroupId = Number.parseInt(fields[2] ?? "", 10);
+      if (memberProcessGroupId !== processGroupId) continue;
+
+      const environment = await fs.readFile(`/proc/${entry.name}/environ`, "utf8");
+      if (environment.split("\0").includes(expectedRunIdentity)) return true;
+    } catch {
+      // The process can exit, or deny inspection, while /proc is scanned.
+    }
+  }
+
+  return false;
+}
+
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -7040,6 +7072,12 @@ export interface HeartbeatServiceOptions {
     runId: string;
     issueId: string;
   }) => Promise<void>;
+  /** Test seam for a restart after process termination is acknowledged but before issue release. */
+  afterOperatorCancellationTerminationAcknowledged?: (input: {
+    runId: string;
+  }) => Promise<void>;
+  /** Test seam for persisted child-process identity checks. */
+  readProcessStartedAt?: (pid: number) => Promise<string | null>;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -7101,6 +7139,7 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const readPersistedProcessStartedAt = options.readProcessStartedAt ?? readProcessStartedAt;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -13124,42 +13163,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
 
             const authoritativeIds = queuedCommentIdsFromWakePayload(wake.payload);
-            if (authoritativeIds.length === 0) {
-              // Legacy/direct comment wakes carry comment ids in their ordinary
-              // payload and context, not in the authoritative queued-message
-              // envelope. Preserve their established claim path; only an
-              // explicitly bound queued-message envelope is subject to the
-              // live-comment discard gate below.
-              const [claimedRun] = await tx
-                .update(heartbeatRuns)
-                .set({
-                  status: "running",
-                  responsibleUserId,
-                  startedAt: lockedRun.startedAt ?? claimedAt,
-                  updatedAt: claimedAt,
-                })
+            let liveIds: string[] | null = null;
+            if (authoritativeIds.length > 0) {
+              const commentRows = await tx
+                .select({ id: issueComments.id, deletedAt: issueComments.deletedAt })
+                .from(issueComments)
                 .where(and(
-                  eq(heartbeatRuns.id, lockedRun.id),
-                  eq(heartbeatRuns.status, "queued"),
-                ))
-                .returning();
-              return claimedRun
-                ? { kind: "claimed" as const, run: claimedRun }
-                : { kind: "stale" as const, run: null };
+                  eq(issueComments.companyId, run.companyId),
+                  eq(issueComments.issueId, issueId),
+                  inArray(issueComments.id, authoritativeIds),
+                ));
+              liveIds = authoritativeIds.filter((commentId) => {
+                const comment = commentRows.find((row) => row.id === commentId);
+                return Boolean(comment && !comment.deletedAt);
+              });
             }
-            const commentRows = await tx
-              .select({ id: issueComments.id, deletedAt: issueComments.deletedAt })
-              .from(issueComments)
-              .where(and(
-                eq(issueComments.companyId, run.companyId),
-                eq(issueComments.issueId, issueId),
-                inArray(issueComments.id, authoritativeIds),
-              ));
-            const liveIds = authoritativeIds.filter((commentId) => {
-              const comment = commentRows.find((row) => row.id === commentId);
-              return Boolean(comment && !comment.deletedAt);
-            });
-            if (liveIds.length === 0) {
+            if (liveIds?.length === 0) {
               const reason = "Queued messages were discarded before dispatch";
               const [cancelled] = await tx
                 .update(heartbeatRuns)
@@ -13205,7 +13224,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .set({
                 status: "claimed",
                 claimedAt,
-                payload: withQueuedCommentIdsInWakePayload(wake.payload, liveIds),
+                ...(liveIds
+                  ? { payload: withQueuedCommentIdsInWakePayload(wake.payload, liveIds) }
+                  : {}),
                 updatedAt: claimedAt,
               })
               .where(eq(agentWakeupRequests.id, wake.id));
@@ -13215,10 +13236,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "running",
                 responsibleUserId,
                 startedAt: lockedRun.startedAt ?? claimedAt,
-                contextSnapshot: withQueuedCommentIdsInRunContext(
-                  lockedRun.contextSnapshot,
-                  liveIds,
-                ),
+                ...(liveIds
+                  ? {
+                      contextSnapshot: withQueuedCommentIdsInRunContext(
+                        lockedRun.contextSnapshot,
+                        liveIds,
+                      ),
+                    }
+                  : {}),
                 updatedAt: claimedAt,
               })
               .where(and(
@@ -13226,9 +13251,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eq(heartbeatRuns.status, "queued"),
               ))
               .returning();
-            return claimedRun
-              ? { kind: "claimed" as const, run: claimedRun }
-              : { kind: "stale" as const, run: null };
+            if (!claimedRun) return { kind: "stale" as const, run: null };
+
+            const claimedWakeReason = readNonEmptyString(context.wakeReason);
+            if (claimedWakeReason !== "source_scoped_recovery_action") {
+              await tx
+                .update(issues)
+                .set({
+                  executionRunId: claimedRun.id,
+                  executionAgentNameKey: normalizeAgentNameKey(agent.name),
+                  executionLockedAt: claimedAt,
+                  updatedAt: claimedAt,
+                })
+                .where(and(
+                  eq(issues.id, issueId),
+                  eq(issues.companyId, claimedRun.companyId),
+                  eq(issues.assigneeAgentId, claimedRun.agentId),
+                  or(isNull(issues.executionRunId), eq(issues.executionRunId, claimedRun.id)),
+                ));
+            }
+
+            // Publish while the issue row is still locked so an exact-run
+            // cancellation cannot publish a terminal successor event first.
+            publishLiveEvent({
+              companyId: claimedRun.companyId,
+              type: "heartbeat.run.status",
+              payload: buildHeartbeatRunStatusLiveEventPayload(claimedRun),
+            });
+            publishRunLifecyclePluginEvent(claimedRun);
+            return { kind: "claimed" as const, run: claimedRun };
           })
         : null;
     if (queuedCommentClaim?.kind === "cancelled") {
@@ -13262,63 +13313,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await db
-        .update(heartbeatRuns)
-        .set({
-          status: "running",
-          responsibleUserId,
-          startedAt: run.startedAt ?? claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      : await db.transaction(async (tx) => {
+          if (issueId) {
+            await tx.execute(
+              sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+            );
+          }
+
+          const updated = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "running",
+              responsibleUserId,
+              startedAt: run.startedAt ?? claimedAt,
+              updatedAt: claimedAt,
+            })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!updated) return null;
+
+          if (updated.wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({ status: "claimed", claimedAt, updatedAt: claimedAt })
+              .where(eq(agentWakeupRequests.id, updated.wakeupRequestId));
+          }
+
+          const claimedWakeReason = readNonEmptyString(context.wakeReason);
+          if (issueId && claimedWakeReason !== "source_scoped_recovery_action") {
+            await tx
+              .update(issues)
+              .set({
+                executionRunId: updated.id,
+                executionAgentNameKey: normalizeAgentNameKey(agent.name),
+                executionLockedAt: claimedAt,
+                updatedAt: claimedAt,
+              })
+              .where(
+                and(
+                  eq(issues.id, issueId),
+                  eq(issues.companyId, updated.companyId),
+                  eq(issues.assigneeAgentId, updated.agentId),
+                  or(isNull(issues.executionRunId), eq(issues.executionRunId, updated.id)),
+                ),
+              );
+          }
+
+          // Publish while the issue row is still locked so an exact-run
+          // cancellation cannot publish a terminal successor event first.
+          if (issueId) {
+            publishLiveEvent({
+              companyId: updated.companyId,
+              type: "heartbeat.run.status",
+              payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+            });
+            publishRunLifecyclePluginEvent(updated);
+          }
+          return updated;
+        });
     if (!claimed) return null;
 
-    publishLiveEvent({
-      companyId: claimed.companyId,
-      type: "heartbeat.run.status",
-      payload: {
-        runId: claimed.id,
-        agentId: claimed.agentId,
-        status: claimed.status,
-        invocationSource: claimed.invocationSource,
-        triggerDetail: claimed.triggerDetail,
-        error: claimed.error ?? null,
-        errorCode: claimed.errorCode ?? null,
-        startedAt: claimed.startedAt ? new Date(claimed.startedAt).toISOString() : null,
-        finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
-      },
-    });
-    publishRunLifecyclePluginEvent(claimed);
-
-    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
+    if (!issueId) {
+      publishLiveEvent({
+        companyId: claimed.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(claimed),
+      });
+      publishRunLifecyclePluginEvent(claimed);
+      await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
     }
 
     return claimed;
@@ -14251,6 +14314,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    const reaped: string[] = [];
 
     await dispatchPendingNativeStatusWakeups().catch((error) => {
       logger.warn(
@@ -14309,6 +14373,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    const pendingOperatorCancellationTerminations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`${heartbeatRuns.resultJson} ->> 'operatorCancellationTerminationPending' = 'true'`,
+        ),
+    );
+    for (const pendingRun of pendingOperatorCancellationTerminations) {
+      const running = runningProcesses.get(pendingRun.id);
+      let resultJson = parseObject(pendingRun.resultJson);
+      if (resultJson.operatorCancellationTerminationAcknowledged !== true) {
+        try {
+          await terminateOperatorCancellationProcess(pendingRun, running);
+        } catch (err) {
+          logger.warn(
+            { err, runId: pendingRun.id },
+            "retry failed for causally cancelled process termination",
+          );
+          continue;
+        }
+
+        // Keep the pending marker discoverable until issue release commits. The
+        // acknowledged phase makes a restarted sweep idempotent without sending
+        // another signal to a PID that the OS may already have reused.
+        resultJson = {
+          ...resultJson,
+          operatorCancellationTerminationAcknowledged: true,
+        };
+        await db
+          .update(heartbeatRuns)
+          .set({ resultJson, updatedAt: now })
+          .where(eq(heartbeatRuns.id, pendingRun.id));
+      }
+
+      await options.afterOperatorCancellationTerminationAcknowledged?.({
+        runId: pendingRun.id,
+      });
+
+      const suppressDeferredPromotion =
+        resultJson.operatorCancellationSuppressDeferredPromotion === true;
+      runningProcesses.delete(pendingRun.id);
+      clearHeartbeatRunRuntimeStatus(pendingRun.id);
+      const acknowledgedRun = { ...pendingRun, resultJson };
+      await releaseIssueExecutionAndPromote(acknowledgedRun, {
+        suppressImmediateRecovery: true,
+        suppressDeferredPromotion,
+        promoteOtherAgentsAfterDeferredSuppression: suppressDeferredPromotion,
+        deferredPromotionRequiredCleanupRunId: suppressDeferredPromotion
+          ? pendingRun.id
+          : undefined,
+      });
+      delete resultJson.operatorCancellationTerminationPending;
+      delete resultJson.operatorCancellationTerminationAcknowledged;
+      delete resultJson.operatorCancellationSuppressDeferredPromotion;
+      const cleanedRun = await db
+        .update(heartbeatRuns)
+        .set({ resultJson, updatedAt: now })
+        .where(eq(heartbeatRuns.id, pendingRun.id))
+        .returning()
+        .then((rows) => rows[0] ?? acknowledgedRun);
+      publishLiveEvent({
+        companyId: cleanedRun.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(cleanedRun),
+      });
+      publishRunLifecyclePluginEvent(cleanedRun);
+      await finalizeAgentStatus(cleanedRun.agentId, "cancelled");
+      await startNextQueuedRunForAgent(cleanedRun.agentId);
+      reaped.push(cleanedRun.id);
+    }
+
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({
@@ -14342,8 +14479,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue.monitorNextCheckAt,
       ]),
     );
-
-    const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
@@ -14658,6 +14793,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
+      const pendingCancelledSuccessorTermination = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "cancelled"),
+            sql`${heartbeatRuns.resultJson} ->> 'operatorCancellationTerminationPending' = 'true'`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (pendingCancelledSuccessorTermination) return [];
+      const trackedProcessRunIds = [...runningProcesses.keys()];
+      if (trackedProcessRunIds.length > 0) {
+        const trackedCancelledSuccessor = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agentId),
+              inArray(heartbeatRuns.id, trackedProcessRunIds),
+              eq(heartbeatRuns.status, "cancelled"),
+              eq(heartbeatRuns.errorCode, "operator_cancelled_issue_run"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (trackedCancelledSuccessor) return [];
+      }
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
@@ -16693,6 +16858,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         | { dispatched: true; resultPromise: Promise<T> }
         | { dispatched: false }
       > => {
+        const queuedAsFollowupToRunId = readNonEmptyString(context.queuedAsFollowupToRunId);
+        if (issueId && queuedAsFollowupToRunId) {
+          return db.transaction(async (tx) => {
+            await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+              .for("update");
+            const currentRun = await tx
+              .select({ status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, run.id))
+              .then((rows) => rows[0] ?? null);
+            if (currentRun?.status !== "running") {
+              await tx
+                .update(issues)
+                .set({
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(issues.id, issueId),
+                    eq(issues.companyId, run.companyId),
+                    eq(issues.executionRunId, run.id),
+                  ),
+                );
+              return { dispatched: false as const };
+            }
+            return { dispatched: true as const, resultPromise: dispatch(() => {}) };
+          });
+        }
         if (!issueId || !isResolvedInteractionContinuationWakeContext(context)) {
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
@@ -17407,6 +17606,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "skipping late run finalization because the run already left running state",
         );
+        if (
+          persistedRunWrite.run?.status === "cancelled" &&
+          persistedRunWrite.run.errorCode === "operator_cancelled_issue_run"
+        ) {
+          await db
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.companyId, run.companyId),
+                eq(issues.executionRunId, run.id),
+              ),
+            );
+        }
         return;
       }
 
@@ -17950,7 +18168,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      suppressDeferredPromotion?: boolean;
+      promoteOtherAgentsAfterDeferredSuppression?: boolean;
+      deferredPromotionRequiredCleanupRunId?: string;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -18090,6 +18313,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      if (options.suppressDeferredPromotion) {
+        const now = new Date();
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Deferred wake suppressed by terminal run release",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.agentId, run.agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+
+        // Exact-run operator cancellation always suppresses this agent's deferred
+        // continuation. Normal release stops here; verified reaping may continue
+        // to a different agent's deferred handoff after the old process is gone.
+        if (!options.promoteOtherAgentsAfterDeferredSuppression) return null;
+      }
 
       while (true) {
         let deferred = await tx
@@ -18100,6 +18347,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.status, "deferred_issue_execution"),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              options.deferredPromotionRequiredCleanupRunId
+                ? sql`${agentWakeupRequests.payload} ->> 'operatorCancellationCleanupHandoffRunId' = ${options.deferredPromotionRequiredCleanupRunId}`
+                : undefined,
             ),
           )
           .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -19297,9 +19547,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(heartbeatRuns.id, issue.executionRunId))
             .then((rows) => rows[0] ?? null)
           : null;
+        let activeExecutionCleanupPending = Boolean(
+          parseObject(activeExecutionRun?.resultJson).operatorCancellationTerminationPending,
+        );
 
         if (
           activeExecutionRun &&
+          !activeExecutionCleanupPending &&
           !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
             activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
           )
@@ -19328,6 +19582,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // normally against the now-running holder.
         if (
           activeExecutionRun &&
+          !activeExecutionCleanupPending &&
           activeExecutionRun.status !== "running" &&
           issue.assigneeAgentId &&
           activeExecutionRun.agentId !== issue.assigneeAgentId
@@ -19374,6 +19629,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               updatedAt: new Date(),
             })
             .where(eq(issues.id, issue.id));
+        }
+
+        if (!activeExecutionRun) {
+          activeExecutionRun = await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.status, "cancelled"),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.resultJson} ->> 'operatorCancellationTerminationPending' = 'true'`,
+            ))
+            .orderBy(asc(heartbeatRuns.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          activeExecutionCleanupPending = Boolean(activeExecutionRun);
         }
 
         if (!activeExecutionRun) {
@@ -19653,9 +19924,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           if (availableActiveExecutionRun) {
+            const cleanupHandoffRunId =
+              activeExecutionCleanupPending &&
+              activeExecutionRun.agentId !== agentId &&
+              issue.assigneeAgentId === agentId
+                ? activeExecutionRun.id
+                : null;
             const deferredPayload = {
               ...(payload ?? {}),
               issueId,
+              ...(cleanupHandoffRunId
+                ? { operatorCancellationCleanupHandoffRunId: cleanupHandoffRunId }
+                : {}),
               [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
             };
 
@@ -19686,6 +19966,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ...existingDeferredPayload,
                 ...(payload ?? {}),
                 issueId,
+                ...(cleanupHandoffRunId
+                  ? { operatorCancellationCleanupHandoffRunId: cleanupHandoffRunId }
+                  : {}),
                 [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
               };
 
@@ -20007,6 +20290,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return mergedRun;
     }
 
+    const queuedContextSnapshot = shouldQueueFollowupForRunningWake && sameScopeRunningRun
+      ? { ...enrichedContextSnapshot, queuedAsFollowupToRunId: sameScopeRunningRun.id }
+      : enrichedContextSnapshot;
+
     const queueOutcome = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
@@ -20074,7 +20361,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: enrichedContextSnapshot,
+          contextSnapshot: queuedContextSnapshot,
           sessionIdBefore: sessionBefore,
           continuationAttempt,
         })
@@ -20428,7 +20715,258 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    suppressImmediateRecovery?: boolean;
+    suppressDeferredPromotion?: boolean;
   };
+
+  async function terminateOperatorCancellationProcess(
+    run: typeof heartbeatRuns.$inferSelect,
+    running: (typeof runningProcesses extends Map<string, infer T> ? T : never) | undefined,
+  ) {
+    if (running) {
+      await terminateHeartbeatRunProcess({
+        pid: running.child.pid,
+        processGroupId: running.processGroupId,
+        graceMs: Math.max(1, running.graceSec) * 1000,
+      });
+      return;
+    }
+
+    const pidAlive = isProcessAlive(run.processPid);
+    const processGroupAlive = isProcessGroupAlive(run.processGroupId);
+    if (!pidAlive && !processGroupAlive) return;
+
+    // A detached child's process group keeps its original PGID while any of
+    // its descendants remain alive. The missing leader cannot prove ownership,
+    // because the OS may later recycle both its PID and PGID, so require the
+    // per-run identity injected into local adapter environments before signaling.
+    const processGroupId = run.processGroupId;
+    if (!pidAlive && processGroupAlive && processGroupId && run.processPid === processGroupId) {
+      if (!(await linuxProcessGroupContainsRunIdentity(processGroupId, run.id))) {
+        throw new Error(`Persisted process group no longer belongs to cancelled run ${run.id}`);
+      }
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
+      return;
+    }
+
+    const expectedStartedAt = run.processStartedAt?.getTime() ?? Number.NaN;
+    if (!pidAlive || !run.processPid || !Number.isFinite(expectedStartedAt)) {
+      throw new Error(`Cannot establish ownership of persisted process for cancelled run ${run.id}`);
+    }
+
+    const observedStartedAt = await readPersistedProcessStartedAt(run.processPid);
+    const observedStartedAtMs = observedStartedAt ? Date.parse(observedStartedAt) : Number.NaN;
+    if (!Number.isFinite(observedStartedAtMs) || observedStartedAtMs > expectedStartedAt) {
+      throw new Error(`Persisted PID no longer belongs to cancelled run ${run.id}`);
+    }
+
+    await terminateHeartbeatRunProcess({
+      pid: run.processPid,
+      processGroupId: run.processGroupId,
+    });
+  }
+
+  async function clearOperatorCancellationCleanupMarkers(
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const resultJson = parseObject(run.resultJson);
+    delete resultJson.operatorCancellationTerminationPending;
+    delete resultJson.operatorCancellationTerminationAcknowledged;
+    delete resultJson.operatorCancellationSuppressDeferredPromotion;
+    return db
+      .update(heartbeatRuns)
+      .set({ resultJson, updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, run.id))
+      .returning()
+      .then((rows) => rows[0] ?? { ...run, resultJson });
+  }
+
+  async function cancelRunAndQueuedRunsForIssue(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    patch: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const now = new Date();
+    const targetProcess = runningProcesses.get(run.id);
+    const targetProcessPid = targetProcess?.child.pid ?? run.processPid;
+    const targetProcessGroupId = targetProcess?.processGroupId ?? run.processGroupId;
+    const targetTerminationPending = run.status === "running" && Boolean(targetProcessPid || targetProcessGroupId);
+    const cancellation = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+      );
+      const updated = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          ...patch,
+          ...(targetTerminationPending ? {
+            processPid: targetProcessPid,
+            processGroupId: targetProcessGroupId,
+            resultJson: {
+              ...parseObject(patch.resultJson),
+              operatorCancellationTerminationPending: true,
+              operatorCancellationSuppressDeferredPromotion: true,
+            },
+          } : {}),
+          updatedAt: now,
+        })
+        .where(and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, run.status),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+
+      const successorCandidates = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'queuedAsFollowupToRunId' = ${run.id}`,
+            sql`${heartbeatRuns.id} <> ${run.id}`,
+          ),
+        );
+      const successorRuns = [];
+      for (const successorRun of successorCandidates) {
+        const running = runningProcesses.get(successorRun.id);
+        const processPid = running?.child.pid ?? successorRun.processPid;
+        const processGroupId = running?.processGroupId ?? successorRun.processGroupId;
+        const terminationPending = successorRun.status === "running" && Boolean(processPid || processGroupId);
+        const updatedSuccessor = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Queued issue wake suppressed by operator cancellation",
+            errorCode: "operator_cancelled_issue_run",
+            ...(terminationPending ? {
+              processPid,
+              processGroupId,
+              resultJson: {
+                ...parseObject(successorRun.resultJson),
+                operatorCancellationTerminationPending: true,
+                operatorCancellationSuppressDeferredPromotion: true,
+              },
+            } : {}),
+            updatedAt: now,
+          })
+          .where(and(
+            eq(heartbeatRuns.id, successorRun.id),
+            eq(heartbeatRuns.status, successorRun.status),
+          ))
+          .returning()
+          .then((rows) => rows[0]);
+        if (updatedSuccessor) successorRuns.push(updatedSuccessor);
+      }
+
+      const wakeupRequestIds = [updated, ...successorRuns]
+        .map((successorRun) => successorRun.wakeupRequestId)
+        .filter((wakeupRequestId): wakeupRequestId is string => Boolean(wakeupRequestId));
+      if (wakeupRequestIds.length > 0) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Queued issue wake suppressed by operator cancellation",
+            updatedAt: now,
+          })
+          .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+      }
+
+      // A live target with pending termination keeps owning the issue lock until
+      // the reaper verifies cleanup. Clearing it here would let a reassigned peer
+      // enter the same issue while the old adapter may still be executing.
+      const cancelledRunIds = [
+        ...(!targetTerminationPending ? [updated.id] : []),
+        ...successorRuns
+          .filter((successorRun) =>
+            parseObject(successorRun.resultJson).operatorCancellationTerminationPending !== true,
+          )
+          .map((successorRun) => successorRun.id),
+      ];
+      if (cancelledRunIds.length > 0) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              inArray(issues.executionRunId, cancelledRunIds),
+            ),
+          );
+      }
+
+      return { updated, successorRuns };
+    });
+    const cancelled = cancellation?.updated ?? null;
+
+    let successorTerminationFailed = false;
+    const successfullyTerminatedSuccessors: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (const successorRun of cancellation?.successorRuns ?? []) {
+      const running = runningProcesses.get(successorRun.id);
+      let terminationFailed = false;
+      try {
+        if (parseObject(successorRun.resultJson).operatorCancellationTerminationPending === true) {
+          await terminateOperatorCancellationProcess(successorRun, running);
+        }
+      } catch (err) {
+        terminationFailed = true;
+        successorTerminationFailed = true;
+        logger.warn(
+          { err, runId: successorRun.id },
+          "failed to terminate causally linked run after operator cancellation",
+        );
+      } finally {
+        if (!terminationFailed) {
+          const resultJson = parseObject(successorRun.resultJson);
+          if (resultJson.operatorCancellationTerminationPending === true) {
+            resultJson.operatorCancellationTerminationAcknowledged = true;
+          }
+          const terminatedRun = await db
+            .update(heartbeatRuns)
+            .set({ resultJson, updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, successorRun.id))
+            .returning()
+            .then((rows) => rows[0] ?? successorRun);
+          successfullyTerminatedSuccessors.push(terminatedRun);
+          runningProcesses.delete(successorRun.id);
+          clearHeartbeatRunRuntimeStatus(successorRun.id);
+          publishLiveEvent({
+            companyId: terminatedRun.companyId,
+            type: "heartbeat.run.status",
+            payload: buildHeartbeatRunStatusLiveEventPayload(terminatedRun),
+          });
+          publishRunLifecyclePluginEvent(terminatedRun);
+        }
+      }
+    }
+
+    if (cancelled) {
+      clearHeartbeatRunRuntimeStatus(cancelled.id);
+      publishLiveEvent({
+        companyId: cancelled.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(cancelled),
+      });
+      publishRunLifecyclePluginEvent(cancelled);
+    }
+    return { cancelled, successorTerminationFailed, successfullyTerminatedSuccessors };
+  }
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
@@ -20447,26 +20985,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : options.resultJson;
 
-    const running = runningProcesses.get(run.id);
-    try {
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid,
-          processGroupId: running.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
-        });
-      }
-    } finally {
-      runningProcesses.delete(run.id);
-    }
-
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancellationPatch = {
       finishedAt,
       error: reason,
       errorCode,
       ...(resultJson ? { resultJson } : {}),
-    });
+    };
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const issueCancellation = options.suppressDeferredPromotion && issueId
+      ? await cancelRunAndQueuedRunsForIssue(run, issueId, cancellationPatch)
+      : null;
+    let cancelled = issueCancellation?.cancelled ?? null;
+    const successorTerminationFailed = issueCancellation?.successorTerminationFailed ?? false;
+    const successfullyTerminatedSuccessors =
+      issueCancellation?.successfullyTerminatedSuccessors ?? [];
+    if (issueCancellation && !cancelled) {
+      return (await getRun(runId)) ?? run;
+    }
+    const targetHasPendingCleanup = Boolean(
+      parseObject(cancelled?.resultJson).operatorCancellationTerminationPending,
+    );
+
+    const running = runningProcesses.get(run.id);
+    let targetTerminationFailed = false;
+    try {
+      if (running || (cancelled && targetHasPendingCleanup)) {
+        await terminateOperatorCancellationProcess(cancelled ?? run, running);
+      }
+    } catch (err) {
+      if (!issueCancellation || !cancelled || !targetHasPendingCleanup) throw err;
+      targetTerminationFailed = true;
+      logger.warn(
+        { err, runId: run.id },
+        "failed to terminate operator-cancelled target run; durable cleanup remains pending",
+      );
+    } finally {
+      if (!targetTerminationFailed) runningProcesses.delete(run.id);
+    }
+
+    if (cancelled && targetHasPendingCleanup && !targetTerminationFailed) {
+      const cleanedResultJson = parseObject(cancelled.resultJson);
+      cleanedResultJson.operatorCancellationTerminationAcknowledged = true;
+      cancelled = await db
+        .update(heartbeatRuns)
+        .set({ resultJson: cleanedResultJson, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, cancelled.id))
+        .returning()
+        .then((rows) => rows[0] ?? cancelled);
+    }
+
+    if (!cancelled && !(options.suppressDeferredPromotion && issueId)) {
+      cancelled = await setRunStatus(run.id, "cancelled", cancellationPatch);
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -20481,13 +21052,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      if (!targetTerminationFailed) {
+        await releaseIssueExecutionAndPromote(cancelled, {
+          suppressImmediateRecovery: options.suppressImmediateRecovery,
+          suppressDeferredPromotion: options.suppressDeferredPromotion,
+        });
+        if (targetHasPendingCleanup) {
+          cancelled = await clearOperatorCancellationCleanupMarkers(cancelled);
+        }
+        for (const successorRun of successfullyTerminatedSuccessors) {
+          await releaseIssueExecutionAndPromote(successorRun, {
+            suppressImmediateRecovery: true,
+            suppressDeferredPromotion: true,
+          });
+          await clearOperatorCancellationCleanupMarkers(successorRun);
+        }
+      }
     }
 
-    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    });
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!successorTerminationFailed && !targetTerminationFailed) {
+      await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      });
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 

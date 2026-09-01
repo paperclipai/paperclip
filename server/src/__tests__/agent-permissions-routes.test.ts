@@ -1936,4 +1936,38 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("suppresses immediate recovery for a board exact-run cancellation", async () => {
+    const run = {
+      id: "run-1",
+      companyId,
+      agentId,
+      status: "running",
+    };
+    mockHeartbeatService.getRun.mockResolvedValue(run);
+    mockHeartbeatService.cancelRun.mockResolvedValue(run);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      "Cancelled by a board operator",
+      expect.objectContaining({
+        suppressImmediateRecovery: true,
+        suppressDeferredPromotion: true,
+        resultJson: expect.objectContaining({ cancelledByActorType: "user" }),
+      }),
+    );
+  });
 });
