@@ -3928,13 +3928,10 @@ const REMOTE_PROVIDER_PACK_PINS = {
   codex: "0.148.0",
   opencode: "1.18.17",
   acpx: "0.13.1",
-  piRuntime: "0.84.2",
-  piAcp: "0.0.33",
   claudeAcp: "0.70.0",
   codexAcp: "1.6.2",
 } as const;
 const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
-  pi: "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f",
   claude:
     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
   codex:
@@ -4881,7 +4878,7 @@ export async function createRunnerdBackend(input: {
       "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
       "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
       "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
-      "const expectedPackages={acpx:manifest.payload.pins.acpx,'pi-acp':manifest.payload.pins.piAcp,'@earendil-works/pi-coding-agent':manifest.payload.pins.piRuntime,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
+      "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
       "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
     ].join(";");
     const verified = await remoteCommandRunner.execute({

@@ -244,8 +244,6 @@ describe("remote provider pack manifest", () => {
         codex: "0.148.0",
         opencode: "1.18.17",
         acpx: "0.13.1",
-        piRuntime: "0.84.2",
-        piAcp: "0.0.33",
         claudeAcp: "0.70.0",
         codexAcp: "1.6.2",
       },
@@ -254,7 +252,6 @@ describe("remote provider pack manifest", () => {
       distDigest: sha256DirectoryTree(join(root, "dist")),
       bridgeDigest: "",
       acpxProfileDigests: {
-        pi: "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f",
         claude:
           "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
         codex:
