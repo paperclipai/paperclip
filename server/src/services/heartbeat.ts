@@ -4319,13 +4319,33 @@ export async function createManagedMcpRunConfig(input: {
     .orderBy(asc(toolMcpGateways.name));
 
   const installRows = await input.db
-    .select({ connectionId: toolConnectionInstalls.connectionId })
+    .select({
+      connectionId: toolConnectionInstalls.connectionId,
+      enabled: toolConnections.enabled,
+      status: toolConnections.status,
+      healthStatus: toolConnections.healthStatus,
+    })
     .from(toolConnectionInstalls)
+    .innerJoin(
+      toolConnections,
+      and(
+        eq(toolConnections.id, toolConnectionInstalls.connectionId),
+        eq(toolConnections.companyId, toolConnectionInstalls.companyId),
+      ),
+    )
     .where(and(
       eq(toolConnectionInstalls.companyId, input.agent.companyId),
       sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${input.agent.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${input.agent.id}))`,
     ));
-  const installedConnectionIds = new Set(installRows.map((install) => install.connectionId));
+  const availableInstalledConnectionIds = new Set(
+    installRows
+      .filter((install) =>
+        install.enabled
+        && install.status === "active"
+        && !["degraded", "failed", "error", "missing_secret"].includes(install.healthStatus)
+      )
+      .map((install) => install.connectionId),
+  );
 
   const applicableGateways = rows.filter((gateway) => gatewayAppliesToRun({
     gateway,
@@ -4343,7 +4363,7 @@ export async function createManagedMcpRunConfig(input: {
   }))))
     .filter(({ connectionIds }) =>
       connectionIds.size > 0
-      && [...connectionIds].every((connectionId) => installedConnectionIds.has(connectionId)))
+      && [...connectionIds].every((connectionId) => availableInstalledConnectionIds.has(connectionId)))
     .map(({ gateway }) => gateway);
   if (gateways.length === 0) return null;
 

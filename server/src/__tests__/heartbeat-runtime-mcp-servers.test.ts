@@ -174,6 +174,16 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     ).rejects.toThrow(
       `assigned native MCP connection is unavailable: ${installedConnection!.id}`,
     );
+    await expect(
+      createManagedMcpRunConfig({
+        db,
+        agent: agent!,
+        runId: randomUUID(),
+        config: {},
+        projectId: null,
+        issueId: null,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
