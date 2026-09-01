@@ -16,10 +16,10 @@ describe("resolveIssueDocumentDeepLink", () => {
     });
   });
 
-  it("routes ordinary and annotated documents to Artifacts", () => {
+  it("routes ordinary and annotated documents to a dedicated document tab", () => {
     expect(resolveIssueDocumentDeepLink("#document-qa%20evidence&thread=thread-1")).toEqual({
       kind: "properties-pane",
-      tab: "artifacts",
+      tab: "document",
       documentKey: "qa evidence",
     });
   });

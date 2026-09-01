@@ -736,6 +736,50 @@ describe("OnboardingWizard — which step it lands on", () => {
     // here rather than read as a pass.
     expect(currentStep()).toBe("agent");
     expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Organization created, but onboarding switched to another organization.",
+    );
+  });
+
+  it("finishes advancing when the returned company was already adopted", async () => {
+    // The company-created live update can make the surrounding app adopt the
+    // returned company before the POST continuation runs. That is not a
+    // different-company takeover: both signals name the same company, so
+    // dropping the continuation leaves the customer on the name step even
+    // though the organization now exists.
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Continue",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Model the surrounding app adopting exactly the company that the pending
+    // request is about, without choosing a new step on the wizard's behalf.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = { companyId: "company-created" };
+    await rerender();
+    await settle();
+
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+    expect(companyState.setSelectedCompanyId).toHaveBeenCalledWith("company-created");
+    expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
   });
 
   it("applies the step again when the wizard is re-opened", async () => {

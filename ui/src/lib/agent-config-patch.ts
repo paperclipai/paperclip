@@ -15,6 +15,7 @@ export interface AgentConfigOverlay {
   adapterType?: string;
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
+  debug: Record<string, unknown>;
   runtime: Record<string, unknown>;
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
@@ -60,7 +61,11 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
   const cheapOverlay = overlay.modelProfiles?.cheap;
   const hasModelProfileChange = cheapOverlay !== undefined;
 
-  if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
+  if (
+    Object.keys(overlay.heartbeat).length > 0
+    || Object.keys(overlay.debug).length > 0
+    || hasModelProfileChange
+  ) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
     const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
       ?? { ...existingRc };
@@ -68,6 +73,16 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
       nextRuntimeConfig.heartbeat = { ...existingHb, ...overlay.heartbeat };
+    }
+
+    if (Object.keys(overlay.debug).length > 0) {
+      const existingDebug = (existingRc.debug ?? {}) as Record<string, unknown>;
+      const nextDebug = omitUndefinedEntries({ ...existingDebug, ...overlay.debug });
+      if (Object.keys(nextDebug).length === 0) {
+        delete nextRuntimeConfig.debug;
+      } else {
+        nextRuntimeConfig.debug = nextDebug;
+      }
     }
 
     if (hasModelProfileChange) {

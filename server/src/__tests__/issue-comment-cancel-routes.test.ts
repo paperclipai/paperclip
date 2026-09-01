@@ -34,6 +34,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  getExperimental: vi.fn(async () => ({
+    enableExternalObjects: false,
+  })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
@@ -277,6 +280,9 @@ describe.sequential("issue comment cancel routes", () => {
         censorUsernameInLogs: false,
         feedbackDataSharingPreference: "prompt",
       },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableExternalObjects: false,
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);

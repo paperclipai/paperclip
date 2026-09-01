@@ -12,21 +12,61 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
-import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type {
+  IssueAttachment,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+  IssueDocument,
+  IssueDocumentSummary,
+  IssueWorkProduct,
+} from "@paperclipai/shared";
+import type {
+  PaperclipQuestionResponse,
+  PaperclipQuestionSet,
+} from "@paperclipai/adapter-utils";
+
+export type { PaperclipQuestionResponse, PaperclipQuestionSet };
+
+export type TaskChatProviderActivityFamily =
+  | "plan"
+  | "tool_execution"
+  | "research"
+  | "delegation"
+  | "model_identity"
+  | "context"
+  | "artifact"
+  | "review"
+  | "hook"
+  | "memory"
+  | "safety"
+  | "terminal"
+  | "wait"
+  | "provider_notice";
+
+export type TaskChatProviderActivityStatus =
+  "running" | "completed" | "failed" | "interrupted" | "informational";
+
+export interface TaskChatWorkspaceChangeFile {
+  path: string;
+  operation: "create" | "modify" | "delete" | "rename" | "mode_change";
+  previousPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  diff: string | null;
+}
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
 /** Who authored a thread row — the primary legibility signal. */
 export type TaskChatAuthorKind = "human" | "agent" | "system";
 
 /** ACP ToolCallStatus. */
-export type TaskChatToolStatus = "pending" | "in_progress" | "completed" | "failed";
+export type TaskChatToolStatus =
+  "pending" | "in_progress" | "completed" | "failed" | "interrupted";
 
 /** ACP PermissionOptionKind. */
 export type TaskChatApprovalOptionKind =
-  | "allow_once"
-  | "allow_always"
-  | "reject_once"
-  | "reject_always";
+  "allow_once" | "allow_always" | "reject_once" | "reject_always";
 
 /** ACP PlanEntryStatus. */
 export type TaskChatPlanEntryStatus = "pending" | "in_progress" | "completed";
@@ -65,6 +105,8 @@ export interface TaskChatMessageItem {
   author: TaskChatAuthorKind;
   authorName?: string;
   text: string;
+  /** Runner-authored output channel. Legacy adapters leave this unset. */
+  channel?: "progress" | "final" | "unknown";
   timestamp?: string;
   /** Show a streaming cursor and suppress collapse while true. */
   streaming?: boolean;
@@ -72,6 +114,12 @@ export interface TaskChatMessageItem {
   optimistic?: "pending" | "queued";
   /** Live run this queued message is waiting behind. */
   queueTargetRunId?: string | null;
+  /** Non-blocking verification limitations attached to the run's durable reply. */
+  verificationCaveats?: Array<{
+    commandOrCheck: string;
+    reasonCode?: string | null;
+    detail?: string | null;
+  }>;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
   /**
@@ -80,16 +128,12 @@ export interface TaskChatMessageItem {
    * "for {user}" chip beside the author name (the open cross-task write design (attribution)).
    */
   onBehalfOfUserName?: string;
-  /**
-   * Agent text streamed inside a run turn (interstitial updates between tool
-   * calls). Ephemeral in the redesigned view (PAP-361): while streaming it
-   * takes the live parent row's line (TaskChatStatusItem.selfTalk); once
-   * finished it renders nowhere — the run log / classic transcript remain the
-   * archive. Tagged for live and settled transcripts alike.
-   */
+  /** A transient provider progress update, distinct from the durable final response. */
   interstitial?: boolean;
   /** Epoch ms of the message's first streamed chunk. */
   atMs?: number;
+  /** Index of the latest transcript event folded into this logical block. */
+  transcriptIndex?: number;
   /**
    * The settled run turn "attached" to this bubble (round 9): when the run's
    * final reply lands, the live parent row transforms into the "Worked · …"
@@ -121,6 +165,12 @@ export interface TaskChatThinkingItem {
   collapsed?: boolean;
   /** Human-readable elapsed label for the collapsed header. */
   summaryLabel?: string;
+  /** Provider-emitted reasoning surface; never synthesized by the UI. */
+  channel?: "summary" | "detail" | "unknown";
+  /** A real provider reasoning lifecycle with no provider-authored text. */
+  lifecycleOnly?: boolean;
+  /** Index of the latest transcript event folded into this logical block. */
+  transcriptIndex?: number;
 }
 
 /** A tool invocation row (ACP tool_call / tool_call_update). */
@@ -207,7 +257,13 @@ export interface TaskChatActivityPhaseItem {
   /** Historical assistant update that introduced this phase. */
   interstitial?: TaskChatMessageItem;
   /** Chronological tool/usage rows owned exclusively by this phase. */
-  items: Array<TaskChatToolItem | TaskChatUsageItem>;
+  items: Array<
+    | TaskChatToolItem
+    | TaskChatUsageItem
+    | TaskChatThinkingItem
+    | TaskChatMarkerItem
+    | TaskChatProtocolItem
+  >;
   /** Deterministic, taxonomy-based summary (for example "Read 3 files, ran 1 command"). */
   summary: string;
   /** The tail phase of an in-flight run stays foregrounded. */
@@ -238,6 +294,171 @@ export interface TaskChatInteractionItem {
   interaction: IssueThreadInteraction;
 }
 
+/** A canonical, atomically saved Plan document interleaved into the thread. */
+export interface TaskChatPlanDocumentItem {
+  id: string;
+  kind: "plan_document";
+  document: IssueDocument;
+}
+
+export interface TaskChatProtocolDetail {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+
+export interface TaskChatProtocolStep {
+  id: string;
+  label: string;
+  status: "pending" | "in_progress" | "completed" | "blocked" | "failed";
+}
+
+export interface TaskChatProtocolLink {
+  label: string;
+  href: string;
+  description?: string;
+}
+
+export interface TaskChatProtocolChild {
+  id: string;
+  title: string;
+  status: string;
+  metadata?: string;
+  summary?: string;
+}
+
+export interface TaskChatProviderActivityItem {
+  id: string;
+  kind: "protocol";
+  surface: "provider_activity";
+  family: TaskChatProviderActivityFamily;
+  eventType: string;
+  status: TaskChatProviderActivityStatus;
+  title: string;
+  summary?: string;
+  details: TaskChatProtocolDetail[];
+  steps: TaskChatProtocolStep[];
+  links: TaskChatProtocolLink[];
+  children: TaskChatProtocolChild[];
+  output?: string;
+  outputTruncated?: boolean;
+  /** Index of the latest provider event coalesced into this activity. */
+  transcriptIndex?: number;
+}
+
+export interface TaskChatWorkspaceChangeItem {
+  id: string;
+  kind: "protocol";
+  surface: "workspace_change";
+  changeSetId: string;
+  revision: number;
+  source: "harness_reported" | "runner_verified";
+  complete: boolean;
+  files: TaskChatWorkspaceChangeFile[];
+  totals: { files: number; additions: number | null; deletions: number | null };
+  patchArtifactRef: string | null;
+}
+
+export interface TaskChatWorkspaceFileItem {
+  id: string;
+  kind: "protocol";
+  surface: "workspace_file";
+  referenceId: string;
+  source: "harness_reported" | "runner_verified";
+  path: string;
+  displayName: string;
+  mediaType: string | null;
+  presentation: "document" | "code" | "image" | "generic";
+  line: number | null;
+  preview: string | null;
+  previewTruncated: boolean;
+}
+
+export interface TaskChatRuntimeRequestItem {
+  id: string;
+  kind: "protocol";
+  surface: "runtime_request";
+  runId: string;
+  requestId: string;
+  requestKind:
+    | "runtime"
+    | "command_approval"
+    | "file_approval"
+    | "permission_approval"
+    | "user_input"
+    | "elicitation"
+    | null;
+  turnId: string | null;
+  requestType: "permission" | "input";
+  status: "pending" | "resolved" | "expired" | "cancelled";
+  prompt: string;
+  choices: Array<{ key: string; label: string }>;
+  fields: Array<{ name: string; label: string; placeholder: string | null }>;
+  questionSet?: PaperclipQuestionSet | null;
+  resolvedAction?: string | null;
+  response?: PaperclipQuestionResponse | null;
+}
+
+export type TaskChatRuntimeRequestDecision =
+  | { action: "accept" | "accept_for_session" | "decline" | "cancel" }
+  | { action: "submit"; values: Record<string, string> }
+  | { action: "submit"; response: PaperclipQuestionResponse };
+
+export interface TaskChatRunResultItem {
+  id: string;
+  kind: "protocol";
+  surface: "run_result";
+  disposition: "done" | "blocked" | "needs_review" | "yielded";
+  summary: string;
+  objectiveSatisfied: boolean | null;
+  verification: Array<{
+    commandOrCheck: string;
+    status: "passed" | "failed" | "not_run";
+    detail?: string;
+    artifactRef?: string;
+  }>;
+  remainingWork: Array<{ description: string; blocksCompletion: boolean }>;
+  blocker: {
+    reasonCode: string;
+    unblockAction: string;
+    scope: "current_track" | "task_wide";
+  } | null;
+  artifacts: Array<{ kind: string; ref: string; title?: string }>;
+}
+
+export interface TaskChatRunTerminalItem {
+  id: string;
+  kind: "protocol";
+  surface: "run_terminal";
+  turnState: "completed" | "failed" | "interrupted" | "cancelled";
+  runState: "succeeded" | "failed" | "cancelled";
+  disposition: "done" | "blocked" | "needs_review" | "yielded";
+  stopReason?: string;
+}
+
+export interface TaskChatMaterializedResourceItem {
+  id: string;
+  kind: "protocol";
+  surface: "resource";
+  resourceKind: "document" | "deliverable" | "attachment";
+  title: string;
+  subtitle: string;
+  href: string | null;
+  timestamp?: string;
+  document?: IssueDocumentSummary;
+  workProduct?: IssueWorkProduct;
+  attachment?: IssueAttachment;
+}
+
+export type TaskChatProtocolItem =
+  | TaskChatProviderActivityItem
+  | TaskChatWorkspaceChangeItem
+  | TaskChatWorkspaceFileItem
+  | TaskChatRuntimeRequestItem
+  | TaskChatRunResultItem
+  | TaskChatRunTerminalItem
+  | TaskChatMaterializedResourceItem;
+
 /** Items a turn can group — everything except another turn. */
 export type TaskChatTurnChildItem =
   | TaskChatMessageItem
@@ -246,7 +467,9 @@ export type TaskChatTurnChildItem =
   | TaskChatStatusItem
   | TaskChatMarkerItem
   | TaskChatUsageItem
-  | TaskChatActivityPhaseItem;
+  | TaskChatActivityPhaseItem
+  | TaskChatPlanDocumentItem
+  | TaskChatProtocolItem;
 
 /**
  * One agent turn's activity (thinking/tools/diffs) grouped so a finished turn
@@ -263,6 +486,9 @@ export interface TaskChatTurnItem {
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /** Agent identity retained when a live runner turn becomes durable history. */
+  agentName?: string;
+  agentIcon?: string | null;
   /**
    * The in-flight run's status line, hoisted to be THE turn's single visible
    * row while collapsed (PAP-354 parent-row model). Absent once settled.
@@ -270,6 +496,10 @@ export interface TaskChatTurnItem {
   liveStatus?: TaskChatStatusItem;
   /** Animate the fold when settling (false = collapse instantly, e.g. history). */
   animateFold?: boolean;
+  /** New-runner turns keep Worked/Stopped fixed above their ordered timeline. */
+  standaloneHeader?: boolean;
+  /** Durable response shown after the ordered Paperclip Runner timeline. */
+  finalResponse?: TaskChatMessageItem;
   summary: {
     /** e.g. "38s" — omitted when unknown. */
     durationLabel?: string;
@@ -292,8 +522,61 @@ export type TaskChatItem =
   | TaskChatUsageItem
   | TaskChatActivityPhaseItem
   | TaskChatInteractionItem
+  | TaskChatPlanDocumentItem
   | TaskChatTurnItem
-  | TaskChatBriefItem;
+  | TaskChatBriefItem
+  | TaskChatProtocolItem;
+
+/** Latest lifecycle state wins for each request; terminal entries suppress stale pending cards. */
+export function latestPendingRuntimeRequest(
+  items: readonly TaskChatItem[],
+): TaskChatRuntimeRequestItem | null {
+  const seen = new Set<string>();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "protocol" || item.surface !== "runtime_request")
+      continue;
+    const key = `${item.runId}:${item.requestId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (item.status === "pending") return item;
+  }
+  return null;
+}
+
+/** A protocol denial is the explicit negative path, so a second Skip action is redundant. */
+export function runtimeRequestReplacesComposerSkip(
+  item: TaskChatRuntimeRequestItem,
+): boolean {
+  return item.choices.some((choice) => {
+    const key = choice.key.trim().toLowerCase();
+    const label = choice.label.trim().toLowerCase();
+    return (
+      ["deny", "decline", "reject"].includes(key) ||
+      /^(deny|decline|reject)(\b|\s)/.test(label)
+    );
+  });
+}
+
+/** One latest lifecycle entry per request, in the order each request began. */
+export function latestRuntimeRequests(
+  items: readonly TaskChatItem[],
+): TaskChatRuntimeRequestItem[] {
+  const latest = new Map<
+    string,
+    { order: number; item: TaskChatRuntimeRequestItem }
+  >();
+  for (const [order, item] of items.entries()) {
+    if (item.kind !== "protocol" || item.surface !== "runtime_request")
+      continue;
+    const key = `${item.runId}:${item.requestId}`;
+    const existing = latest.get(key);
+    latest.set(key, { order: existing?.order ?? order, item });
+  }
+  return [...latest.values()]
+    .sort((left, right) => left.order - right.order)
+    .map(({ item }) => item);
+}
 
 /** A structured plan entry (ACP PlanEntry) for the Plans tab. */
 export interface TaskChatPlanEntry {

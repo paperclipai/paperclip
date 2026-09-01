@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SidePanelFrame, SidePanelWindowControls } from "@/components/side-panel";
 
 export function PropertiesPanel() {
-  const { panelContent, panelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelContentMode, panelVisible, setPanelVisible } = usePanel();
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
 
   if (!panelContent) return null;
@@ -36,6 +37,7 @@ export function PropertiesPanel() {
   return (
     <ResizablePropertiesPanel
       panelContent={panelContent}
+      panelContentMode={panelContentMode}
       panelVisible={panelVisible}
       setPanelVisible={setPanelVisible}
     />
@@ -129,12 +131,14 @@ interface FixedPane {
 
 interface ResizablePropertiesPanelProps {
   panelContent: ReactNode;
+  panelContentMode: "padded" | "prose" | "full-bleed";
   panelVisible: boolean;
   setPanelVisible: (visible: boolean) => void;
 }
 
 function ResizablePropertiesPanel({
   panelContent,
+  panelContentMode,
   panelVisible,
   setPanelVisible,
 }: ResizablePropertiesPanelProps) {
@@ -353,45 +357,40 @@ function ResizablePropertiesPanel({
           className={cn("flex-1 flex flex-col min-h-0", isFixed && "w-full")}
           style={isFixed ? undefined : { width, minWidth: width }}
         >
-          {/* The slot hosts whatever IssueProperties portals in — the tab strip
-              when Plan/Artifacts have content, else a plain "Properties" title;
-              window controls sit right. Vertical padding lives on the controls
-              cluster, not the bar, so the tab strip can stretch to the border
-              and its active underline hugs the header's bottom line. */}
-          <div className="flex items-center justify-between gap-2 px-4 border-b border-border">
-            <div
-              id={PROPERTIES_PANE_HEADER_SLOT_ID}
-              className="flex min-w-0 flex-1 items-center self-stretch"
-            />
-            <div className="flex items-center gap-1 py-2">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="size-7"
-                title={maximized ? "Restore panel" : "Maximize panel"}
-                aria-label={maximized ? "Restore panel" : "Maximize panel"}
-                onClick={maximized ? handleRestore : handleMaximize}
-              >
-                {maximized ? (
-                  <Minimize2 className="h-3.5 w-3.5" />
-                ) : (
-                  <Maximize2 className="h-3.5 w-3.5" />
-                )}
-              </Button>
-              <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <ScrollArea className="flex-1">
-            <div
-              className={cn("p-4", maximized && "mx-auto w-full px-9")}
-              style={maximized ? { maxWidth: MAXIMIZED_CONTENT_MAX_WIDTH } : undefined}
-            >
-              {panelContent}
-            </div>
-          </ScrollArea>
-          <div id={PROPERTIES_PANE_FOOTER_SLOT_ID} className="shrink-0" />
+          <SidePanelFrame
+            presentation="docked"
+            maximized={maximized}
+            contentMode="full-bleed"
+            className="flex-1 border-l-0"
+            header={(
+              <div
+                id={PROPERTIES_PANE_HEADER_SLOT_ID}
+                className="flex min-w-0 flex-1 items-center self-stretch"
+              />
+            )}
+            trailingControls={(
+              <SidePanelWindowControls
+                maximized={maximized}
+                onMaximizedChange={(next) => {
+                  if (next) handleMaximize();
+                  else handleRestore();
+                }}
+                onToggle={() => setPanelVisible(false)}
+              />
+            )}
+            footer={<div id={PROPERTIES_PANE_FOOTER_SLOT_ID} />}
+          >
+            {panelContentMode === "full-bleed" ? panelContent : (
+              <ScrollArea className="h-full">
+                <div
+                  className={cn("p-4", maximized && "mx-auto w-full px-9")}
+                  style={maximized ? { maxWidth: MAXIMIZED_CONTENT_MAX_WIDTH } : undefined}
+                >
+                  {panelContent}
+                </div>
+              </ScrollArea>
+            )}
+          </SidePanelFrame>
         </div>
       </aside>
     </>

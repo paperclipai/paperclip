@@ -15,6 +15,9 @@ num-traits.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
 tungstenite.workspace = true
 
 [[bin]]

@@ -182,6 +182,9 @@ describe("plugin worker manager duplex channel route", () => {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
+          // Batch the exit with the open response to exercise the pre-bind hold
+          // and prove its normalized representation retains the discriminator.
+          batchWithOpenReply: true,
           workerSessionId: "ws-A",
           data: [{ chunk: "one" }],
           // The worker reports a reason-less transport close with no exit code.
@@ -360,7 +363,7 @@ describe("plugin worker manager duplex channel route", () => {
   // The five explicit bounds. Each bound ends the route when it is exceeded.
   // -------------------------------------------------------------------------
 
-  it("ends the route when the pre-bind buffered bytes pass the bound", async () => {
+  it("ends the route when the post-bind buffered bytes pass the bound", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxPreBindBufferedChars: 10 },
     });
@@ -368,6 +371,10 @@ describe("plugin worker manager duplex channel route", () => {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
+          // Hold these frames until the fixture acknowledges a host write. A
+          // write can only come from the returned session, so this makes the
+          // post-bind path deterministic instead of depending on pipe batching.
+          emitScriptedFramesAfterFirstWrite: true,
           data: [
             { chunk: "aaaaa" }, // total 5 → buffered
             { chunk: "bbbbb" }, // total 10 → buffered
@@ -375,8 +382,10 @@ describe("plugin worker manager duplex channel route", () => {
           ],
         }),
       );
-      // No listener attaches, so the data buffers. The cumulative bytes pass the
-      // bound and the route ends. The login wait resolves with a null exit code.
+      session.write(new TextEncoder().encode("emit"));
+      // No listener attaches, so the post-bind data buffers. The cumulative bytes
+      // pass the bound and the route ends. The channel wait resolves with a null
+      // exit code.
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
     } finally {
       await handle.stop().catch(() => undefined);

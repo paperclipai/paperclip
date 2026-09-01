@@ -44,7 +44,7 @@ export function createCodexNativeSessionBackend(
 
   return new HarnessDriverBackend(new CodexAppServerDriver({
     ...(input.provider.model ? { model: input.provider.model } : {}),
-    approvalPolicy: input.provider.approvalPolicy ?? "never",
+    approvalPolicy: input.provider.approvalPolicy ?? "untrusted",
     baseInstructions: nativeSystemInstructions(input),
     includeSkillInstructions: "runtimeContext" in input,
     requestedCollaborationMode:

@@ -57,6 +57,14 @@ describe("parseManagedConfigEnv", () => {
     });
   });
 
+  it("accepts the deprecated runner ingress key for managed-config compatibility", () => {
+    const config = parseManagedConfigEnv(
+      envWith(validDoc({ features: { enableRunnerPreviewIngress: true } })),
+    );
+
+    expect(config?.features).toEqual({ enableRunnerPreviewIngress: true });
+  });
+
   it("accepts empty features {} and autoInstall [] sections", () => {
     const config = parseManagedConfigEnv(
       envWith(validDoc({ features: {}, plugins: { autoInstall: [] } })),

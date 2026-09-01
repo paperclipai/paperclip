@@ -1765,6 +1765,7 @@ export function createPluginWorkerHandle(
   interface HeldDuplexExitEvent {
     workerSessionId: string;
     exitCode: number | null;
+    transportClosed?: boolean;
   }
 
   interface DuplexChannelRoute {
@@ -2169,7 +2170,11 @@ export function createPluginWorkerHandle(
       // Normalize the exit to the narrow duplex-event schema. A replaced exit
       // simply overwrites the earlier held exit.
       const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-      route.preBindExit = { workerSessionId, exitCode };
+      route.preBindExit = {
+        workerSessionId,
+        exitCode,
+        ...(params.transportClosed === true ? { transportClosed: true } : {}),
+      };
       return;
     }
     // A data event. Validate and normalize it to the narrow duplex-event schema
@@ -2237,6 +2242,7 @@ export function createPluginWorkerHandle(
             hostRouteId: route.hostRouteId,
             workerSessionId: heldExit.workerSessionId,
             exitCode: heldExit.exitCode,
+            ...(heldExit.transportClosed === true ? { transportClosed: true } : {}),
           },
         });
       }

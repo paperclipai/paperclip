@@ -58,7 +58,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await tempDb?.cleanup();
   });
 
-  it("provisions one aggregate gateway and filters degraded access without blocking direct adapters", async () => {
+  it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -158,12 +158,45 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
 
+    await expect(
+      buildPaperclipRuntimeMcpServers({
+        db,
+        agent: agent!,
+        runId: randomUUID(),
+        expectedAssignmentDigest: "0".repeat(64),
+      }),
+    ).resolves.toEqual([]);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
+
     await db.update(toolConnections)
       .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
       .where(eq(toolConnections.id, installedConnection!.id));
+    const unavailableReports: Array<Array<{ id: string; name: string }>> = [];
     await expect(
-      buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() }),
+      buildPaperclipRuntimeMcpServers({
+        db,
+        agent: agent!,
+        runId: randomUUID(),
+        expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
+        onUnavailableAssignedConnections: (connections) => {
+          unavailableReports.push(connections);
+        },
+      }),
     ).resolves.toEqual([]);
+    expect(unavailableReports).toEqual([[
+      { id: installedConnection!.id, name: installedConnection!.name },
+    ]]);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
+    await expect(
+      createManagedMcpRunConfig({
+        db,
+        agent: agent!,
+        runId: randomUUID(),
+        config: {},
+        projectId: null,
+        issueId: null,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {

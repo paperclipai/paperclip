@@ -75,6 +75,8 @@ export interface InstanceExperimentalSettings {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /** Shows internal Paperclip maintainer tools and observability links. */
+  enablePaperclipDeveloperMode: boolean;
   /**
    * Instructs agents to write user-interaction content (confirmations,
    * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
@@ -101,6 +103,11 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
+  /**
+   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
+   * enableNativeRunner and this value has no runtime effect.
+   */
+  enableRunnerPreviewIngress: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When

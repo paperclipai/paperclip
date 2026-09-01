@@ -7,6 +7,14 @@ import {
 } from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
 import { ONBOARDING_STORAGE_KEY } from "@/components/OnboardingWizard";
+import { STORYBOOK_COMPANY_ID } from "../fixtures/onboardingDraft";
+import {
+  STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+  storybookAuthSignal,
+  storybookEnvironmentCapabilities,
+  storybookEnvironmentTest,
+  storybookEnvironments,
+} from "../fixtures/onboardingEnvironment";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { CompanyProvider } from "@/context/CompanyContext";
 import { DialogProvider } from "@/context/DialogContext";
@@ -22,6 +30,7 @@ import {
   storybookAuthSession,
   storybookCompanies,
   storybookDashboardSummary,
+  storybookHiredAgent,
   storybookIssues,
   storybookLiveRuns,
   storybookProjects,
@@ -137,6 +146,10 @@ function installStorybookApiFixtures() {
       return Response.json({
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+        // The cloud-tenant shape, and what the onboarding connect step resolves
+        // its login environment through: without it the step looks for a local
+        // default and never finds the managed sandbox.
+        enableManagedSandboxOnly: true,
       });
     }
 
@@ -144,17 +157,192 @@ function installStorybookApiFixtures() {
       return Response.json({});
     }
 
-    // The onboarding wizard's connect step reads these. An empty environment
-    // list is the cloud-tenant shape — agents run in a managed sandbox rather
-    // than a configured environment — and it is also the state that produces
-    // the "no managed sandbox environment is available" notice, which is worth
-    // being able to look at rather than only meeting it on a live stack.
+    // The connect step's provider sign-in is gated on a *sandbox* environment
+    // resolving, its provider supporting a login PTY, and the auth signal coming
+    // back absent. These three answers decide whether that panel renders at all,
+    // so a story picks them through `onboardingFixtureState` rather than getting
+    // one hard-coded shape — an earlier version returned an empty environment
+    // list here and made the panel invisible everywhere.
     if (/^\/api\/companies\/[^/]+\/environments$/.test(url.pathname)) {
+      return Response.json(storybookEnvironments());
+    }
+
+    if (
+      /^\/api\/companies\/[^/]+\/environments\/capabilities$/.test(url.pathname)
+    ) {
+      return Response.json(storybookEnvironmentCapabilities());
+    }
+
+    if (
+      /^\/api\/companies\/[^/]+\/adapters\/[^/]+\/auth-signal/.test(
+        url.pathname,
+      )
+    ) {
+      return Response.json(storybookAuthSignal());
+    }
+
+    if (
+      /^\/api\/companies\/[^/]+\/adapters\/[^/]+\/models$/.test(url.pathname)
+    ) {
       return Response.json([]);
     }
 
-    if (/^\/api\/companies\/[^/]+\/adapters\/[^/]+\/models$/.test(url.pathname)) {
-      return Response.json([]);
+    // Codex's login, which is a different flow on different routes.
+    //
+    // Claude signs in through the setup-token routes below; every other adapter
+    // uses these generic per-adapter ones. Only the Claude half was stubbed at
+    // first, so pressing Sign in on the Codex tile fell through to the dev
+    // server and came back 404 — which reads as a broken product rather than as
+    // a missing fixture, and the two are not distinguishable from the panel.
+    //
+    // Its panel mode is `displayed_code`, not Claude's `submitted_browser_code`:
+    // the server shows a URL *and* a code to type into it, and nothing is typed
+    // back here. So this is a genuinely different card, and the canvas holding it
+    // has to size to it too.
+    const adapterLoginMatch = url.pathname.match(
+      /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/login-sessions(?:\/([^/]+))?(\/cancel)?$/,
+    );
+    if (adapterLoginMatch) {
+      const session = {
+        sessionId: "adapter-login-storybook",
+        environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+        // `waiting_for_user` is the state this panel is worth looking at in: the
+        // session is live and the customer is being asked for something.
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+      };
+      if (adapterLoginMatch[3]) return Response.json({ ...session, status: "cancelled" });
+      // The prompt rides the owner read of the session rather than a route of
+      // its own — the shape that differs from Claude's, where it is guarded
+      // separately. Returning it only on the read with a session id keeps that
+      // distinction rather than flattening the two flows into one.
+      if (adapterLoginMatch[2]) {
+        return Response.json({
+          ...session,
+          prompt: {
+            url: "https://auth.openai.com/device",
+            code: "STORY-BOOK",
+          },
+        });
+      }
+      return Response.json(session);
+    }
+
+    // Claude's setup-token login, enough of it to watch the panel expand.
+    //
+    // The point is not the login — it is what the panel does to the card around
+    // it. Starting a login turns a single row into a row plus an authorization
+    // URL plus a code field, and the onboarding canvas that holds it animates
+    // its own height and clips its overflow. A canvas that measured itself once
+    // would cut that expansion off, and nothing short of driving the flow would
+    // show it.
+    if (
+      /^\/api\/companies\/[^/]+\/setup-token-login-sessions$/.test(url.pathname)
+    ) {
+      return Response.json({
+        sessionId: "setup-token-storybook",
+        environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+        status: "awaiting_browser_code",
+        expiresAt: null,
+        failure: null,
+      });
+    }
+    if (
+      /^\/api\/companies\/[^/]+\/setup-token-login-sessions\/[^/]+$/.test(
+        url.pathname,
+      )
+    ) {
+      return Response.json({
+        sessionId: "setup-token-storybook",
+        environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+        status: "awaiting_browser_code",
+        expiresAt: null,
+        failure: null,
+      });
+    }
+    // The authorization URL is its own route, and deliberately so: the status
+    // read above is public and carries no secret, while the URL is an owner-only
+    // read. The panel polls this one separately and stays on "Preparing the
+    // login…" until it answers — so a fixture without it looks like a hung login
+    // rather than a missing route, which is exactly how it was misread once.
+    if (
+      /^\/api\/companies\/[^/]+\/setup-token-login-sessions\/[^/]+\/prompt$/.test(
+        url.pathname,
+      )
+    ) {
+      return Response.json({
+        authorizationUrl:
+          "https://claude.ai/oauth/authorize?client_id=storybook&response_type=code&state=storybook",
+        transportAdvisory: null,
+      });
+    }
+    // Submitting the browser code. The panel hands the pasted code here and then
+    // completes; both are stubbed so the last stage of the flow — the one where
+    // the card is at its tallest — can actually be reached.
+    if (
+      /^\/api\/companies\/[^/]+\/setup-token-login-sessions\/[^/]+\/code$/.test(
+        url.pathname,
+      )
+    ) {
+      return Response.json({
+        sessionId: "setup-token-storybook",
+        environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+        status: "awaiting_completion",
+        expiresAt: null,
+        failure: null,
+        transportAdvisory: null,
+      });
+    }
+    if (
+      /^\/api\/companies\/[^/]+\/claude-oauth-token-status$/.test(url.pathname)
+    ) {
+      return new Response(null, { status: 404 });
+    }
+
+    // The hire, and the three calls either side of it.
+    //
+    // These exist so the review step can be reached the way a customer reaches
+    // it — by pressing Connect — rather than by seeding a draft that claims the
+    // hire already happened. The difference is not pedantry: the wizard only
+    // offers Back on a step it walked *forward* into, so a story that starts on
+    // the review step renders it without the control it is supposed to have.
+    //
+    // The environment test, which is the hire's gate. It answers from the story's
+    // auth state rather than always passing — see `storybookEnvironmentTest`.
+    const testEnvMatch = url.pathname.match(
+      /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/test-environment$/,
+    );
+    if (testEnvMatch) {
+      return Response.json(storybookEnvironmentTest(testEnvMatch[1]));
+    }
+    if (/^\/api\/companies\/[^/]+\/agent-hires$/.test(url.pathname)) {
+      // `approval: null` on purpose. A hire that returns one sends the wizard
+      // through the approvals API before it advances, and this story is about
+      // the step it lands on rather than the path it took.
+      return Response.json({ agent: storybookHiredAgent, approval: null });
+    }
+    const instructionsBundleMatch = url.pathname.match(
+      /^\/api\/agents\/([^/]+)\/instructions-bundle(\/file)?$/,
+    );
+    if (instructionsBundleMatch) {
+      // The wizard seeds the lead's instructions here and swallows a failure —
+      // so an unstubbed route costs nothing but a console warning on every run,
+      // which is the kind of noise that trains people to ignore the console.
+      if (instructionsBundleMatch[2]) {
+        return Response.json({ path: "AGENTS.md", content: "" });
+      }
+      return Response.json({
+        agentId: instructionsBundleMatch[1],
+        companyId: STORYBOOK_COMPANY_ID,
+        mode: "managed",
+        rootPath: null,
+        managedRootPath: `/managed/agents/${instructionsBundleMatch[1]}`,
+        entryFile: "AGENTS.md",
+        resolvedEntryPath: `/managed/agents/${instructionsBundleMatch[1]}/AGENTS.md`,
+        editable: true,
+        warnings: [],
+      });
     }
 
     if (
@@ -232,6 +420,16 @@ function installStorybookApiFixtures() {
             supportsLocalAgentJwt: true,
             requiresMaterializedRuntimeSkills: false,
             supportsModelProfiles: true,
+            // `useAdapterCapabilities` prefers this listing over its own static
+            // defaults, so an omission here is not a smaller fixture — it is a
+            // capability the adapter loses. Without `login` the onboarding
+            // connect step's provider sign-in silently never renders, which is
+            // indistinguishable from it having been removed. Mirrors
+            // `KNOWN_DEFAULTS` in `use-adapter-capabilities.ts`.
+            login: {
+              panelMode: "submitted_browser_code",
+              timeoutPolicy: "fixed",
+            },
           },
         },
         {
@@ -247,6 +445,10 @@ function installStorybookApiFixtures() {
             supportsLocalAgentJwt: true,
             requiresMaterializedRuntimeSkills: false,
             supportsModelProfiles: true,
+            login: {
+              panelMode: "displayed_code",
+              timeoutPolicy: "caller_bounded",
+            },
           },
         },
       ]);

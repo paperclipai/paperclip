@@ -1,6 +1,9 @@
-use std::io;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::{self, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::path::Path;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -8,22 +11,31 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tungstenite::client::{client_with_config, IntoClientRequest};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::server::ErrorResponse;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::protocol::WebSocketConfig;
-use tungstenite::{Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{accept_hdr_with_config, client_tls_with_config, Connector, Message, WebSocket};
 
-use super::state::{Command, DurableState};
+use super::state::{open_private_regular_file, Command, DurableState};
 use super::{
     BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL, PROTOCOL_VERSION,
 };
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+const WELCOME_TIMEOUT: Duration = Duration::from_secs(2);
+const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug)]
 struct ParsedWsUrl {
+    secure: bool,
     host: String,
     authority: String,
     port: u16,
@@ -32,6 +44,7 @@ struct ParsedWsUrl {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedWsTarget {
+    secure: bool,
     authority: String,
     path: String,
     addresses: Vec<SocketAddr>,
@@ -47,14 +60,21 @@ impl ResolvedWsTarget {
     }
 
     fn request_url(&self) -> String {
-        format!("ws://{}{}", self.authority, self.path)
+        let scheme = if self.secure { "wss" } else { "ws" };
+        format!("{scheme}://{}{}", self.authority, self.path)
     }
 }
 
 fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
-    let remainder = input
-        .strip_prefix("ws://")
-        .ok_or_else(|| DurableRunnerError::invalid("runner transport accepts exactly ws://"))?;
+    let (secure, remainder, default_port) = if let Some(value) = input.strip_prefix("ws://") {
+        (false, value, 80)
+    } else if let Some(value) = input.strip_prefix("wss://") {
+        (true, value, 443)
+    } else {
+        return Err(DurableRunnerError::invalid(
+            "runner connect URL must use ws:// or wss://",
+        ));
+    };
     if remainder.is_empty()
         || remainder
             .chars()
@@ -80,16 +100,26 @@ fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
             .find(']')
             .ok_or_else(|| DurableRunnerError::invalid("bracketed IPv6 authority is malformed"))?;
         let host = &authority[1..closing];
-        let port = authority[closing + 1..].strip_prefix(':').ok_or_else(|| {
-            DurableRunnerError::invalid("bracketed IPv6 authority requires a port")
-        })?;
+        let suffix = &authority[closing + 1..];
+        let port = if suffix.is_empty() {
+            default_port.to_string()
+        } else {
+            suffix
+                .strip_prefix(':')
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("bracketed IPv6 authority is malformed")
+                })?
+                .to_owned()
+        };
         host.parse::<std::net::Ipv6Addr>()
             .map_err(|_| DurableRunnerError::invalid("bracketed WebSocket host must be IPv6"))?;
         (host, port)
     } else {
-        let (host, port) = authority.rsplit_once(':').ok_or_else(|| {
-            DurableRunnerError::invalid("WebSocket URL requires an explicit port")
-        })?;
+        let (host, port) = authority
+            .rsplit_once(':')
+            .map_or((authority, default_port.to_string()), |(host, port)| {
+                (host, port.to_owned())
+            });
         if host.is_empty() || host.contains(':') {
             return Err(DurableRunnerError::invalid(
                 "WebSocket host is empty or contains unbracketed IPv6",
@@ -106,6 +136,7 @@ fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
         ));
     }
     Ok(ParsedWsUrl {
+        secure,
         host: host.to_owned(),
         authority: authority.to_owned(),
         port,
@@ -131,16 +162,485 @@ where
             "WebSocket destination resolved to no addresses",
         ));
     }
-    if addresses.iter().any(|address| !address.ip().is_loopback()) {
+    if !parsed.secure && addresses.iter().any(|address| !address.ip().is_loopback()) {
         return Err(DurableRunnerError::invalid(
-            "every WebSocket destination must resolve to loopback",
+            "plaintext WebSocket destinations must all resolve to loopback",
         ));
     }
     Ok(ResolvedWsTarget {
+        secure: parsed.secure,
         authority: parsed.authority,
         path: parsed.path,
         addresses,
     })
+}
+
+pub(crate) enum RunnerTransportEndpoint {
+    Dial(ResolvedWsTarget),
+    Listen { listener: TcpListener, path: String },
+}
+
+impl RunnerTransportEndpoint {
+    pub(crate) fn new(input: &str, run_id: &str) -> Result<Self, DurableRunnerError> {
+        if let Some(remainder) = input.strip_prefix("listen://") {
+            let (authority, path) = remainder.split_once('/').ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "runner_ingress_bind_conflict: listener path is required",
+                )
+            })?;
+            if authority != "0.0.0.0:43127" {
+                return Err(DurableRunnerError::invalid(
+                    "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                ));
+            }
+            let path = format!("/{path}");
+            validate_listener_path(&path)?;
+            if path != format!("/api/runner/v1/connect/{run_id}") {
+                return Err(DurableRunnerError::invalid(
+                    "runner listener path does not match the configured run",
+                ));
+            }
+            let listener = TcpListener::bind(authority).map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "runner_ingress_bind_conflict: failed to bind fixed listener: {error}"
+                ))
+            })?;
+            listener.set_nonblocking(true).map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "runner_ingress_bind_conflict: failed to configure listener: {error}"
+                ))
+            })?;
+            return Ok(Self::Listen { listener, path });
+        }
+        Ok(Self::Dial(ResolvedWsTarget::resolve(input)?))
+    }
+
+    fn open(
+        &self,
+        max_frame_bytes: usize,
+        ca_bundle_path: Option<&Path>,
+        connect_deadline: Instant,
+    ) -> Result<Option<RunnerSocket>, DurableRunnerError> {
+        ensure_connection_deadline(connect_deadline)?;
+        let websocket_config = || {
+            WebSocketConfig::default()
+                .max_message_size(Some(max_frame_bytes))
+                .max_frame_size(Some(max_frame_bytes))
+        };
+        match self {
+            Self::Dial(target) => {
+                if ca_bundle_path.is_some() && !target.secure {
+                    return Err(DurableRunnerError::invalid(
+                        "--ca-bundle-path is accepted only with wss://",
+                    ));
+                }
+                let stream = connect_pinned_addresses(&target.addresses, connect_deadline)?;
+                let request = target
+                    .request_url()
+                    .into_client_request()
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!("invalid WebSocket request: {error}"))
+                    })?;
+                let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
+                let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
+                ensure_connection_deadline(deadline)?;
+                stream.set_nonblocking(true).map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "WebSocket stream configuration failed: {error}"
+                    ))
+                })?;
+                let mut handshake =
+                    client_tls_with_config(request, stream, Some(websocket_config()), connector);
+                let mut socket = loop {
+                    match handshake {
+                        Ok((socket, _)) => break socket,
+                        Err(HandshakeError::Interrupted(mid_handshake)) => {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if remaining.is_zero() {
+                                return Err(DurableRunnerError::invalid(
+                                    "WebSocket upgrade deadline elapsed",
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(5).min(remaining));
+                            handshake = mid_handshake.handshake();
+                        }
+                        Err(error) => {
+                            return Err(DurableRunnerError::invalid(format!(
+                                "WebSocket upgrade failed: {error}"
+                            )))
+                        }
+                    }
+                };
+                set_dial_stream_nonblocking(socket.get_mut(), false)?;
+                let mut socket = RunnerSocket::Dial(socket);
+                socket.configure_auth_timeouts(connect_deadline)?;
+                Ok(Some(socket))
+            }
+            Self::Listen { listener, path } => {
+                if ca_bundle_path.is_some() {
+                    return Err(DurableRunnerError::invalid(
+                        "--ca-bundle-path is not accepted in listener mode",
+                    ));
+                }
+                let (stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                    Err(error) => {
+                        return Err(DurableRunnerError::invalid(format!(
+                            "runner ingress listener accept failed: {error}"
+                        )))
+                    }
+                };
+                stream.set_nonblocking(true).map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner ingress stream configuration failed: {error}"
+                    ))
+                })?;
+                let expected_path = path.clone();
+                let mut handshake = accept_hdr_with_config(
+                    stream,
+                    move |request: &tungstenite::handshake::server::Request, response| {
+                        if request.uri().path() != expected_path
+                            || request.uri().query().is_some()
+                            || request.headers().contains_key("sec-websocket-extensions")
+                        {
+                            let mut rejection = ErrorResponse::new(Some(
+                                "runner listener requires the configured path without extensions"
+                                    .to_owned(),
+                            ));
+                            *rejection.status_mut() = tungstenite::http::StatusCode::BAD_REQUEST;
+                            return Err(rejection);
+                        }
+                        Ok(response)
+                    },
+                    Some(websocket_config()),
+                );
+                let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
+                let mut socket = loop {
+                    match handshake {
+                        Ok(socket) => break socket,
+                        Err(HandshakeError::Interrupted(mid_handshake)) => {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if remaining.is_zero() {
+                                return Err(DurableRunnerError::invalid(
+                                    "runner ingress WebSocket upgrade deadline elapsed",
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(5).min(remaining));
+                            handshake = mid_handshake.handshake();
+                        }
+                        Err(error) => {
+                            return Err(DurableRunnerError::invalid(format!(
+                                "runner ingress WebSocket upgrade failed: {error}"
+                            )))
+                        }
+                    }
+                };
+                socket.get_mut().set_nonblocking(false).map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner ingress stream configuration failed: {error}"
+                    ))
+                })?;
+                configure_auth_timeouts(socket.get_ref(), connect_deadline)?;
+                Ok(Some(RunnerSocket::Listen(socket)))
+            }
+        }
+    }
+}
+
+fn validate_listener_path(path: &str) -> Result<(), DurableRunnerError> {
+    let run_id = path
+        .strip_prefix("/api/runner/v1/connect/")
+        .filter(|run_id| !run_id.is_empty() && !run_id.contains('/'));
+    if run_id.is_none()
+        || path.contains(['?', '#', '\\', '%'])
+        || path
+            .chars()
+            .any(|character| character.is_ascii_control() || character.is_ascii_whitespace())
+    {
+        return Err(DurableRunnerError::invalid(
+            "runner listener path is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_connection_deadline(deadline: Instant) -> Result<(), DurableRunnerError> {
+    if Instant::now() >= deadline {
+        return Err(DurableRunnerError::invalid(
+            "transport connection lifecycle deadline elapsed",
+        ));
+    }
+    Ok(())
+}
+
+fn bounded_operation_deadline(
+    lifecycle_deadline: Instant,
+    operation_budget: Duration,
+) -> Result<Instant, DurableRunnerError> {
+    ensure_connection_deadline(lifecycle_deadline)?;
+    Ok(lifecycle_deadline.min(Instant::now() + operation_budget))
+}
+
+fn configure_auth_timeouts(
+    stream: &TcpStream,
+    lifecycle_deadline: Instant,
+) -> Result<(), DurableRunnerError> {
+    let deadline = bounded_operation_deadline(lifecycle_deadline, AUTH_TIMEOUT)?;
+    let timeout = deadline.saturating_duration_since(Instant::now());
+    if timeout.is_zero() {
+        return Err(DurableRunnerError::invalid(
+            "transport connection lifecycle deadline elapsed",
+        ));
+    }
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+        .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+}
+
+fn set_dial_stream_nonblocking(
+    stream: &mut MaybeTlsStream<TcpStream>,
+    nonblocking: bool,
+) -> Result<(), DurableRunnerError> {
+    let result = match stream {
+        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(nonblocking),
+        MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(nonblocking),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported TLS stream",
+        )),
+    };
+    result.map_err(|error| {
+        DurableRunnerError::invalid(format!("WebSocket stream configuration failed: {error}"))
+    })
+}
+
+fn connect_pinned_addresses(
+    addresses: &[SocketAddr],
+    lifecycle_deadline: Instant,
+) -> Result<TcpStream, DurableRunnerError> {
+    connect_pinned_addresses_with(
+        addresses,
+        lifecycle_deadline,
+        CONNECT_TOTAL_TIMEOUT,
+        CONNECT_ATTEMPT_TIMEOUT,
+        TcpStream::connect_timeout,
+    )
+}
+
+fn connect_pinned_addresses_with<T, F>(
+    addresses: &[SocketAddr],
+    lifecycle_deadline: Instant,
+    total_budget: Duration,
+    attempt_budget: Duration,
+    mut connect: F,
+) -> Result<T, DurableRunnerError>
+where
+    F: FnMut(&SocketAddr, Duration) -> io::Result<T>,
+{
+    if addresses.is_empty() || total_budget.is_zero() || attempt_budget.is_zero() {
+        return Err(DurableRunnerError::invalid(
+            "WebSocket connect requires pinned addresses and non-zero timeout budgets",
+        ));
+    }
+    let started = Instant::now();
+    let transport_deadline = started + total_budget;
+    let deadline = lifecycle_deadline.min(transport_deadline);
+    if deadline <= started {
+        return Err(DurableRunnerError::invalid(
+            "WebSocket connect lifecycle deadline elapsed before dialing",
+        ));
+    }
+    let effective_budget = deadline.saturating_duration_since(started);
+    let mut ordered = addresses.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    let mut attempted = 0_usize;
+    let mut last_failure: Option<(SocketAddr, io::Error)> = None;
+    for address in &ordered {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        attempted += 1;
+        match connect(address, attempt_budget.min(remaining)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_failure = Some((*address, error)),
+        }
+    }
+    let suffix = last_failure.map_or_else(
+        || "the total connection budget elapsed before an attempt".to_owned(),
+        |(address, error)| format!("last attempt {address} failed: {error}"),
+    );
+    Err(DurableRunnerError::invalid(format!(
+        "WebSocket connect failed after {attempted}/{} pinned address attempts within {} ms; {suffix}",
+        ordered.len(),
+        effective_budget.as_millis(),
+    )))
+}
+
+fn custom_tls_connector(path: &Path) -> Result<Connector, DurableRunnerError> {
+    let file = open_private_regular_file(path).map_err(|error| {
+        DurableRunnerError::invalid(format!("failed to open private CA bundle: {error}"))
+    })?;
+    if file
+        .metadata()
+        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
+        .len()
+        > MAX_CA_BUNDLE_BYTES
+    {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle exceeds the 4 MiB limit",
+        ));
+    }
+    let native = rustls_native_certs::load_native_certs();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(native.certs);
+    let mut reader = BufReader::new(file);
+    let certificates = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| DurableRunnerError::invalid(format!("invalid CA bundle: {error}")))?;
+    if certificates.is_empty() {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle contains no certificates",
+        ));
+    }
+    let (added, _) = roots.add_parsable_certificates(certificates);
+    if added == 0 {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle contains no usable certificates",
+        ));
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
+enum RunnerSocket {
+    Dial(WebSocket<MaybeTlsStream<TcpStream>>),
+    Listen(WebSocket<TcpStream>),
+}
+
+trait WebSocketMessages {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error>;
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error>;
+}
+
+impl<S: Read + Write> WebSocketMessages for WebSocket<S> {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
+        self.send(message)
+    }
+
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+        self.read()
+    }
+}
+
+impl WebSocketMessages for RunnerSocket {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
+        match self {
+            Self::Dial(socket) => socket.send(message),
+            Self::Listen(socket) => socket.send(message),
+        }
+    }
+
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+        match self {
+            Self::Dial(socket) => socket.read(),
+            Self::Listen(socket) => socket.read(),
+        }
+    }
+}
+
+impl RunnerSocket {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Dial(socket) => match socket.get_mut() {
+                MaybeTlsStream::Plain(stream) => stream.set_read_timeout(timeout),
+                MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(timeout),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported TLS stream",
+                )),
+            },
+            Self::Listen(socket) => socket.get_mut().set_read_timeout(timeout),
+        }
+    }
+
+    fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Dial(socket) => match socket.get_mut() {
+                MaybeTlsStream::Plain(stream) => stream.set_write_timeout(timeout),
+                MaybeTlsStream::Rustls(stream) => stream.sock.set_write_timeout(timeout),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported TLS stream",
+                )),
+            },
+            Self::Listen(socket) => socket.get_mut().set_write_timeout(timeout),
+        }
+    }
+
+    #[cfg(test)]
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Dial(socket) => match socket.get_ref() {
+                MaybeTlsStream::Plain(stream) => stream.read_timeout(),
+                MaybeTlsStream::Rustls(stream) => stream.sock.read_timeout(),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported TLS stream",
+                )),
+            },
+            Self::Listen(socket) => socket.get_ref().read_timeout(),
+        }
+    }
+
+    fn configure_auth_timeouts(
+        &mut self,
+        lifecycle_deadline: Instant,
+    ) -> Result<Instant, DurableRunnerError> {
+        let deadline = bounded_operation_deadline(lifecycle_deadline, AUTH_TIMEOUT)?;
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err(DurableRunnerError::invalid(
+                "transport connection lifecycle deadline elapsed",
+            ));
+        }
+        self.set_read_timeout(Some(timeout))
+            .and_then(|()| self.set_write_timeout(Some(timeout)))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        Ok(deadline)
+    }
+}
+
+fn send_auth_plain(
+    socket: &mut RunnerSocket,
+    value: &Value,
+    max_frame_bytes: usize,
+    lifecycle_deadline: Instant,
+) -> Result<(), DurableRunnerError> {
+    socket.configure_auth_timeouts(lifecycle_deadline)?;
+    send_plain(socket, value, max_frame_bytes)?;
+    ensure_connection_deadline(lifecycle_deadline)
+}
+
+fn send_auth_response_plain(
+    socket: &mut RunnerSocket,
+    value: &Value,
+    max_frame_bytes: usize,
+    lifecycle_deadline: Instant,
+    send_started: &mut bool,
+) -> Result<(), DurableRunnerError> {
+    socket.configure_auth_timeouts(lifecycle_deadline)?;
+    let message = encode_plain_message(value, max_frame_bytes)?;
+    // A write error can occur after the peer receives the complete response,
+    // so the one-use ticket becomes ambiguous immediately before this call.
+    *send_started = true;
+    socket.send_message(message).map_err(map_websocket_error)?;
+    ensure_connection_deadline(lifecycle_deadline)
 }
 
 #[derive(Debug)]
@@ -368,7 +868,7 @@ impl SecureChannel {
 }
 
 pub(crate) struct AuthenticatedTransport {
-    socket: WebSocket<TcpStream>,
+    socket: RunnerSocket,
     secure_channel: SecureChannel,
     max_frame_bytes: usize,
 }
@@ -393,22 +893,28 @@ impl ConnectFailure {
         }
     }
 
-    fn after_auth_started(error: DurableRunnerError, credential_kind: &str) -> Self {
+    fn after_auth_started(
+        error: DurableRunnerError,
+        credential_kind: &str,
+        bootstrap_may_have_been_consumed: bool,
+    ) -> Self {
         Self {
             error,
-            bootstrap_maybe_consumed: credential_kind == "bootstrap",
+            bootstrap_maybe_consumed: credential_kind == "bootstrap"
+                && bootstrap_may_have_been_consumed,
         }
     }
 }
 
 impl AuthenticatedTransport {
     pub(crate) fn connect(
-        target: &ResolvedWsTarget,
+        endpoint: &RunnerTransportEndpoint,
         config: &DurableRunnerConfig,
         state: &DurableState,
         bootstrap: Option<&BootstrapTicket>,
         lease: Option<&LeaseCredential>,
-    ) -> Result<(Self, Welcome), ConnectFailure> {
+        connect_deadline: Instant,
+    ) -> Result<Option<(Self, Welcome)>, ConnectFailure> {
         let (credential_token, credential_kind, expected_lease) = match (lease, bootstrap) {
             (Some(lease), _) => (
                 lease.expose().map_err(ConnectFailure::retryable)?,
@@ -427,134 +933,146 @@ impl AuthenticatedTransport {
             }
         };
         let credential = CredentialMaterial::from_token(credential_token);
-        let stream = TcpStream::connect(target.addresses.as_slice())
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("WebSocket connect failed: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
-        stream
-            .set_read_timeout(Some(AUTH_TIMEOUT))
-            .and_then(|()| stream.set_write_timeout(Some(AUTH_TIMEOUT)))
-            .map_err(|error| DurableRunnerError::invalid(error.to_string()))
-            .map_err(ConnectFailure::retryable)?;
-        let request = target
-            .request_url()
-            .into_client_request()
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("invalid WebSocket request: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
-        let websocket_config = WebSocketConfig::default()
-            .max_message_size(Some(config.max_frame_bytes))
-            .max_frame_size(Some(config.max_frame_bytes));
-        let (mut socket, _) = client_with_config(request, stream, Some(websocket_config))
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("WebSocket upgrade failed: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
+        let Some(mut socket) = endpoint
+            .open(
+                config.max_frame_bytes,
+                config.ca_bundle_path.as_deref(),
+                connect_deadline,
+            )
+            .map_err(ConnectFailure::retryable)?
+        else {
+            return Ok(None);
+        };
+        let mut auth_response_send_started = false;
 
-        let authenticate =
-            || -> Result<(Self, Welcome), DurableRunnerError> {
-                let client_nonce = random_nonce()?;
-                send_plain(
-                    &mut socket,
-                    &json!({
-                        "protocol": PROTOCOL,
-                        "version": PROTOCOL_VERSION,
-                        "kind": "auth_hello",
-                        "payload": {
-                            "credentialId": credential.credential_id,
-                            "credentialKind": credential_kind,
-                            "clientNonce": client_nonce,
-                            "protocolMin": PROTOCOL_VERSION,
-                            "protocolMax": PROTOCOL_VERSION,
-                            "runnerInstanceId": state.runner_instance_id,
-                            "environmentLeaseId": state.environment_lease_id,
-                            "runId": state.run_id,
-                            "normalizedSessionId": state.normalized_session_id,
-                            "turnId": state.turn_id,
-                            "itemId": state.item_id,
-                            "runnerVersion": config.runner_version,
-                            "runnerDigest": config.runner_digest,
-                            "resume": {
-                                "lastControllerCommandSeq": state.last_controller_command_seq,
-                                "nextSourceEventSeq": state.next_source_seq,
-                                "ackedSourceSeq": state.acked_source_seq,
-                            },
+        let authenticate = || -> Result<(Self, Welcome), DurableRunnerError> {
+            let client_nonce = random_nonce()?;
+            send_auth_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_hello",
+                    "payload": {
+                        "credentialId": credential.credential_id,
+                        "credentialKind": credential_kind,
+                        "clientNonce": client_nonce,
+                        "protocolMin": PROTOCOL_VERSION,
+                        "protocolMax": PROTOCOL_VERSION,
+                        "runnerInstanceId": state.runner_instance_id,
+                        "environmentLeaseId": state.environment_lease_id,
+                        "runId": state.run_id,
+                        "normalizedSessionId": state.normalized_session_id,
+                        "turnId": state.turn_id,
+                        "itemId": state.item_id,
+                        "runnerVersion": config.runner_version,
+                        "runnerDigest": config.runner_digest,
+                        "resume": {
+                            "lastControllerCommandSeq": state.last_controller_command_seq,
+                            "nextSourceEventSeq": state.next_source_seq,
+                            "ackedSourceSeq": state.acked_source_seq,
                         },
-                    }),
-                    config.max_frame_bytes,
-                )?;
+                    },
+                }),
+                config.max_frame_bytes,
+                connect_deadline,
+            )?;
 
-                let challenge_value = receive_plain(&mut socket, config.max_frame_bytes)?;
-                validate_envelope_kind(&challenge_value, "auth_challenge")?;
-                let challenge: AuthChallenge =
-                    serde_json::from_value(challenge_value.get("payload").cloned().ok_or_else(
-                        || DurableRunnerError::invalid("challenge payload is required"),
-                    )?)
-                    .map_err(|error| {
-                        DurableRunnerError::invalid(format!("invalid auth challenge: {error}"))
-                    })?;
-                validate_challenge(
-                    &challenge,
-                    state,
-                    config,
-                    &credential,
-                    credential_kind,
-                    &client_nonce,
-                    expected_lease,
-                )?;
-                let signing_bytes = challenge_signing_bytes(&challenge);
-                verify_hmac_hex(
-                    &credential.auth_key,
-                    "paperclip-runner-server-proof-v1",
-                    &[&signing_bytes],
-                    &challenge.server_proof,
-                )?;
-                let client_proof = hex_encode(&hmac_domain(
-                    &credential.auth_key,
-                    "paperclip-runner-client-proof-v1",
-                    &[&signing_bytes, challenge.server_proof.as_bytes()],
-                ));
-                send_plain(
-                    &mut socket,
-                    &json!({
-                        "protocol": PROTOCOL,
-                        "version": PROTOCOL_VERSION,
-                        "kind": "auth_response",
-                        "payload": {
-                            "credentialId": credential.credential_id,
-                            "clientNonce": client_nonce,
-                            "serverNonce": challenge.server_nonce,
-                            "clientProof": client_proof,
-                        },
-                    }),
-                    config.max_frame_bytes,
-                )?;
-                let secure_channel = SecureChannel::client(
-                    &credential.auth_key,
-                    &signing_bytes,
-                    challenge.server_proof.as_bytes(),
-                    client_proof.as_bytes(),
-                )?;
-                let mut transport = Self {
-                    socket,
-                    secure_channel,
-                    max_frame_bytes: config.max_frame_bytes,
-                };
-                transport
-                    .socket
-                    .get_mut()
-                    .set_read_timeout(Some(Duration::from_millis(250)))
-                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-                let mut welcome_value = transport.receive_json()?.ok_or_else(|| {
-                    DurableRunnerError::invalid("authenticated welcome timed out")
-                })?;
-                let welcome =
-                    validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
-                Ok((transport, welcome))
+            let challenge_deadline = socket.configure_auth_timeouts(connect_deadline)?;
+            let challenge_value =
+                receive_plain_until(&mut socket, config.max_frame_bytes, challenge_deadline)?;
+            validate_envelope_kind(&challenge_value, "auth_challenge")?;
+            let challenge: AuthChallenge = serde_json::from_value(
+                challenge_value
+                    .get("payload")
+                    .cloned()
+                    .ok_or_else(|| DurableRunnerError::invalid("challenge payload is required"))?,
+            )
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("invalid auth challenge: {error}"))
+            })?;
+            validate_challenge(
+                &challenge,
+                state,
+                config,
+                &credential,
+                credential_kind,
+                &client_nonce,
+                expected_lease,
+            )?;
+            let signing_bytes = challenge_signing_bytes(&challenge);
+            verify_hmac_hex(
+                &credential.auth_key,
+                "paperclip-runner-server-proof-v1",
+                &[&signing_bytes],
+                &challenge.server_proof,
+            )?;
+            let client_proof = hex_encode(&hmac_domain(
+                &credential.auth_key,
+                "paperclip-runner-client-proof-v1",
+                &[&signing_bytes, challenge.server_proof.as_bytes()],
+            ));
+            send_auth_response_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_response",
+                    "payload": {
+                        "credentialId": credential.credential_id,
+                        "clientNonce": client_nonce,
+                        "serverNonce": challenge.server_nonce,
+                        "clientProof": client_proof,
+                    },
+                }),
+                config.max_frame_bytes,
+                connect_deadline,
+                &mut auth_response_send_started,
+            )?;
+            let secure_channel = SecureChannel::client(
+                &credential.auth_key,
+                &signing_bytes,
+                challenge.server_proof.as_bytes(),
+                client_proof.as_bytes(),
+            )?;
+            let mut transport = Self {
+                socket,
+                secure_channel,
+                max_frame_bytes: config.max_frame_bytes,
             };
-        authenticate().map_err(|error| ConnectFailure::after_auth_started(error, credential_kind))
+            // Ticket validation and lease persistence happen before the server
+            // emits welcome. Keep that work bounded without assuming a loaded
+            // control-plane event loop can always respond within 250 ms.
+            let welcome_deadline = bounded_operation_deadline(connect_deadline, WELCOME_TIMEOUT)?;
+            let welcome_timeout = welcome_deadline.saturating_duration_since(Instant::now());
+            if welcome_timeout.is_zero() {
+                return Err(DurableRunnerError::invalid(
+                    "transport connection lifecycle deadline elapsed",
+                ));
+            }
+            transport
+                .socket
+                .set_read_timeout(Some(welcome_timeout))
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            let mut welcome_value = transport
+                .receive_json_until(Some(welcome_deadline))?
+                .ok_or_else(|| DurableRunnerError::invalid("authenticated welcome timed out"))?;
+            let welcome =
+                validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
+            // Authentication can wait longer for control-plane validation, but
+            // the steady-state runner loop must return to provider polling
+            // promptly when no control message is available.
+            transport
+                .socket
+                .set_read_timeout(Some(RUNTIME_READ_TIMEOUT))
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            ensure_connection_deadline(connect_deadline)?;
+            Ok((transport, welcome))
+        };
+        let result = authenticate();
+        result.map(Some).map_err(|error| {
+            ConnectFailure::after_auth_started(error, credential_kind, auth_response_send_started)
+        })
     }
 
     pub(crate) fn send_json(&mut self, value: &Value) -> Result<(), DurableRunnerError> {
@@ -570,10 +1088,18 @@ impl AuthenticatedTransport {
     }
 
     pub(crate) fn receive_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
-        let frame = match receive_plain_optional(&mut self.socket, self.max_frame_bytes)? {
-            Some(frame) => frame,
-            None => return Ok(None),
-        };
+        self.receive_json_until(None)
+    }
+
+    fn receive_json_until(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Value>, DurableRunnerError> {
+        let frame =
+            match receive_plain_optional_until(&mut self.socket, self.max_frame_bytes, deadline)? {
+                Some(frame) => frame,
+                None => return Ok(None),
+            };
         self.secure_channel.decrypt(&frame, false).map(Some)
     }
 }
@@ -885,10 +1411,18 @@ fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, Durable
 }
 
 fn send_plain(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut (impl WebSocketMessages + ?Sized),
     value: &Value,
     max_frame_bytes: usize,
 ) -> Result<(), DurableRunnerError> {
+    let message = encode_plain_message(value, max_frame_bytes)?;
+    socket.send_message(message).map_err(map_websocket_error)
+}
+
+fn encode_plain_message(
+    value: &Value,
+    max_frame_bytes: usize,
+) -> Result<Message, DurableRunnerError> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
     if bytes.len() > max_frame_bytes {
@@ -898,25 +1432,44 @@ fn send_plain(
     }
     let text =
         String::from_utf8(bytes).map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-    socket
-        .send(Message::Text(text.into()))
-        .map_err(map_websocket_error)
+    Ok(Message::Text(text.into()))
 }
 
 fn receive_plain(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Value, DurableRunnerError> {
-    receive_plain_optional(socket, max_frame_bytes)?
+    receive_plain_optional_until(socket, max_frame_bytes, Some(Instant::now() + AUTH_TIMEOUT))?
         .ok_or_else(|| DurableRunnerError::invalid("WebSocket message timed out"))
 }
 
-fn receive_plain_optional(
-    socket: &mut WebSocket<TcpStream>,
+fn receive_plain_until(
+    socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
+    deadline: Instant,
+) -> Result<Value, DurableRunnerError> {
+    receive_plain_optional_until(socket, max_frame_bytes, Some(deadline))?
+        .ok_or_else(|| DurableRunnerError::invalid("WebSocket message timed out"))
+}
+
+fn receive_plain_optional_until(
+    socket: &mut (impl WebSocketMessages + ?Sized),
+    max_frame_bytes: usize,
+    deadline: Option<Instant>,
 ) -> Result<Option<Value>, DurableRunnerError> {
     loop {
-        match socket.read() {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(DurableRunnerError::invalid(
+                "WebSocket authentication message deadline elapsed",
+            ));
+        }
+        let message = socket.read_message();
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(DurableRunnerError::invalid(
+                "WebSocket authentication message deadline elapsed",
+            ));
+        }
+        match message {
             Ok(Message::Text(text)) => {
                 if text.len() > max_frame_bytes {
                     return Err(DurableRunnerError::invalid(
@@ -930,7 +1483,7 @@ fn receive_plain_optional(
                     });
             }
             Ok(Message::Ping(payload)) => socket
-                .send(Message::Pong(payload))
+                .send_message(Message::Pong(payload))
                 .map_err(map_websocket_error)?,
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => {
@@ -1053,16 +1606,18 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
 
-    use tungstenite::accept;
+    use tungstenite::{accept, client};
 
     use super::*;
 
     fn config(port: u16) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: format!("ws://127.0.0.1:{port}/api/runner/v1/connect/run_1"),
+            ca_bundle_path: None,
             state_dir: PathBuf::from("unused"),
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
@@ -1076,6 +1631,7 @@ mod tests {
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
         }
     }
@@ -1256,17 +1812,328 @@ mod tests {
         assert!(
             resolve_ws_target_with("ws://example.test:80/path", |_, _| Ok(vec![public])).is_err()
         );
+        let secure = resolve_ws_target_with("wss://example.test/path", |host, port| {
+            assert_eq!(host, "example.test");
+            assert_eq!(port, 443);
+            Ok(vec![public])
+        })
+        .unwrap();
+        assert!(secure.secure);
+        assert_eq!(secure.request_url(), "wss://example.test/path");
         for input in [
-            "wss://127.0.0.1:80/path",
             "ws://user@127.0.0.1:80/path",
-            "ws://127.0.0.1/path",
             "ws://127.0.0.1:80/path?ticket=secret",
+            "https://127.0.0.1/path",
         ] {
             assert!(
                 resolve_ws_target_with(input, |_, _| Ok(vec![])).is_err(),
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn pinned_connect_falls_back_in_deterministic_order_with_bounded_attempts() {
+        let first = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3001);
+        let second = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3002);
+        let mut attempts = Vec::new();
+        let connected = connect_pinned_addresses_with(
+            &[second, first],
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |address, timeout| {
+                attempts.push((*address, timeout));
+                if *address == first {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "first address refused",
+                    ))
+                } else {
+                    Ok("connected")
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(connected, "connected");
+        assert_eq!(
+            attempts.iter().map(|attempt| attempt.0).collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.1 <= Duration::from_millis(250)));
+
+        let failure = connect_pinned_addresses_with(
+            &[second, first],
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |_, _| -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::TimedOut, "simulated timeout"))
+            },
+        )
+        .unwrap_err();
+        assert!(failure.to_string().contains(&second.to_string()));
+        assert!(failure.to_string().contains("2/2 pinned address attempts"));
+
+        let lifecycle_budget = Duration::from_millis(40);
+        let mut observed_timeout = None;
+        connect_pinned_addresses_with(
+            &[first],
+            Instant::now() + lifecycle_budget,
+            Duration::from_secs(2),
+            Duration::from_millis(250),
+            |_, timeout| -> io::Result<()> {
+                observed_timeout = Some(timeout);
+                Err(io::Error::new(io::ErrorKind::TimedOut, "simulated timeout"))
+            },
+        )
+        .unwrap_err();
+        assert!(observed_timeout.is_some_and(|timeout| timeout <= lifecycle_budget));
+    }
+
+    #[test]
+    fn authentication_io_rejects_work_past_the_lifecycle_deadline() {
+        struct DelayedSocket {
+            delay: Duration,
+            message: Option<Message>,
+        }
+
+        impl WebSocketMessages for DelayedSocket {
+            fn send_message(&mut self, _message: Message) -> Result<(), tungstenite::Error> {
+                Ok(())
+            }
+
+            fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+                thread::sleep(self.delay);
+                Ok(self.message.take().unwrap())
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let lifecycle_budget = Duration::from_secs(1);
+        configure_auth_timeouts(&stream, Instant::now() + lifecycle_budget).unwrap();
+        assert!(stream
+            .read_timeout()
+            .unwrap()
+            .is_some_and(|timeout| !timeout.is_zero() && timeout <= lifecycle_budget));
+        assert!(stream
+            .write_timeout()
+            .unwrap()
+            .is_some_and(|timeout| !timeout.is_zero() && timeout <= lifecycle_budget));
+        drop(client);
+
+        let mut delayed = DelayedSocket {
+            delay: Duration::from_millis(5),
+            message: Some(Message::Text("{}".into())),
+        };
+        let error = receive_plain_until(
+            &mut delayed,
+            1024,
+            Instant::now() + Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline elapsed"));
+    }
+
+    #[test]
+    fn listener_path_is_exact_and_unambiguous() {
+        validate_listener_path("/api/runner/v1/connect/run_1").unwrap();
+        for path in [
+            "/api/runner/v1/connect/",
+            "/api/runner/v1/connect/run_1/extra",
+            "/api/runner/v1/connect/run_1?ticket=secret",
+            "/api/runner/v1/connect/run%5f1",
+        ] {
+            assert!(validate_listener_path(path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn dial_bootstrap_failure_before_auth_response_is_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = config(port);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            receive_plain(&mut socket, server_config.max_frame_bytes).unwrap();
+            send_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_challenge",
+                    "payload": {},
+                }),
+                server_config.max_frame_bytes,
+            )
+            .unwrap();
+        });
+
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid challenge unexpectedly authenticated"),
+        };
+        assert!(!failure.bootstrap_maybe_consumed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn dial_bootstrap_failure_after_auth_response_is_fail_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = config(port);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server_state = state.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            server_authenticate(
+                &mut socket,
+                &server_config,
+                &server_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: current_unix_ms().unwrap() + 60_000,
+                    revocation_epoch: 0,
+                },
+            );
+            // Disconnect after receiving the authenticated response but before
+            // welcome, when the authority may already have consumed the ticket.
+        });
+
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("connection without welcome unexpectedly authenticated"),
+        };
+        assert!(failure.bootstrap_maybe_consumed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn listener_rejects_invalid_peer_before_accepting_valid_bootstrap_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let config = config(address.port());
+        let state = test_state(&config);
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+
+        let (invalid_ready, invalid_connected) = mpsc::channel();
+        let invalid_path = path.clone();
+        let invalid_config = config.clone();
+        let invalid_peer = thread::spawn(move || {
+            let stream = TcpStream::connect(address).unwrap();
+            invalid_ready.send(()).unwrap();
+            let (mut socket, _) = client(format!("ws://{address}{invalid_path}"), stream).unwrap();
+            receive_plain(&mut socket, invalid_config.max_frame_bytes).unwrap();
+            send_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_challenge",
+                    "payload": {},
+                }),
+                invalid_config.max_frame_bytes,
+            )
+            .unwrap();
+        });
+        invalid_connected.recv().unwrap();
+        let invalid_failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid listener peer unexpectedly authenticated"),
+        };
+        assert!(!invalid_failure.bootstrap_maybe_consumed);
+        invalid_peer.join().unwrap();
+
+        let (valid_ready, valid_connected) = mpsc::channel();
+        let valid_config = config.clone();
+        let valid_state = state.clone();
+        let valid_peer = thread::spawn(move || {
+            let stream = TcpStream::connect(address).unwrap();
+            valid_ready.send(()).unwrap();
+            let (mut socket, _) = client(format!("ws://{address}{path}"), stream).unwrap();
+            let expires = current_unix_ms().unwrap() + 60_000;
+            let mut secure = server_authenticate(
+                &mut socket,
+                &valid_config,
+                &valid_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: expires,
+                    revocation_epoch: 0,
+                },
+            );
+            send_secure(
+                &mut socket,
+                &mut secure,
+                &valid_config,
+                &welcome(
+                    &valid_state,
+                    "connection_1",
+                    Some("lease-secret"),
+                    expires,
+                    0,
+                    vec![],
+                ),
+            );
+        });
+        valid_connected.recv().unwrap();
+        let (_, accepted) = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(accepted.connection.connection_id, "connection_1");
+        assert_eq!(accepted.lease.unwrap().expose().unwrap(), "lease-secret");
+        valid_peer.join().unwrap();
     }
 
     #[test]
@@ -1419,10 +2286,22 @@ mod tests {
             send_plain(&mut socket, &encrypted, server_config.max_frame_bytes).unwrap();
         });
 
-        let target = ResolvedWsTarget::resolve(&config.connect_url).unwrap();
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
-        let (_, welcome) =
-            AuthenticatedTransport::connect(&target, &config, &state, Some(&ticket), None).unwrap();
+        let (transport, welcome) = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            transport.socket.read_timeout().unwrap(),
+            Some(RUNTIME_READ_TIMEOUT)
+        );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();

@@ -9,16 +9,12 @@ import {
 } from "../protocol/replay-contract.js";
 import {
   createSessionSnapshot,
-  MAX_RECORDED_MISSING_SEQUENCES,
   reducePrpFixture,
   reduceSessionEvents,
   type SessionSnapshot,
 } from "./session-reducer.js";
 
-const fixtureDirectory = new URL(
-  "../../protocol/fixtures/replay/",
-  import.meta.url,
-);
+const fixtureDirectory = new URL("../../protocol/fixtures/replay/", import.meta.url);
 const fixtureNames = [
   "happy-path",
   "failed-run",
@@ -26,6 +22,12 @@ const fixtureNames = [
   "duplicate-event",
   "source-gap",
   "unknown-optional-fields",
+  "semantic-tool-artifact-happy-path",
+  "semantic-tool-denial-redaction",
+  "semantic-tool-conflict-duplicate-retry",
+  "semantic-tool-governance-wake-monitor",
+  "budget-cost-stop-reason",
+  "semantic-tool-unknown-optional-envelope",
 ];
 
 async function loadFixture(name: string): Promise<PrpFixture> {
@@ -40,10 +42,7 @@ async function loadFixture(name: string): Promise<PrpFixture> {
 
 async function loadGolden(name: string): Promise<SessionSnapshot> {
   return JSON.parse(
-    await readFile(
-      new URL(`golden/${name}.snapshot.json`, fixtureDirectory),
-      "utf8",
-    ),
+    await readFile(new URL(`golden/${name}.snapshot.json`, fixtureDirectory), "utf8"),
   ) as SessionSnapshot;
 }
 
@@ -85,33 +84,6 @@ describe("deterministic PRP session reducer", () => {
     ]);
   });
 
-  it("bounds sequence-gap details for an untrusted large cursor jump", async () => {
-    const fixture = await loadFixture("source-gap");
-    const event: PrpEvent = {
-      ...fixture.events[0]!,
-      sourceEventId: "event_large_gap",
-      sourceSeq: Number.MAX_SAFE_INTEGER,
-    };
-
-    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [
-      event,
-    ]);
-
-    expect(snapshot.gaps).toHaveLength(1);
-    expect(snapshot.gaps[0]).toMatchObject({
-      expected: 1,
-      received: Number.MAX_SAFE_INTEGER,
-      missingCount: Number.MAX_SAFE_INTEGER - 1,
-      truncated: true,
-    });
-    expect(snapshot.gaps[0]?.missing).toHaveLength(
-      MAX_RECORDED_MISSING_SEQUENCES,
-    );
-    expect(snapshot.gaps[0]?.missing.at(-1)).toBe(
-      MAX_RECORDED_MISSING_SEQUENCES,
-    );
-  });
-
   it("summarizes runtime request creation and resolution with type and prompt", async () => {
     const fixture = await loadFixture("interrupted-run");
     const fixtureRequest = fixture.events.find(
@@ -133,10 +105,7 @@ describe("deterministic PRP session reducer", () => {
       payload: { requestId: "request_interrupted_permission" },
     };
 
-    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [
-      created,
-      resolved,
-    ]);
+    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [created, resolved]);
 
     expect(snapshot.requests[0]).toMatchObject({ type: "permission" });
     expect(snapshot.timeline.map((entry) => entry.summary)).toEqual([

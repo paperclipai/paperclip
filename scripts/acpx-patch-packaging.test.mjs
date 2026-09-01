@@ -26,6 +26,9 @@ const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
+const runnerPackage = JSON.parse(
+  await readFile(new URL("../packages/paperclip-runner/package.json", import.meta.url), "utf8"),
+);
 const serverPackage = JSON.parse(
   await readFile(new URL("../server/package.json", import.meta.url), "utf8"),
 );
@@ -35,6 +38,14 @@ const dbPackage = JSON.parse(
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
+const acpxRuntimePatch = await readFile(
+  new URL("../patches/acpx@0.13.1.patch", import.meta.url),
+  "utf8",
+);
+const claudeAcpPatch = await readFile(
+  new URL("../patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch", import.meta.url),
+  "utf8",
+);
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -51,6 +62,24 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.deepEqual(serverPackage.bundleDependencies, ["acpx"]);
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
+});
+
+test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.70.0"],
+    "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+  );
+  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
+  assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.70.0");
+  assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
+  for (const callback of [
+    "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
+    "onAgentSpawn", "onAgentStderr", "onAgentExit",
+    "onSessionNotification", "onClientOperation",
+  ]) assert.match(acpxRuntimePatch, new RegExp(callback));
+  assert.match(claudeAcpPatch, /usage: \{/);
+  assert.match(claudeAcpPatch, /cache_creation_input_tokens/);
 });
 
 test("published packages preserve the patched embedded-postgres runtime", () => {
@@ -254,7 +283,8 @@ while [ "$#" -gt 0 ]; do
 done
 patch_input="$(cat)"
 grep -q spawnEnvironment <<< "$patch_input"
-! grep -q onAgentStderr <<< "$patch_input"
+grep -q spawnAgent <<< "$patch_input"
+grep -q onAgentStderr <<< "$patch_input"
 printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
 `,
   );

@@ -41,7 +41,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
-import { resolveManagedGrokHomeDir } from "./grok-home.js";
+import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -245,6 +245,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  // Declared here (not inside the try) so the outer `finally` can remove it on
+  // every exit path (teardown and setup failure alike), mirroring the Codex
+  // adapter's `stagedCodexHomeDir` handling.
+  let stagedGrokHomeDir: string | null = null;
 
   try {
     const envConfig = parseObject(config.env);
@@ -302,11 +306,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
+    // Held before the remote block below, so the remote lane can stage this
+    // same host home into the sandbox without re-resolving it.
+    const hostGrokHome = resolveManagedGrokHomeDir(process.env, agent.companyId);
     // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
     // Grok home a completed device login wrote. Leaves the API-key path below
     // (`resolveBillingType`) unchanged when the key exists.
-    if (!hasNonEmptyEnvValue(env, "XAI_API_KEY") && !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY")) {
-      env.GROK_HOME = resolveManagedGrokHomeDir(process.env, agent.companyId);
+    const isGrokSubscriptionMode =
+      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY");
+    if (isGrokSubscriptionMode) {
+      env.GROK_HOME = hostGrokHome;
     }
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
@@ -331,6 +340,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Syncing Grok workspace to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
+      // Stage only the credential file the remote lane needs into a curated
+      // temp dir and ship THAT as the `home` asset, the same curated-snapshot
+      // approach the Codex adapter uses. Subscription mode only: an API-key
+      // run authenticates from the environment variable and needs no home.
+      if (isGrokSubscriptionMode) {
+        stagedGrokHomeDir = await stageGrokHomeForSync(hostGrokHome, { runId });
+      }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target: executionTarget,
@@ -341,6 +357,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
         onProgress: (line) => onLog("stdout", line),
         onRuntimeProgress: ctx.onRuntimeProgress,
+        assets: stagedGrokHomeDir
+          ? [{ key: "home", localDir: stagedGrokHomeDir, followSymlinks: true }]
+          : undefined,
       });
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
@@ -358,6 +377,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
+      // Set GROK_HOME after the refresh above, so the refresh cannot overwrite
+      // it. The fixed fallback path mirrors `prepareAdapterExecutionTargetRuntime`'s
+      // own `home` asset layout, in case `assetDirs.home` is absent.
+      if (isGrokSubscriptionMode) {
+        env.GROK_HOME =
+          preparedExecutionTargetRuntime.assetDirs.home ??
+          path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "grok", "home");
+      }
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
@@ -601,6 +628,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toResult(initial);
   } finally {
+    // Remove the staged GROK_HOME allowlist temp dir first, before the
+    // `Promise.all` below. A rejecting member of that `Promise.all` (for
+    // example a failed workspace restore) throws out of this `finally` and
+    // skips every statement after it, so the removal must run before that
+    // await to hold on every exit path (teardown AND error), never only the
+    // happy path. Cleanup failure is logged, not fatal — a leaked temp dir
+    // must not crash the run.
+    if (stagedGrokHomeDir) {
+      await fs.rm(stagedGrokHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Grok home "${stagedGrokHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    }
     await Promise.all([
       restoreRemoteWorkspace?.(),
       stagedAssets.cleanup(),

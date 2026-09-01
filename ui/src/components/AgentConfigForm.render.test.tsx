@@ -611,7 +611,7 @@ async function runTest(container: HTMLElement) {
 }
 
 async function startLogin(container: HTMLElement) {
-  await clickByText(container, "Log in");
+  await clickByText(container, "Sign in");
   await flushReact();
 }
 
@@ -1089,11 +1089,11 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderCodexSandbox();
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
   it("hides the Codex login for a provider without the login pseudo-terminal capability", async () => {
@@ -1118,7 +1118,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("shows the login affordance and the displayed-code panel for a third adapter with a projected login capability", async () => {
@@ -1129,13 +1129,13 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderVendorSandbox();
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
     // The projected capability gates the login affordance on for the third
     // adapter.
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
 
     await startLogin(result.container);
 
@@ -1154,11 +1154,11 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderGrokSandbox();
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
 
     await startLogin(result.container);
 
@@ -1171,11 +1171,11 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderClaudeSandbox();
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
   it("hides the Login button for a Claude sandbox whose provider lacks the setup-token login capability", async () => {
@@ -1199,7 +1199,7 @@ describe("AgentConfigForm environment selector", () => {
 
     // E2B does not advertise the setup-token login capability, so the panel
     // stays hidden even after the auth-missing check.
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("hides the Login button for a Daytona sandbox while the capabilities report no setup-token support", async () => {
@@ -1234,7 +1234,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("gates a pseudo-terminal login on the provider pty capability for a non-Claude adapter", async () => {
@@ -1260,7 +1260,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("shows a pseudo-terminal login for a non-Claude adapter when the provider advertises pty support", async () => {
@@ -1285,7 +1285,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {
@@ -1353,11 +1353,11 @@ describe("AgentConfigForm environment selector", () => {
     });
     await flushReact();
 
-    expect(findButton(container, "Log in")).toBeFalsy();
+    expect(findButton(container, "Sign in")).toBeFalsy();
 
     await runTest(container);
 
-    expect(findButton(container, "Log in")).toBeTruthy();
+    expect(findButton(container, "Sign in")).toBeTruthy();
   });
 
   it("does not show the Login button when the Test result has no adapter_auth_missing check", async () => {
@@ -1366,7 +1366,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("does not show the Login button when the effective environment is Local", async () => {
@@ -1380,7 +1380,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("shows the Login button for an agent with no own environment under the managed-sandbox-only policy", async () => {
@@ -1416,11 +1416,11 @@ describe("AgentConfigForm environment selector", () => {
     );
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
   it("keeps the Login button hidden under the managed-sandbox-only policy when no managed sandbox is available", async () => {
@@ -1447,7 +1447,7 @@ describe("AgentConfigForm environment selector", () => {
     );
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {
@@ -1561,8 +1561,8 @@ describe("AgentConfigForm environment selector", () => {
       "codex_local",
       "session-1",
     );
-    // The panel resets: the Log in button is available again and the code is gone.
-    const login = findButton(result.container, "Log in");
+    // The panel resets: the Sign in button is available again and the code is gone.
+    const login = findButton(result.container, "Sign in");
     expect(login?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("WXYZ-1234");
@@ -1603,7 +1603,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     await startLogin(result.container);
 
-    const startButton = findButton(result.container, "Log in");
+    const startButton = findButton(result.container, "Sign in");
     expect(startButton).toBeTruthy();
     expect(startButton?.disabled).toBe(true);
     expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
@@ -1673,7 +1673,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     await runTest(result.container);
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
 
     const select = result.container.querySelector("select");
     await act(async () => {
@@ -1685,7 +1685,7 @@ describe("AgentConfigForm environment selector", () => {
     });
     await flushReact();
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("shows the authorization URL and a browser-code input for a Claude sandbox", async () => {
@@ -1821,7 +1821,7 @@ describe("AgentConfigForm environment selector", () => {
     ]);
     roots.push(result.root);
 
-    // Log in on the first sandbox. The stored state adds the fixed
+    // Sign in on the first sandbox. The stored state adds the fixed
     // `CLAUDE_CODE_OAUTH_TOKEN` binding and the non-secret claim to the form.
     await runTest(result.container);
     await startLogin(result.container);
@@ -2036,7 +2036,7 @@ describe("AgentConfigForm environment selector", () => {
         </QueryClientProvider>,
       );
     });
-    await flushUntil(() => Boolean(findButton(container, "Log in")));
+    await flushUntil(() => Boolean(findButton(container, "Sign in")));
 
     expect(findButton(container, "Use saved login")).toBeUndefined();
     expect(onApplyStored).not.toHaveBeenCalled();
@@ -2063,7 +2063,7 @@ describe("AgentConfigForm environment selector", () => {
     // The panel shows a fixed message and returns to its start state. The Log in
     // button is available again.
     expect(result.container.textContent).toContain("The login did not finish");
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
     // The panel never shows the provider failure message, which could carry a
     // secret.
     expect(result.container.textContent).not.toContain("the provider rejected the browser code");
@@ -2088,7 +2088,7 @@ describe("AgentConfigForm environment selector", () => {
     );
 
     expect(result.container.textContent).toContain("The login did not finish");
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
   });
 
   it("shows a terminal failure and stops polling on a status 404 from server cleanup", async () => {
@@ -2119,7 +2119,7 @@ describe("AgentConfigForm environment selector", () => {
 
     // The panel shows the fixed failure message and returns to its start state.
     expect(result.container.textContent).toContain("The login did not finish");
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
 
     // The panel shows no credential material: no authorization URL and no
     // browser-code input.
@@ -2156,9 +2156,9 @@ describe("AgentConfigForm environment selector", () => {
       "company-1",
       "claude-session-1",
     );
-    // The panel resets: the Log in button is available again, and the URL and the
+    // The panel resets: the Sign in button is available again, and the URL and the
     // browser-code input are gone.
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
     expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
@@ -2190,10 +2190,10 @@ describe("AgentConfigForm environment selector", () => {
       "company-1",
       "claude-session-1",
     );
-    // The panel reset even though the cancel returned a 404: the Log in button is
+    // The panel reset even though the cancel returned a 404: the Sign in button is
     // available again, and the URL and the browser-code input are gone. No error
     // message remains.
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
     expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
@@ -2229,9 +2229,9 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderClaudeSandbox();
 
     await runTest(result.container);
-    // The panel shows the Log in button but no session started, so no active
+    // The panel shows the Sign in button but no session started, so no active
     // session exists to cancel.
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
 
     await act(async () => {
       result.root.unmount();
@@ -2335,7 +2335,7 @@ describe("AgentConfigForm environment selector", () => {
       await flushFake();
 
       await clickFake(container, "Test");
-      await clickFake(container, "Log in");
+      await clickFake(container, "Sign in");
 
       // The login is active: both polls have run at least once.
       const statusCallsAtStart = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
@@ -2374,7 +2374,7 @@ describe("AgentConfigForm environment selector", () => {
         "claude-session-1",
       );
       // The Log in button is available again, and the Cancel button is gone.
-      expect(findButton(container, "Log in")?.disabled).toBe(false);
+      expect(findButton(container, "Sign in")?.disabled).toBe(false);
       expect(findButton(container, "Cancel")).toBeFalsy();
 
       // Both polls stopped. A further ten seconds adds no new poll call.
@@ -2597,7 +2597,7 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
 
     // The panel shows a fixed, non-secret message and returns to its start state.
     expect(result.container.textContent).toContain("The login did not finish");
-    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
     expect(result.container.textContent).not.toContain(
       "the provider rejected the stored-session claim",
     );

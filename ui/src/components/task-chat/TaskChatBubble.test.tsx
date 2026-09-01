@@ -138,6 +138,40 @@ describe("TaskChatBubble agent page-surface treatment", () => {
   });
 });
 
+describe("TaskChatBubble verification caveats", () => {
+  it("renders non-blocking not-run verification beneath the durable agent reply", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    flushSync(() => root.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{
+          id: "agent-message",
+          kind: "message",
+          author: "agent",
+          authorName: "Runner",
+          text: "The implementation is complete.",
+          verificationCaveats: [{
+            commandOrCheck: "Run npm test",
+            reasonCode: "tool_unavailable",
+            detail: "Node and npm are unavailable in this environment.",
+          }],
+        }} />
+      </ThemeProvider>,
+    ));
+
+    const caveat = container.querySelector('[data-testid="task-chat-verification-caveats"]');
+    expect(caveat?.textContent).toContain("Verification caveat");
+    expect(caveat?.textContent).toContain("Run npm test");
+    expect(caveat?.textContent).toContain("tool unavailable");
+    expect(caveat?.textContent).toContain("Node and npm are unavailable");
+
+    flushSync(() => root.unmount());
+    container.remove();
+  });
+});
+
 describe("TaskChatBubble interstitial self-talk (PAP-357)", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;

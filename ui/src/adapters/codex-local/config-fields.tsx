@@ -13,12 +13,19 @@ import {
   isCodexLocalFastModeSupported,
   isCodexLocalManualModel,
 } from "@paperclipai/adapter-codex-local";
+import {
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerPermissionMode,
+  type CodexPermissionMode,
+} from "@paperclipai/adapter-utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
-
 export function CodexLocalConfigFields({
   mode,
   isCreate,
@@ -38,6 +45,39 @@ export function CodexLocalConfigFields({
   // both, so the managed-sandbox-only policy hides them the same way
   // `runnerManaged` already does for the Paperclip Runner.
   const hideEngineChoice = runnerManaged || managedSandboxOnly === true;
+  const codexPermissionCapability = PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex;
+  const runnerPermissionMode = runnerManaged
+    ? resolvePaperclipRunnerPermissionMode(
+        "codex",
+        isCreate
+          ? values!.codexPermissionMode
+          : eff(
+              "adapterConfig",
+              "codexPermissionMode",
+              config.codexPermissionMode,
+            ),
+      )
+    : codexPermissionCapability.defaultMode;
+  const runnerLifecycleMode = runnerManaged
+    ? isCreate
+      ? values!.paperclipRunnerLifecycleMode ?? "per_turn"
+      : eff(
+          "adapterConfig",
+          "lifecycleMode",
+          config.lifecycleMode === "warm" ? "warm" : "per_turn",
+        )
+    : "per_turn";
+  const runnerIdleTimeoutMs = runnerManaged
+    ? resolvePaperclipRunnerIdleTimeoutMs(
+        isCreate
+          ? values!.paperclipRunnerIdleTimeoutMs
+          : eff(
+              "adapterConfig",
+              "idleTimeoutMs",
+              config.idleTimeoutMs,
+            ),
+      )
+    : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
   const rawEngine = runnerManaged ? "cli" : isCreate
     ? values!.codexEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -83,6 +123,90 @@ export function CodexLocalConfigFields({
           <select className={inputClass} value="codex" disabled>
             <option value="codex">Codex</option>
           </select>
+        </Field>
+      )}
+      {runnerManaged && (
+        <Field
+          label="Permission mode"
+          hint={`${codexPermissionCapability.description} Full auto does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
+        >
+          <select
+            className={inputClass}
+            value={runnerPermissionMode}
+            onChange={(event) => {
+              const value = resolvePaperclipRunnerPermissionMode(
+                "codex",
+                event.target.value,
+              ) as CodexPermissionMode;
+              isCreate
+                ? set!({ codexPermissionMode: value })
+                : mark("adapterConfig", "codexPermissionMode", value);
+            }}
+          >
+            {codexPermissionCapability.options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {runnerManaged && (
+        <Field
+          label="Runner lifecycle"
+          hint="Turn by turn suspends after each run. Warm keeps the same Codex process available between governed runs."
+        >
+          <select
+            className={inputClass}
+            value={runnerLifecycleMode}
+            onChange={(event) => {
+              const value = event.target.value === "warm" ? "warm" : "per_turn";
+              isCreate
+                ? set!({ paperclipRunnerLifecycleMode: value })
+                : mark("adapterConfig", "lifecycleMode", value);
+            }}
+          >
+            <option value="per_turn">Turn by turn</option>
+            <option value="warm">Warm session</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && runnerLifecycleMode === "warm" && (
+        <Field
+          label="Warm idle timeout (ms)"
+          hint="After this much inactivity, runnerd checkpoints and suspends the Codex session. The maximum is 24 hours."
+        >
+          {isCreate ? (
+            <input
+              type="number"
+              min={1}
+              max={PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS}
+              className={inputClass}
+              value={runnerIdleTimeoutMs}
+              onChange={(event) =>
+                set!({
+                  paperclipRunnerIdleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(
+                    Number(event.target.value),
+                  ),
+                })
+              }
+            />
+          ) : (
+            <DraftNumberInput
+              value={runnerIdleTimeoutMs}
+              min={1}
+              max={PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS}
+              onCommit={(value) =>
+                mark(
+                  "adapterConfig",
+                  "idleTimeoutMs",
+                  resolvePaperclipRunnerIdleTimeoutMs(value),
+                )
+              }
+              immediate
+              className={inputClass}
+            />
+          )}
         </Field>
       )}
       {acpSelected && (

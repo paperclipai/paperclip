@@ -44,6 +44,7 @@ import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  onOpenDocument?: (document: IssueDocument) => void;
   documentDeepLink?: {
     requestId: number;
     documentKey: string;
@@ -319,10 +320,12 @@ function DocumentRow({
   issueId,
   doc,
   openRequestId,
+  onOpen,
 }: {
   issueId: string;
   doc: IssueDocument;
   openRequestId?: number;
+  onOpen?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -330,13 +333,29 @@ function DocumentRow({
   const location = useLocation();
   const Chevron = expanded ? ChevronDown : ChevronRight;
   useEffect(() => {
-    if (openRequestId === undefined) return;
+    if (onOpen || openRequestId === undefined) return;
     setExpanded(true);
-  }, [openRequestId]);
+  }, [onOpen, openRequestId]);
   useEffect(() => {
-    if (openRequestId === undefined || !expanded) return;
+    if (onOpen || openRequestId === undefined || !expanded) return;
     headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [expanded, openRequestId]);
+  }, [expanded, onOpen, openRequestId]);
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={cn(ROW_CLASS, "w-full text-left hover:bg-accent/50")}
+      >
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
+        <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
+          {`Rev ${doc.latestRevisionNumber ?? 1}`}
+        </span>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      </button>
+    );
+  }
   return (
     <div className="rounded-md border border-border bg-card/50">
       <div ref={headerRef} className="flex items-center hover:bg-accent/50">
@@ -396,7 +415,7 @@ function DocumentRow({
  * user uploads are excluded — those stay first-class in the conversation
  * thread.
  */
-export function IssuePropertiesArtifactsTab({ issue, documentDeepLink }: IssuePropertiesArtifactsTabProps) {
+export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDocument }: IssuePropertiesArtifactsTabProps) {
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -464,6 +483,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink }: IssuePr
                 <DocumentRow
                   issueId={issue.id}
                   doc={doc}
+                  onOpen={onOpenDocument ? () => onOpenDocument(doc) : undefined}
                   openRequestId={documentDeepLink?.documentKey === doc.key
                     ? documentDeepLink.requestId
                     : undefined}

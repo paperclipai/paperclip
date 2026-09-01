@@ -91,6 +91,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
+const mockSecretsApi = vi.hoisted(() => ({
+  listMyUserSecrets: vi.fn(),
+  createUserSecretDefinition: vi.fn(),
+  createMyUserSecret: vi.fn(),
+  rotateMyUserSecret: vi.fn(),
+}));
 const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
@@ -122,6 +128,7 @@ vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
+vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
@@ -134,7 +141,12 @@ vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    recommended: false,
+    // Mirrors the real registry, where these two and only these two are
+    // `recommended`. A blanket `false` used to be harmless because every adapter
+    // then sat in the "Advanced settings" disclosure and was reachable anyway;
+    // with the step down to a tile row built from this flag, it made that row
+    // empty in every test and hid the surface under it.
+    recommended: type === "claude_local" || type === "codex_local",
     label: type,
     description: "",
     icon: () => null,
@@ -645,6 +657,160 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await clickByText((t) => t.startsWith("Connect"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    // The Connect handler reuses a passing probe instead of re-running it, so the
+    // effect that clears the cache has to name every input to the configuration
+    // the probe tested. `credentialMode` and `apiKey` were missing from it, and
+    // the gap is reachable: the probe and the hire share one try/catch, so a hire
+    // that throws leaves the pass in state. Switching to a key and pressing
+    // Connect again then hired against a key nothing had tested.
+    /**
+     * Typing a key into this step must not put the key into the agent's stored
+     * configuration. That configuration is persisted and revisioned, so a plain
+     * value there is a live credential at rest in every copy of it — which is
+     * what this step did before, and what the Claude token path has always
+     * avoided by holding a `user_secret_ref` instead.
+     */
+    describe("an API key typed on the step", () => {
+      const KEY = "sk-ant-typed-by-the-customer";
+
+      // The canvas holding the key field only opens once a source is selected,
+      // and the tile row that selects one is built from this registry. The
+      // suite's default is empty, which leaves the step with no tiles, no
+      // canvas, and no field to type into.
+      beforeEach(() => {
+        mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+        // No definition and no stored value yet: the first customer to type a key.
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+        mockSecretsApi.createUserSecretDefinition.mockResolvedValue({ id: "def-1" });
+        mockSecretsApi.createMyUserSecret.mockResolvedValue({ id: "secret-abc" });
+        mockSecretsApi.rotateMyUserSecret.mockResolvedValue({ id: "secret-existing" });
+      });
+
+      async function connectWithApiKey() {
+        const handles = await openConnectStep();
+        await handles.clickByText((t) => t.startsWith("Use API keys"));
+        const field = document.body.querySelector(
+          'input[type="password"]',
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, KEY);
+        });
+        await flushReact();
+        await handles.clickByText((t) => t.startsWith("Connect"));
+        return handles;
+      }
+
+      it("is stored as the user's own secret and referenced, never carried in the hire", async () => {
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+        const [, createBody] = mockSecretsApi.createMyUserSecret.mock.calls.at(-1) as [
+          string,
+          { definitionKey: string; value: string },
+        ];
+        expect(createBody.definitionKey).toBe("ANTHROPIC_API_KEY");
+        expect(createBody.value).toBe(KEY);
+
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
+          adapterConfig: { env?: Record<string, unknown> };
+        };
+        // The same binding kind the subscription half of this step produces.
+        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+          type: "user_secret_ref",
+          key: "ANTHROPIC_API_KEY",
+          version: "latest",
+        });
+        // The whole payload, not just that one field: the point is that the key
+        // is nowhere in what gets persisted, however it might be nested.
+        expect(JSON.stringify(hireBody)).not.toContain(KEY);
+
+        await act(async () => root.unmount());
+      });
+
+      // Onboarding is the first thing to need this definition, so it creates it.
+      it("creates the definition once, then reuses it", async () => {
+        await connectWithApiKey();
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
+
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([
+          { definition: { id: "def-1", key: "ANTHROPIC_API_KEY" }, secret: null },
+        ]);
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
+
+        await act(async () => root.unmount());
+      });
+
+      // A second value against one definition is what the server refuses, so a
+      // customer who already has a key stored must rotate rather than add.
+      it("rotates an existing value instead of storing a second one", async () => {
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([
+          {
+            definition: { id: "def-1", key: "ANTHROPIC_API_KEY" },
+            secret: { id: "secret-existing" },
+          },
+        ]);
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.rotateMyUserSecret).toHaveBeenCalledWith(
+          expect.any(String),
+          "secret-existing",
+          { value: KEY },
+        );
+        expect(mockSecretsApi.createMyUserSecret).not.toHaveBeenCalled();
+
+        await act(async () => root.unmount());
+      });
+
+      // The one outcome that must never happen is a hire that falls back to
+      // embedding the key because storing it failed.
+      it("blocks the hire when the key cannot be stored", async () => {
+        mockSecretsApi.createMyUserSecret.mockRejectedValue(new Error("vault unreachable"));
+        const { root } = await connectWithApiKey();
+
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("Could not store the API key");
+
+        await act(async () => root.unmount());
+      });
+
+      it("stores one secret when Connect is pressed twice with the same key", async () => {
+        mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
+        const { root, clickByText } = await connectWithApiKey();
+
+        await clickByText((t) => t.startsWith("Connect"));
+
+        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+
+        await act(async () => root.unmount());
+      });
+    });
+
+    it("re-probes rather than reusing a pass when the credential mode changes", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "pass" as const,
+        checks: [],
+        testedAt: new Date().toISOString(),
+      });
+      // The hire fails, which is what leaves the passing probe behind.
+      mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
+
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+
+      // Switch to API keys, which changes the configuration the hire will send.
+      await clickByText((t) => t.startsWith("Use API keys"));
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
     });
@@ -1550,21 +1716,21 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     it("shows the login panel for claude_local when the signal reports no ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).toContain("Sign in to the environment");
+      expect(document.body.textContent).toContain("Sign in to Anthropic");
       await act(async () => root.unmount());
     });
 
     it("shows the login panel for codex_local when the signal cannot decide", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
       const { root } = await openStep4({ adapterType: "codex_local" });
-      expect(document.body.textContent).toContain("Sign in to the environment");
+      expect(document.body.textContent).toContain("Sign in to OpenAI");
       await act(async () => root.unmount());
     });
 
     it("hides the login panel when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      expect(document.body.textContent).not.toContain("Sign in to Anthropic");
       await act(async () => root.unmount());
     });
 
@@ -1596,8 +1762,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await flushReact();
       };
 
-      await clickByText((t) => t.startsWith("Advanced settings"));
-      await clickByText((t) => t === "codex_local");
+      // Straight to the tile. The adapter change used to be reached through an
+      // "Advanced settings" disclosure listing every non-recommended adapter;
+      // the step now offers Claude and Codex as tiles and spends that line on
+      // the credential switch instead. What is asserted below is unchanged —
+      // changing the source re-reads the signal — only the route there is.
+      // The tile's text is the label plus its credential tag, hence the prefix.
+      await clickByText((t) => t.startsWith("codex_local"));
 
       expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
         "company-new",
@@ -1613,7 +1784,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      expect(document.body.textContent).not.toContain("Sign in to Anthropic");
       expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
       await act(async () => root.unmount());
     });

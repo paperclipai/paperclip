@@ -59,7 +59,10 @@ import {
   acpxDriverDescriptor,
   validateAcpxDriverConfig,
 } from "./driver-profile.js";
-import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import {
+  resolveQualifiedAcpxProfile,
+  type QualifiedAcpxAgent,
+} from "./qualified-profiles.js";
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
@@ -169,6 +172,73 @@ export interface CodexAcpxDriverDependencies {
   }) => Promise<AcpxRecoveryWorkspaceLease>;
 }
 
+export interface ProbeQualifiedAcpxEnvironmentOptions {
+  runtimeDirectory: string;
+  agent: QualifiedAcpxAgent;
+  model: string;
+  environment?: NodeJS.ProcessEnv;
+}
+
+export interface QualifiedAcpxEnvironmentProbe {
+  effectiveModel: string;
+  commandDigest: string;
+}
+
+/**
+ * Admit and cleanly close the same qualified ACPX host used by production
+ * sessions without exposing that host as part of the public package surface.
+ */
+export async function probeQualifiedAcpxEnvironment(
+  options: ProbeQualifiedAcpxEnvironmentOptions,
+): Promise<QualifiedAcpxEnvironmentProbe> {
+  const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
+  const driver = new CodexAcpxDriver({
+    runtimeDirectory: options.runtimeDirectory,
+    agent: options.agent,
+    model: options.model,
+    permissionMode: "deny-all",
+    systemInstructions:
+      "Paperclip Runner environment qualification probe. Do not execute a provider turn.",
+    ...(options.environment === undefined
+      ? {}
+      : { environment: options.environment }),
+    dynamicTools: [],
+    dynamicToolHandler: async () => {
+      throw new Error("environment probe exposes no semantic tools");
+    },
+  });
+  const session = await driver.openSession({
+    runId: "environment-probe",
+    normalizedSessionId: "environment-probe",
+    workingDirectory: options.runtimeDirectory,
+  });
+  try {
+    const snapshot = await session.snapshot();
+    if (snapshot.providerIdentity?.kind !== "acpx") {
+      throw new Error("ACPX environment probe returned no provider identity");
+    }
+    return Object.freeze({
+      effectiveModel: snapshot.providerIdentity.effectiveModel,
+      commandDigest: profile.commandDigest,
+    });
+  } finally {
+    // A successful return is authoritative proof that the driver's bounded
+    // close released the provider, credential lease, semantic bridge, and
+    // verified command. A failed close remains owned by the driver's retained
+    // recovery/quarantine path, so callers must preserve runtimeDirectory.
+    await session.close({ reason: "environment probe complete" });
+  }
+}
+
+function openProductionAcpxHost(
+  options: OpenAcpxRuntimeHostOptions,
+): Promise<AcpxRuntimeHost> {
+  return AcpxRuntimeHost.open(options, {
+    openRuntime: openCodexAcpxRuntime,
+    reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
+  });
+}
+
 /** Qualified HarnessDriver backed by the admitted ACPX runtime host. */
 export class CodexAcpxDriver implements HarnessDriver {
   readonly #options: CodexAcpxDriverOptions;
@@ -203,11 +273,7 @@ export class CodexAcpxDriver implements HarnessDriver {
     };
     this.#openHost =
       dependencies.openHost ??
-      ((hostOptions) =>
-        AcpxRuntimeHost.open(hostOptions, {
-          openRuntime: openCodexAcpxRuntime,
-          reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
-        }));
+      openProductionAcpxHost;
     this.#closeSettlementTimeoutMs =
       dependencies.closeSettlementTimeoutMs ?? CLOSE_TURN_SETTLEMENT_TIMEOUT_MS;
     this.#terminalEventReserve = Math.max(
