@@ -668,16 +668,20 @@ describe("openapi routes", () => {
     expect(assertsBoardUnconditionally("(req, res) => { assertBoard(other); }", names)).toBe(false);
     expect(assertsBoardUnconditionally("(req, res) => { svc.assertBoard(req); }", names)).toBe(false);
 
-    // The neighbouring-helper mis-attribution: bounding the scan to the
-    // registration's own arguments is what keeps `helper`'s assertion out of a
-    // route that only calls `namedHandler`.
+    // The neighbouring-helper mis-attribution. `/thing` runs `namedHandler`, which
+    // asserts nothing; the arrow-bodied `helper` below it does assert. Scanning from
+    // the registration to the *next* registration swallows `helper` and reports the
+    // route as board-guarded, so the span is bounded to the registration's own
+    // arguments instead.
     const source = maskLiterals(`
       router.get("/thing", namedHandler);
-      function helper(req: Request) { assertBoard(req); }
+      const helper = (req: Request) => { assertBoard(req); };
       function namedHandler(req: Request, res: Response) { res.json({}); }
     `);
     const registration = source.indexOf("router.get");
     expect(registrationArguments(source, registration)?.trim().endsWith("namedHandler")).toBe(true);
+    // The unbounded span is precisely what the bounded one must not behave like.
+    expect(assertsBoardUnconditionally(source.slice(registration), names)).toBe(true);
     expect(assertsBoardUnconditionally(registrationArguments(source, registration) ?? "", names)).toBe(false);
     expect(namedHandlerAssertsBoard(source, registration, names)).toBe(false);
   });
