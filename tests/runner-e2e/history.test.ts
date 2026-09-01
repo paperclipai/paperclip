@@ -151,6 +151,10 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("57/57 passed");
     expect(index).toContain("56/57 passed");
     expect(index).toContain("Open report&nbsp;→");
+    expect(index).toContain(
+      "Visual evidence remains in access-controlled workflow artifacts",
+    );
+    expect(index).toContain("Inert structured public evidence");
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
   });
@@ -219,6 +223,11 @@ describe("historical publication security", () => {
     expect(dashboard).not.toContain(
       `campaigns/campaign-1/evidence/${execution.id}/attempt-1/final-state.png`,
     );
+    expect(dashboard).toContain("Visual evidence · workflow artifact only");
+    expect(dashboard).toContain(
+      "public history contains inert structured evidence only",
+    );
+    expect(dashboard).toContain("Public history excludes visual evidence");
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
     ).rejects.toThrow();

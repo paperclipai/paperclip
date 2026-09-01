@@ -167,6 +167,10 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain("data-gallery-previous");
     expect(dashboard).toContain("data-gallery-next");
     expect(dashboard).toContain("View gallery · 1");
+    expect(dashboard).toContain(
+      "Visual evidence is retained in the access-controlled workflow artifact",
+    );
+    expect(dashboard).toContain("Public history excludes visual evidence");
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");
     expect(dashboard).toContain("Campaign billing summary");

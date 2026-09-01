@@ -889,7 +889,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Every selected result includes visible final-state evidence.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Visual evidence is retained in the access-controlled workflow artifact; public history contains inert structured evidence only.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -897,7 +897,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
           <div class="metric"><strong>${failed}</strong><span>Failed</span></div>
           <div class="metric"><strong>${html(durationLabel(totalDuration))}</strong><span>Test time</span></div>
         </div>
-        <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>View gallery · ${screenshotCount}</button>
+        <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
     <section class="billing-overview" aria-label="Campaign billing summary">
@@ -918,7 +918,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </nav>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Public history excludes visual evidence</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">
