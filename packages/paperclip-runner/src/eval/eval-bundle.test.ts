@@ -109,7 +109,9 @@ describe("assertBundleSecretFree", () => {
     expect(() => assertBundleSecretFree(withToken)).toThrow(EvalBundleSecretError);
 
     const withForbiddenKey = { ...bundle(), apiKey: "value" } as unknown as EvalBundle;
-    expect(() => assertBundleSecretFree(withForbiddenKey)).toThrow(/forbidden key/);
+    expect(() => assertBundleSecretFree(withForbiddenKey)).toThrow(
+      /forbidden credential field/,
+    );
   });
 });
 
