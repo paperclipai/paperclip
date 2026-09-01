@@ -1,6 +1,6 @@
 import type { AdapterRuntimeEvent } from "@paperclipai/adapter-utils";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, chmod, rm } from "node:fs/promises";
+import { lstat, mkdtemp, chmod, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import {
@@ -115,20 +115,35 @@ function overlaps(left: string, right: string): boolean {
 async function trustedScratchPath(value: string): Promise<string> {
   const stated = await lstat(value);
   if (!stated.isDirectory() || stated.isSymbolicLink()) throw new Error("formal_qa_scratch_untrusted");
-  const resolved = resolve(value);
+  const resolved = await realpath(value);
   const actual = await lstat(resolved);
   if (!actual.isDirectory() || actual.isSymbolicLink()) throw new Error("formal_qa_scratch_untrusted");
   return resolved;
 }
 
-function protectedRoots(environment: NodeJS.ProcessEnv): string[] {
-  return [...new Set([environment.CODEX_HOME, resolveSourceCodexHome(environment)])]
+async function protectedRoots(environment: NodeJS.ProcessEnv): Promise<string[]> {
+  const candidates = [...new Set([environment.CODEX_HOME, resolveSourceCodexHome(environment)])]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => resolve(value.trim()));
+  const roots: string[] = [];
+  try {
+    for (const candidate of candidates) {
+      const canonical = await realpath(candidate);
+      const stated = await lstat(canonical);
+      if (!stated.isDirectory() || stated.isSymbolicLink()) {
+        throw new Error("formal_qa_credential_root_untrusted");
+      }
+      if (!roots.includes(canonical)) roots.push(canonical);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "formal_qa_credential_root_untrusted") throw error;
+    throw new Error("formal_qa_credential_root_untrusted", { cause: error });
+  }
+  return roots;
 }
 
-function assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): string[] {
-  const hostProtectedRoots = protectedRoots(environment);
+async function assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): Promise<string[]> {
+  const hostProtectedRoots = await protectedRoots(environment);
   if (hostProtectedRoots.some((root) => overlaps(scratchPath, root))) {
     throw new Error("formal_qa_scratch_credential_overlap");
   }
@@ -136,8 +151,9 @@ function assertScratchCredentialSeparation(scratchPath: string, environment: Nod
 }
 
 export const formalQaCodexExecutorTestOnly = {
-  assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): void {
-    assertScratchCredentialSeparation(resolve(scratchPath), environment);
+  async assertScratchCredentialSeparation(scratchPath: string, environment: NodeJS.ProcessEnv): Promise<void> {
+    const trusted = await trustedScratchPath(scratchPath);
+    await assertScratchCredentialSeparation(trusted, environment);
   },
   protectedRoots,
 };
@@ -202,7 +218,7 @@ export async function executeFormalQaCodexAppServer(input: {
   }
   const scratchPath = await trustedScratchPath(input.scratchPath);
   const sourceEnvironment = input.environment ?? process.env;
-  const hostProtectedRoots = assertScratchCredentialSeparation(scratchPath, sourceEnvironment);
+  const hostProtectedRoots = await assertScratchCredentialSeparation(scratchPath, sourceEnvironment);
   const providerHome = await mkdtemp(join(tmpdir(), "paperclip-formal-qa-codex-"));
   await chmod(providerHome, 0o700);
   const providerStats = await lstat(providerHome);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,28 +20,49 @@ afterEach(async () => {
 });
 
 describe("Formal-QA Codex executor", () => {
-  it("allows instance scratch under HOME while rejecting scratch inside the Codex credential home", () => {
-    const environment = { HOME: "/home/test", CODEX_HOME: "/home/test/.codex" };
-    const instanceScratch = "/home/test/.paperclip/instances/default/formal-qa-review-scratch";
+  it("allows instance scratch under HOME while rejecting scratch inside the Codex credential home", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "formal-qa-home-"));
+    const codexHome = path.join(home, ".codex");
+    const instanceScratch = path.join(home, ".paperclip/instances/default/formal-qa-review-scratch");
+    const credentialScratch = path.join(codexHome, "formal-qa-review-scratch");
+    tempDirs.push(home);
+    await mkdir(instanceScratch, { recursive: true });
+    await mkdir(credentialScratch, { recursive: true });
+    const environment = { HOME: home, CODEX_HOME: codexHome };
 
-    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
-      instanceScratch,
-      environment,
-    )).not.toThrow();
-    expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).toEqual(["/home/test/.codex"]);
-    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
-      "/home/test/.codex/formal-qa-review-scratch",
-      environment,
-    )).toThrow("formal_qa_scratch_credential_overlap");
+    await expect(formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      instanceScratch, environment,
+    )).resolves.toBeUndefined();
+    await expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).resolves.toEqual([codexHome]);
+    await expect(formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      credentialScratch, environment,
+    )).rejects.toThrow("formal_qa_scratch_credential_overlap");
   });
 
-  it("protects the resolved ~/.codex credential home when CODEX_HOME is not explicit", () => {
-    const environment = { HOME: "/home/test" };
-    expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).toEqual(["/home/test/.codex"]);
-    expect(() => formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
-      "/home/test/.codex/review",
-      environment,
-    )).toThrow("formal_qa_scratch_credential_overlap");
+  it("protects the resolved ~/.codex credential home when CODEX_HOME is not explicit", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "formal-qa-home-"));
+    const codexHome = path.join(home, ".codex");
+    const credentialScratch = path.join(codexHome, "review");
+    tempDirs.push(home);
+    await mkdir(credentialScratch, { recursive: true });
+    const environment = { HOME: home };
+    await expect(formalQaCodexExecutorTestOnly.protectedRoots(environment)).resolves.toEqual([codexHome]);
+    await expect(formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      credentialScratch, environment,
+    )).rejects.toThrow("formal_qa_scratch_credential_overlap");
+  });
+
+  it("rejects a credential symlink that aliases the trusted scratch tree", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "formal-qa-home-"));
+    const instanceScratch = path.join(home, ".paperclip/instances/default/formal-qa-review-scratch");
+    const codexHome = path.join(home, ".codex");
+    tempDirs.push(home);
+    await mkdir(instanceScratch, { recursive: true });
+    await symlink(instanceScratch, codexHome, "dir");
+
+    await expect(formalQaCodexExecutorTestOnly.assertScratchCredentialSeparation(
+      instanceScratch, { HOME: home, CODEX_HOME: codexHome },
+    )).rejects.toThrow("formal_qa_scratch_credential_overlap");
   });
 
   it("interrupts and force-closes a live turn when the control plane aborts it", async () => {
