@@ -1197,6 +1197,7 @@ mod tests {
     fn config(state_dir: PathBuf) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: "ws://127.0.0.1:3000/api/runner/v1/connect/run_1".to_owned(),
+            ca_bundle_path: None,
             state_dir,
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
@@ -1210,6 +1211,7 @@ mod tests {
             p0_reserve_bytes: 4096,
             max_frame_bytes: 65_536,
             reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
         }
     }

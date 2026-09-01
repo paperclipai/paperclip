@@ -20,6 +20,8 @@ The PRP identity binds company, issue, agent, run, environment lease, runner ins
 - Allow the sandbox provider's private preview proxy to reach runnerd on TCP 43127. Do not expose the port with a public sandbox or signed URL.
 - Allow the sandbox outbound access only to destinations explicitly required by the provider runtime.
 - Use Daytona's `wss://` preview URL with normal certificate and hostname validation. The preview token is sent only as the `X-Daytona-Preview-Token` header by Paperclip.
+- Runnerd rejects public plaintext `ws://` destinations. Public dial targets require `wss://` with hostname validation and either the platform trust store or an explicitly staged private CA bundle.
+- Listener mode binds only `0.0.0.0:43127`, accepts only the run-specific `/api/runner/v1/connect/:runId` path, and rejects WebSocket extension negotiation. PRP authentication and application-layer secure frames remain mandatory above the preview-proxy hop.
 - Do not put the bootstrap ticket in argv, files, provider environment, logs, or model context. Inject it into runnerd's initial environment/secret channel; runnerd already removes it from its environment immediately.
 - Runnerd is the only process allowed to reach PRP. The provider communicates with runnerd over inherited pipes.
 
