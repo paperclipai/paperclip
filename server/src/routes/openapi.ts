@@ -42,6 +42,8 @@ import {
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  // Formal-QA preparation
+  createFormalQaPreparationSchema,
   // Company
   createCompanySchema,
   updateCompanySchema,
@@ -1048,6 +1050,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/issues/{issueId}/attachments",
   "POST /api/companies/{companyId}/projects",
   "POST /api/projects/{id}/workspaces",
+  "POST /api/companies/{companyId}/formal-qa-preparations",
   "POST /api/companies/{companyId}/routines",
   "POST /api/companies/{companyId}/folders",
   "POST /api/companies/{companyId}/folders/ensure-my",
@@ -2898,6 +2901,41 @@ registry.registerPath({
   summary: "Delete a project workspace",
   request: { params: z.object({ id: z.string(), workspaceId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Formal-QA preparation ─────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/formal-qa-preparations",
+  tags: ["formal-qa"],
+  summary: "List inert exact-head Formal-QA preparation receipts",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ projectId: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/formal-qa-preparations",
+  tags: ["formal-qa"],
+  summary: "Create an inert exact-head Formal-QA preparation receipt",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createFormalQaPreparationSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/formal-qa-preparations/{id}",
+  tags: ["formal-qa"],
+  summary: "Get a Formal-QA preparation receipt",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Routines ────────────────────────────────────────────────────────────────

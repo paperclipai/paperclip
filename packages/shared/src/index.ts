@@ -1790,6 +1790,12 @@ export {
 } from "./validators/index.js";
 
 export {
+  createFormalQaPreparationSchema,
+  formalQaPreparationStatusSchema,
+  type CreateFormalQaPreparation,
+} from "./validators/formal-qa-preparation.js";
+
+export {
   createCompanySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,

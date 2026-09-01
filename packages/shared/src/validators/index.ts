@@ -72,6 +72,11 @@ export {
   type UpdateSmokeRun,
   type RecordSmokeRunStep,
 } from "./smoke-lab.js";
+export {
+  createFormalQaPreparationSchema,
+  formalQaPreparationStatusSchema,
+  type CreateFormalQaPreparation,
+} from "./formal-qa-preparation.js";
 
 export {
   createCompanySchema,
