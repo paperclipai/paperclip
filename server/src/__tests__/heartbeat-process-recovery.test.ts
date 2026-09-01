@@ -5255,7 +5255,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       livenessState: "blocked",
     });
     // The owner must be someone other than the blocked assignee, otherwise the
-    // wake is an address that resolves back to the sender (HIV-2811, below).
+    // wake is an address that resolves back to the sender (the recovery fix, below).
     const ownerAgentId = randomUUID();
     await db.insert(agents).values({
       id: ownerAgentId,
@@ -5302,11 +5302,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   /**
-   * HIV-2811. Until this test existed the sweep re-woke the blocked assignee
+   * the recovery fix. Until this test existed the sweep re-woke the blocked assignee
    * from the descriptor that assignee had just written, on every pass — the
    * `recoveryKey` carries the latest run id, so the idempotency key was fresh
-   * each time. LUN-1317 ran 40 times in under three hours that way, and
-   * HIV-2719, the only routine allowed to promote a finding to assigned work,
+   * each time. the affected task ran 40 times in under three hours that way, and
+   * the finding routine, the only routine allowed to promote a finding to assigned work,
    * ran 25 times in 30 minutes while 30 findings queued behind it.
    *
    * The previous test above asserted exactly this loop as correct behaviour; it

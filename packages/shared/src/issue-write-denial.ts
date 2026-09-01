@@ -223,10 +223,10 @@ export function describeIssueWriteDenial(
       };
 
     /**
-     * HIV-2811, second half. `in_progress` alone used to emit the run-lock copy
+     * the recovery fix, second half. `in_progress` alone used to emit the run-lock copy
      * above, so a refusal with no run behind it still read "checked out and a
      * run is live … wait for the run to release the lock". Measured
-     * 2026-09-01: HIV-2785 refused a peer write with `checkoutRunId`,
+     * 2026-09-01: the write-denial fix refused a peer write with `checkoutRunId`,
      * `executionRunId` and `executionLockedAt` all null. The caller believed a
      * release was coming, blocked itself, and named itself the unblock owner
      * to wait for it — a wait no event could ever end.

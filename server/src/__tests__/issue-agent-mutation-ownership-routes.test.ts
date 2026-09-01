@@ -807,7 +807,7 @@ describe("agent issue mutation checkout ownership", () => {
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
     // The lock has to be on the issue for this to be the lock case. Until
-    // HIV-2811 this fixture set no run at all and still got the run-lock
+    // the recovery fix this fixture set no run at all and still got the run-lock
     // refusal, which is the conflation the fix removes; the sibling test below
     // now owns the no-run case.
     mockIssueService.getById.mockResolvedValue(makeIssue({ checkoutRunId: ownerRunId }));
@@ -831,8 +831,8 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   /**
-   * HIV-2811, second half. An `in_progress` issue with no run holding it is a
-   * permission boundary, not a lock. Measured 2026-09-01 on HIV-2785:
+   * the recovery fix, second half. An `in_progress` issue with no run holding it is a
+   * permission boundary, not a lock. Measured 2026-09-01 on the write-denial fix:
    * checkoutRunId, executionRunId and executionLockedAt all null, and the peer
    * still read "wait for the run to release the lock" — so it blocked itself
    * and named itself the unblock owner to wait for a release no event could

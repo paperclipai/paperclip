@@ -3732,7 +3732,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        // HIV-2811: a descriptor naming the issue's own assignee resolves back
+        // the recovery fix: a descriptor naming the issue's own assignee resolves back
         // to the sender. The sweep is where that closes into a loop, because
         // `recoveryKey` carries the latest run id and so mints a fresh
         // idempotency key on every pass. Suppress, and do not fall through to

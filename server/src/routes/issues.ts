@@ -4141,7 +4141,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       checkoutRunId?: string | null;
-      /** With checkoutRunId, decides run-lock vs assignee-scope denial (HIV-2811). */
+      /** With checkoutRunId, decides run-lock vs assignee-scope denial (the recovery fix). */
       executionRunId?: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
@@ -4192,7 +4192,7 @@ export function issueRoutes(
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so the copy routes to comments either way. But WHICH refusal
         // this is depends on whether a run actually holds the issue, and until
-        // HIV-2811 `in_progress` alone claimed a live checkout: a peer read
+        // the recovery fix `in_progress` alone claimed a live checkout: a peer read
         // "wait for the run to release the lock" off an issue whose
         // checkoutRunId, executionRunId and executionLockedAt were all null,
         // and armed a wait that no event could end. A lock clears on its own;

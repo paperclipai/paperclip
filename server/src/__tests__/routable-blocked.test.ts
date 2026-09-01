@@ -78,7 +78,7 @@ describe("routable blocked notifications", () => {
     });
   });
 
-  // HIV-2811. LUN-1317 ran 40 times in under three hours and HIV-2719 25 times
+  // the recovery fix. the affected task ran 40 times in under three hours and the finding routine 25 times
   // in 30 minutes, each cycle woken by a descriptor naming the agent that had
   // just written it.
   it("does not wake on a descriptor addressed back to the blocked assignee", async () => {

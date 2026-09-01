@@ -12,13 +12,13 @@ type RoutableBlockedIssue = {
 };
 
 /**
- * HIV-2811: an unblock descriptor whose owner is the issue's own assignee is an
+ * the recovery fix: an unblock descriptor whose owner is the issue's own assignee is an
  * address that resolves back to the sender. Waking on it asks the agent that
  * just blocked to perform the thing it has already reported it cannot do, so
  * the wake produces the same block, which produces the next wake.
  *
- * Measured 2026-09-01: LUN-1317 ran 40 times in under three hours, 38 of them
- * recorded `livenessState: blocked`; HIV-2719 ran 25 times in 30 minutes and,
+ * Measured 2026-09-01: the affected task ran 40 times in under three hours, 38 of them
+ * recorded `livenessState: blocked`; the finding routine ran 25 times in 30 minutes and,
  * being the only routine permitted to promote a finding to assigned work, held
  * 30 queued findings shut while it cycled. Both descriptors named the blocked
  * agent itself.
