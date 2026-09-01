@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   resolvePaperclipDesiredSkillNames,
@@ -165,17 +166,23 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
-  const unhealthy = effective.installedConnections.filter((connection) =>
+  // App access is optional runtime context. Keep usable assignments pinned, but
+  // do not stop unrelated work because an assigned app needs attention.
+  const availableConnectionIds = new Set(effective.installedConnections.filter((connection) =>
     permitted.has(connection.id)
+    && connection.status === "active"
+    && connection.enabled
+    && !isToolConnectionAttentionHealth(connection.healthStatus)
     && ["mcp_remote", "local_stdio"].includes(connection.transport)
-    && (!connection.enabled || connection.status !== "active" || ["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)),
-  );
-  if (unhealthy.length) throw new Error(`assigned native MCP connection is unavailable: ${unhealthy.map((connection) => connection.id).join(", ")}`);
+  ).map((connection) => connection.id));
   const assignment = {
     version: 1,
     agentId: input.agent.id,
-    connections: effective.installedConnections.filter((connection) => permitted.has(connection.id) && connection.status === "active" && connection.enabled && ["mcp_remote", "local_stdio"].includes(connection.transport)).map((connection) => connection.id).sort(),
-    tools: effective.allowedTools.map((tool) => tool.id).sort(),
+    connections: [...availableConnectionIds].sort(),
+    tools: effective.allowedTools
+      .filter((tool) => availableConnectionIds.has(tool.connectionId))
+      .map((tool) => tool.id)
+      .sort(),
   };
   const assignmentDigest = sha256(JSON.stringify(assignment));
   return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };

@@ -31,6 +31,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  isToolConnectionAttentionHealth,
   type BillingType,
   type CostStatus,
   type EnvironmentLeaseStatus,
@@ -3989,7 +3990,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
-  failOnUnavailableAssignedConnection?: boolean;
+  expectedAssignmentDigest?: string | null;
+  onUnavailableAssignedConnections?: (
+    connections: Array<{ id: string; name: string }>,
+  ) => void | Promise<void>;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveProfilesForAgent(
@@ -4025,19 +4029,39 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     permittedConnectionIds.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && !["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)
+    && !isToolConnectionAttentionHealth(connection.healthStatus)
     && (connection.transport === "mcp_remote" || connection.transport === "local_stdio")
   );
   const unhealthyConnections = effective.installedConnections.filter((connection) =>
     permittedConnectionIds.has(connection.id)
     && (connection.transport === "mcp_remote" || connection.transport === "local_stdio")
-    && (!connection.enabled || connection.status !== "active" || ["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)),
+    && (!connection.enabled || connection.status !== "active" || isToolConnectionAttentionHealth(connection.healthStatus)),
   );
-  if (input.failOnUnavailableAssignedConnection && unhealthyConnections.length) {
-    throw new Error(
-      `assigned native MCP connection is unavailable: ${unhealthyConnections.map((connection) => connection.id).join(", ")}`,
-    );
+  if (unhealthyConnections.length && input.onUnavailableAssignedConnections) {
+    try {
+      await input.onUnavailableAssignedConnections(
+        unhealthyConnections
+          .map(({ id, name }) => ({ id, name }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          runId: input.runId,
+          err: error,
+        },
+        "failed to report unavailable runtime MCP connections",
+      );
+    }
   }
+  const assignedConnectionIds = new Set(
+    assignedConnections.map((connection) => connection.id),
+  );
+  const assignedTools = effective.allowedTools.filter((tool) =>
+    assignedConnectionIds.has(tool.connectionId)
+  );
   const service = createToolGatewayService(input.db);
   if (assignedConnections.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
@@ -4052,11 +4076,19 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     version: 1,
     agentId: input.agent.id,
     connections: assignedConnections.map((connection) => connection.id).sort(),
-    tools: effective.allowedTools.map((tool) => tool.id).sort(),
+    tools: assignedTools.map((tool) => tool.id).sort(),
   };
   const assignmentDigest = createHash("sha256")
     .update(JSON.stringify(assignment))
     .digest("hex");
+  // Native runs may lose access after their immutable context is captured, but
+  // they must never gain a new or changed assignment during dispatch.
+  if (
+    input.expectedAssignmentDigest !== undefined
+    && input.expectedAssignmentDigest !== assignmentDigest
+  ) {
+    return [];
+  }
   const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
   let [profile] = await input.db
     .select()
@@ -4082,7 +4114,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           applicationId: connection.applicationId,
           connectionId: connection.id,
         })),
-      ...effective.allowedTools
+      ...assignedTools
         .filter((tool) => !fullConnectionIds.has(tool.connectionId))
         .map((tool) => ({
           selectorType: "catalog_entry" as const,
@@ -20522,20 +20554,29 @@ export function heartbeatService(
           if (nativeRuntimeResolution.kind === "native") {
             if (!nativeExecution || !nativeRunnerInstanceId)
               throw new Error("native_runtime_selection_not_persisted");
+            const expectedNativeMcpDigest =
+              "runtimeContext" in nativeExecution
+              && nativeExecution.runtimeContext.mcp.bindingId
+                ? nativeExecution.runtimeContext.mcp.digest
+                : null;
             const nativeMcpServers = await buildPaperclipRuntimeMcpServers({
               db,
               agent,
               runId: run.id,
-              failOnUnavailableAssignedConnection: true,
+              expectedAssignmentDigest: expectedNativeMcpDigest,
+              onUnavailableAssignedConnections: async (connections) => {
+                const names = connections.map((connection) => connection.name).join(", ");
+                await onLog(
+                  "stderr",
+                  `[paperclip] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
+                );
+              },
             });
-            if (!("runtimeContext" in nativeExecution) && nativeMcpServers.length) {
-              throw new Error("historical native runs cannot acquire newly assigned MCP access");
-            }
             if ("runtimeContext" in nativeExecution) {
               if (nativeMcpServers.length > 1) throw new Error("native MCP realization must produce one aggregate gateway");
               const server = nativeMcpServers[0] ?? null;
               const digest = server?.connectionId.startsWith("assignment:") ? server.connectionId.slice("assignment:".length) : null;
-              if (digest !== (nativeExecution.runtimeContext.mcp.bindingId ? nativeExecution.runtimeContext.mcp.digest : null)) {
+              if (digest && digest !== expectedNativeMcpDigest) {
                 throw new Error("native MCP assignment digest mismatch");
               }
             }
