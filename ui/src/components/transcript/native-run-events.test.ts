@@ -336,6 +336,26 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("does not append a fallback after a channel-less final delta", () => {
+    expect(nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "message-final", {
+        kind: "assistant_message",
+        text: "",
+      }),
+      itemEvent(2, "item.delta", "message-final", {
+        text: "Streamed final reply.",
+      }),
+      event(3, "run.result.proposed", runResult("Structured fallback.")),
+    ])).toEqual([
+      expect.objectContaining({
+        kind: "assistant",
+        text: "Streamed final reply.",
+        delta: true,
+        channel: "unknown",
+      }),
+    ]);
+  });
+
   it("keeps progress separate from the final runner response", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.completed", {

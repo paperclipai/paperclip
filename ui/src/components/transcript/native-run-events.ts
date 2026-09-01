@@ -392,7 +392,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // Before that point the deltas still provide the live streaming view.
       if (completedAgentMessageIds.has(itemId)) continue;
       const channel = itemIdentity.assistantChannel;
-      if (channel === "final") hasFinalAssistantMessage = true;
+      if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, delta: true, channel });
       continue;
     }
