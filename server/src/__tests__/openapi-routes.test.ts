@@ -387,11 +387,46 @@ function assertsBoardUnconditionally(
     if (!/[A-Za-z_$]/.test(char)) continue;
     if (/[\w$.]/.test(handlerSource[i - 1] ?? " ")) continue; // mid-identifier, or a `.method(` call
     if (!callPattern.test(handlerSource.slice(i, i + window))) continue;
-    // Reject a braceless `if (...) assertBoard(req);` / `else assertBoard(req);`.
-    if (/\b(if|else)\s*(\([^()]*\))?\s*$/.test(handlerSource.slice(0, i).trimEnd())) continue;
+    if (!isUnconditionalStatement(handlerSource, i)) continue;
     return true;
   }
   return false;
+}
+
+/**
+ * True when the call starting at `at` is executed unconditionally — a statement of
+ * its own, or the initializer of a plain `const`/`let` declarator. Anything guarded
+ * by an operator is not: `x && assertBoard(req)`, `flag ? assertBoard(req) : null`
+ * and `if (needsBoard(req)) assertBoard(req)` all reach the assertion only sometimes.
+ *
+ * Reading the preceding token rather than pattern-matching the text before it: the
+ * earlier `\b(if|else)\s*(\([^()]*\))?\s*$` test could not see a condition containing
+ * its own parentheses, so `if (needsBoard(req)) assertBoard(req)` read as
+ * unconditional.
+ */
+function isUnconditionalStatement(source: string, at: number) {
+  let j = at - 1;
+  const skipWhitespace = () => {
+    while (j >= 0 && /\s/.test(source[j])) j--;
+  };
+  skipWhitespace();
+  if (j >= 4 && source.slice(j - 4, j + 1) === "await") {
+    j -= 5;
+    skipWhitespace();
+  }
+  if (j < 0) return true;
+  const previous = source[j];
+  if (previous === ";" || previous === "{" || previous === "}") return true;
+  // `const userId = boardUserId(req);` asserts just as unconditionally, but only
+  // when the `=` is a declarator's, not part of `==`, `=>`, `+=` or a guarded
+  // assignment such as `ok && (x = f(req))`.
+  if (previous !== "=") return false;
+  if (j > 0 && "=!<>+-*/%&|^".includes(source[j - 1])) return false;
+  if (source[j + 1] === ">") return false;
+  let start = j - 1;
+  while (start >= 0 && !";{}".includes(source[start])) start--;
+  const target = source.slice(start + 1, j);
+  return !/[(?]|&&|\|\|/.test(target);
 }
 
 /**
@@ -399,19 +434,59 @@ function assertsBoardUnconditionally(
  * over `seed`. A declaration whose body unconditionally calls a known assertion is
  * itself an assertion, so the pass repeats until nothing new is found (a wrapper may
  * be declared above the wrapper it calls).
+ *
+ * Each declaration is analyzed over its own body only. Slicing to end-of-file instead
+ * lets a declaration without a brace body — `const filters = (req) => ({ ... })` —
+ * borrow the next unrelated `=> {` further down and inherit its assertion, which
+ * quietly seeded the set with names like `body`, `path` and `payload`.
  */
 function resolveBoardAssertNames(masked: string, seed: ReadonlySet<string>) {
   const names = new Set(seed);
-  const declarations = declarationsIn(masked);
+  const declarations = declarationsIn(masked)
+    .map((declaration) => ({ ...declaration, body: declarationBody(masked, declaration) }))
+    .filter((declaration): declaration is typeof declaration & { body: string } => declaration.body !== null);
   for (;;) {
     const found = declarations.filter(
       (declaration) =>
         !names.has(declaration.name) &&
-        assertsBoardUnconditionally(masked.slice(declaration.index), names, declaration.isNamedFunction),
+        assertsBoardUnconditionally(declaration.body, names, declaration.isNamedFunction),
     );
     if (found.length === 0) return names;
     for (const declaration of found) names.add(declaration.name);
   }
+}
+
+/**
+ * The declaration's own text, from its start through the closing brace of its body.
+ * Null when it has no brace body (a concise arrow, an overload signature), so an
+ * unanalyzable declaration is skipped rather than reading someone else's body.
+ */
+function declarationBody(masked: string, declaration: { index: number; isNamedFunction: boolean }) {
+  const source = masked.slice(declaration.index);
+  const bodyStart = declaration.isNamedFunction ? namedFunctionBodyStart(source) : arrowFunctionBodyStart(source);
+  if (bodyStart < 0) return null;
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(0, i + 1);
+  }
+  return null;
+}
+
+// Offset of the brace opening a `const name = (...) => { ... }` body, requiring the
+// arrow to belong to this declaration's own parameter list.
+function arrowFunctionBodyStart(source: string) {
+  const open = source.indexOf("(");
+  if (open < 0) return -1;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")" && --depth === 0) {
+      const body = source.slice(i + 1).match(/^\s*(?::[^{;=]*)?=>\s*\{/);
+      return body ? i + 1 + body[0].length - 1 : -1;
+    }
+  }
+  return -1;
 }
 
 // A few routes pass a named handler rather than an inline arrow. Resolve the
@@ -441,6 +516,15 @@ function registrationArguments(masked: string, registrationIndex: number) {
   return null;
 }
 
+function braceBalanceOf(masked: string) {
+  let balance = 0;
+  for (const char of masked) {
+    if (char === "{") balance++;
+    else if (char === "}") balance--;
+  }
+  return balance;
+}
+
 function loadActualRoutes() {
   const routes = new Set<string>();
   const boardGuardedRoutes = new Set<string>();
@@ -449,10 +533,13 @@ function loadActualRoutes() {
 
   // The shared assertions first: everything in `authz.ts` that bottoms out in
   // `assertBoard`. Route files then extend this with their own local wrappers.
-  const sharedAssertNames = resolveBoardAssertNames(
-    maskLiterals(fs.readFileSync(path.join(ROUTES_DIR, AUTHZ_FILE), "utf8")),
-    new Set([BOARD_ASSERT_ROOT]),
-  );
+  // `authz.ts` has no `apiPrefixes` entry, so it never passes through the loop's
+  // brace-balance check below — but every route file's assertion set is seeded from
+  // it, and losing `assertBoardOrgAccess` alone would drop 25 routes from coverage
+  // with every pinned expectation still green. Balance it explicitly.
+  const maskedAuthz = maskLiterals(fs.readFileSync(path.join(ROUTES_DIR, AUTHZ_FILE), "utf8"));
+  if (braceBalanceOf(maskedAuthz) !== 0) unbalancedRouteFiles.push(AUTHZ_FILE);
+  const sharedAssertNames = resolveBoardAssertNames(maskedAuthz, new Set([BOARD_ASSERT_ROOT]));
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
@@ -469,12 +556,7 @@ function loadActualRoutes() {
     // source. Record files the masker cannot balance rather than scanning them
     // wrongly and silently under-reporting.
     const masked = maskLiterals(source);
-    let braceBalance = 0;
-    for (const char of masked) {
-      if (char === "{") braceBalance++;
-      else if (char === "}") braceBalance--;
-    }
-    if (braceBalance !== 0) unbalancedRouteFiles.push(file);
+    if (braceBalanceOf(masked) !== 0) unbalancedRouteFiles.push(file);
 
     const assertNames = resolveBoardAssertNames(masked, sharedAssertNames);
 
@@ -654,11 +736,33 @@ describe("openapi routes", () => {
     expect([...closure("function gate(req: Request, res: Response): string | null { assertBoard(req); }")])
       .toContain("gate");
 
-    // Conditional assertions do not make a wrapper an assertion.
+    // Conditional assertions do not make a wrapper an assertion. The braceless
+    // cases matter most: a condition containing its own parentheses, and the
+    // operator forms, all reach the assertion only sometimes.
     expect([...closure("function maybe(req: Request) { if (req.actor.type === 'board') assertBoard(req); }")])
       .not.toContain("maybe");
     expect([...closure("function branch(req: Request) { if (x) { assertBoard(req); } }")])
       .not.toContain("branch");
+    expect([...closure("function nested(req: Request) { if (needsBoard(req)) assertBoard(req); }")])
+      .not.toContain("nested");
+    expect([...closure("function andForm(req: Request) { x && assertBoard(req); }")]).not.toContain("andForm");
+    expect([...closure("function ternary(req: Request) { flag ? assertBoard(req) : null; }")])
+      .not.toContain("ternary");
+    // ...but a plain declarator initializer is unconditional.
+    expect([...closure("function viaConst(req: Request) { const id = assertBoard(req); return id; }")])
+      .toContain("viaConst");
+    expect([...closure("async function viaAwait(req: Request) { const id = await assertBoard(req); return id; }")])
+      .toContain("viaAwait");
+
+    // A declaration with no brace body must not borrow the next one's. Without
+    // bounding each declaration to its own body, `concise` inherits `real`'s
+    // assertion and the closure fills up with names like `body` and `payload`.
+    const spillover = closure(`
+      const concise = (req: Request) => ({ id: req.params.id });
+      const real = (req: Request) => { assertBoard(req); };
+    `);
+    expect([...spillover]).toContain("real");
+    expect([...spillover]).not.toContain("concise");
 
     const names = new Set([BOARD_ASSERT_ROOT]);
 
