@@ -135,7 +135,6 @@ import {
   reconcileNativeFinalizations,
   resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
-import { resolveAcpxCodexManagedCredentialEnvironment } from "./native-runtime/acpx-managed-credential.js";
 import type { NativeRunHistoricalSpan } from "./native-runtime/native-run-trace.js";
 import {
   parseNativeExecutionInput,
@@ -20599,12 +20598,6 @@ export function heartbeatService(
                     // keeping the agent's configured provider values authoritative.
                     runnerEnvironment: {
                       ...buildNativeProviderEnvironment(adapterEnv),
-                      ...(nativeExecution.provider.kind === "acpx" &&
-                      nativeExecution.provider.agent === "codex"
-                        ? resolveAcpxCodexManagedCredentialEnvironment(
-                            adapterEnv,
-                          )
-                        : {}),
                       ...(nativeMcpServer
                         ? {
                             PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
