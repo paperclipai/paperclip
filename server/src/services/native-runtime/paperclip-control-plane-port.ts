@@ -69,13 +69,20 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
-  constructor(db: Db, binding: PaperclipControlPlaneBinding, options: {
-    onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-  } = {}) {
+  constructor(
+    db: Db,
+    binding: PaperclipControlPlaneBinding,
+    options: {
+      onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+      onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+    } = {},
+  ) {
     this.#db = db;
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#onDuplicateEvent = options.onDuplicateEvent;
   }
 
   #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
@@ -197,7 +204,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         canonicalPayload: event as unknown as Record<string, unknown>,
       },
     });
-    if (persisted.disposition === "committed") await this.#onCommittedEvent?.(event);
+    if (persisted.disposition === "committed") {
+      await this.#onCommittedEvent?.(event);
+    } else {
+      // A recovered runner may replay the event whose durable side effects
+      // parked the prior attempt. Do not repeat those effects, but let the
+      // embedding runtime refresh observational state before appendEvent
+      // returns to its synchronous governed-wait boundary.
+      await this.#onDuplicateEvent?.(event);
+    }
     return {
       cursor: persisted.row.seq,
       highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,

@@ -257,6 +257,24 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("rejects an unsupported persisted runner provider before probing Codex", async () => {
+    const adapter = requireServerAdapter("paperclip_runner");
+    const result = await adapter.testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "opencode" },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "fail",
+      checks: [{
+        code: "paperclip_runner_provider_unsupported",
+        level: "error",
+      }],
+    });
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({

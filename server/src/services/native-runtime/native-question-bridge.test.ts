@@ -11,6 +11,7 @@ import {
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import type { PrpEvent } from "@paperclipai/paperclip-runner";
 
@@ -105,6 +106,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       title: "Answer a native question",
       status: "in_progress",
       assigneeAgentId: agentId,
+      responsibleUserId: "operator-1",
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -118,6 +120,12 @@ describeEmbeddedPostgres("native question bridge", () => {
       runnerInstanceId,
       driverKind: "codex",
       contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "observed",
     });
   }
 

@@ -65,6 +65,8 @@ export interface TaskChatMessageItem {
   author: TaskChatAuthorKind;
   authorName?: string;
   text: string;
+  /** Runner-authored output channel. Legacy adapters leave this unset. */
+  channel?: "progress" | "final" | "unknown";
   timestamp?: string;
   /** Show a streaming cursor and suppress collapse while true. */
   streaming?: boolean;
@@ -121,6 +123,8 @@ export interface TaskChatThinkingItem {
   collapsed?: boolean;
   /** Human-readable elapsed label for the collapsed header. */
   summaryLabel?: string;
+  /** Provider-emitted reasoning surface; never synthesized by the UI. */
+  channel?: "summary" | "detail" | "unknown";
 }
 
 /** A tool invocation row (ACP tool_call / tool_call_update). */
