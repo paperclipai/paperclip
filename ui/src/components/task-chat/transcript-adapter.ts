@@ -1351,9 +1351,21 @@ export function buildTurnTimelineRows(
     }
     return current;
   };
-  const lastVisible = [...parsed]
+  const legacyReplyBoundary = [...parsed]
     .reverse()
-    .find((item) => item.kind !== "thinking");
+    .find((item) => {
+      if (item.kind === "usage" || item.kind === "status") return false;
+      if (item.kind === "marker") {
+        return item.variant === "interrupted";
+      }
+      if (item.kind === "protocol") {
+        return (
+          item.surface === "provider_activity" ||
+          item.surface === "runtime_request"
+        );
+      }
+      return true;
+    });
   for (const item of parsed) {
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
@@ -1361,7 +1373,8 @@ export function buildTurnTimelineRows(
       // the last-visible fallback until the posted reply lands.
       const explicitFinal = item.channel === "final" || item.interstitial === false;
       const legacyTrailingReply =
-        (item.channel == null || item.channel === "unknown") && item === lastVisible;
+        (item.channel == null || item.channel === "unknown") &&
+        item === legacyReplyBoundary;
       if (!running && (explicitFinal || legacyTrailingReply)) continue;
       current = {
         id: `${item.id}:phase`,

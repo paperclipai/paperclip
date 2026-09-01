@@ -1481,6 +1481,107 @@ describe("settledRunChildren (PAP-361)", () => {
     expect(phase.items.map((item) => item.kind)).toEqual(["usage"]);
   });
 
+  it("keeps a channel-less final reply out of activity when bookkeeping follows it", () => {
+    const finalThenBookkeeping = transcriptToTaskChatItems([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "Done — the direct adapter finished.",
+      } as TranscriptEntry,
+      {
+        kind: "result",
+        ts: TS,
+        text: "",
+        inputTokens: 40,
+        outputTokens: 10,
+        cachedTokens: 0,
+        costUsd: 0,
+        subtype: "paperclip_runner_usage",
+        isError: false,
+        errors: [],
+      } as TranscriptEntry,
+    ], { runId: "legacy-run", running: false });
+
+    const children = settledRunChildren(finalThenBookkeeping);
+    expect(children).toHaveLength(1);
+    const phase = children[0];
+    expect(phase.kind).toBe("activity_phase");
+    if (phase.kind !== "activity_phase") return;
+    expect(phase.interstitial).toBeUndefined();
+    expect(phase.items.map((item) => item.kind)).toEqual(["usage"]);
+  });
+
+  it("keeps a channel-less final reply out of activity when a workspace summary follows it", () => {
+    const finalReply = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Done — the workspace is updated.",
+        } as TranscriptEntry,
+      ],
+      { runId: "legacy-run", running: false },
+    );
+    const children = settledRunChildren([
+      ...finalReply,
+      {
+        id: "workspace-summary",
+        kind: "protocol",
+        surface: "workspace_change",
+        changeSetId: "changes-1",
+        revision: 1,
+        source: "harness_reported",
+        complete: true,
+        files: [],
+        totals: { files: 0, additions: 0, deletions: 0 },
+        patchArtifactRef: null,
+      },
+    ]);
+
+    expect(children).toHaveLength(1);
+    expect(children[0]?.kind).toBe("protocol");
+    expect(
+      children.some(
+        (child) =>
+          child.kind === "activity_phase" &&
+          child.interstitial?.text === "Done — the workspace is updated.",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not hide channel-less commentary when real activity follows it", () => {
+    const commentaryThenToolAndUsage = transcriptToTaskChatItems([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "Checking the direct adapter first.",
+      } as TranscriptEntry,
+      toolCall("Read", { file_path: "a.ts" }),
+      {
+        kind: "result",
+        ts: TS,
+        text: "",
+        inputTokens: 40,
+        outputTokens: 10,
+        cachedTokens: 0,
+        costUsd: 0,
+        subtype: "paperclip_runner_usage",
+        isError: false,
+        errors: [],
+      } as TranscriptEntry,
+    ], { runId: "legacy-run", running: false });
+
+    const children = settledRunChildren(commentaryThenToolAndUsage);
+    expect(children).toHaveLength(1);
+    const phase = children[0];
+    expect(phase.kind).toBe("activity_phase");
+    if (phase.kind !== "activity_phase") return;
+    expect(phase.interstitial?.text).toBe(
+      "Checking the direct adapter first.",
+    );
+    expect(phase.items.map((item) => item.kind)).toEqual(["tool", "usage"]);
+  });
+
   it("matches the folded summary's tool count exactly (row-count parity)", () => {
     const children = settledRunChildren(parsed);
     const summary = buildTurnSummary(transcript);
