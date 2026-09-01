@@ -4230,6 +4230,7 @@ describe("IssueDetail", () => {
       };
       mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(directRun);
       mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([directRun]);
+      mockIssuesApi.getQueuedComments.mockClear();
 
       await act(async () => {
         root.render(
@@ -4274,6 +4275,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
       id: "run-active-1",
+      runtimeMode: "native",
       status: "running",
       invocationSource: "issue",
       triggerDetail: null,

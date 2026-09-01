@@ -759,7 +759,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [liveRun]);
 
   const heldPaperclipRunnerRunId =
-    isNativePaperclipRunnerRun(liveRun)
+    liveRun && isNativePaperclipRunnerRun(liveRun)
       ? liveRun.id
       : settlingRun &&
           isNativePaperclipRunnerRun(
