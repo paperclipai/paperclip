@@ -527,6 +527,37 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
   });
 
+  it("does not raise a long-active review while the source issue waits on a scheduled monitor", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const nextCheckAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: { monitor: { nextCheckAt: nextCheckAt.toISOString(), notes: "waiting for a date gate" } },
+        monitorNextCheckAt: nextCheckAt,
+      })
+      .where(eq(issues.id, seeded.issueId));
+    const service = productivityReviewService(db);
+
+    const waiting = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(waiting.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    const afterMonitor = await service.reconcileProductivityReviews({
+      now: new Date(nextCheckAt.getTime() + 60 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+
+    expect(afterMonitor.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

@@ -16,6 +16,7 @@ import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { hasScheduledIssueMonitorPath } from "./recovery/issue-graph-liveness.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -547,7 +548,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    // A scheduled monitor is the supported way to express waiting: the issue is
+    // parked until nextCheckAt and the harness will wake it then. Counting that
+    // wait as an active episode raises a long_active review on every sweep until
+    // the monitor fires, so an issue waiting on a date collects reviews for as
+    // long as it waits.
+    const waitingOnScheduledMonitor = hasScheduledIssueMonitorPath(sourceIssue, now);
+    const longActive =
+      !waitingOnScheduledMonitor && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
