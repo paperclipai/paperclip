@@ -2,7 +2,8 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -11,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::handshake::server::ErrorResponse;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
@@ -261,14 +263,13 @@ impl RunnerTransportEndpoint {
                         )))
                     }
                 };
-                stream.set_nonblocking(false).map_err(|error| {
+                stream.set_nonblocking(true).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "runner ingress stream configuration failed: {error}"
                     ))
                 })?;
-                configure_auth_timeouts(&stream)?;
                 let expected_path = path.clone();
-                let socket = accept_hdr_with_config(
+                let mut handshake = accept_hdr_with_config(
                     stream,
                     move |request: &tungstenite::handshake::server::Request, response| {
                         if request.uri().path() != expected_path
@@ -285,14 +286,44 @@ impl RunnerTransportEndpoint {
                         Ok(response)
                     },
                     Some(websocket_config()),
-                )
-                .map_err(|error| {
+                );
+                let deadline = Instant::now() + AUTH_TIMEOUT;
+                let mut socket = loop {
+                    match handshake {
+                        Ok(socket) => break socket,
+                        Err(HandshakeError::Interrupted(mid_handshake))
+                            if Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                            handshake = mid_handshake.handshake();
+                        }
+                        Err(error) => {
+                            return Err(DurableRunnerError::invalid(format!(
+                                "runner ingress WebSocket upgrade failed: {error}"
+                            )))
+                        }
+                    }
+                };
+                socket.get_mut().set_nonblocking(false).map_err(|error| {
                     DurableRunnerError::invalid(format!(
-                        "runner ingress WebSocket upgrade failed: {error}"
+                        "runner ingress stream configuration failed: {error}"
                     ))
                 })?;
+                configure_auth_timeouts(socket.get_ref())?;
                 Ok(Some(RunnerSocket::Listen(socket)))
             }
+        }
+    }
+
+    fn bootstrap_failure_may_have_consumed_ticket(&self, credential_proven: bool) -> bool {
+        match self {
+            // In dial mode the configured server owns bootstrap admission. Once
+            // authentication starts, a lost response may hide consumption.
+            Self::Dial(_) => true,
+            // A listener peer is untrusted until it proves possession of the
+            // bootstrap-derived authentication key. Malformed upgrades and
+            // challenges before that point cannot consume the runner's ticket.
+            Self::Listen { .. } => credential_proven,
         }
     }
 }
@@ -661,10 +692,15 @@ impl ConnectFailure {
         }
     }
 
-    fn after_auth_started(error: DurableRunnerError, credential_kind: &str) -> Self {
+    fn after_auth_started(
+        error: DurableRunnerError,
+        credential_kind: &str,
+        bootstrap_may_have_been_consumed: bool,
+    ) -> Self {
         Self {
             error,
-            bootstrap_maybe_consumed: credential_kind == "bootstrap",
+            bootstrap_maybe_consumed: credential_kind == "bootstrap"
+                && bootstrap_may_have_been_consumed,
         }
     }
 }
@@ -701,6 +737,7 @@ impl AuthenticatedTransport {
         else {
             return Ok(None);
         };
+        let mut credential_proven = false;
 
         let authenticate =
             || -> Result<(Self, Welcome), DurableRunnerError> {
@@ -760,6 +797,11 @@ impl AuthenticatedTransport {
                     &[&signing_bytes],
                     &challenge.server_proof,
                 )?;
+                // A valid server proof demonstrates that this peer possesses
+                // the bootstrap-derived key. Failures before this point in
+                // listener mode are safe to reject without discarding the
+                // still-unused one-use ticket.
+                credential_proven = true;
                 let client_proof = hex_encode(&hmac_domain(
                     &credential.auth_key,
                     "paperclip-runner-client-proof-v1",
@@ -802,9 +844,14 @@ impl AuthenticatedTransport {
                     validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
                 Ok((transport, welcome))
             };
-        authenticate()
-            .map(Some)
-            .map_err(|error| ConnectFailure::after_auth_started(error, credential_kind))
+        let result = authenticate();
+        result.map(Some).map_err(|error| {
+            ConnectFailure::after_auth_started(
+                error,
+                credential_kind,
+                endpoint.bootstrap_failure_may_have_consumed_ticket(credential_proven),
+            )
+        })
     }
 
     pub(crate) fn send_json(&mut self, value: &Value) -> Result<(), DurableRunnerError> {
@@ -1157,7 +1204,11 @@ fn receive_plain(
     socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Value, DurableRunnerError> {
-    receive_plain_optional(socket, max_frame_bytes)?
+    receive_plain_optional_until(
+        socket,
+        max_frame_bytes,
+        Some(Instant::now() + AUTH_TIMEOUT),
+    )?
         .ok_or_else(|| DurableRunnerError::invalid("WebSocket message timed out"))
 }
 
@@ -1165,7 +1216,20 @@ fn receive_plain_optional(
     socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Option<Value>, DurableRunnerError> {
+    receive_plain_optional_until(socket, max_frame_bytes, None)
+}
+
+fn receive_plain_optional_until(
+    socket: &mut (impl WebSocketMessages + ?Sized),
+    max_frame_bytes: usize,
+    deadline: Option<Instant>,
+) -> Result<Option<Value>, DurableRunnerError> {
     loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(DurableRunnerError::invalid(
+                "WebSocket authentication message deadline elapsed",
+            ));
+        }
         match socket.read_message() {
             Ok(Message::Text(text)) => {
                 if text.len() > max_frame_bytes {
@@ -1303,10 +1367,11 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
 
-    use tungstenite::accept;
+    use tungstenite::{accept, client};
 
     use super::*;
 
@@ -1539,6 +1604,98 @@ mod tests {
         ] {
             assert!(validate_listener_path(path).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn listener_rejects_invalid_peer_before_accepting_valid_bootstrap_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let config = config(address.port());
+        let state = test_state(&config);
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+
+        let (invalid_ready, invalid_connected) = mpsc::channel();
+        let invalid_path = path.clone();
+        let invalid_config = config.clone();
+        let invalid_peer = thread::spawn(move || {
+            let stream = TcpStream::connect(address).unwrap();
+            invalid_ready.send(()).unwrap();
+            let (mut socket, _) = client(format!("ws://{address}{invalid_path}"), stream).unwrap();
+            receive_plain(&mut socket, invalid_config.max_frame_bytes).unwrap();
+            send_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_challenge",
+                    "payload": {},
+                }),
+                invalid_config.max_frame_bytes,
+            )
+            .unwrap();
+        });
+        invalid_connected.recv().unwrap();
+        let invalid_failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid listener peer unexpectedly authenticated"),
+        };
+        assert!(!invalid_failure.bootstrap_maybe_consumed);
+        invalid_peer.join().unwrap();
+
+        let (valid_ready, valid_connected) = mpsc::channel();
+        let valid_config = config.clone();
+        let valid_state = state.clone();
+        let valid_peer = thread::spawn(move || {
+            let stream = TcpStream::connect(address).unwrap();
+            valid_ready.send(()).unwrap();
+            let (mut socket, _) = client(format!("ws://{address}{path}"), stream).unwrap();
+            let expires = current_unix_ms().unwrap() + 60_000;
+            let mut secure = server_authenticate(
+                &mut socket,
+                &valid_config,
+                &valid_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: expires,
+                    revocation_epoch: 0,
+                },
+            );
+            send_secure(
+                &mut socket,
+                &mut secure,
+                &valid_config,
+                &welcome(
+                    &valid_state,
+                    "connection_1",
+                    Some("lease-secret"),
+                    expires,
+                    0,
+                    vec![],
+                ),
+            );
+        });
+        valid_connected.recv().unwrap();
+        let (_, accepted) =
+            AuthenticatedTransport::connect(&endpoint, &config, &state, Some(&ticket), None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(accepted.connection.connection_id, "connection_1");
+        assert_eq!(accepted.lease.unwrap().expose().unwrap(), "lease-secret");
+        valid_peer.join().unwrap();
     }
 
     #[test]
