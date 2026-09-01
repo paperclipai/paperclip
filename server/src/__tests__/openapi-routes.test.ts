@@ -127,9 +127,219 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   return `${prefix}${routePath}`;
 }
 
+// Routes registered with a shared path constant instead of a string literal,
+// so `ROUTE_LITERAL_PATTERN` cannot see them.
+const constantPathRoutes: Array<{ file: string; marker: string; route: string }> = [
+  { file: "companies.ts", marker: "router.post(COMPANY_IMPORT_ROUTE_PATH", route: "POST /api/companies/import" },
+  {
+    file: "companies.ts",
+    marker: "router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH",
+    route: `POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`,
+  },
+];
+
+/**
+ * Masks string, template, comment and regex-literal contents with spaces,
+ * preserving length so offsets stay valid against the raw source. Brace
+ * counting on the result reflects real block nesting.
+ *
+ * Masking rather than parsing because TypeScript 7 no longer exposes the
+ * syntactic compiler API (`ts.createSourceFile` and friends are gone from the
+ * published package), and a real parser is not worth a new dependency for one
+ * test. The trade is covered rather than assumed: `loadActualRoutes` refuses to
+ * report any file this masker cannot brace-balance, and the test asserts that
+ * list is empty, so a masking bug fails the suite instead of silently shrinking
+ * what gets checked.
+ */
+function maskLiterals(source: string) {
+  const out = source.split("");
+  const regexPrecedingKeywords = new Set([
+    "return", "typeof", "case", "in", "of", "new", "delete", "void", "instanceof", "do", "else", "yield", "await",
+  ]);
+  // A `/` opens a regex literal unless the previous token can end an expression.
+  const opensRegex = (at: number) => {
+    let j = at - 1;
+    while (j >= 0 && /\s/.test(out[j])) j--;
+    if (j < 0) return true;
+    if (/[A-Za-z0-9_$]/.test(out[j])) {
+      let k = j;
+      while (k >= 0 && /[A-Za-z0-9_$]/.test(out[k])) k--;
+      return regexPrecedingKeywords.has(out.slice(k + 1, j + 1).join(""));
+    }
+    return !")]".includes(out[j]);
+  };
+
+  const blocks: string[] = [];
+  // Never write past the end: the masked source must stay the same length as
+  // the input for offsets to remain valid against it.
+  const blank = (at: number) => {
+    if (at < source.length) out[at] = " ";
+  };
+  let state = "code";
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (state === "code") {
+      if (char === "/" && (next === "/" || next === "*")) {
+        state = next === "/" ? "line" : "block";
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        continue;
+      }
+      if (char === "/" && opensRegex(i)) {
+        out[i] = " ";
+        i++;
+        let inClass = false;
+        for (; i < source.length && source[i] !== "\n"; i++) {
+          const regexChar = source[i];
+          if (regexChar === "\\") {
+            blank(i);
+            blank(i + 1);
+            i++;
+            continue;
+          }
+          if (regexChar === "[") inClass = true;
+          else if (regexChar === "]") inClass = false;
+          out[i] = " ";
+          if (regexChar === "/" && !inClass) {
+            i++;
+            break;
+          }
+        }
+        while (i < source.length && /[a-z]/.test(source[i])) out[i++] = " ";
+        continue;
+      }
+      if (char === '"' || char === "'" || char === "`") {
+        state = char === "`" ? "template" : "string";
+        blocks.push(char);
+        i++;
+        continue;
+      }
+      if (char === "{") {
+        blocks.push("brace");
+        i++;
+        continue;
+      }
+      if (char === "}") {
+        if (blocks.pop() === "substitution") state = "template";
+        i++;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (state === "line") {
+      if (char === "\n") state = "code";
+      else out[i] = " ";
+      i++;
+      continue;
+    }
+    if (state === "block") {
+      if (char === "*" && next === "/") {
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        state = "code";
+        continue;
+      }
+      if (char !== "\n") out[i] = " ";
+      i++;
+      continue;
+    }
+    // string or template
+    if (char === "\\") {
+      blank(i);
+      blank(i + 1);
+      i += 2;
+      continue;
+    }
+    if (char === blocks[blocks.length - 1]) {
+      blocks.pop();
+      state = "code";
+      i++;
+      continue;
+    }
+    if (state === "template" && char === "$" && next === "{") {
+      blocks.push("substitution");
+      state = "code";
+      i += 2;
+      continue;
+    }
+    if (char !== "\n") out[i] = " ";
+    i++;
+  }
+  return out.join("");
+}
+
+// Every one of these begins with `assertBoard(req)` (see `routes/authz.ts`), so
+// each is at least as strict as board-only and none of them can admit an agent
+// actor. `assertInstanceAdmin` and `assertBoardOrgAccess` are strictly stricter;
+// the spec renders both as `actor: "board"`, which is what this guard checks, so
+// it deliberately does not try to tell the three apart.
+const BOARD_ASSERT_PATTERN = /^(assertBoard|assertBoardOrgAccess|assertInstanceAdmin)\(req\)\s*;/;
+
+/**
+ * True when every request that reaches this handler runs a board assertion —
+ * the assertion is a statement of the handler body itself, not of a branch.
+ * `try { ... }` is transparent because it does not make a statement
+ * conditional; `catch`, `if`/`else` and every other block are not.
+ *
+ * One-directional by design: a handler that gates on board access some other
+ * way (a middleware, a bespoke helper) simply is not reported, so the guard
+ * never demands that an operation be annotated `board` on a guess.
+ */
+function assertsBoardUnconditionally(handlerSource: string, isNamedFunction = false) {
+  const bodyStart = handlerSource.search(isNamedFunction ? /\)\s*\{/ : /=>\s*\{/);
+  if (bodyStart < 0) return false;
+  const blocks: string[] = [];
+  for (let i = handlerSource.indexOf("{", bodyStart); i < handlerSource.length; i++) {
+    const char = handlerSource[i];
+    if (char === "{") {
+      blocks.push(blocks.length > 0 && /\btry$/.test(handlerSource.slice(0, i).trimEnd()) ? "try" : "block");
+      continue;
+    }
+    if (char === "}") {
+      blocks.pop();
+      if (blocks.length === 0) return false;
+      continue;
+    }
+    if (char !== "a") continue;
+    if (blocks.slice(1).some((kind) => kind !== "try")) continue;
+    if (!BOARD_ASSERT_PATTERN.test(handlerSource.slice(i, i + 40))) continue;
+    // Reject a braceless `if (...) assertBoard(req);` / `else assertBoard(req);`.
+    if (/\b(if|else)\s*(\([^()]*\))?\s*$/.test(handlerSource.slice(0, i).trimEnd())) continue;
+    return true;
+  }
+  return false;
+}
+
+// A few routes pass a named handler rather than an inline arrow. Resolve the
+// identifier against the same file and analyze the function it names.
+function namedHandlerAssertsBoard(masked: string, registrationIndex: number) {
+  const open = masked.indexOf("(", registrationIndex);
+  let depth = 0;
+  let close = open;
+  for (; close < masked.length; close++) {
+    if (masked[close] === "(") depth++;
+    else if (masked[close] === ")" && --depth === 0) break;
+  }
+  const args = masked.slice(open + 1, close);
+  if (args.includes("=>")) return false;
+  const handlerName = args.split(",").pop()?.trim() ?? "";
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(handlerName)) return false;
+  const declared = masked.search(new RegExp(`(?:async\\s+)?function\\s+${handlerName}\\s*\\(`));
+  if (declared >= 0) return assertsBoardUnconditionally(masked.slice(declared), true);
+  const assigned = masked.search(new RegExp(`const\\s+${handlerName}\\s*=\\s*(?:async\\s*)?\\(`));
+  return assigned >= 0 && assertsBoardUnconditionally(masked.slice(assigned));
+}
+
 function loadActualRoutes() {
   const routes = new Set<string>();
+  const boardGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
+  const unbalancedRouteFiles: string[] = [];
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
@@ -142,21 +352,46 @@ function loadActualRoutes() {
       continue;
     }
 
-    for (const match of source.matchAll(ROUTE_LITERAL_PATTERN)) {
+    // Board-guard detection reads block structure, so it needs the masked
+    // source. Record files the masker cannot balance rather than scanning them
+    // wrongly and silently under-reporting.
+    const masked = maskLiterals(source);
+    let braceBalance = 0;
+    for (const char of masked) {
+      if (char === "{") braceBalance++;
+      else if (char === "}") braceBalance--;
+    }
+    if (braceBalance !== 0) unbalancedRouteFiles.push(file);
+
+    const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
+    registrations.forEach((match, index) => {
       const method = match[1].toUpperCase();
       const routePath = match[2];
-      routes.add(`${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`);
-    }
+      const route = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
+      routes.add(route);
 
-    if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")) {
-      routes.add("POST /api/companies/import");
-    }
-    if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH")) {
-      routes.add(`POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`);
+      const next = registrations[index + 1];
+      const handlerSource = masked.slice(match.index, next ? next.index : masked.length);
+      if (assertsBoardUnconditionally(handlerSource) || namedHandlerAssertsBoard(masked, match.index)) {
+        boardGuardedRoutes.add(route);
+      }
+    });
+
+    for (const { file: constantFile, marker, route } of constantPathRoutes) {
+      if (file !== constantFile) continue;
+      const at = source.indexOf(marker);
+      if (at < 0) continue;
+      routes.add(route);
+      if (assertsBoardUnconditionally(masked.slice(at))) boardGuardedRoutes.add(route);
     }
   }
 
-  return { routes, unknownRouteFiles: unknownRouteFiles.sort() };
+  return {
+    routes,
+    boardGuardedRoutes,
+    unknownRouteFiles: unknownRouteFiles.sort(),
+    unbalancedRouteFiles: unbalancedRouteFiles.sort(),
+  };
 }
 
 function loadSpecRoutes() {
@@ -280,6 +515,40 @@ describe("openapi routes", () => {
       missingInSpec: [],
       extraInSpec: [],
     });
+  });
+
+  it("annotates every unconditionally board-guarded route as board-only", () => {
+    const { boardGuardedRoutes, unbalancedRouteFiles } = loadActualRoutes();
+    const { spec } = loadSpecRoutes();
+
+    // The scan only means anything while it can still read the route files.
+    expect(unbalancedRouteFiles).toEqual([]);
+    expect([...boardGuardedRoutes]).toContain("POST /api/execution-workspaces/{id}/reconcile-branch");
+    expect([...boardGuardedRoutes]).toContain("GET /api/tools/oauth/cloud-connector/callback");
+    // `assertInstanceAdmin` is recognised too, and a multi-line registration is
+    // still matched.
+    expect([...boardGuardedRoutes]).toContain("PATCH /api/adapters/{type}");
+    expect([...boardGuardedRoutes]).toContain("GET /api/heartbeat-runs/{runId}/provider-trace/download");
+    // Negative controls: a board assertion buried in a branch does not count.
+    // `POST /api/invites/{inviteId}/revoke` asserts instance admin only for
+    // bootstrap-CEO invites, and `POST /api/agents/{id}/heartbeat/invoke`
+    // explicitly admits an agent actor and asserts only when a provider trace is
+    // requested. Both are genuinely `board_or_agent`.
+    expect([...boardGuardedRoutes]).not.toContain("POST /api/invites/{inviteId}/revoke");
+    expect([...boardGuardedRoutes]).not.toContain("POST /api/agents/{id}/heartbeat/invoke");
+
+    const mislabeled = [...boardGuardedRoutes]
+      .filter((route) => {
+        const separator = route.indexOf(" ");
+        const operation = spec.paths?.[route.slice(separator + 1)]?.[route.slice(0, separator).toLowerCase()];
+        // A guarded route missing from the spec entirely is the coverage test's
+        // failure to report, not this one's.
+        if (!operation) return false;
+        return operation["x-paperclip-authorization"]?.actor !== "board";
+      })
+      .sort();
+
+    expect(mislabeled).toEqual([]);
   });
 
   it("documents auth and reviewed response-code invariants", () => {
