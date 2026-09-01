@@ -806,6 +806,12 @@ describe("agent issue mutation checkout ownership", () => {
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
+    // The lock has to be on the issue for this to be the lock case. Until
+    // HIV-2811 this fixture set no run at all and still got the run-lock
+    // refusal, which is the conflation the fix removes; the sibling test below
+    // now owns the no-run case.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ checkoutRunId: ownerRunId }));
+
     const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -822,6 +828,36 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  /**
+   * HIV-2811, second half. An `in_progress` issue with no run holding it is a
+   * permission boundary, not a lock. Measured 2026-09-01 on HIV-2785:
+   * checkoutRunId, executionRunId and executionLockedAt all null, and the peer
+   * still read "wait for the run to release the lock" — so it blocked itself
+   * and named itself the unblock owner to wait for a release no event could
+   * produce, which is the loop this issue is about.
+   */
+  it("tells a peer that an unheld in_progress issue is assignee-scoped, not locked", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ checkoutRunId: null, executionRunId: null }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("issue_write_assignee_scoped_field_edit");
+    expect(res.body.details.boundary).toBe("Assignee-scoped field edit");
+    expect(res.body.details.checkoutRunId).toBeNull();
+    expect(res.body.details.executionRunId).toBeNull();
+    expect(res.body.error).toContain("Who can act:");
+    expect(res.body.error).toContain("Comment instead");
+    // The whole point: nothing here invites a wait.
+    expect(res.body.error).not.toContain("wait");
+    expect(res.body.error).not.toContain("release the lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {

@@ -29,6 +29,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_responsible_user_ceiling",
   "issue_write_responsible_user_unavailable",
   "issue_write_assignee_run_lock",
+  "issue_write_assignee_scoped_field_edit",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
@@ -219,6 +220,37 @@ export function describeIssueWriteDenial(
         sanctionedPath:
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
           `wait for the run to release the lock and retry.`,
+      };
+
+    /**
+     * HIV-2811, second half. `in_progress` alone used to emit the run-lock copy
+     * above, so a refusal with no run behind it still read "checked out and a
+     * run is live … wait for the run to release the lock". Measured
+     * 2026-09-01: HIV-2785 refused a peer write with `checkoutRunId`,
+     * `executionRunId` and `executionLockedAt` all null. The caller believed a
+     * release was coming, blocked itself, and named itself the unblock owner
+     * to wait for it — a wait no event could ever end.
+     *
+     * So the two states get different words. `boundary`, not `lock`, and 403,
+     * not 409: nothing here clears on its own, and a retry will be refused the
+     * same way. The copy must not contain the word "wait".
+     */
+    case "issue_write_assignee_scoped_field_edit":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Assignee-scoped field edit",
+        title: "Field edits on this task belong to its assignee",
+        description:
+          `${issue} is assigned to ${assignee} and no run holds it. Writes are open, but ` +
+          `field edits stay assignee-scoped, so this refusal is a permission boundary — ` +
+          `not a lock that will clear.`,
+        whoCanAct:
+          `${assignee}, or an agent holding the manage-active-checkouts permission.`,
+        sanctionedPath:
+          `Comment instead of patching — comments stay open and wake ${assignee}. Retrying ` +
+          `the edit will be refused the same way, so do not hold work open for a release.`,
       };
 
     case "cross_issue_influence_cap_exceeded": {
