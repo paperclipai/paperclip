@@ -1030,33 +1030,60 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     // thread/read, and then exits nonzero. Recovery preserves the completed
     // run outcome, while the later idle provider failure remains visible.
     let mut recovered = CodexCommandExecutor::new(&directory);
-    let mut recovered_event_types = Vec::new();
+    let mut recovered_events = Vec::new();
     let recovered_exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < recovered_exit_deadline {
-        recovered_event_types.extend(
-            poll_and_ack(&mut recovered)
-                .expect("poll restored provider after idle crash")
-                .into_iter()
-                .map(|event| event.event_type),
-        );
-        if recovered_event_types
+        recovered_events
+            .extend(poll_and_ack(&mut recovered).expect("poll restored provider after idle crash"));
+        if recovered_events
             .iter()
-            .any(|event| event == "session.failed")
+            .any(|event| event.event_type == "session.failed")
         {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert!(recovered_event_types
+    assert!(recovered_events
         .iter()
-        .any(|event| event == "session.failed"));
-    assert!(!recovered_event_types
+        .any(|event| event.event_type == "session.failed"));
+    let resumed_index = recovered_events
         .iter()
-        .any(|event| event == "turn.failed"));
+        .position(|event| event.event_type == "session.resumed")
+        .expect("recovery identifies the replacement provider process");
+    let resumed = &recovered_events[resumed_index];
+    assert_eq!(resumed.payload["providerSessionId"], "codex-thread-1");
     assert_eq!(
-        recovered_event_types
+        resumed.payload["providerAccountSessionId"],
+        "codex-account-session"
+    );
+    assert!(resumed.payload["processId"]
+        .as_u64()
+        .is_some_and(|pid| pid > 0));
+    assert_eq!(
+        recovered_events
             .iter()
-            .filter(|event| event.as_str() == "session.reconciled")
+            .filter(|event| event.event_type == "session.resumed")
+            .count(),
+        1,
+        "recovery identifies the replacement provider process exactly once"
+    );
+    assert!(!recovered_events
+        .iter()
+        .any(|event| event.event_type == "turn.failed"));
+    let reconciled_index = recovered_events
+        .iter()
+        .position(|event| event.event_type == "session.reconciled")
+        .expect("recovery reconciles the restored provider");
+    let failed_index = recovered_events
+        .iter()
+        .position(|event| event.event_type == "session.failed")
+        .expect("the resumed provider exit fails its session");
+    assert!(resumed_index < reconciled_index);
+    assert!(resumed_index < failed_index);
+    assert_eq!(
+        recovered_events
+            .iter()
+            .filter(|event| event.event_type == "session.reconciled")
             .count(),
         1,
         "recovery is reconciled once, but the resumed provider exit fails its session"
@@ -1067,6 +1094,10 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     )
     .expect("parse provider state after resumed exit");
     assert_eq!(recovered_persisted["lifecycle"], "provider_exited");
+    assert_eq!(
+        recovered_persisted["providerSessionId"],
+        "codex-account-session"
+    );
     assert_eq!(recovered_persisted["providerProcessGeneration"], 2);
     assert_eq!(recovered_persisted["completedTurnProcessGeneration"], 1);
     assert_eq!(call_count(&directory, "thread/read"), 1);

@@ -1025,16 +1025,29 @@ impl CodexCommandExecutor {
                     "failed to restore Codex completion authority: {error}"
                 ))
             })?;
-        self.provider = Some(provider);
+        let resumed_provider_session_id = provider.provider_session_id().map(str::to_owned);
+        let resumed_process_id = provider.process_id();
         {
             let state = self
                 .state
                 .as_mut()
                 .expect("Codex state remains available during recovery");
             state.provider_process_generation = process_generation;
+            state.provider_session_id = resumed_provider_session_id.clone();
             state.settled_provider_turn_ids = settled_provider_turn_ids;
             state.settled_provider_turn_filter = settled_provider_turn_filter;
+            state.push_terminal_event(NormalizedProviderEvent {
+                event_type: "session.resumed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({
+                    "provider": "codex",
+                    "providerSessionId": thread_id.clone(),
+                    "providerAccountSessionId": resumed_provider_session_id,
+                    "processId": resumed_process_id,
+                }),
+            })?;
         }
+        self.provider = Some(provider);
         if provider_had_exited
             || ambiguous_turn_start_pending
             || recovered_active_turn_id != previous_active_turn_id

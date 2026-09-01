@@ -382,7 +382,7 @@ it("rehydrates canonical workspace changes without reconstructing the diff", () 
   });
 });
 
-it("resolves identity from canonical durable session events", () => {
+it("resolves canonical and legacy durable session identities", () => {
   expect(
     resolveRunnerdSessionIdentity({
       provider: "codex",
@@ -394,6 +394,17 @@ it("resolves identity from canonical durable session events", () => {
     processId: 4242,
     threadId: "provider-thread-1",
     sessionId: "provider-account-1",
+  });
+  expect(
+    resolveRunnerdSessionIdentity({
+      threadId: "legacy-thread-1",
+      sessionId: "legacy-session-1",
+      runtimeIdentity: { process_id: 4343 },
+    }),
+  ).toEqual({
+    processId: 4343,
+    threadId: "legacy-thread-1",
+    sessionId: "legacy-session-1",
   });
 });
 
