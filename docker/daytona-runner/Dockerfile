@@ -12,7 +12,7 @@ COPY packages/paperclip-runner/protocol ../protocol
 RUN cargo build --locked --release -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
 
-FROM node:24.11-bookworm AS provider-pack-build
+FROM node:24-bookworm AS provider-pack-build
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
