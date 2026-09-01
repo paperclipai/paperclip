@@ -495,6 +495,45 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     });
   });
 
+  it("does not reuse an acknowledgement from a different queue", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          queuedSteeringAcknowledgements: {
+            [seeded.commentIds[0]]: {
+              status: "acknowledged",
+              queueId: randomUUID(),
+              turnId: "turn-from-another-queue",
+              acknowledgedAt: "2026-08-22T15:04:00.000Z",
+            },
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({
+        queueId: seeded.wakeId,
+        targetRunId: seeded.runId,
+        revision: initial.body.revision,
+      });
+
+    expect(steered.status).toBe(409);
+    expect(steered.body.details).toMatchObject({
+      code: "steering_temporarily_unavailable",
+      retryable: true,
+    });
+    const queueAfterFailure = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(queueAfterFailure.body.entries.map((entry: any) => entry.comment.id))
+      .toEqual(seeded.commentIds);
+  });
+
   it("keeps queue edits available during handoff but rejects stale same-turn steering", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))

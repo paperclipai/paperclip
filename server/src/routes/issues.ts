@@ -11966,7 +11966,10 @@ export function issueRoutes(
           const runResult = readObject(locked.activeRun.resultJson);
           const acknowledgements = readObject(runResult.queuedSteeringAcknowledgements);
           const priorAcknowledgement = readObject(acknowledgements[commentId]);
-          if (priorAcknowledgement.status === "acknowledged") {
+          if (
+            priorAcknowledgement.status === "acknowledged"
+            && priorAcknowledgement.queueId === req.body.queueId
+          ) {
             duplicate = true;
             acknowledgedTurnId = typeof priorAcknowledgement.turnId === "string"
               ? priorAcknowledgement.turnId
