@@ -19,6 +19,7 @@ import {
   type CapabilityLiveSessionSnapshot,
   type CapabilityLiveSessionStore,
   type CapabilityLiveTransportFactory,
+  type CapabilityLiveTurnEvent,
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
@@ -62,6 +63,7 @@ interface FakeProviderState {
   attachments: Array<{ runId: string; turnId: string; itemId: string }>;
   holdAfterTool: boolean;
   closeError: Error | null;
+  usageRunDelta: Record<string, unknown> | null;
   onTurnStart?: () => Promise<void>;
 }
 
@@ -253,6 +255,12 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
             outputTokens: this.state.nextTurn * 10,
             reasoningOutputTokens: this.state.nextTurn * 2,
           },
+          ...(this.state.usageRunDelta === null
+            ? {}
+            : {
+                runDeltaAvailable: true,
+                runDelta: this.state.usageRunDelta,
+              }),
         },
       },
     });
@@ -300,6 +308,7 @@ function providerState(): FakeProviderState {
     attachments: [],
     holdAfterTool: false,
     closeError: null,
+    usageRunDelta: null,
   };
 }
 
@@ -649,6 +658,65 @@ describe("Capability live runnerd and Codex session", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+    await service.shutdown(session.id);
+  });
+
+  it("streams normalized usage before terminal with cumulative fallback and explicit run deltas", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({
+      runId: "run-live-usage-stream",
+      sessionId: "session-live-usage-stream",
+    });
+    const events: CapabilityLiveTurnEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    await session.sendMessage("report cumulative usage");
+    state.usageRunDelta = {
+      requests: 2,
+      inputTokens: 7,
+      outputTokens: 3,
+      cachedInputTokens: 1,
+      reasoningTokens: 2,
+      providerCostUsd: 0.004,
+    };
+    await session.sendMessage("report explicit run delta");
+    unsubscribe();
+
+    const usageEvents = events.filter(
+      (event): event is Extract<CapabilityLiveTurnEvent, { kind: "usage" }> =>
+        event.kind === "usage",
+    );
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({
+      turnId: "turn-1",
+      usage: {
+        providerRequests: 1,
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 20,
+        reasoningTokens: 2,
+        costNanodollars: 0,
+      },
+    });
+    expect(usageEvents[1]).toMatchObject({
+      turnId: "turn-2",
+      usage: {
+        providerRequests: 2,
+        inputTokens: 7,
+        outputTokens: 3,
+        cachedInputTokens: 1,
+        reasoningTokens: 2,
+        costNanodollars: 4_000_000,
+      },
+    });
+    for (const usageEvent of usageEvents) {
+      const usageIndex = events.indexOf(usageEvent);
+      const terminalIndex = events.findIndex(
+        (event) => event.kind === "terminal" && event.turnId === usageEvent.turnId,
+      );
+      expect(terminalIndex).toBeGreaterThan(usageIndex);
+    }
     await service.shutdown(session.id);
   });
 

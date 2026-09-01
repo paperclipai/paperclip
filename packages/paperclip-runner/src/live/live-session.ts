@@ -375,6 +375,21 @@ export type CapabilityLiveTurnEvent =
       seq: number;
       at: string;
       turnId: string | null;
+      kind: "usage";
+      /** Current provider-reported usage for the active turn. */
+      usage: {
+        providerRequests: number;
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens: number;
+        reasoningTokens: number;
+        costNanodollars: number;
+      };
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
       kind: "terminal";
       status: CapabilityLiveTurnResult["status"];
       assistantText: string;
@@ -398,6 +413,8 @@ type CapabilityLiveTurnEventInput = CapabilityLiveTurnEvent extends infer Varian
 
 /** Bound on interim events per turn; terminal and error always get through. */
 export const CAPABILITY_LIVE_TURN_EVENT_LIMIT = 4_000;
+/** Separate bound so provider usage cannot be starved by delta/activity traffic. */
+const CAPABILITY_LIVE_USAGE_EVENT_LIMIT = 512;
 
 export interface CapabilityInteractionResolution {
   interactionId: string;
@@ -1102,6 +1119,7 @@ export class CapabilityLiveSession {
   readonly #listeners = new Set<CapabilityLiveTurnListener>();
   #eventSeq = 0;
   #turnEventCount = 0;
+  #turnUsageEventCount = 0;
   readonly #rawUsageByTurn = new Map<string, {
     providerRequests: number;
     inputTokens: number;
@@ -1228,8 +1246,10 @@ export class CapabilityLiveSession {
   }
 
   #emit(event: CapabilityLiveTurnEventInput): void {
-    const bounded = event.kind === "delta" || event.kind === "activity";
-    if (bounded) {
+    if (event.kind === "usage") {
+      if (this.#turnUsageEventCount >= CAPABILITY_LIVE_USAGE_EVENT_LIMIT) return;
+      this.#turnUsageEventCount += 1;
+    } else if (event.kind === "delta" || event.kind === "activity") {
       if (this.#turnEventCount >= CAPABILITY_LIVE_TURN_EVENT_LIMIT) return;
       this.#turnEventCount += 1;
     }
@@ -1417,6 +1437,7 @@ export class CapabilityLiveSession {
     this.#status = "running";
     this.#clearIdleTimer();
     this.#turnEventCount = 0;
+    this.#turnUsageEventCount = 0;
     // Start the baseline before admitting provider work, but do not make turn
     // interruption wait for a potentially large workspace walk. The provider
     // turn id is bound first; the terminal path waits for this baseline before
@@ -2255,27 +2276,56 @@ export class CapabilityLiveSession {
         tokenUsage.total ?? tokenUsage.totalTokenUsage ?? tokenUsage.total_token_usage ?? tokenUsage,
       );
       const runDelta = record(tokenUsage.runDelta ?? params.runDelta);
-      if (turnId.length > 0 && Object.keys(runDelta).length > 0) {
+      if (turnId.length > 0) {
+        const runDeltaAvailable =
+          (params.runDeltaAvailable === true ||
+            tokenUsage.runDeltaAvailable === true) &&
+          Object.keys(runDelta).length > 0;
+        const source = runDeltaAvailable ? runDelta : this.#latestCumulativeUsage;
+        const committed = reconcileCapabilityLiveUsage(this.snapshot());
+        const cumulative = !runDeltaAvailable;
         const integer = (...names: string[]): number => {
           for (const name of names) {
-            const value = runDelta[name];
+            const value = source[name];
             if (Number.isSafeInteger(value) && Number(value) >= 0) return Number(value);
           }
           return 0;
         };
-        const providerCostUsd = typeof runDelta.providerCostUsd === "number"
-          && Number.isFinite(runDelta.providerCostUsd)
-          && runDelta.providerCostUsd >= 0
-          ? runDelta.providerCostUsd
+        const providerCostUsd = typeof source.providerCostUsd === "number"
+          && Number.isFinite(source.providerCostUsd)
+          && source.providerCostUsd >= 0
+          ? source.providerCostUsd
           : 0;
-        this.#rawUsageByTurn.set(turnId, {
-          providerRequests: integer("requests", "providerRequests"),
-          inputTokens: integer("inputTokens", "input_tokens"),
-          outputTokens: integer("outputTokens", "output_tokens"),
-          cachedInputTokens: integer("cacheReadTokens", "cachedInputTokens", "cache_read_input_tokens"),
-          reasoningTokens: integer("reasoningTokens", "reasoning_tokens"),
-          costNanodollars: Math.round(providerCostUsd * 1_000_000_000),
-        });
+        const subtractCommitted = (value: number, prior: number): number =>
+          cumulative ? Math.max(0, value - prior) : value;
+        const usage = {
+          providerRequests: Math.max(1, subtractCommitted(
+            integer("requests", "providerRequests"),
+            committed.providerRequests,
+          )),
+          inputTokens: subtractCommitted(
+            integer("inputTokens", "input_tokens"),
+            committed.inputTokens,
+          ),
+          outputTokens: subtractCommitted(
+            integer("outputTokens", "output_tokens"),
+            committed.outputTokens,
+          ),
+          cachedInputTokens: subtractCommitted(
+            integer("cacheReadTokens", "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens"),
+            committed.cachedInputTokens,
+          ),
+          reasoningTokens: subtractCommitted(
+            integer("reasoningOutputTokens", "reasoningTokens", "reasoning_tokens", "reasoning_output_tokens"),
+            committed.reasoningTokens,
+          ),
+          costNanodollars: subtractCommitted(
+            Math.round(providerCostUsd * 1_000_000_000),
+            committed.costNanodollars,
+          ),
+        };
+        this.#rawUsageByTurn.set(turnId, usage);
+        this.#emit({ turnId, kind: "usage", usage });
       }
     }
     this.#appendEvidence("provider_event", turnId || null, {

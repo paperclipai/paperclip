@@ -7,6 +7,23 @@ const liveSessionMocks = vi.hoisted(() => ({
   }>,
   sendMessage: vi.fn(),
   snapshot: vi.fn(),
+  interrupt: vi.fn(),
+  turnListener: null as
+    | null
+    | ((event: {
+        seq: number;
+        at: string;
+        turnId: string;
+        kind: "usage";
+        usage: {
+          providerRequests: number;
+          inputTokens: number;
+          outputTokens: number;
+          cachedInputTokens: number;
+          reasoningTokens: number;
+          costNanodollars: number;
+        };
+      }) => void),
 }));
 
 vi.mock("../live/live-session.js", () => ({
@@ -21,10 +38,18 @@ vi.mock("../live/live-session.js", () => ({
     async create() {
       return {
         id: "session-shutdown-test",
-        subscribe: () => () => undefined,
+        subscribe: (
+          listener: NonNullable<typeof liveSessionMocks.turnListener>,
+        ) => {
+          liveSessionMocks.turnListener = listener;
+          return () => {
+            liveSessionMocks.turnListener = null;
+          };
+        },
         sendMessage: liveSessionMocks.sendMessage,
         pendingInteractions: () => [],
         snapshot: liveSessionMocks.snapshot,
+        interrupt: liveSessionMocks.interrupt,
       };
     }
 
@@ -45,10 +70,12 @@ describe("live workflow executor infrastructure failures", () => {
   beforeEach(() => {
     liveSessionMocks.shutdown.mockReset();
     liveSessionMocks.createOptions.length = 0;
+    liveSessionMocks.turnListener = null;
     liveSessionMocks.sendMessage.mockReset().mockResolvedValue({
       status: "completed",
       turnId: "turn-shutdown-test",
     });
+    liveSessionMocks.interrupt.mockReset().mockResolvedValue({});
     liveSessionMocks.snapshot.mockReset().mockReturnValue({
       sessionId: "session-shutdown-test",
       authority: {},
@@ -231,5 +258,119 @@ describe("live workflow executor infrastructure failures", () => {
         expect.objectContaining({ id: "cost-budget", passed: false }),
       ]),
     );
+  });
+
+  it("interrupts an active paid turn as soon as live usage reaches its budget", async () => {
+    const emptySnapshot = {
+      sessionId: "session-live-budget-test",
+      authority: {},
+      mockState: JSON.stringify({ tasks: [] }),
+      transcript: [],
+      evidence: [],
+      authorizationRecords: [],
+      attempts: [],
+      usageLedger: [],
+      stateHistory: [],
+      workspaceDiffs: [],
+    };
+    const exceededSnapshot = {
+      ...emptySnapshot,
+      usageLedger: [
+        {
+          receiptId: "usage-live-budget-test",
+          attemptId: "attempt-live-budget-test",
+          providerResponseId: "response-live-budget-test",
+          turnId: "turn-live-budget-test",
+          providerCalls: 1,
+          providerRequests: 1,
+          inputTokens: 80,
+          outputTokens: 20,
+          cachedInputTokens: 0,
+          reasoningTokens: 0,
+          costNanodollars: 10_000_000,
+          observedAt: "2026-09-01T00:00:00.000Z",
+        },
+      ],
+    };
+    let interrupted = false;
+    let turnResolved = false;
+    let resolveTurn:
+      ((value: { status: string; turnId: string }) => void) | null = null;
+    liveSessionMocks.snapshot.mockImplementation(() =>
+      interrupted ? exceededSnapshot : emptySnapshot,
+    );
+    liveSessionMocks.sendMessage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTurn = resolve;
+          queueMicrotask(() => {
+            const usageEvent = {
+              seq: 1,
+              at: "2026-09-01T00:00:00.000Z",
+              turnId: "turn-live-budget-test",
+              kind: "usage",
+              usage: {
+                providerRequests: 1,
+                inputTokens: 80,
+                outputTokens: 20,
+                cachedInputTokens: 0,
+                reasoningTokens: 0,
+                costNanodollars: 10_000_000,
+              },
+            } as const;
+            liveSessionMocks.turnListener?.(usageEvent);
+            liveSessionMocks.turnListener?.({ ...usageEvent, seq: 2 });
+          });
+        }),
+    );
+    liveSessionMocks.interrupt.mockImplementationOnce(async () => {
+      expect(turnResolved).toBe(false);
+      interrupted = true;
+      turnResolved = true;
+      resolveTurn?.({
+        status: "interrupted",
+        turnId: "turn-live-budget-test",
+      });
+      return exceededSnapshot;
+    });
+    const source = RUNNER_LIVE_CANDIDATE_SLOTS[0]!.candidates[0]!;
+    const candidate = {
+      ...source,
+      budget: {
+        ...source.budget,
+        maxTotalTokens: 100,
+        maxCostUsd: 0.01,
+      },
+    };
+    const entry: RunnerLiveScheduleEntry = {
+      executionId: "candidate-live-budget-stop",
+      caseId: "steering-causality",
+      candidateId: candidate.id,
+      slotId: candidate.slotId,
+      repetition: 1,
+      providerTrace: "raw",
+      budget: candidate.budget,
+    };
+
+    const observation = await executeLiveRunnerWorkflow({
+      entry,
+      candidate,
+      evalCase: runnerWorkflowCase(entry.caseId),
+    });
+
+    expect(liveSessionMocks.interrupt).toHaveBeenCalledTimes(1);
+    expect(liveSessionMocks.interrupt).toHaveBeenCalledWith(
+      expect.stringContaining("candidate reported usage budget stop"),
+    );
+    expect(liveSessionMocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(observation).toMatchObject({
+      classification: "candidate_failure",
+      metrics: { totalTokens: 100, costUsd: 0.01 },
+      failure: {
+        code: "candidate_budget_reached",
+        category: "candidate",
+        retryable: false,
+      },
+    });
   });
 });

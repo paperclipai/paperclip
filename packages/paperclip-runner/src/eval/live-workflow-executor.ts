@@ -332,6 +332,34 @@ function candidateBudgetViolations(
   return violations;
 }
 
+function liveCandidateBudgetStopReason(
+  candidate: RunnerLiveEvalCandidate,
+  snapshot: CapabilityLiveSessionSnapshot,
+  usage: Extract<CapabilityLiveTurnEvent, { kind: "usage" }>["usage"],
+): string | null {
+  const committed = usageTotals(snapshot);
+  const totalTokens =
+    committed.totalTokens +
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.reasoningTokens;
+  const costUsd = committed.costUsd + usage.costNanodollars / 1_000_000_000;
+  const reached: string[] = [];
+  if (totalTokens >= candidate.budget.maxTotalTokens) {
+    reached.push(
+      `totalTokens ${totalTokens} reached budget ${candidate.budget.maxTotalTokens}`,
+    );
+  }
+  if (costUsd >= candidate.budget.maxCostUsd) {
+    reached.push(
+      `costUsd ${costUsd} reached budget ${candidate.budget.maxCostUsd}`,
+    );
+  }
+  return reached.length === 0
+    ? null
+    : `candidate reported usage budget stop: ${reached.join("; ")}`;
+}
+
 /** Builds an unscored observation without exposing provider credentials or raw trace payloads. */
 export function unavailableLiveRunnerWorkflowObservation(input: {
   entry: RunnerLiveScheduleEntry;
@@ -448,7 +476,11 @@ export async function executeLiveRunnerWorkflow(input: {
   const startedAt = Date.now();
   let firstVisibleAt: number | null = null;
   let infrastructureError: unknown;
+  let budgetInterrupt: Promise<void> | null = null;
+  let budgetInterruptError: unknown;
+  let budgetStopReason: string | null = null;
   const withinBudget = (): boolean =>
+    budgetStopReason === null &&
     candidateBudgetViolations(input.candidate, session?.snapshot()).length ===
     0;
   try {
@@ -488,6 +520,27 @@ export async function executeLiveRunnerWorkflow(input: {
         (event.kind === "delta" || event.kind === "activity")
       )
         firstVisibleAt = Date.now();
+      if (
+        event.kind === "usage" &&
+        budgetInterrupt === null &&
+        session !== null
+      ) {
+        const reason = liveCandidateBudgetStopReason(
+          input.candidate,
+          session.snapshot(),
+          event.usage,
+        );
+        if (reason !== null) {
+          budgetStopReason = reason;
+          const activeSession = session;
+          budgetInterrupt = activeSession.interrupt(reason).then(
+            () => undefined,
+            (error: unknown) => {
+              budgetInterruptError = error;
+            },
+          );
+        }
+      }
     });
     try {
       if (input.evalCase.id === "cancellation-permissions") {
@@ -519,6 +572,8 @@ export async function executeLiveRunnerWorkflow(input: {
       }
     } finally {
       unsubscribe();
+      if (budgetInterrupt !== null) await budgetInterrupt;
+      if (budgetInterruptError !== undefined) throw budgetInterruptError;
     }
   } catch (error) {
     infrastructureError = error;
@@ -576,6 +631,18 @@ export async function executeLiveRunnerWorkflow(input: {
   const trace = traceMetadata(rawTrace);
   const { totalTokens, costUsd } = usageTotals(snapshot);
   const budgetViolations = candidateBudgetViolations(input.candidate, snapshot);
+  const budgetFailure =
+    budgetViolations.length > 0
+      ? {
+          code: "candidate_budget_exceeded",
+          message: budgetViolations.join("; "),
+        }
+      : budgetStopReason === null
+        ? null
+        : {
+            code: "candidate_budget_reached",
+            message: budgetStopReason,
+          };
   const receiptIds =
     snapshot?.evidence
       .filter((entry) => entry.kind === "tool_result")
@@ -787,14 +854,14 @@ export async function executeLiveRunnerWorkflow(input: {
       snapshot === undefined ? [] : providerEventTypes(snapshot),
     artifactDigests:
       snapshot?.workspaceDiffs?.map((entry) => digestJson(entry.diff)) ?? [],
-    ...(budgetViolations.length === 0
+    ...(budgetFailure === null
       ? {}
       : {
           failure: {
-            code: "candidate_budget_exceeded",
+            code: budgetFailure.code,
             category: "candidate" as const,
             retryable: false,
-            message: budgetViolations.join("; "),
+            message: budgetFailure.message,
           },
         }),
   };
