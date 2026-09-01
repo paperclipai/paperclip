@@ -900,7 +900,7 @@ export function paperclipRunnerHistoryItems(
  *
  * This is intentionally narrower than the stored transcript and the runner
  * inspector: it keeps work a person can understand or act on while excluding
- * transport/lifecycle bookkeeping, usage, terminal authority, and the final
+ * transport/lifecycle bookkeeping, terminal authority, and the final
  * response. Logical provider/tool lifecycles have already been coalesced by
  * `transcriptToTaskChatItems`, so each returned item is one visible "thing".
  */
@@ -953,6 +953,7 @@ export function paperclipRunnerActivityItems(
           item.surface === "resource"
         );
       case "usage":
+        return true;
       case "status":
       case "activity_phase":
       case "interaction":

@@ -484,7 +484,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       />,
     );
 
-    expect(container.querySelector('[data-testid="task-chat-progress-update"]')?.textContent)
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent)
       .toContain("Persisted before message channels existed.");
     expect(container.querySelector('[data-testid="task-chat-final-response"]')).toBeNull();
 
@@ -497,7 +497,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       />,
     );
 
-    expect(container.querySelector('[data-testid="task-chat-progress-update"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-final-response"]')?.textContent)
       .toContain("Persisted before message channels existed.");
   });
@@ -532,7 +532,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       channel: "progress",
     }]);
     renderRun();
-    expect(container.querySelector('[data-testid="task-chat-progress-update"]')?.textContent)
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent)
       .toContain("Same text.");
     expect(container.querySelector('[data-testid="task-chat-final-response"]')).toBeNull();
 
@@ -543,7 +543,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       channel: "final",
     }]);
     renderRun();
-    expect(container.querySelector('[data-testid="task-chat-progress-update"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-final-response"]')?.textContent)
       .toContain("Same text.");
   });
@@ -1406,7 +1406,7 @@ describe("TaskChatThread mobile composer dock (PAP-495)", () => {
 
 describe("TaskChatThread live transcript", () => {
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
-    transcriptState.transcriptByRun.set("run-status", [
+    nativeTranscriptState.transcriptByRun.set("run-status", [
       {
         kind: "provider_activity",
         ts: "2026-08-24T12:00:01.000Z",
@@ -1455,6 +1455,7 @@ describe("TaskChatThread live transcript", () => {
       agentId: "agent-1",
       agentName: "Codex",
       adapterType: "paperclip_runner",
+      runtimeMode: "native" as const,
     };
 
     render(
@@ -1507,7 +1508,7 @@ describe("TaskChatThread live transcript", () => {
   });
 
   it("keeps an unlinked persisted runner reply hidden while the live turn still owns that response", () => {
-    transcriptState.transcriptByRun.set("run-runner", [
+    nativeTranscriptState.transcriptByRun.set("run-runner", [
       {
         kind: "assistant",
         ts: "2026-08-21T15:44:20.000Z",
@@ -1547,6 +1548,7 @@ describe("TaskChatThread live transcript", () => {
           agentId: "agent-1",
           agentName: "Runner",
           adapterType: "paperclip_runner",
+          runtimeMode: "native",
         }}
       />,
     );

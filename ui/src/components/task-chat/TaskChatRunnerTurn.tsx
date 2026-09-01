@@ -21,6 +21,7 @@ import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatThinking } from "./TaskChatThinking";
 import { TaskChatToolCard } from "./TaskChatToolCard";
+import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import {
   protocolActivityIsRunning,
   protocolActivityLabel,
@@ -126,6 +127,8 @@ function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
               />
             ) : item.kind === "tool" ? (
               <TaskChatToolCard item={item} />
+            ) : item.kind === "usage" ? (
+              <TaskChatUsageReadout item={item} />
             ) : item.kind === "marker" ? (
               <RunnerActivityMarker item={item} />
             ) : item.kind === "protocol" ? (
@@ -317,20 +320,34 @@ export function TaskChatRunnerTurn({
   const observedFinal = paperclipRunnerFinalResponse(items, {
     allowFallback: terminal,
   });
+  const observedProviderText = Boolean(
+    observedFinal &&
+      items.some(
+        (item) =>
+          item.kind === "message" &&
+          item.id === observedFinal.id &&
+          item.channel !== "progress",
+      ),
+  );
   // A reconnect/replay can briefly rebuild the transcript without the final
-  // item (or with an earlier, shorter prefix). Once durable answer text is on
-  // screen it must be monotonic for the lifetime of this mounted turn.
+  // item (or with an earlier, shorter prefix). Provider-authored final text
+  // always replaces a structured summary fallback, even when it is shorter;
+  // within either class, displayed answer text remains monotonic.
   const finalRef = useRef<{
     runId?: string | null;
     item?: TaskChatMessageItem;
+    providerText?: boolean;
   }>({ runId });
   if (finalRef.current.runId !== runId) finalRef.current = { runId };
   if (
     observedFinal &&
     (!finalRef.current.item ||
-      observedFinal.text.length >= finalRef.current.item.text.length)
+      (observedProviderText && !finalRef.current.providerText) ||
+      (observedProviderText === Boolean(finalRef.current.providerText) &&
+        observedFinal.text.length >= finalRef.current.item.text.length))
   ) {
     finalRef.current.item = observedFinal;
+    finalRef.current.providerText = observedProviderText;
   }
   const final = finalRef.current.item;
 

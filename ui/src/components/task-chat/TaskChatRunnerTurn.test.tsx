@@ -907,6 +907,72 @@ describe("TaskChatRunnerTurn", () => {
     ).toContain("Waiting for Review browser RTS plan.");
   });
 
+  it("waits for settlement before using a structured result fallback", () => {
+    const items: TaskChatItem[] = [
+      {
+        id: "result",
+        kind: "protocol",
+        surface: "run_result",
+        disposition: "done",
+        summary: "Structured fallback.",
+        objectiveSatisfied: true,
+        verification: [],
+        remainingWork: [],
+        blocker: null,
+        artifacts: [],
+      },
+    ];
+
+    render(items, "running");
+
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).toBeNull();
+  });
+
+  it("lets a shorter provider final replace a structured result fallback", () => {
+    const result: TaskChatItem = {
+      id: "result",
+      kind: "protocol",
+      surface: "run_result",
+      disposition: "done",
+      summary: "A much longer structured summary fallback.",
+      objectiveSatisfied: true,
+      verification: [],
+      remainingWork: [],
+      blocker: null,
+      artifacts: [],
+    };
+
+    render([result], "succeeded");
+    expect(container.textContent).toContain(
+      "A much longer structured summary fallback.",
+    );
+
+    render(
+      [
+        result,
+        {
+          id: "provider-final",
+          kind: "message",
+          author: "agent",
+          text: "Done.",
+          channel: "final",
+          streaming: false,
+        },
+      ],
+      "succeeded",
+    );
+
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]')
+        ?.textContent,
+    ).toContain("Done.");
+    expect(container.textContent).not.toContain(
+      "A much longer structured summary fallback.",
+    );
+  });
+
   it("collapses terminal reasoning to the existing Worked summary", () => {
     render(
       [

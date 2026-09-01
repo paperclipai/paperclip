@@ -579,11 +579,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).not.toContain("Continue monitoring");
     expect(container.textContent).not.toContain("Snooze 1h");
     expect(container.textContent).not.toContain("Mark false positive");
-    expect(
-      Array.from(container.querySelectorAll("button")).filter((button) =>
-        /continue|snooze|false positive/i.test(button.textContent ?? ""),
-      ),
-    ).toHaveLength(0);
+    expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
 
