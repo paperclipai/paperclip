@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   deliverAgentUnblockNotification,
+  isSelfAddressedUnblockDescriptor,
+  resolveRequestedUnblockDescriptor,
   ROUTABLE_BLOCKED_ROLLOUT_AT,
 } from "../services/routable-blocked.js";
 
@@ -9,10 +11,12 @@ const agentId = "00000000-0000-4000-8000-000000000001";
 function blockedIssue(input: {
   transitionAt?: Date | null;
   notifiedAt?: Date | null;
+  assigneeAgentId?: string | null;
 } = {}) {
   return {
     id: "00000000-0000-4000-8000-000000000002",
     status: "blocked",
+    assigneeAgentId: input.assigneeAgentId ?? null,
     unblockDescriptor: { owner: { agentId }, action: "Review the finding" } as const,
     blockedTransitionAt: input.transitionAt === undefined
       ? new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1)
@@ -72,5 +76,61 @@ describe("routable blocked notifications", () => {
     expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
       idempotencyKey: expect.stringContaining(secondTransition.toISOString()),
     });
+  });
+
+  // HIV-2811. LUN-1317 ran 40 times in under three hours and HIV-2719 25 times
+  // in 30 minutes, each cycle woken by a descriptor naming the agent that had
+  // just written it.
+  it("does not wake on a descriptor addressed back to the blocked assignee", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue({ assigneeAgentId: agentId }),
+      wakeup,
+      markNotified,
+    })).resolves.toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(markNotified).not.toHaveBeenCalled();
+  });
+
+  // The sweep path is the one that looped: `recoveryKey` bypasses both the
+  // transition and the already-notified guard, so without this the same wake
+  // was re-minted on every pass.
+  it("does not wake a self-addressed descriptor on the recovery path either", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue({ assigneeAgentId: agentId, notifiedAt: new Date() }),
+      wakeup,
+      markNotified,
+      recoveryKey: "run-1",
+    })).resolves.toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("still wakes an agent named on an issue it is not assigned to", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue({ assigneeAgentId: parentAgentId }),
+      wakeup,
+      markNotified,
+    })).resolves.toBe(true);
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.anything());
+  });
+
+  it("classifies self-addressed descriptors and nothing else", () => {
+    expect(isSelfAddressedUnblockDescriptor(blockedIssue({ assigneeAgentId: agentId }))).toBe(true);
+    expect(isSelfAddressedUnblockDescriptor(blockedIssue({ assigneeAgentId: parentAgentId }))).toBe(false);
+    expect(isSelfAddressedUnblockDescriptor(blockedIssue())).toBe(false);
+    expect(isSelfAddressedUnblockDescriptor({
+      id: "00000000-0000-4000-8000-000000000002",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      unblockDescriptor: { owner: "board", action: "Decide" },
+    })).toBe(false);
   });
 });
