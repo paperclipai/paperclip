@@ -280,7 +280,7 @@ describeEmbeddedPostgres("heartbeat missing-comment retry handoff", () => {
         commentRetry.errorCode === "issue_assignee_changed" &&
         previousAssigneeFollowupWake?.runId === null &&
         handoffWake?.runId === newAssigneeRun?.id &&
-        (newAssigneeRun.status === "running" || newAssigneeRun.status === "succeeded")
+        newAssigneeRun.status === "succeeded"
       );
     });
 

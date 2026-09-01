@@ -15180,6 +15180,7 @@ export function heartbeatService(
           await releaseIssueExecutionAndPromote(cancelled, {
             suppressImmediateRecovery: true,
             deferPromotedStart: true,
+            prioritizeCurrentAssigneeWake: true,
           });
         }
         logger.info(
@@ -22036,6 +22037,7 @@ export function heartbeatService(
     options: {
       suppressImmediateRecovery?: boolean;
       deferPromotedStart?: boolean;
+      prioritizeCurrentAssigneeWake?: boolean;
     } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
@@ -22198,7 +22200,12 @@ export function heartbeatService(
             ),
           )
           .orderBy(
-            sql`case when ${agentWakeupRequests.agentId} = ${issue.assigneeAgentId} then 0 else 1 end`,
+            sql`case
+              when ${options.prioritizeCurrentAssigneeWake === true}
+                and ${agentWakeupRequests.agentId} = ${issue.assigneeAgentId}
+              then 0
+              else 1
+            end`,
             asc(agentWakeupRequests.requestedAt),
           )
           .limit(1)
