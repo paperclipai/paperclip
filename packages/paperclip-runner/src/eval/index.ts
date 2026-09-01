@@ -8,3 +8,5 @@ export * from "./workflow-scoring.js";
 export * from "./workflow-harness.js";
 export * from "./workflow-traceability.js";
 export * from "./workflow-report.js";
+export * from "./live-workflow-matrix.js";
+export * from "./live-workflow-executor.js";

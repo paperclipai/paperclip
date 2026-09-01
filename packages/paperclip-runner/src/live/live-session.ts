@@ -1701,6 +1701,68 @@ export class CapabilityLiveSession {
     return this.snapshot();
   }
 
+  async increaseManagedSessionBudget(
+    maxSessionListCostUsd: number,
+  ): Promise<CapabilityLiveSessionSnapshot> {
+    if (
+      (this.#config.provider !== "claude_managed" &&
+        this.#config.provider !== "aws_agentcore") ||
+      this.#transport === null
+    ) {
+      throw new Error(
+        "remote session budget updates require a connected remote provider session",
+      );
+    }
+    if (!Number.isFinite(maxSessionListCostUsd) || maxSessionListCostUsd <= 0) {
+      throw new Error("managed session spend ceiling must be positive");
+    }
+    await this.#transport.request("session/budget/increase", {
+      maxSessionListCostUsd,
+    });
+    if (this.#config.managedProfile) {
+      this.#config.managedProfile.maxSessionListCostUsd = maxSessionListCostUsd;
+    }
+    if (this.#config.agentCoreProfile) {
+      this.#config.agentCoreProfile.maxEstimatedSessionCostUsd =
+        maxSessionListCostUsd;
+    }
+    this.#status = this.#activeTurnId === null ? "warm_idle" : "running";
+    this.#appendEvidence("session", this.#activeTurnId, {
+      action: "budget_increased",
+      maxSessionListCostUsd,
+    });
+    await this.#persist();
+    return this.snapshot();
+  }
+
+  async deleteManagedRemoteSession(): Promise<CapabilityLiveSessionSnapshot> {
+    if (
+      (this.#config.provider !== "claude_managed" &&
+        this.#config.provider !== "aws_agentcore") ||
+      this.#transport === null
+    ) {
+      throw new Error(
+        "remote session deletion requires a connected remote provider session",
+      );
+    }
+    if (this.#activeTurnId !== null) {
+      throw new Error(
+        "interrupt the active turn before deleting the remote session",
+      );
+    }
+    await this.#transport.request("session/destroy", {});
+    this.#providerSessionId = null;
+    this.#authority.active = false;
+    this.#status = "closed";
+    this.#appendEvidence("cleanup", null, {
+      reason: "remote session explicitly deleted",
+      remoteDeleted: true,
+      resumable: false,
+    });
+    await this.#persist();
+    return this.snapshot();
+  }
+
   async resolveInteraction(input: CapabilityInteractionResolution): Promise<CapabilityLiveTurnResult> {
     const interaction = pendingInteractions(this.#port).find(
       (candidate) => candidate.id === input.interactionId,

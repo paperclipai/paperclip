@@ -13,12 +13,13 @@ export interface RunnerWorkflowReportBundle {
   runnerBuild?: string;
   promptPolicyId: string;
   providerVersions: Record<string, string>;
+  scheduleSeed?: string;
 }
 
 export interface RunnerWorkflowEvalReport {
   schema: typeof RUNNER_WORKFLOW_REPORT_SCHEMA;
   generatedAt: string;
-  source: "deterministic";
+  source: "deterministic" | "live" | "chaos";
   bundle: RunnerWorkflowReportBundle;
   results: RunnerWorkflowMatrixEntry[];
   aggregate: {
