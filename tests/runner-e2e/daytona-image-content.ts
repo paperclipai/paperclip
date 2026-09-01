@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const DAYTONA_IMAGE_CONTENT_SCHEMA =
-  "paperclip-daytona-runner-image-content/v2";
+  "paperclip-daytona-runner-image-content/v3";
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
 export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
@@ -37,6 +37,7 @@ export interface DaytonaImageContentOptions {
   inputPaths?: readonly string[];
   platform?: string;
   baseImages?: readonly string[];
+  frontendDigest?: string;
 }
 
 function compareNames(left: string, right: string): number {
@@ -72,6 +73,29 @@ function assertPinnedBaseImage(reference: string): void {
       `Daytona image base must use an immutable sha256 digest: ${reference}`,
     );
   }
+}
+
+function assertPinnedFrontendDigest(digest: string): void {
+  if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(
+      `Daytona Dockerfile frontend must use an immutable sha256 digest: ${digest}`,
+    );
+  }
+}
+
+export function extractDaytonaDockerfileFrontendDigest(
+  dockerfile: string,
+): string {
+  const firstLine = dockerfile.split(/\r?\n/, 1)[0] ?? "";
+  const match = /^#\s*syntax=\S+@(sha256:[0-9a-f]{64})\s*$/.exec(firstLine);
+  if (!match) {
+    throw new Error(
+      "Daytona Dockerfile first line must pin its syntax frontend to an immutable sha256 digest",
+    );
+  }
+  const digest = match[1]!;
+  assertPinnedFrontendDigest(digest);
+  return digest;
 }
 
 export function extractDaytonaBaseImages(dockerfile: string): string[] {
@@ -115,6 +139,19 @@ async function resolveBaseImages(
   }
   for (const reference of baseImages) assertPinnedBaseImage(reference);
   return baseImages.sort(compareNames);
+}
+
+async function resolveFrontendDigest(
+  root: string,
+  explicitFrontendDigest?: string,
+): Promise<string> {
+  const digest =
+    explicitFrontendDigest ??
+    extractDaytonaDockerfileFrontendDigest(
+      await readFile(path.join(root, DAYTONA_IMAGE_DOCKERFILE_PATH), "utf8"),
+    );
+  assertPinnedFrontendDigest(digest);
+  return digest;
 }
 
 async function hashEntry(
@@ -175,6 +212,11 @@ export async function computeDaytonaImageContentId(
     "contract",
     DAYTONA_IMAGE_CONTENT_SCHEMA,
     options.platform ?? DAYTONA_IMAGE_PLATFORM,
+  );
+  updateRecord(
+    hash,
+    "dockerfile-frontend",
+    await resolveFrontendDigest(root, options.frontendDigest),
   );
   for (const baseImage of await resolveBaseImages(root, options.baseImages)) {
     updateRecord(hash, "base-image", baseImage);

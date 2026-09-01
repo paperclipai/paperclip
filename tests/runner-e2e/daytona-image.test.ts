@@ -7,6 +7,7 @@ import {
   DAYTONA_IMAGE_DOCKERFILE_PATH,
   DAYTONA_IMAGE_INPUT_PATHS,
   extractDaytonaBaseImages,
+  extractDaytonaDockerfileFrontendDigest,
 } from "./daytona-image-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -47,6 +48,9 @@ describe("runner E2E Daytona image contract", () => {
     expect(dockerfile).toContain("provider-pack.json");
     expect(dockerfile).toContain("io.paperclip.runner.content-id");
     expect(dockerfile).toContain("org.opencontainers.image.revision");
+    expect(extractDaytonaDockerfileFrontendDigest(dockerfile)).toBe(
+      "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+    );
     expect(extractDaytonaBaseImages(dockerfile)).toEqual([
       "rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6",
       "node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b",
@@ -101,7 +105,7 @@ describe("runner E2E Daytona image contract", () => {
     expect(contentId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("changes only when a selected image input or target platform changes", async () => {
+  it("changes only when an image input, frontend, base, or platform changes", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "paperclip-daytona-image-id-"),
     );
@@ -115,12 +119,22 @@ describe("runner E2E Daytona image contract", () => {
         repositoryRoot: root,
         inputPaths: ["image-input"],
         baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+        frontendDigest: `sha256:${"c".repeat(64)}`,
       });
       expect(
         await computeDaytonaImageContentId({
           repositoryRoot: root,
           inputPaths: ["image-input"],
           baseImages: [`example.test/base:1@sha256:${"b".repeat(64)}`],
+          frontendDigest: `sha256:${"c".repeat(64)}`,
+        }),
+      ).not.toBe(baseline);
+      expect(
+        await computeDaytonaImageContentId({
+          repositoryRoot: root,
+          inputPaths: ["image-input"],
+          baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+          frontendDigest: `sha256:${"d".repeat(64)}`,
         }),
       ).not.toBe(baseline);
 
@@ -133,6 +147,7 @@ describe("runner E2E Daytona image contract", () => {
           repositoryRoot: root,
           inputPaths: ["image-input"],
           baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+          frontendDigest: `sha256:${"c".repeat(64)}`,
         }),
       ).toBe(baseline);
 
@@ -145,6 +160,7 @@ describe("runner E2E Daytona image contract", () => {
           repositoryRoot: root,
           inputPaths: ["image-input"],
           baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+          frontendDigest: `sha256:${"c".repeat(64)}`,
         }),
       ).not.toBe(baseline);
       expect(
@@ -153,6 +169,7 @@ describe("runner E2E Daytona image contract", () => {
           inputPaths: ["image-input"],
           platform: "linux/arm64",
           baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+          frontendDigest: `sha256:${"c".repeat(64)}`,
         }),
       ).not.toBe(baseline);
     } finally {
@@ -164,5 +181,23 @@ describe("runner E2E Daytona image contract", () => {
     expect(() => extractDaytonaBaseImages("FROM node:24-bookworm\n")).toThrow(
       "must use an immutable sha256 digest",
     );
+  });
+
+  it("rejects a mutable or missing Dockerfile syntax frontend", async () => {
+    expect(() =>
+      extractDaytonaDockerfileFrontendDigest(
+        "# syntax=docker/dockerfile:1.7\nFROM scratch\n",
+      ),
+    ).toThrow("must pin its syntax frontend");
+    expect(() =>
+      extractDaytonaDockerfileFrontendDigest("FROM scratch\n"),
+    ).toThrow("must pin its syntax frontend");
+    await expect(
+      computeDaytonaImageContentId({
+        inputPaths: [],
+        baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+        frontendDigest: "sha256:mutable",
+      }),
+    ).rejects.toThrow("must use an immutable sha256 digest");
   });
 });
