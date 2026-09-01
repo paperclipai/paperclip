@@ -34,52 +34,6 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-/**
- * Belt-and-suspenders: bind the calling actor's own run's source issue at
- * checkout time when it is still null, rather than waiting for the run's
- * first comment/PATCH to trigger the bind-on-first-write path in
- * `observeCrossIssueInfluence`. Checkout does not read or write
- * `contextSnapshot` for the *calling* actor's own run today (it only does so
- * for a *spawned* wakeup belonging to a different actor), so most
- * unscoped-wake runs would otherwise reach their first write still unbound.
- *
- * Best-effort: this never blocks or fails the checkout response. A run whose
- * context is still unbound after this call is still safely covered by the
- * bind-on-first-write fallback in `observeCrossIssueInfluence`.
- */
-export async function bindCheckoutRunSourceIssueIfUnset(
-  db: Db,
-  input: { companyId: string; runId: string; agentId: string; issueId: string },
-): Promise<void> {
-  if (!isUuidLike(input.runId)) return;
-  try {
-    await db.transaction(async (tx) => {
-      const run = await tx
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-        .from(heartbeatRuns)
-        .where(and(
-          eq(heartbeatRuns.id, input.runId),
-          eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.agentId, input.agentId),
-        ))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!run || readRunSourceIssueId(run.contextSnapshot)) return;
-
-      const priorSnapshot = mergeableContextSnapshot(run.contextSnapshot);
-      await tx.update(heartbeatRuns)
-        .set({ contextSnapshot: { ...priorSnapshot, issueId: input.issueId, source: "issue.checkout" } })
-        .where(and(
-          eq(heartbeatRuns.id, input.runId),
-          eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.agentId, input.agentId),
-        ));
-    });
-  } catch (err) {
-    logger.warn({ err, runId: input.runId, issueId: input.issueId }, "failed to bind run source issue at checkout");
-  }
-}
-
 function mergeableContextSnapshot(contextSnapshot: unknown): Record<string, unknown> {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return {};
   return contextSnapshot as Record<string, unknown>;
