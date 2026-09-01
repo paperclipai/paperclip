@@ -1096,7 +1096,7 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
-      ...(taskWatchdogsEnabled && watchdogAgentId
+      ...(watchdogAgentId
         ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
         : {}),
     });
@@ -1200,7 +1200,6 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
   const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
@@ -1606,7 +1605,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
+                    title="Add reviewer, approver, or watchdog"
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1640,29 +1639,27 @@ export function NewIssueDialog() {
                     <ShieldCheck className="h-3 w-3" />
                     Approver
                   </button>
-                  {taskWatchdogsEnabled && (
-                    <button
-                      className={cn(
-                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                        showWatchdogRow && "bg-accent",
-                      )}
-                      onClick={() => {
-                        if (showWatchdogRow) {
-                          setShowWatchdogRow(false);
-                          setWatchdogAgentId("");
-                          setWatchdogInstructions("");
-                          setWatchdogEditorOpen(false);
-                        } else {
-                          setShowWatchdogRow(true);
-                          setWatchdogEditorOpen(true);
-                        }
-                        setParticipantMenuOpen(false);
-                      }}
-                    >
-                      <ScanEye className="h-3 w-3" />
-                      Watchdog
-                    </button>
-                  )}
+                  <button
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                      showWatchdogRow && "bg-accent",
+                    )}
+                    onClick={() => {
+                      if (showWatchdogRow) {
+                        setShowWatchdogRow(false);
+                        setWatchdogAgentId("");
+                        setWatchdogInstructions("");
+                        setWatchdogEditorOpen(false);
+                      } else {
+                        setShowWatchdogRow(true);
+                        setWatchdogEditorOpen(true);
+                      }
+                      setParticipantMenuOpen(false);
+                    }}
+                  >
+                    <ScanEye className="h-3 w-3" />
+                    Watchdog
+                  </button>
                 </PopoverContent>
               </Popover>
               </div>
@@ -1759,7 +1756,7 @@ export function NewIssueDialog() {
             )}
 
             {/* Watchdog row */}
-            {taskWatchdogsEnabled && showWatchdogRow && (
+            {showWatchdogRow && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                 <span className="w-6 shrink-0 flex items-center justify-center"><ScanEye className="h-3.5 w-3.5" /></span>
                 <Popover open={watchdogEditorOpen} onOpenChange={setWatchdogEditorOpen}>

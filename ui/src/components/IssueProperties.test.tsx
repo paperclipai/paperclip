@@ -497,7 +497,6 @@ describe("IssueProperties", () => {
       ],
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
     });
   });
 
@@ -507,7 +506,6 @@ describe("IssueProperties", () => {
 
   it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     const root = renderProperties(container, {
@@ -555,7 +553,6 @@ describe("IssueProperties", () => {
       latestRevisionId: "revision-evidence",
     } satisfies IssueDocument;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
@@ -859,7 +856,6 @@ describe("IssueProperties", () => {
     // The chat shell hosts the full tree in the center pane; the slim pill row
     // + its Add sub-task button only render in the classic layout (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const onAddSubIssue = vi.fn();
@@ -904,24 +900,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hides watchdog setup controls while the experimental flag is off", async () => {
-    const root = renderProperties(container, {
-      issue: createIssue(),
-      childIssues: [],
-      onUpdate: vi.fn(),
-    });
-    await flush();
-
-    expect(container.textContent).not.toContain("Watchdog");
-    expect(container.textContent).not.toContain("Set watchdog");
-
-    act(() => root.unmount());
-  });
-
-  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
-    });
+  it("always shows watchdog setup controls", async () => {
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -1206,7 +1185,6 @@ describe("IssueProperties", () => {
     // The sub-task pill row (with its collapse control) is classic-layout only
     // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
@@ -2517,7 +2495,6 @@ describe("IssueProperties", () => {
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2584,7 +2561,6 @@ describe("IssueProperties", () => {
 
   it("updates cached issue detail when saving a watchdog", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
@@ -2639,7 +2615,6 @@ describe("IssueProperties", () => {
 
   it("renders an existing watchdog and removes it via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2681,7 +2656,6 @@ describe("IssueProperties", () => {
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
@@ -2720,7 +2694,6 @@ describe("IssueProperties", () => {
 
   it("links to the generated watchdog task when one exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {

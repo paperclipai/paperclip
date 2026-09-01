@@ -172,7 +172,6 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  issueGraphLivenessAutoRecoveryRequestSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -7061,22 +7060,6 @@ for (const route of [
     ...(route[0] === "post" ? { body: z.record(z.string(), z.unknown()).optional() } : {}),
   });
 }
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
-  tags: ["instance-settings"],
-  summary: "Preview issue graph liveness auto-recovery",
-  body: issueGraphLivenessAutoRecoveryRequestSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
-  tags: ["instance-settings"],
-  summary: "Run issue graph liveness auto-recovery",
-  body: issueGraphLivenessAutoRecoveryRequestSchema,
-});
 
 registerCurrentRoute({
   method: "get",

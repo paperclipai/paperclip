@@ -1351,7 +1351,6 @@ describe("NewIssueDialog", () => {
   it("reveals the watchdog editor from the overflow menu", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
 
     const { root } = renderDialog(container);
@@ -1378,7 +1377,6 @@ describe("NewIssueDialog", () => {
   it("submits the configured watchdog from a restored draft", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
     localStorage.setItem(
       "paperclip:issue-draft",
