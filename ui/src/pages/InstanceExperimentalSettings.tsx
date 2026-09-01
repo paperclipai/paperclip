@@ -277,6 +277,7 @@ export function InstanceExperimentalSettings() {
       queryClient.setQueryData(queryKeys.instance.experimentalSettings, updatedSettings);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.adapters.all }),
         queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
@@ -362,6 +363,7 @@ export function InstanceExperimentalSettings() {
     getWorktreeInstanceId(),
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
+  const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableRunnerPreviewIngress =
     experimentalQuery.data?.enableRunnerPreviewIngress === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
@@ -730,6 +732,19 @@ export function InstanceExperimentalSettings() {
         settingKey="enablePaperclipDeveloperMode"
         managed={managedKeys.enablePaperclipDeveloperMode}
         ariaLabel="Toggle Paperclip developer mode experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Paperclip Runner"
+        description="Allow new Codex agents to select the experimental Rust Paperclip Runner. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
+        checked={enableNativeRunner}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate({ enableNativeRunner: checked })
+        }
+        disabled={toggleMutation.isPending}
+        settingKey="enableNativeRunner"
+        managed={managedKeys.enableNativeRunner}
+        ariaLabel="Toggle Paperclip Runner experimental setting"
       />
 
       <ExperimentalToggleCard

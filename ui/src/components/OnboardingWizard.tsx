@@ -114,6 +114,15 @@ const MISSION_PROMPT_CHIPS = [
   "Launch a marketplace"
 ];
 
+// First-run onboarding stays on the proven direct adapters even when an
+// instance administrator has opted into Paperclip Runner elsewhere. The
+// experimental flag only exposes the runner in explicit agent configuration.
+const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
+  "process",
+  "http",
+  "paperclip_runner",
+]);
+
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
   if (q1.trim()) parts.push(q1.trim());
@@ -881,10 +890,9 @@ function OnboardingWizardInner({
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
     const all = listUIAdapters()
       .filter((a) =>
-        !SYSTEM_ADAPTER_TYPES.has(a.type) &&
+        !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
