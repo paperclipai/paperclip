@@ -3664,7 +3664,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("serves the app gallery manifest through the board route", async () => {
     const company = await createCompany(db);
-    const app = createRouteApp(db);
+    const app = createRouteApp(db, undefined, undefined, { paperclipCloudConnector: null });
 
     const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
 
