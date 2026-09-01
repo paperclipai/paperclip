@@ -342,6 +342,31 @@ export function expandRunnerdCanonicalNotifications(
   return payload.events.map((event) => ({ method, params: record(event) }));
 }
 
+export function resolveRunnerdSessionIdentity(input: unknown): {
+  processId: number | null;
+  threadId: string | null;
+  sessionId: string | null;
+} {
+  const started = record(input);
+  const runtimeIdentity = record(started.runtimeIdentity);
+  const descriptor = record(started.providerDescriptor);
+  const processId =
+    runtimeIdentity.processId ??
+    runtimeIdentity.process_id ??
+    descriptor.processId ??
+    started.processId ??
+    started.pid;
+  const threadId = started.threadId ?? started.providerSessionId;
+  const sessionId = started.sessionId ?? started.providerAccountSessionId;
+  return {
+    processId: typeof processId === "number" ? processId : null,
+    threadId:
+      typeof threadId === "string" && threadId.length > 0 ? threadId : null,
+    sessionId:
+      typeof sessionId === "string" && sessionId.length > 0 ? sessionId : null,
+  };
+}
+
 class NotificationQueue implements AsyncIterable<CodexRpcNotification> {
   #values: Array<{ value: CodexRpcNotification; bytes: number }> = [];
   #waiters: Array<{
@@ -1896,21 +1921,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const events = this.#core?.store.state.committedEvents ?? [];
     while (this.#eventIndex < events.length) {
       const event = events[this.#eventIndex++];
-      if (event.eventType === "harness.ready") {
+      if (
+        event.eventType === "harness.ready" ||
+        event.eventType === "session.started" ||
+        event.eventType === "session.resumed"
+      ) {
         const started = record(record(event.envelope.payload).payload);
         const runtimeIdentity = record(started.runtimeIdentity);
         const descriptor = record(started.providerDescriptor);
-        // Older durable snapshots serialized the enum fields in snake_case;
-        // the provider descriptor is the canonical fallback during recovery.
-        const pid =
-          runtimeIdentity.processId ??
-          runtimeIdentity.process_id ??
-          descriptor.processId ??
-          started.pid;
-        const threadId = started.threadId;
-        const sessionId = started.sessionId;
+        const {
+          processId: pid,
+          threadId,
+          sessionId,
+        } = resolveRunnerdSessionIdentity(started);
         const providerIdentity = record(started.providerIdentity);
-        if (typeof pid === "number") {
+        if (pid !== null) {
           this.#evidence.providerPid = pid;
           if (descriptor.driver === "acpx_runtime")
             this.#evidence.sidecarPid = pid;
@@ -1947,8 +1972,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ) {
           this.#evidence.providerService = "aws_bedrock_agentcore_harness";
         }
-        if (typeof threadId === "string") this.#threadId = threadId;
-        if (typeof sessionId === "string") this.#sessionId = sessionId;
+        if (threadId !== null) this.#threadId = threadId;
+        if (sessionId !== null) this.#sessionId = sessionId;
         if (typeof providerIdentity.kind === "string") {
           this.#providerIdentity = structuredClone(providerIdentity);
         }

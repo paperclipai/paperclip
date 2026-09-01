@@ -26,6 +26,7 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
   trustedRuntimeReadOnlyRoots,
   unwrapRunnerdProviderNotification,
@@ -378,6 +379,21 @@ it("rehydrates canonical workspace changes without reconstructing the diff", () 
     threadId: "thread-1",
     turnId: "turn-1",
     workspaceChange,
+  });
+});
+
+it("resolves identity from canonical durable session events", () => {
+  expect(
+    resolveRunnerdSessionIdentity({
+      provider: "codex",
+      providerSessionId: "provider-thread-1",
+      providerAccountSessionId: "provider-account-1",
+      processId: 4242,
+    }),
+  ).toEqual({
+    processId: 4242,
+    threadId: "provider-thread-1",
+    sessionId: "provider-account-1",
   });
 });
 
