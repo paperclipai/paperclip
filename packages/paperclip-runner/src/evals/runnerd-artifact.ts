@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import {
@@ -10,6 +12,31 @@ import {
 
 const execFileAsync = promisify(execFile);
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+
+async function readVerifiedBuildMetadata(
+  bytes: Buffer,
+  timeoutMs: number,
+): Promise<string> {
+  const stagingDirectory = await mkdtemp(join(tmpdir(), "paperclip-runnerd-verified-"));
+  const stagedExecutable = join(
+    stagingDirectory,
+    process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd",
+  );
+
+  try {
+    await chmod(stagingDirectory, 0o700);
+    await writeFile(stagedExecutable, bytes, { flag: "wx", mode: 0o700 });
+    await chmod(stagedExecutable, 0o700);
+    const { stdout } = await execFileAsync(stagedExecutable, ["--build-metadata"], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024,
+    });
+    return stdout;
+  } finally {
+    await rm(stagingDirectory, { recursive: true, force: true });
+  }
+}
 
 export interface PaperclipRunnerdBuildMetadata {
   schema: typeof PAPERCLIP_RUNNERD_BUILD_METADATA_SCHEMA;
@@ -176,11 +203,7 @@ export async function resolvePaperclipRunnerdArtifact(input: {
 
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(executablePath, ["--build-metadata"], {
-      encoding: "utf8",
-      timeout: input.metadataTimeoutMs ?? 5_000,
-      maxBuffer: 64 * 1024,
-    }));
+    stdout = await readVerifiedBuildMetadata(bytes, input.metadataTimeoutMs ?? 5_000);
   } catch (error) {
     throw new PaperclipRunnerdArtifactError(
       `runnerd artifact did not return build metadata: ${error instanceof Error ? error.message : String(error)}`,
@@ -201,7 +224,7 @@ export async function resolvePaperclipRunnerdArtifact(input: {
   return {
     executablePath,
     sha256: observedSha256,
-    byteSize: fileStat.size,
+    byteSize: bytes.byteLength,
     buildMetadata: parsePaperclipRunnerdBuildMetadata(parsed),
   };
 }

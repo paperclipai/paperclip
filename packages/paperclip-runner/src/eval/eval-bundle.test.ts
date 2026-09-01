@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertBundleSecretFree,
+  bundleEvidenceDeclaration,
   bundleId,
   describeBundle,
   EvalBundleSecretError,
@@ -62,7 +63,28 @@ describe("assertBundleSecretFree", () => {
   });
 
   it("rejects an untyped grant", () => {
-    expect(() => assertBundleSecretFree(bundle({ grants: ["not-a-grant"] }))).toThrow(EvalBundleSecretError);
+    const rejected = "not-a-grant-with-private-material";
+    let error: unknown;
+    try {
+      assertBundleSecretFree(bundle({ grants: [rejected] }));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(EvalBundleSecretError);
+    expect((error as Error).message).not.toContain(rejected);
+  });
+
+  it("scans a secret-shaped invalid grant before structural validation without echoing it", () => {
+    const rejected = ["xox", "b-1234567890-abcdefghijklmnop"].join("");
+    let error: unknown;
+    try {
+      assertBundleSecretFree(bundle({ grants: [rejected] }));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ path: "bundle.grants[0]" });
+    expect((error as Error).message).toContain("slack-token");
+    expect((error as Error).message).not.toContain(rejected);
   });
 
   it("rejects a secret-shaped value smuggled into a template", () => {
@@ -73,7 +95,7 @@ describe("assertBundleSecretFree", () => {
         restraintTemplate: "none",
       },
     });
-    expect(() => assertBundleSecretFree(leaked)).toThrow(/openai-key/);
+    expect(() => assertBundleSecretFree(leaked)).toThrow(/provider-key/);
   });
 
   it("rejects a bearer token and a forbidden key", () => {
@@ -95,16 +117,41 @@ describe("describeBundle", () => {
   it("produces a redacted one-line summary carrying the bundle id", () => {
     const described = describeBundle(bundle());
     expect(described.bundleId).toBe(bundleId(bundle()));
-    expect(described.summary).toContain("runnerd/codex-app-server@prp.v1");
-    expect(described.summary).toContain("gpt-5-codex");
-    expect(described.summary).toContain("faults:clean");
+    expect(described.summary).toContain(described.bundleId);
+    expect(described.summary).toContain("1 grants");
+    expect(described.summary).toContain("0 faults");
+    expect(described.summary).not.toContain("codex-app-server");
+    expect(described.summary).not.toContain("gpt-5-codex");
     expect(described.summary).not.toContain("sk-");
   });
 
-  it("names the fault classes when faults are injected", () => {
+  it("counts faults without persisting their free-form declaration", () => {
     const described = describeBundle(
       bundle({ faultInjection: [{ id: "f1", class: "conflict", description: "stale write" }] }),
     );
-    expect(described.summary).toContain("faults:conflict");
+    expect(described.summary).toContain("1 faults");
+    expect(described.summary).not.toContain("stale write");
+  });
+});
+
+describe("bundleEvidenceDeclaration", () => {
+  it("persists explicit digests instead of free-form bundle content", () => {
+    const candidate = bundle({
+      promptPolicy: {
+        id: "custom-policy",
+        callTemplate: "Unique free-form call instructions.",
+        restraintTemplate: "Unique free-form restraint instructions.",
+      },
+      faultInjection: [{ id: "fault-a", class: "retry", description: "Unique fault detail." }],
+    });
+    const declaration = bundleEvidenceDeclaration(candidate);
+    const serialized = JSON.stringify(declaration);
+
+    expect(declaration.contentSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(declaration.promptPolicy.callTemplateSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(declaration.faultInjection).toMatchObject({ count: 1 });
+    expect(serialized).not.toContain("Unique free-form call instructions.");
+    expect(serialized).not.toContain("Unique free-form restraint instructions.");
+    expect(serialized).not.toContain("Unique fault detail.");
   });
 });

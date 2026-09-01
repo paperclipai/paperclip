@@ -59,6 +59,23 @@ describe("buildEvalSliceReport", () => {
     const leaky = { ...bundle(), grants: ["not-a-grant"] };
     expect(() => buildEvalSliceReport(leaky, [green("a")])).toThrow();
   });
+
+  it("does not persist free-form bundle declarations", () => {
+    const candidate = bundle();
+    candidate.promptPolicy.callTemplate = "Unique instructions that stay in memory.";
+    const report = buildEvalSliceReport(candidate, [green("a")]);
+    const serialized = JSON.stringify(report);
+
+    expect(report.bundle.declaration.promptPolicy.callTemplateSha256).toMatch(
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    expect(serialized).not.toContain(candidate.promptPolicy.callTemplate);
+  });
+
+  it("scans the final serialized report before returning it", () => {
+    const observation = green("Bearer abcdef0123456789abcdef");
+    expect(() => buildEvalSliceReport(bundle(), [observation])).toThrow(/bearer-token/);
+  });
 });
 
 describe("renderEvalSliceMarkdown", () => {

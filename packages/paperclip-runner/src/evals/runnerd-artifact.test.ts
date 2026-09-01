@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,4 +56,36 @@ describe("runnerd artifact metadata", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "executes a private copy of the verified bytes when the source path is swapped",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "paperclip-runnerd-artifact-"));
+      const executablePath = join(root, "paperclip-runnerd");
+      const verifiedScript = `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(valid)}'\n`;
+      const replacementScript = "#!/bin/sh\nprintf '%s\\n' 'unverified replacement'\n";
+      const expectedSha256 = `sha256:${createHash("sha256").update(verifiedScript).digest("hex")}`;
+
+      try {
+        await writeFile(executablePath, verifiedScript, { mode: 0o700 });
+        const input = {
+          executablePath,
+          expectedSha256,
+          get metadataTimeoutMs() {
+            writeFileSync(executablePath, replacementScript, { mode: 0o700 });
+            return 5_000;
+          },
+        };
+
+        await expect(resolvePaperclipRunnerdArtifact(input)).resolves.toMatchObject({
+          executablePath,
+          sha256: expectedSha256,
+          byteSize: Buffer.byteLength(verifiedScript),
+          buildMetadata: valid,
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

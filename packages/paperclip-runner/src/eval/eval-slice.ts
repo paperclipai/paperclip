@@ -1,4 +1,12 @@
-import { assertBundleSecretFree, bundleId, describeBundle, type EvalBundle } from "./eval-bundle.js";
+import {
+  assertBundleSecretFree,
+  assertEvalArtifactSecretFree,
+  bundleEvidenceDeclaration,
+  bundleId,
+  describeBundle,
+  type EvalBundle,
+  type EvalBundleEvidenceDeclaration,
+} from "./eval-bundle.js";
 import {
   EVAL_DIMENSION_KEYS,
   scoreEval,
@@ -12,10 +20,10 @@ import {
  * The runner eval vertical slice: bind a declared candidate {@link EvalBundle}
  * to a set of scored observations and emit one inspectable, secret-free report.
  *
- * The report is reproducible from the bundle declaration (its id is content
- * addressed) and carries per-case scorecards plus per-dimension aggregates, so a
- * candidate can be compared across runs and a red counterpart shows exactly
- * which dimension regressed.
+ * The report binds its scorecards to a content-addressed, digested bundle
+ * declaration. The caller retains the secret-free source bundle for replay;
+ * persisted reports carry no free-form bundle content. Per-dimension aggregates
+ * show whether a regression came from outcome, restraint, trace, or efficiency.
  */
 export const EVAL_SLICE_REPORT_SCHEMA = "paperclip.runner.eval-slice-report.v1" as const;
 
@@ -27,7 +35,7 @@ export interface EvalScoredCase {
 
 export interface EvalSliceReport {
   schema: typeof EVAL_SLICE_REPORT_SCHEMA;
-  bundle: { id: string; summary: string; declaration: EvalBundle };
+  bundle: { id: string; summary: string; declaration: EvalBundleEvidenceDeclaration };
   cases: EvalScoredCase[];
   aggregate: {
     caseCount: number;
@@ -79,9 +87,13 @@ export function buildEvalSliceReport(
       ? 0
       : round(cases.reduce((sum, entry) => sum + entry.scorecard.overall.score, 0) / cases.length);
 
-  return {
+  const report: EvalSliceReport = {
     schema: EVAL_SLICE_REPORT_SCHEMA,
-    bundle: { id, summary: describeBundle(bundle).summary, declaration: bundle },
+    bundle: {
+      id,
+      summary: describeBundle(bundle).summary,
+      declaration: bundleEvidenceDeclaration(bundle),
+    },
     cases,
     aggregate: {
       caseCount: cases.length,
@@ -91,6 +103,10 @@ export function buildEvalSliceReport(
       dimensionMeans,
     },
   };
+  // Scan the exact serialization that callers persist, including observations
+  // and derived scorecards rather than only the source bundle.
+  assertEvalArtifactSecretFree(JSON.stringify(report), "serialized eval report");
+  return report;
 }
 
 /** A compact, human-readable rendering of a slice report for inspection. */

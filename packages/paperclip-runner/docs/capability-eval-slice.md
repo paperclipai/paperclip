@@ -6,8 +6,12 @@ each observation intact and reporting independent dimensions for safety,
 semantic outcome, trajectory restraint, trace completeness, and efficiency.
 
 `EvalBundle` records reproducibility inputs without storing credentials.
-`assertBundleSecretFree` rejects credential-shaped keys and values, while
-`bundleId` derives a stable content identifier from the canonical declaration.
+`assertBundleSecretFree` rejects credential-shaped keys and values before any
+structural error can echo them. Persisted reports contain an explicit digested
+bundle-evidence declaration rather than the free-form source bundle, while
+`bundleId` still derives a stable content identifier from the full canonical
+declaration. The exact final report serialization is scanned again before it is
+returned to a persistence boundary.
 
 `scoreEval` is pure: the same observation and bundle always produce the same
 scorecard. Hard-invariant failures gate the overall score to zero. Other
