@@ -8,6 +8,7 @@ import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
   isArtifactReviewDocumentKey,
+  type ExecutionWorkspace,
   type Issue,
   type IssueLabel,
 } from "@paperclipai/shared";
@@ -68,7 +69,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, ChevronLeft } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -98,6 +99,15 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import {
+  buildWorkspaceSelectionUpdate,
+  currentWorkspaceSelection,
+} from "../../lib/issue-workspace-selection";
+import {
+  buildReusableExecutionWorkspaceOptionGroups,
+  dedupeReusableExecutionWorkspaces,
+  reusableWorkspaceOptionMatches,
+} from "../../lib/reusable-execution-workspaces";
 import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
@@ -287,6 +297,9 @@ export function IssueProperties({
   } | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [workspacePickerStep, setWorkspacePickerStep] = useState<"mode" | "reuse">("mode");
+  const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
   const [blockedByExpanded, setBlockedByExpanded] = useState(false);
@@ -452,6 +465,69 @@ export function IssueProperties({
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
   const issueProject = issue.project ?? currentProject;
+  const workspacePickerEligible = experimentalSettings?.enableIsolatedWorkspaces === true
+    && Boolean(issueProject?.executionWorkspacePolicy?.enabled);
+  const {
+    data: reusableExecutionWorkspaces,
+    isLoading: reusableExecutionWorkspacesLoading,
+    isError: reusableExecutionWorkspacesError,
+  } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    queryFn: () => executionWorkspacesApi.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerEligible && workspacePickerOpen,
+  });
+  const effectiveWorkspaceSelection = currentWorkspaceSelection(issue, issueProject);
+  const hasWorkspaceOverride = issue.executionWorkspacePreference != null
+    || issue.executionWorkspaceSettings != null;
+  const activeWorkspacePickerMode = effectiveWorkspaceSelection === "reuse_existing"
+    ? "reuse"
+    : !hasWorkspaceOverride
+      ? "default"
+      : effectiveWorkspaceSelection === "isolated_workspace"
+        ? "isolated"
+        : "default";
+  const reusableWorkspaceOptions = useMemo(
+    () => buildReusableExecutionWorkspaceOptionGroups(
+      dedupeReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []),
+    ).map((group) => ({
+      ...group,
+      options: group.options.filter((option) => reusableWorkspaceOptionMatches(option, workspaceSearch)),
+    })).filter((group) => group.options.length > 0),
+    [reusableExecutionWorkspaces, workspaceSearch],
+  );
+  const boundWorkspace = (reusableExecutionWorkspaces ?? []).find(
+    (workspace) => workspace.id === issue.executionWorkspaceId,
+  ) ?? issue.currentExecutionWorkspace ?? null;
+  const workspaceTriggerLabel = activeWorkspacePickerMode === "isolated"
+    ? "New isolated workspace"
+    : activeWorkspacePickerMode === "reuse"
+      ? boundWorkspace?.name ?? "Reuse existing workspace"
+      : "Default";
+  const workspaceTriggerTitle = activeWorkspacePickerMode === "reuse"
+    ? boundWorkspace?.branchName ?? undefined
+    : undefined;
+  const closeWorkspacePicker = () => {
+    setWorkspacePickerOpen(false);
+    setWorkspacePickerStep("mode");
+    setWorkspaceSearch("");
+  };
+  const saveWorkspaceSelection = (
+    selection: null | "isolated_workspace" | "reuse_existing",
+    workspace?: ExecutionWorkspace,
+  ) => {
+    const update = buildWorkspaceSelectionUpdate(selection, workspace?.id, workspace?.mode);
+    if (!update) return;
+    onUpdate(update);
+    closeWorkspacePicker();
+  };
   const issueUsesMainWorkspace = useMemo(
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
@@ -2405,8 +2481,124 @@ export function IssueProperties({
         </PropertyPicker>
       </PropertySection>
 
-      {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+      {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <PropertySection title="Workspace">
+          {workspacePickerEligible ? (
+            <PropertyPicker
+              inline={inline}
+              label="Execution"
+              open={workspacePickerOpen}
+              onOpenChange={(open) => {
+                setWorkspacePickerOpen(open);
+                if (!open) {
+                  setWorkspacePickerStep("mode");
+                  setWorkspaceSearch("");
+                }
+              }}
+              triggerContent={(
+                <span className="truncate" title={workspaceTriggerTitle}>
+                  {workspaceTriggerLabel}
+                </span>
+              )}
+              triggerClassName="min-w-0 max-w-full"
+              popoverClassName={cn("max-w-full", inline ? "w-full" : "w-72")}
+            >
+              {workspacePickerStep === "mode" ? (
+                <>
+                  <div className="space-y-0.5">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
+                      onClick={() => saveWorkspaceSelection(null)}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm">Default</span>
+                        <span className="block text-xs text-muted-foreground">Use the project workspace policy</span>
+                      </span>
+                      {activeWorkspacePickerMode === "default" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
+                      onClick={() => saveWorkspaceSelection("isolated_workspace")}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm">New isolated workspace</span>
+                        <span className="block text-xs text-muted-foreground">Create a fresh workspace on the next run</span>
+                      </span>
+                      {activeWorkspacePickerMode === "isolated" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
+                      onClick={() => setWorkspacePickerStep("reuse")}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm">Reuse existing workspace…</span>
+                        <span className="block text-xs text-muted-foreground">Pick a workspace to reuse</span>
+                      </span>
+                      {activeWorkspacePickerMode === "reuse" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                    </button>
+                  </div>
+                  <div className="mt-1 border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
+                    {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="border-b border-border pb-1">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded px-1 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                      onClick={() => setWorkspacePickerStep("mode")}
+                      aria-label="Back to workspace options"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      Workspace mode
+                    </button>
+                    <input
+                      className="block w-full bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+                      placeholder="Search workspaces..."
+                      value={workspaceSearch}
+                      onChange={(event) => setWorkspaceSearch(event.target.value)}
+                      autoFocus={!inline}
+                      aria-label="Search reusable workspaces"
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto overscroll-contain py-1">
+                    {reusableExecutionWorkspacesLoading ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">Loading workspaces...</div>
+                    ) : reusableExecutionWorkspacesError ? (
+                      <div className="px-2 py-2 text-xs text-destructive">Failed to load workspaces.</div>
+                    ) : reusableWorkspaceOptions.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">No matching workspaces.</div>
+                    ) : reusableWorkspaceOptions.map((group) => (
+                      <div key={group.id} className="py-1">
+                        <div className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.label}</div>
+                        {group.options.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
+                            onClick={() => saveWorkspaceSelection("reuse_existing", option.workspace)}
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm">{option.label}</span>
+                              <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
+                            </span>
+                            {issue.executionWorkspaceId === option.workspaceId ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
+                    {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}
+                  </div>
+                </>
+              )}
+            </PropertyPicker>
+          ) : null}
           {showWorkspaceDetailLink && issue.executionWorkspaceId && (
             <PropertyRow label="Workspace">
               <Link
