@@ -127,6 +127,7 @@ import {
   readRemoteProviderPackManifest,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
+  resolveRemoteRunnerTransportMode,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
   runtimeQuestionFallbackFromEvent,
@@ -928,6 +929,35 @@ describe("remote runner build metadata", () => {
         "listen_ws",
       ),
     ).toThrow("runner_remote_transport_capability_missing:listen_ws");
+  });
+});
+
+describe("remote runner transport authorization", () => {
+  const ingressTarget = {
+    kind: "remote",
+    transport: "sandbox",
+    providerKey: "daytona",
+    remoteCwd: "/workspace",
+    leaseId: "lease-1",
+    effectiveCapabilities: { runnerWebSocketIngress: true },
+  } as const;
+
+  it("fails before selecting sandbox ingress for an unauthorized run", () => {
+    expect(() =>
+      resolveRemoteRunnerTransportMode({
+        target: ingressTarget as never,
+        runnerIngressAuthorized: false,
+      }),
+    ).toThrow("runner_ingress_unavailable");
+  });
+
+  it("selects sandbox ingress for a resolved native run", () => {
+    expect(
+      resolveRemoteRunnerTransportMode({
+        target: ingressTarget as never,
+        runnerIngressAuthorized: true,
+      }),
+    ).toBe("listen_ws");
   });
 });
 

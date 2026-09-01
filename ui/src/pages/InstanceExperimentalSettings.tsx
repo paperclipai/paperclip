@@ -364,8 +364,6 @@ export function InstanceExperimentalSettings() {
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
-  const enableRunnerPreviewIngress =
-    experimentalQuery.data?.enableRunnerPreviewIngress === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
@@ -736,7 +734,7 @@ export function InstanceExperimentalSettings() {
 
       <ExperimentalToggleCard
         title="Paperclip Runner"
-        description="Allow new Codex agents to select the experimental Rust Paperclip Runner. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
+        description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
         checked={enableNativeRunner}
         onCheckedChange={(checked) =>
           toggleMutation.mutate({ enableNativeRunner: checked })
@@ -745,19 +743,6 @@ export function InstanceExperimentalSettings() {
         settingKey="enableNativeRunner"
         managed={managedKeys.enableNativeRunner}
         ariaLabel="Toggle Paperclip Runner experimental setting"
-      />
-
-      <ExperimentalToggleCard
-        title="Runner Preview Ingress"
-        description="Let Paperclip Runner agents connect through an authenticated sandbox-provider WebSocket preview. Legacy adapters continue using their existing transports."
-        checked={enableRunnerPreviewIngress}
-        onCheckedChange={(checked) =>
-          toggleMutation.mutate({ enableRunnerPreviewIngress: checked })
-        }
-        disabled={toggleMutation.isPending}
-        settingKey="enableRunnerPreviewIngress"
-        managed={managedKeys.enableRunnerPreviewIngress}
-        ariaLabel="Toggle runner preview ingress experimental setting"
       />
 
       {inWorktree ? (

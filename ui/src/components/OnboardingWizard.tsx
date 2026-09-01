@@ -1093,6 +1093,26 @@ function OnboardingWizardInner({
     return createdCompanyIdRef.current === companyIdAtStart;
   }
 
+  /**
+   * Whether a just-created company can still be committed to this wizard.
+   *
+   * Company-list refreshes can make the surrounding app adopt the POST result
+   * before the continuation runs. That is the same successful transition, not
+   * a takeover. A different id still means navigation moved the wizard to a
+   * different organization while the request was in flight.
+   */
+  function canCommitCreatedCompany(
+    companyIdAtStart: string | null,
+    returnedCompanyId: string,
+  ) {
+    const companyIdNow = createdCompanyIdRef.current;
+    if (companyIdNow === companyIdAtStart || companyIdNow === returnedCompanyId) {
+      return true;
+    }
+    setError("Organization created, but onboarding switched to another organization.");
+    return false;
+  }
+
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
@@ -1365,6 +1385,7 @@ function OnboardingWizardInner({
     }
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1373,7 +1394,7 @@ function OnboardingWizardInner({
       // a company while the request was open has taken over the wizard, and
       // adopting the company just created would fight it — and would leave the
       // customer on a company they never navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current here rather than waiting for the next render.
       // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
@@ -1429,6 +1450,7 @@ function OnboardingWizardInner({
     creatingCompanyRef.current = true;
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1437,7 +1459,7 @@ function OnboardingWizardInner({
       // taken over the wizard, and adopting the company just created would
       // fight it — and would leave the customer on a company they never
       // navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current rather than waiting for the next render, for
       // the same reason the mission path does: anything downstream that asks

@@ -2728,7 +2728,8 @@ export async function executePaperclipNativeSession(input: {
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-  enableRunnerPreviewIngress?: boolean;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
   runnerRemoteBinaryPath?: string | null;
@@ -4622,6 +4623,29 @@ function createRemoteRunnerProcessLauncher(input: {
   };
 }
 
+/**
+ * Select the remote runner transport before any artifact is staged or provider
+ * endpoint is acquired. Sandbox ingress is available only to a run already
+ * authorized by native runtime selection.
+ */
+export function resolveRemoteRunnerTransportMode(input: {
+  target: AdapterExecutionTarget;
+  runnerIngressAuthorized: boolean;
+}): "listen_ws" | "dial_wss" {
+  if (input.target.kind !== "remote") {
+    throw new Error("runner_transport_ineligible: remote target is required");
+  }
+  const requiredMode =
+    input.target.transport === "sandbox" &&
+    input.target.effectiveCapabilities?.runnerWebSocketIngress === true
+      ? "listen_ws"
+      : "dial_wss";
+  if (requiredMode === "listen_ws" && !input.runnerIngressAuthorized) {
+    throw new Error("runner_ingress_unavailable");
+  }
+  return requiredMode;
+}
+
 /** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
   db: Db;
@@ -4635,7 +4659,8 @@ export async function createRunnerdBackend(input: {
   }) => Promise<void>;
   runnerEnvironment?: NodeJS.ProcessEnv;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-  enableRunnerPreviewIngress?: boolean;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
   runnerRemoteBinaryPath?: string | null;
@@ -6104,17 +6129,11 @@ export async function createRunnerdBackend(input: {
                 };
               }
 
-              const requiredMode =
-                target.transport === "sandbox" &&
-                target.effectiveCapabilities?.runnerWebSocketIngress === true
-                  ? "listen_ws"
-                  : "dial_wss";
-              if (
-                requiredMode === "listen_ws" &&
-                input.enableRunnerPreviewIngress !== true
-              ) {
-                throw new Error("runner_ingress_unavailable");
-              }
+              const requiredMode = resolveRemoteRunnerTransportMode({
+                target,
+                runnerIngressAuthorized:
+                  input.runnerIngressAuthorized === true,
+              });
               let transport: PaperclipRunnerTransport;
               if (requiredMode === "dial_wss") {
                 // Validate eligibility before staging any artifact.
@@ -6128,8 +6147,8 @@ export async function createRunnerdBackend(input: {
                       localConnectUrl: "ws://127.0.0.1/unused",
                       runnerPublicUrl: input.runnerPublicUrl,
                       runnerCaBundlePath: input.runnerCaBundlePath,
-                      enableRunnerPreviewIngress:
-                        input.enableRunnerPreviewIngress === true,
+                      runnerIngressAuthorized:
+                        input.runnerIngressAuthorized === true,
                     }),
                 );
                 if (
@@ -6164,7 +6183,7 @@ export async function createRunnerdBackend(input: {
                       localConnectUrl: "ws://127.0.0.1/unused",
                       runnerPublicUrl: input.runnerPublicUrl,
                       runnerCaBundlePath: input.runnerCaBundlePath,
-                      enableRunnerPreviewIngress: true,
+                      runnerIngressAuthorized: true,
                     }),
                 );
               }

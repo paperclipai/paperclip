@@ -115,6 +115,33 @@ function parseBooleanFromEnv(rawValue: string | undefined): boolean | null {
   return null;
 }
 
+async function runOnboardedForeground(configPath: string): Promise<void> {
+  const previousOpenOnListen = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+  const browserDisabled = parseBooleanFromEnv(process.env.PAPERCLIP_NO_BROWSER) === true;
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+  // The server consumes this flag in its listen callback. Keep it scoped to
+  // this foreground start so a later in-process restart does not open another
+  // tab. Explicit configuration wins over the interactive default, while the
+  // broad no-browser switch wins over an earlier explicit opt-in.
+  if (browserDisabled) {
+    process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
+  } else if (interactive && previousOpenOnListen === undefined) {
+    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
+  }
+
+  try {
+    const { runCommand } = await import("./run.js");
+    await runCommand({ config: configPath, repair: true, yes: true });
+  } finally {
+    if (previousOpenOnListen === undefined) {
+      delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    } else {
+      process.env.PAPERCLIP_OPEN_ON_LISTEN = previousOpenOnListen;
+    }
+  }
+}
+
 function parseNumberFromEnv(rawValue: string | undefined): number | null {
   if (!rawValue) return null;
   const parsed = Number(rawValue);
@@ -477,8 +504,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     }
 
     if (shouldRunNow && !opts.invokedByRun) {
-      const { runCommand } = await import("./run.js");
-      await runCommand({ config: configPath, repair: true, yes: true });
+      await runOnboardedForeground(configPath);
       return;
     }
 
@@ -745,8 +771,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   if (shouldRunNow && !opts.invokedByRun) {
-    const { runCommand } = await import("./run.js");
-    await runCommand({ config: configPath, repair: true, yes: true });
+    await runOnboardedForeground(configPath);
     return;
   }
 

@@ -71,6 +71,13 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(false);
   });
 
+  it("retains the deprecated ingress key for stored-settings compatibility", () => {
+    expect(
+      normalizeExperimentalSettings({ enableRunnerPreviewIngress: true })
+        .enableRunnerPreviewIngress,
+    ).toBe(true);
+  });
+
   it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableConferenceRoomChat).toBe(false);
     expect(normalizeExperimentalSettings({}).enableConferenceRoomChat).toBe(false);

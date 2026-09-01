@@ -53,7 +53,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:
-      "Allow new Codex agents to use the experimental Rust Paperclip Runner transport.",
+      "Allow new Codex agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -278,9 +278,9 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableRunnerPreviewIngress: {
-    title: "Runner Preview Ingress",
+    title: "Runner Preview Ingress (Deprecated)",
     description:
-      "Let paperclip_runner connect through an authenticated sandbox-provider WebSocket ingress. Legacy adapters never use this path.",
+      "Compatibility-only key retained for older managed configs. Runner ingress follows the Paperclip Runner setting.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

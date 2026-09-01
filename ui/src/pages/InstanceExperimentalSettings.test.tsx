@@ -70,8 +70,6 @@ const STATUS_CARDS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle status cards experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
-const RUNNER_PREVIEW_INGRESS_TOGGLE_SELECTOR =
-  'button[aria-label="Toggle runner preview ingress experimental setting"]';
 const PAPERCLIP_RUNNER_TOGGLE_SELECTOR =
   'button[aria-label="Toggle Paperclip Runner experimental setting"]';
 
@@ -305,24 +303,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
   });
 
-  it("renders and patches the Runner Preview Ingress experimental toggle", async () => {
+  it("does not expose the retired Runner Preview Ingress setting separately", async () => {
+    currentExperimentalSettings.enableRunnerPreviewIngress = true;
     await renderPage();
 
-    expect(container.textContent).toContain("Runner Preview Ingress");
-    const toggle = container.querySelector<HTMLButtonElement>(
-      RUNNER_PREVIEW_INGRESS_TOGGLE_SELECTOR,
-    );
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableRunnerPreviewIngress: true,
-    });
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain("Runner Preview Ingress");
+    expect(container.querySelector(
+      'button[aria-label="Toggle runner preview ingress experimental setting"]',
+    )).toBeNull();
   });
 
   it("keeps Paperclip Runner default-off and exposes an explicit opt-in", async () => {

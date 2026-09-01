@@ -4,6 +4,7 @@ import { BUILTIN_ADAPTER_TYPES } from "../../adapters/builtin-adapter-types.js";
 import {
   NativeRunnerSelectionError,
   NativeRuntimeEligibilityError,
+  isRunnerIngressAuthorized,
   resolveHeartbeatNativeRuntimeMode,
   resolveHeartbeatRuntimeMode,
   resolveNativeRuntimeMode,
@@ -120,6 +121,40 @@ describe("resolveNativeRuntimeMode", () => {
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_rollout_disabled",
     }));
+  });
+
+  it("authorizes ingress from the native runtime decision without a second flag", () => {
+    const freshNative = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      persisted: {
+        runtimeMode: null,
+        runtimeModeReason: null,
+        runtimeModeResolvedAt: null,
+      },
+    });
+    const persistedNative = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+      },
+    });
+    const directLegacy = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      agent: { ...eligible.agent, adapterType: "codex_local" },
+      persisted: {
+        runtimeMode: null,
+        runtimeModeReason: null,
+        runtimeModeResolvedAt: null,
+      },
+    });
+
+    expect(isRunnerIngressAuthorized(freshNative)).toBe(true);
+    expect(isRunnerIngressAuthorized(persistedNative)).toBe(true);
+    expect(isRunnerIngressAuthorized(directLegacy)).toBe(false);
   });
 
   it.each(["paused", "terminated", "pending_approval"])(

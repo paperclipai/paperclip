@@ -73,6 +73,46 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
   );
 });
 
+test("published canaries are gated by the exact-version onboarding browser smoke", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  assert.match(
+    releaseWorkflow,
+    /publish_canary:[\s\S]*?outputs:\n\s+canary_version: \$\{\{ steps\.canary_tag\.outputs\.version \}\}/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: needs\.publish_canary\.result == 'success'/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
+  );
+  assert.match(releaseWorkflow, /test:canary-onboarding-smoke/);
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --frozen-lockfile/,
+  );
+  assert.doesNotMatch(
+    releaseWorkflow.match(/smoke_canary_onboarding:[\s\S]*?(?=\n  # ----- Nightly lane)/)?.[0] ?? "",
+    /cache: pnpm/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /name: Smoke exact published canary through onboarding\n\s+env:\n\s+PAPERCLIP_CANARY_SMOKE_SERVER_LOG: \$\{\{ runner\.temp \}\}\/canary-onboarding-server\.log/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?uses: actions\/upload-artifact@[0-9a-f]{40} # v7/,
+  );
+  assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
+  assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
+});
+
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
