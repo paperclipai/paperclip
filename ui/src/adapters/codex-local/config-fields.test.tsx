@@ -25,7 +25,7 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it("exposes the qualified provider choices without managed profiles", () => {
+  it("exposes all qualified provider choices", () => {
     const html = renderRunner({ provider: "codex" });
 
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
@@ -34,8 +34,8 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain("Full auto (never ask)");
     expect(html).toContain("Ask when requested");
     expect(html).toContain("Ask for untrusted operations");
-    expect(html).not.toContain("Claude Agent");
-    expect(html).not.toContain("AWS AgentCore");
+    expect(html).toContain("Claude Managed");
+    expect(html).toContain("AWS AgentCore");
     expect(html).not.toContain("Bypass sandbox");
   });
 
