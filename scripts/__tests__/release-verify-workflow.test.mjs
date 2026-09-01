@@ -91,7 +91,23 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   assert.match(releaseWorkflow, /test:canary-onboarding-smoke/);
   assert.match(
     releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --frozen-lockfile/,
+  );
+  assert.doesNotMatch(
+    releaseWorkflow.match(/smoke_canary_onboarding:[\s\S]*?(?=\n  # ----- Nightly lane)/)?.[0] ?? "",
+    /cache: pnpm/,
+  );
+  assert.match(
+    releaseWorkflow,
     /name: Smoke exact published canary through onboarding\n\s+env:\n\s+PAPERCLIP_CANARY_SMOKE_SERVER_LOG: \$\{\{ runner\.temp \}\}\/canary-onboarding-server\.log/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /smoke_canary_onboarding:[\s\S]*?uses: actions\/upload-artifact@[0-9a-f]{40} # v7/,
   );
   assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
   assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
