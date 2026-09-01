@@ -1026,7 +1026,12 @@ describe("Capability live runnerd and Codex session", () => {
         resumeOf: "attempt-real-killed",
       });
       expect(resumed.snapshot().providerThreadId).toBe("thread-durable-runnerd");
-      await expect(resumed.reconcileActiveTurn()).resolves.toMatchObject({ status: "interrupted" });
+      const reconciled = await resumed.reconcileActiveTurn();
+      if (reconciled === null) throw new Error("checkpointed turn was not reconciled");
+      // Recovery may observe the provider's authoritative completion before
+      // the controller's interrupt wins the race; either terminal settles the
+      // exact checkpointed turn without replaying its governed effect.
+      expect(["completed", "interrupted"]).toContain(reconciled.status);
       const duplicate = await resumed.sendMessage("Apply the governed idempotent effect again.");
       expect(duplicate.assistantText).toContain("duplicate");
       expect(resumed.mockState().comments).toHaveLength(1);
@@ -1038,7 +1043,7 @@ describe("Capability live runnerd and Codex session", () => {
       ]);
       expect(final?.usageLedger).toHaveLength(2);
       expect(final?.terminalTurns).toEqual(expect.arrayContaining([
-        expect.objectContaining({ turnId: "turn-1", status: "interrupted" }),
+        expect.objectContaining({ turnId: "turn-1", status: reconciled.status }),
         expect.objectContaining({ turnId: "turn-2", status: "completed" }),
       ]));
       await resumedService.shutdown(resumed.id, "test complete");

@@ -1092,13 +1092,13 @@ it("cold-restores a suspended provider session under its durable run binding", a
     expect(read.thread).toMatchObject({ id: "codex-thread-1" });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
-    const durable = JSON.parse(
+    const providerState = JSON.parse(
       await readFile(
-        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+        join(externallyOwnedRunnerStateDirectory, "codex-provider-state.json"),
         "utf8",
       ),
-    ) as { providerToolBridge?: { authorized?: Record<string, unknown> } };
-    expect(Object.keys(durable.providerToolBridge?.authorized ?? {})).toEqual(
+    ) as { toolBridge?: { authorized?: Record<string, unknown> } };
+    expect(Object.keys(providerState.toolBridge?.authorized ?? {})).toEqual(
       expect.arrayContaining([
         "get_task_context",
         "paperclip_finish",
