@@ -89,6 +89,10 @@ test("published canaries are gated by the exact-version onboarding browser smoke
     /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
   );
   assert.match(releaseWorkflow, /test:canary-onboarding-smoke/);
+  assert.match(
+    releaseWorkflow,
+    /name: Smoke exact published canary through onboarding\n\s+env:\n\s+PAPERCLIP_CANARY_SMOKE_SERVER_LOG: \$\{\{ runner\.temp \}\}\/canary-onboarding-server\.log/,
+  );
   assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
   assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
 });
