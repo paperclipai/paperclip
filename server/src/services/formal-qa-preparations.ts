@@ -7,7 +7,7 @@ import { conflict, notFound } from "../errors.js";
 
 type PreparationRow = typeof formalQaPreparations.$inferSelect;
 
-function requestSha256(input: CreateFormalQaPreparation): string {
+function requestSha256(input: CreateFormalQaPreparation & { status?: "prepared" | "issued" }): string {
   // All input is validated and scalar. Keeping the exact key order here makes
   // idempotency comparison stable without accepting a caller-provided digest.
   return createHash("sha256").update(JSON.stringify({
@@ -24,6 +24,7 @@ function requestSha256(input: CreateFormalQaPreparation): string {
     issuerOperationId: input.issuerOperationId,
     idempotencyKey: input.idempotencyKey,
     expiresAt: input.expiresAt.toISOString(),
+    status: input.status ?? "prepared",
   })).digest("hex");
 }
 
@@ -44,7 +45,12 @@ export function formalQaPreparationService(db: Db) {
       return db.select().from(formalQaPreparations).where(and(...filters)).orderBy(formalQaPreparations.createdAt);
     },
 
-    create: async (input: CreateFormalQaPreparation & { companyId: string; issuedByUserId: string }) => {
+    create: async (input: CreateFormalQaPreparation & {
+      companyId: string;
+      issuedByUserId: string;
+      /** Internal issuer only. Public board routes never set this field. */
+      status?: "prepared" | "issued";
+    }) => {
       const digest = requestSha256(input);
       return db.transaction(async (tx) => {
         // Serialize idempotency-key creation before the workspace lookup and
@@ -99,6 +105,7 @@ export function formalQaPreparationService(db: Db) {
           idempotencyKey: input.idempotencyKey,
           requestSha256: digest,
           expiresAt: input.expiresAt,
+          status: input.status ?? "prepared",
         }).returning();
         return { preparation: preparation!, replayed: false };
       });

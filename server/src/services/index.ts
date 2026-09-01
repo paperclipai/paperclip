@@ -36,6 +36,7 @@ export {
 export { projectService } from "./projects.js";
 export { formalQaPreparationService } from "./formal-qa-preparations.js";
 export { formalQaCheckoutService } from "./formal-qa-checkouts.js";
+export { formalQaGitHubIssuerService } from "./formal-qa-github-issuer.js";
 export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,

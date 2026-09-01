@@ -7,6 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   formalQaCheckouts,
+  formalQaIssuances,
   formalQaPreparations,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -168,7 +169,7 @@ export function formalQaCheckoutService(db: Db, options?: { instanceRoot?: strin
   const instanceRoot = path.resolve(options?.instanceRoot ?? resolvePaperclipInstanceRoot());
 
   function assertPreparationStatus(preparation: PreparationRow, canReconcile: boolean) {
-    if (preparation.status !== "prepared" || (!canReconcile && preparation.expiresAt.getTime() <= Date.now())) {
+    if (preparation.status !== "issued" || (!canReconcile && preparation.expiresAt.getTime() <= Date.now())) {
       throw conflict("Formal-QA preparation is not eligible for exact checkout", {
         code: "formal_qa_preparation_not_eligible",
       });
@@ -255,8 +256,23 @@ export function formalQaCheckoutService(db: Db, options?: { instanceRoot?: strin
         const [preparation] = await tx.select().from(formalQaPreparations)
           .where(eq(formalQaPreparations.id, preparationId)).limit(1);
         if (!preparation) throw notFound("Formal-QA preparation not found");
+        if (preparation.status !== "issued") {
+          throw conflict("Formal-QA checkout requires a trusted issued preparation", {
+            code: "formal_qa_checkout_issuance_missing",
+          });
+        }
         const [existing] = await tx.select().from(formalQaCheckouts)
           .where(eq(formalQaCheckouts.preparationId, preparation.id)).limit(1);
+        const [issuance] = await tx.select().from(formalQaIssuances)
+          .where(eq(formalQaIssuances.preparationId, preparation.id)).limit(1);
+        if (!issuance || issuance.companyId !== preparation.companyId || issuance.projectId !== preparation.projectId ||
+          issuance.projectWorkspaceId !== preparation.projectWorkspaceId || issuance.repository !== preparation.repository ||
+          issuance.prNumber !== String(preparation.prNumber) || issuance.headSha !== preparation.headSha ||
+          issuance.baseRef !== preparation.baseRef || issuance.baseSha !== preparation.baseSha || issuance.treeSha !== preparation.treeSha) {
+          throw conflict("Formal-QA checkout has no matching trusted GitHub issuance", {
+            code: "formal_qa_checkout_issuance_missing",
+          });
+        }
         assertPreparationStatus(preparation, Boolean(existing));
         const [workspace] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
           .where(and(
@@ -299,9 +315,24 @@ export function formalQaCheckoutService(db: Db, options?: { instanceRoot?: strin
         const [preparation] = await tx.select().from(formalQaPreparations)
           .where(eq(formalQaPreparations.id, preparationId)).limit(1);
         if (!preparation) throw notFound("Formal-QA preparation not found");
+        if (preparation.status !== "issued") {
+          throw conflict("Formal-QA checkout requires a trusted issued preparation", {
+            code: "formal_qa_checkout_issuance_missing",
+          });
+        }
         const [checkout] = await tx.select().from(formalQaCheckouts)
           .where(eq(formalQaCheckouts.preparationId, preparation.id)).limit(1);
         if (!checkout) throw new Error("Formal-QA checkout receipt disappeared during materialization");
+        const [issuance] = await tx.select().from(formalQaIssuances)
+          .where(eq(formalQaIssuances.preparationId, preparation.id)).limit(1);
+        if (!issuance || issuance.companyId !== preparation.companyId || issuance.projectId !== preparation.projectId ||
+          issuance.projectWorkspaceId !== preparation.projectWorkspaceId || issuance.repository !== preparation.repository ||
+          issuance.prNumber !== String(preparation.prNumber) || issuance.headSha !== preparation.headSha ||
+          issuance.baseRef !== preparation.baseRef || issuance.baseSha !== preparation.baseSha || issuance.treeSha !== preparation.treeSha) {
+          throw conflict("Formal-QA checkout has no matching trusted GitHub issuance", {
+            code: "formal_qa_checkout_issuance_missing",
+          });
+        }
         assertPreparationStatus(preparation, true);
         const [workspace] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
           .where(and(

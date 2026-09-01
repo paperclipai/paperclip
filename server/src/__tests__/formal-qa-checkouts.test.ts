@@ -11,6 +11,7 @@ import {
   createDb,
   executionWorkspaces,
   formalQaCheckouts,
+  formalQaIssuances,
   formalQaPreparations,
   heartbeatRuns,
   projectWorkspaces,
@@ -53,6 +54,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(formalQaCheckouts);
+    await db.delete(formalQaIssuances);
     await db.delete(formalQaPreparations);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -119,6 +121,23 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       idempotencyKey: "sealed-operation-1902",
       requestSha256: "c".repeat(64),
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      status: "issued",
+    });
+    await db.insert(formalQaIssuances).values({
+      preparationId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      repository: "vivus-tech/music-tracker",
+      prNumber: "1902",
+      headSha: input.headSha,
+      baseRef: "main",
+      baseSha: input.headSha,
+      treeSha: input.treeSha,
+      requiredCheckName: "PR Policy",
+      requiredCheckAppSlug: "vivus-qa-reviewer",
+      checkRunId: "1001",
+      snapshotSha256: "d".repeat(64),
     });
     return { companyId, projectId, projectWorkspaceId, preparationId };
   }
@@ -162,6 +181,29 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       status: 409,
       details: { code: "formal_qa_checkout_verification_failed" },
     });
+  });
+
+  it("rejects both a board-prepared authority and an issued authority without a matching GitHub issuance", async () => {
+    const fixture = await makeRepository();
+    const { preparationId } = await seed({ ...fixture, cwd: fixture.root });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+
+    await db.update(formalQaPreparations).set({ status: "prepared" })
+      .where(eq(formalQaPreparations.id, preparationId));
+    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
+      status: 409,
+      details: { code: "formal_qa_checkout_issuance_missing" },
+    });
+    expect(await db.select().from(formalQaCheckouts)).toEqual([]);
+
+    await db.update(formalQaPreparations).set({ status: "issued" })
+      .where(eq(formalQaPreparations.id, preparationId));
+    await db.delete(formalQaIssuances);
+    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
+      status: 409,
+      details: { code: "formal_qa_checkout_issuance_missing" },
+    });
+    expect(await db.select().from(formalQaCheckouts)).toEqual([]);
   });
 
   it("recovers a durable creating receipt after worktree creation was interrupted", async () => {
