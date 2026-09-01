@@ -10,7 +10,7 @@ publish = false
 
 [workspace.dependencies]
 aes-gcm = "0.10"
-aws-config = { version = "1.11", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
+aws-config = { version = "1.11", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sdk-bedrockagentcore = { version = "1.63", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1.112", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-sts = { version = "1.112", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a"] }

@@ -96,6 +96,9 @@ it("preserves file-backed AWS workload identity at the runner spawn boundary", (
     runnerVersion: expectedRunnerVersion,
     runnerDigest: expectedRunnerDigest,
     environment: {
+      AWS_PROFILE: "host-profile",
+      AWS_CONFIG_FILE: "/host/home/.aws/config",
+      AWS_SHARED_CREDENTIALS_FILE: "/host/home/.aws/credentials",
       AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://127.0.0.1:9001/credentials",
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
       AWS_ACCESS_KEY_ID: "must-not-reach-runnerd",
@@ -127,6 +130,9 @@ it("preserves file-backed AWS workload identity at the runner spawn boundary", (
   });
   expect(launches[0]!.environment.AWS_ACCESS_KEY_ID).toBeUndefined();
   expect(launches[0]!.environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  expect(launches[0]!.environment.AWS_PROFILE).toBeUndefined();
+  expect(launches[0]!.environment.AWS_CONFIG_FILE).toBeUndefined();
+  expect(launches[0]!.environment.AWS_SHARED_CREDENTIALS_FILE).toBeUndefined();
 });
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {

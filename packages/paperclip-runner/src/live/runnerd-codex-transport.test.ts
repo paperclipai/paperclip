@@ -216,6 +216,10 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
       provider: "aws_agentcore",
       environment: {
         PATH: "/bin",
+        HOME: "/host/home",
+        AWS_PROFILE: "host-profile",
+        AWS_CONFIG_FILE: "/host/home/.aws/config",
+        AWS_SHARED_CREDENTIALS_FILE: "/host/home/.aws/credentials",
         AWS_REGION: "us-east-1",
         AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
         AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
@@ -240,6 +244,7 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
     hasRuntimeContext: false,
   });
   expect(environment).toMatchObject({
+    HOME: "/isolated/codex-home",
     AWS_REGION: "us-east-1",
     AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
     AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
@@ -248,6 +253,9 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
   expect(environment.AWS_ACCESS_KEY_ID).toBeUndefined();
   expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   expect(environment.AWS_SESSION_TOKEN).toBeUndefined();
+  expect(environment.AWS_PROFILE).toBeUndefined();
+  expect(environment.AWS_CONFIG_FILE).toBeUndefined();
+  expect(environment.AWS_SHARED_CREDENTIALS_FILE).toBeUndefined();
   expect(environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
   expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
 });

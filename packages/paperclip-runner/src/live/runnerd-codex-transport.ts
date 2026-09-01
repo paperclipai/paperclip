@@ -902,7 +902,10 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   }
   if (input.provider === "aws_agentcore") {
     return {
-      ...createSanitizedAwsAgentCoreEnvironment(input.options.environment),
+      ...createSanitizedAwsAgentCoreEnvironment(
+        input.options.environment,
+        input.codexHome,
+      ),
       ...commonIdentity,
     };
   }
@@ -1112,7 +1115,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             : options.provider === "claude_managed"
               ? createSanitizedClaudeManagedEnvironment(options.environment)
               : options.provider === "aws_agentcore"
-                ? createSanitizedAwsAgentCoreEnvironment(options.environment)
+                ? createSanitizedAwsAgentCoreEnvironment(
+                    options.environment,
+                    resolve(this.#root, "codex-home"),
+                  )
                 : createSanitizedCodexEnvironment(options.environment),
       ).sort(),
       diagnostics: ["lab transport selected authenticated durable PRP"],
@@ -1495,6 +1501,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const codexHome = this.options.runnerFilesystemRoot
       ? resolve(this.options.runnerFilesystemRoot, "codex-home")
       : localCodexHome;
+    if (provider === "aws_agentcore") {
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    }
     if (provider === "codex") {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
@@ -1857,6 +1866,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const codexHome = this.options.runnerFilesystemRoot
       ? resolve(this.options.runnerFilesystemRoot, "codex-home")
       : localCodexHome;
+    if (provider === "aws_agentcore") {
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    }
     if (provider === "codex") {
       // The prior process consumed a sealed, immutable copy. Rebuild that
       // copy from the authoritative runtime snapshot before a new provider is

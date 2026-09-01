@@ -36,17 +36,18 @@ export function createSanitizedClaudeManagedEnvironment(
 }
 
 /**
- * AgentCore uses workload identity or an explicitly selected shared profile.
- * Long-lived AWS access keys and Paperclip capability credentials are excluded.
+ * AgentCore uses workload identity from a private runner home. Long-lived AWS
+ * access keys, shared profiles, executable credential configuration, and
+ * Paperclip capability credentials are excluded.
  */
 export function createSanitizedAwsAgentCoreEnvironment(
   environment: NodeJS.ProcessEnv | undefined,
+  isolatedHome: string,
 ): NodeJS.ProcessEnv {
   const source = environment ?? process.env;
-  const result: NodeJS.ProcessEnv = {};
+  const result: NodeJS.ProcessEnv = { HOME: isolatedHome };
   for (const key of [
     "PATH",
-    "HOME",
     "LANG",
     "LANGUAGE",
     "LC_ALL",
@@ -64,11 +65,8 @@ export function createSanitizedAwsAgentCoreEnvironment(
     "https_proxy",
     "no_proxy",
     "RUST_BACKTRACE",
-    "AWS_PROFILE",
     "AWS_REGION",
     "AWS_DEFAULT_REGION",
-    "AWS_CONFIG_FILE",
-    "AWS_SHARED_CREDENTIALS_FILE",
     "AWS_WEB_IDENTITY_TOKEN_FILE",
     "AWS_ROLE_ARN",
     "AWS_ROLE_SESSION_NAME",
