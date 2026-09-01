@@ -139,7 +139,7 @@ export function createIsolatedCodexAppServerArgs(
   readOnlyRoots: string[] = [],
   additionalDeniedRoots: readonly string[] = [],
 ): string[] {
-  const normalizedReadOnlyRoots = normalizeFormalQaReadOnlyRoots(source, readOnlyRoots);
+  const normalizedReadOnlyRoots = normalizeReadOnlyRoots(readOnlyRoots);
   const deniedHostRoots = [
     ...new Set(
       [source.HOME, source.CODEX_HOME, ...additionalDeniedRoots]
@@ -193,22 +193,11 @@ export function createIsolatedCodexAppServerArgs(
   ];
 }
 
-function normalizeFormalQaReadOnlyRoots(
-  source: NodeJS.ProcessEnv,
-  readOnlyRoots: readonly string[],
-): string[] {
-  const denied = [source.HOME, source.CODEX_HOME]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .map((value) => resolve(value));
+function normalizeReadOnlyRoots(readOnlyRoots: readonly string[]): string[] {
   const normalized = [...new Set(readOnlyRoots.map((candidate) => resolve(candidate)))];
   for (const root of normalized) {
     if (root === "/") {
-      throw new Error("Formal-QA read-only root cannot be the filesystem root");
-    }
-    for (const protectedRoot of denied) {
-      if (root === protectedRoot || root.startsWith(`${protectedRoot}/`) || protectedRoot.startsWith(`${root}/`)) {
-        throw new Error("Formal-QA read-only root cannot overlap host HOME or CODEX_HOME");
-      }
+      throw new Error("Codex read-only root cannot be the filesystem root");
     }
   }
   return normalized;

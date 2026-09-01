@@ -42,6 +42,25 @@ describe("Codex security configuration", () => {
     expect(serialized).not.toContain("must-not-cross");
   });
 
+  it("keeps the default runner credential projection readable below HOME", () => {
+    const runnerCodexHome = "/home/test/.paperclip/instances/default/runtime/paperclip-runner/run-1/codex-home";
+    const args = createIsolatedCodexAppServerArgs({
+      HOME: "/home/test",
+      CODEX_HOME: "/home/test/.codex",
+      PATH: "/usr/bin:/bin",
+    }, [runnerCodexHome]);
+    const serialized = args.join("\n");
+
+    expect(serialized).toContain('"/home/test"="none"');
+    expect(serialized).toContain('"/home/test/.codex"="none"');
+    expect(serialized).toContain(`${JSON.stringify(runnerCodexHome)}="read"`);
+  });
+
+  it("rejects a filesystem-wide read-only projection", () => {
+    expect(() => createIsolatedCodexAppServerArgs({}, ["/"]))
+      .toThrow("Codex read-only root cannot be the filesystem root");
+  });
+
   it("uses a read-only permission profile for plan mode", () => {
     expect(createSecuredCodexThreadParams("/workspace", "plan")).toMatchObject({
       cwd: "/workspace",
