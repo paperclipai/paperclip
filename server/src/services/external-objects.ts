@@ -1009,6 +1009,7 @@ export function externalObjectService(
     companyId: string;
     objectIds?: string[];
     actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
+    force?: boolean;
   }) {
     if (!(await isEnabled())) return [];
     const groups = await listForIssue(issueId);
@@ -1017,7 +1018,7 @@ export function externalObjectService(
       .filter((id) => !input.objectIds || input.objectIds.includes(id));
     const results = [];
     for (const objectId of objectIds) {
-      results.push(await refreshObject(objectId, { companyId: input.companyId, actor: input.actor }));
+      results.push(await refreshObject(objectId, { companyId: input.companyId, actor: input.actor, force: input.force }));
     }
     return results;
   }
