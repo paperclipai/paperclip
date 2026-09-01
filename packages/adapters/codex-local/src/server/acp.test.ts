@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import type {
+  AdapterEnvironmentTestContext,
+  AdapterExecutionContext,
+  AdapterInvocationMeta,
+} from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 // Every test in this file needs a real teardown, so the mock below delegates
@@ -25,6 +29,7 @@ import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
   nodeVersionMeetsCodexAcpMinimum,
+  probeCodexAcpLiveReply,
   resolveCodexAcpBillingIdentity,
   resolveCodexExecutionEngine,
   resolveCodexExecutionEngineForRun,
@@ -60,6 +65,34 @@ function createLocalSandboxRunner() {
   };
 }
 
+function createLocalSandboxRunnerWithSyncOut() {
+  const runner = createLocalSandboxRunner();
+  return {
+    ...runner,
+    syncOut: async (operations: Array<{
+      operationId: string;
+      files: Array<{ sourcePath: string; targetPath: string; mode?: number }>;
+    }>) => {
+      const results: Array<{ operationId: string; filesTransferred: number; bytesTransferred: number }> = [];
+      for (const operation of operations) {
+        let bytesTransferred = 0;
+        for (const file of operation.files) {
+          await fs.mkdir(path.dirname(file.targetPath), { recursive: true });
+          await fs.copyFile(file.sourcePath, file.targetPath);
+          await fs.chmod(file.targetPath, file.mode ?? 0o600);
+          bytesTransferred += (await fs.stat(file.targetPath)).size;
+        }
+        results.push({
+          operationId: operation.operationId,
+          filesTransferred: operation.files.length,
+          bytesTransferred,
+        });
+      }
+      return { operations: results };
+    },
+  };
+}
+
 type FakeRuntimeOptions = Record<string, unknown>;
 type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string };
 type FakeRuntimeHandle = {
@@ -86,6 +119,7 @@ const originalPaperclipHome = process.env.PAPERCLIP_HOME;
 const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 const originalCodexHome = process.env.CODEX_HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+const originalCodexApiKey = process.env.CODEX_API_KEY;
 
 // Older/newer ISO timestamps for the copy-back monotonic (strictly-newer)
 // decision predicate, plus a subscription-shaped auth.json fixture matching the
@@ -138,6 +172,8 @@ afterEach(async () => {
   else process.env.CODEX_HOME = originalCodexHome;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  if (originalCodexApiKey === undefined) delete process.env.CODEX_API_KEY;
+  else process.env.CODEX_API_KEY = originalCodexApiKey;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -157,7 +193,7 @@ class FakeRuntime {
   constructor(
     readonly options: FakeRuntimeOptions,
     readonly events: FakeRuntimeEvent[] = [
-      { type: "text_delta", text: "hello", stream: "output", tag: "agent_message_chunk" },
+      { type: "text_delta", text: "Hello.", stream: "output", tag: "agent_message_chunk" },
     ],
     readonly terminal: FakeRuntimeTurnResult = { status: "completed", stopReason: "end_turn" },
   ) {}
@@ -283,6 +319,32 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
       },
     },
     onLog: async () => {},
+    ...overrides,
+  };
+}
+
+function liveProbePassed() {
+  return [{
+    code: "codex_hello_probe_passed",
+    level: "info" as const,
+    message: "Codex hello probe succeeded.",
+    detail: "Hello.",
+  }];
+}
+
+function buildEnvironmentContext(
+  root: string,
+  overrides: Partial<AdapterEnvironmentTestContext> = {},
+): AdapterEnvironmentTestContext {
+  return {
+    adapterType: "codex_local",
+    companyId: "company-1",
+    config: {
+      engine: "acp",
+      cwd: root,
+      model: "gpt-5.6-sol",
+      env: { OPENAI_API_KEY: "secret-key" },
+    },
     ...overrides,
   };
 }
@@ -504,21 +566,20 @@ describe("codex_local ACP lane", () => {
 
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-env-");
-    const commandPath = path.join(root, "bin", "codex-acp");
-    await fs.mkdir(path.dirname(commandPath), { recursive: true });
-    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     setNodeVersion("v24.11.0");
 
-    const result = await testCodexAcpEnvironment({
-      adapterType: "codex_local",
-      companyId: "company-1",
-      config: {
-        engine: "acp",
-        cwd: root,
-        agentCommand: commandPath,
-        env: { OPENAI_API_KEY: "test-key" },
+    const result = await testCodexAcpEnvironment(
+      {
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
       },
-    });
+      { liveProbe: async () => liveProbePassed() },
+    );
 
     expect(result.status).toBe("pass");
     expect(result.checks).toContainEqual(
@@ -541,9 +602,40 @@ describe("codex_local ACP lane", () => {
     );
   });
 
+  it("does not accept a custom ACP command as live Codex proof", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-custom-proof-");
+    const liveProbe = vi.fn(async () => liveProbePassed());
+    setNodeVersion("v24.11.0");
+
+    const result = await testCodexAcpEnvironment(
+      {
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: {
+          engine: "acp",
+          cwd: root,
+          agentCommand: "node ./fake-acp.js",
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+      },
+      { liveProbe },
+    );
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "codex_acp_custom_command_unsupported_for_live_proof",
+        level: "error",
+      }),
+    );
+    expect(result.checks).not.toContainEqual(
+      expect.objectContaining({ code: "codex_hello_probe_passed" }),
+    );
+    expect(liveProbe).not.toHaveBeenCalled();
+  });
+
   it("detects shared managed Codex auth in ACP environment tests", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-managed-auth-");
-    const commandPath = path.join(root, "bin", "codex-acp");
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const managedAgentHome = path.join(
       root,
@@ -556,31 +648,30 @@ describe("codex_local ACP lane", () => {
       "agent-1",
       "codex-home",
     );
-    await fs.mkdir(path.dirname(commandPath), { recursive: true });
-    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-shared"}', "utf8");
     setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
-    const result = await testCodexAcpEnvironment({
-      adapterType: "codex_local",
-      companyId: "company-1",
-      config: {
-        engine: "acp",
-        cwd: root,
-        agentCommand: commandPath,
-        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+    const result = await testCodexAcpEnvironment(
+      {
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+        },
       },
-    });
+      { liveProbe: async () => liveProbePassed() },
+    );
 
     expect(result.status).toBe("pass");
     expect(result.checks).toContainEqual(
       expect.objectContaining({
         code: "codex_acp_native_auth_detected",
         level: "info",
-        detail: expect.stringContaining(sharedCodexHome),
       }),
     );
     expect(result.checks).not.toContainEqual(
@@ -592,7 +683,6 @@ describe("codex_local ACP lane", () => {
 
   it("explains the Paperclip server credential boundary when ACP auth is missing", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-missing-auth-");
-    const commandPath = path.join(root, "bin", "codex-acp");
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const managedAgentHome = path.join(
       root,
@@ -605,23 +695,29 @@ describe("codex_local ACP lane", () => {
       "agent-1",
       "codex-home",
     );
-    await fs.mkdir(path.dirname(commandPath), { recursive: true });
-    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
     setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
-    const result = await testCodexAcpEnvironment({
-      adapterType: "codex_local",
-      companyId: "company-1",
-      config: {
-        engine: "acp",
-        cwd: root,
-        agentCommand: commandPath,
-        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+    const result = await testCodexAcpEnvironment(
+      {
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+        },
       },
-    });
+      {
+        liveProbe: async () => [{
+          code: "codex_hello_probe_auth_required",
+          level: "warn",
+          message: "Codex is available, but authentication is not ready.",
+        }],
+      },
+    );
 
     expect(result.status).toBe("warn");
     expect(result.checks).toContainEqual(
@@ -653,34 +749,41 @@ describe("codex_local ACP lane", () => {
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
-    const result = await testCodexAcpEnvironment({
-      adapterType: "codex_local",
-      companyId: "company-1",
-      config: {
-        engine: "acp",
-        cwd: root,
-        // A shell-style command resolves without a real binary in the sandbox.
-        agentCommand: "node ./fake-acp.js",
-        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
-      },
-      executionTarget: {
-        kind: "remote",
-        transport: "sandbox",
-        providerKey: "fake-plugin",
-        remoteCwd: "/work",
-        runner: {
-          execute: async () => ({
-            exitCode: 0,
-            signal: null,
-            timedOut: false,
-            stdout: "",
-            stderr: "",
-            pid: null,
-            startedAt: new Date().toISOString(),
-          }),
+    const result = await testCodexAcpEnvironment(
+      {
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
         },
-      } as never,
-    });
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        } as never,
+      },
+      {
+        liveProbe: async () => [{
+          code: "codex_hello_probe_auth_required",
+          level: "warn",
+          message: "Codex is available, but authentication is not ready.",
+        }],
+      },
+    );
 
     // A missing-auth sandbox is a warning, not a failure, and it carries the
     // neutral canonical check code for the user interface.
@@ -691,6 +794,697 @@ describe("codex_local ACP lane", () => {
         level: "warn",
       }),
     );
+  });
+
+  it("does not create or validate a sandbox-only cwd on the Paperclip host", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-remote-only-cwd-");
+    const remoteOnlyCwd = path.join(root, "must-not-be-created-on-host");
+    setNodeVersion("v24.11.0");
+    const result = await testCodexAcpEnvironment(
+      buildEnvironmentContext(root, {
+        config: {
+          engine: "acp",
+          cwd: remoteOnlyCwd,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: root,
+          runner: createLocalSandboxRunner(),
+        } as never,
+      }),
+      { liveProbe: async () => liveProbePassed() },
+    );
+
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ code: "codex_acp_cwd_valid", level: "info" }),
+    );
+    await expect(fs.lstat(remoteOnlyCwd)).rejects.toThrow();
+  });
+
+  it("runs a real ACP proof in an isolated one-shot workspace and disposes probe caches", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-live-proof-");
+    const dispose = vi.fn(async () => {});
+    let executionContext: AdapterExecutionContext | null = null;
+
+    const checks = await probeCodexAcpLiveReply(
+      buildEnvironmentContext(root),
+      {
+        engine: "acp",
+        cwd: root,
+        model: "gpt-5.6-sol",
+        env: { OPENAI_API_KEY: "secret-key" },
+        paperclipRuntimeSkills: [{ key: "must-not-sync" }],
+        paperclipSkillSync: { desiredSkills: ["must-not-sync"] },
+      },
+      {
+        createExecutor: (options) => {
+          options.stagedRuntimes?.set("probe", { dispose } as never);
+          return async (ctx) => {
+            executionContext = ctx;
+            await expect(fs.stat(String(ctx.config.cwd))).resolves.toBeDefined();
+            return {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              summary: "Hello.",
+            };
+          };
+        },
+      },
+    );
+
+    expect(checks).toEqual(liveProbePassed());
+    expect(JSON.stringify(checks)).not.toMatch(/secret-key|example\.test|private\/worktree/);
+    expect(executionContext).not.toBeNull();
+    const probeConfig = executionContext!.config;
+    const probeWorkspace = String(probeConfig.cwd);
+    expect(probeWorkspace).not.toBe(root);
+    expect(probeConfig).toMatchObject({
+      engine: "acp",
+      mode: "oneshot",
+      permissionMode: "deny-all",
+      nonInteractivePermissions: "fail",
+      model: "gpt-5.6-sol",
+      promptTemplate: "Reply with exactly Hello. Do not use tools.",
+    });
+    expect(probeConfig).not.toHaveProperty("paperclipRuntimeSkills");
+    expect(probeConfig).not.toHaveProperty("paperclipSkillSync");
+    expect(executionContext!.context).toMatchObject({
+      paperclipWorkspace: {
+        cwd: probeWorkspace,
+        source: "project_workspace",
+      },
+    });
+    expect(dispose).toHaveBeenCalledOnce();
+    await expect(fs.access(probeWorkspace)).rejects.toThrow();
+  });
+
+  it("materializes configured API auth at 0600 and removes every credential env copy", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-auth-file-");
+    const sourceHome = path.join(root, "source-home");
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceHome, "config.toml"),
+      '[mcp_servers.private]\nhttp_headers = { Authorization = "Bearer local-mcp-secret" }\n',
+      { mode: 0o600 },
+    );
+    const inheritedKeys = [
+      "OPENAI_API_KEY",
+      "CODEX_API_KEY",
+      "CODEX_AUTH_JSON",
+      "_PAPERCLIP_CODEX_AUTH_JSON",
+    ] as const;
+    const previous = Object.fromEntries(inheritedKeys.map((key) => [key, process.env[key]]));
+    for (const key of inheritedKeys) process.env[key] = `ambient-${key}`;
+    let executorOptions: Record<string, unknown> | null = null;
+    try {
+      const context = buildEnvironmentContext(root, {
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: {
+            CODEX_HOME: sourceHome,
+            OPENAI_API_KEY: "configured-api-secret",
+            codex_auth_json: "must-be-stripped-case-insensitively",
+          },
+        },
+      });
+      const checks = await probeCodexAcpLiveReply(context, context.config, {
+        createExecutor: (options) => {
+          executorOptions = options as unknown as Record<string, unknown>;
+          return async (executionContext) => {
+            const env = executionContext.config.env as Record<string, string>;
+            expect(Object.keys(env).map((key) => key.toUpperCase())).not.toEqual(
+              expect.arrayContaining([...inheritedKeys]),
+            );
+            const authPath = path.join(env.CODEX_HOME!, "auth.json");
+            expect(env.CODEX_HOME).not.toBe(sourceHome);
+            expect(JSON.parse(await fs.readFile(authPath, "utf8"))).toEqual({
+              OPENAI_API_KEY: "configured-api-secret",
+            });
+            expect((await fs.stat(authPath)).mode & 0o777).toBe(0o600);
+            await expect(fs.lstat(path.join(env.CODEX_HOME!, "config.toml"))).rejects.toThrow();
+            return { exitCode: 0, signal: null, timedOut: false, summary: "Hello." };
+          };
+        },
+      });
+
+      expect(checks).toEqual(liveProbePassed());
+      expect(executorOptions).toMatchObject({
+        denyEnvironmentKeys: [...inheritedKeys],
+        skipRuntimeSkillPreparation: true,
+      });
+      expect(executorOptions).not.toHaveProperty("omitInheritedEnvKeys");
+      expect(JSON.stringify(checks)).not.toMatch(
+        /configured-api-secret|must-be-stripped-case-insensitively|local-mcp-secret|ambient-/,
+      );
+    } finally {
+      for (const key of inheritedKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("uses the durable local subscription home so token rotation persists immediately", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-local-rotation-");
+    const sourceHome = path.join(root, "source-home");
+    const sourceAuthPath = path.join(sourceHome, "auth.json");
+    const older = subscriptionAuthJson("acct-local", OLDER_REFRESH, "local-older");
+    const newer = subscriptionAuthJson("acct-local", NEWER_REFRESH, "local-newer");
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.writeFile(sourceAuthPath, older, { mode: 0o600 });
+    const context = buildEnvironmentContext(root, {
+      config: {
+        engine: "acp",
+        cwd: root,
+        env: { CODEX_HOME: sourceHome },
+      },
+    });
+
+    const checks = await probeCodexAcpLiveReply(context, context.config, {
+      createExecutor: () => async (executionContext) => {
+        const probeHome = String((executionContext.config.env as Record<string, string>).CODEX_HOME);
+        expect(probeHome).toBe(sourceHome);
+        await fs.writeFile(path.join(probeHome, "auth.json"), newer, { mode: 0o600 });
+        return { exitCode: 0, signal: null, timedOut: false, summary: "Hello." };
+      },
+    });
+
+    expect(checks).toEqual(liveProbePassed());
+    expect(await fs.readFile(sourceAuthPath, "utf8")).toBe(newer);
+    expect((await fs.stat(sourceAuthPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("does not reconcile runtime skills inside the durable subscription home", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-local-skill-isolation-");
+    const sourceHome = path.join(root, "source-home");
+    const sourceAuthPath = path.join(sourceHome, "auth.json");
+    const skillsHome = path.join(sourceHome, "skills");
+    const managedSkill = path.join(skillsHome, "keep-existing");
+    const manifestPath = path.join(skillsHome, ".paperclip-managed-skills.json");
+    const manifest = `${JSON.stringify({
+      version: 1,
+      managedSkillNames: ["keep-existing"],
+    }, null, 2)}\n`;
+    await fs.mkdir(managedSkill, { recursive: true });
+    await fs.writeFile(
+      sourceAuthPath,
+      subscriptionAuthJson("acct-local-skill", OLDER_REFRESH, "local-skill"),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(path.join(managedSkill, "SKILL.md"), "operator-owned skill\n", "utf8");
+    await fs.writeFile(manifestPath, manifest, "utf8");
+    const context = buildEnvironmentContext(root, {
+      config: {
+        engine: "acp",
+        cwd: root,
+        env: { CODEX_HOME: sourceHome },
+      },
+    });
+
+    const checks = await probeCodexAcpLiveReply(context, context.config, {
+      createExecutor: (options) => createCodexAcpExecutor({
+        ...options,
+        createRuntime: (runtimeOptions: FakeRuntimeOptions) =>
+          new FakeRuntime(runtimeOptions) as never,
+      }),
+    });
+
+    expect(checks).toEqual(liveProbePassed());
+    await expect(fs.readFile(path.join(managedSkill, "SKILL.md"), "utf8"))
+      .resolves.toBe("operator-owned skill\n");
+    await expect(fs.readFile(manifestPath, "utf8")).resolves.toBe(manifest);
+  });
+
+  it("rejects a sandbox subscription probe before execution even when sync-out exists", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-remote-rotation-");
+    const sourceHome = path.join(root, "source-home");
+    const sourceAuthPath = path.join(sourceHome, "auth.json");
+    const older = subscriptionAuthJson("acct-remote", OLDER_REFRESH, "remote-older");
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.writeFile(sourceAuthPath, older, { mode: 0o600 });
+    const context = buildEnvironmentContext(root, {
+      config: {
+        engine: "acp",
+        cwd: root,
+        env: { CODEX_HOME: sourceHome },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-rotation-fixture",
+        remoteCwd: path.join(root, "operator-workspace"),
+        runner: createLocalSandboxRunnerWithSyncOut(),
+      } as never,
+    });
+    const execute = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary: "Hello.",
+    }));
+
+    const checks = await probeCodexAcpLiveReply(context, context.config, {
+      createExecutor: () => execute,
+    });
+
+    expect(checks).toEqual([
+      expect.objectContaining({ code: "codex_hello_probe_failed", level: "error" }),
+    ]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await fs.readFile(sourceAuthPath, "utf8")).toBe(older);
+    expect((await fs.stat(sourceAuthPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects inline and sandbox subscription auth before execution", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-copyback-unavailable-");
+    const sourceHome = path.join(root, "source-home");
+    const sourceAuthPath = path.join(sourceHome, "auth.json");
+    const older = subscriptionAuthJson("acct-blocked", OLDER_REFRESH, "blocked-older");
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.writeFile(sourceAuthPath, older, { mode: 0o600 });
+    const execute = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary: "Hello.",
+    }));
+
+    const configuredChecks = await probeCodexAcpLiveReply(
+      buildEnvironmentContext(root),
+      {
+        engine: "acp",
+        cwd: root,
+        env: { CODEX_AUTH_JSON: older },
+      },
+      { execute },
+    );
+    const sandboxContext = buildEnvironmentContext(root, {
+      config: { engine: "acp", cwd: root, env: { CODEX_HOME: sourceHome } },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "no-sync-out",
+        remoteCwd: "/operator/workspace",
+        runner: createLocalSandboxRunner(),
+      } as never,
+    });
+    const sandboxChecks = await probeCodexAcpLiveReply(
+      sandboxContext,
+      sandboxContext.config,
+      { execute },
+    );
+
+    for (const checks of [configuredChecks, sandboxChecks]) {
+      expect(checks).toEqual([
+        expect.objectContaining({ code: "codex_hello_probe_failed", level: "error" }),
+      ]);
+      expect(JSON.stringify(checks)).not.toMatch(/blocked-older|acct-blocked|ref-blocked/);
+    }
+    expect(execute).not.toHaveBeenCalled();
+    expect(await fs.readFile(sourceAuthPath, "utf8")).toBe(older);
+  });
+
+  it("stages a sandbox proof under an isolated remote root and preserves operator files", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-isolated-sandbox-");
+    const operatorRemoteCwd = path.join(root, "operator-workspace");
+    const sourceHome = path.join(root, "source-codex-home");
+    const sentinelPath = path.join(operatorRemoteCwd, "sentinel.txt");
+    await fs.mkdir(operatorRemoteCwd, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.writeFile(sentinelPath, "operator-owned-bytes", "utf8");
+    await fs.writeFile(
+      path.join(sourceHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sandbox-auth-secret" }),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      path.join(sourceHome, "config.toml"),
+      '[mcp_servers.private]\nhttp_headers = { Authorization = "Bearer sandbox-mcp-secret" }\n',
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const stagePayloads: Array<Record<string, unknown>> = [];
+    const localRunner = createLocalSandboxRunner();
+    const runner = {
+      ...localRunner,
+      execute: async (input: Parameters<typeof localRunner.execute>[0]) => {
+        if (input.stdin) {
+          try {
+            const payload = JSON.parse(input.stdin) as Record<string, unknown>;
+            if (Object.prototype.hasOwnProperty.call(payload, "authJson")) {
+              stagePayloads.push(payload);
+            }
+          } catch {
+            // The remote ACP process bridge also writes JSON-RPC frames to stdin.
+          }
+        }
+        return localRunner.execute(input);
+      },
+    };
+    const context = buildEnvironmentContext(root, {
+      config: {
+        engine: "acp",
+        cwd: root,
+        model: "gpt-5.6-sol",
+        env: { CODEX_HOME: sourceHome },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: operatorRemoteCwd,
+        runner,
+      } as never,
+    });
+
+    const checks = await probeCodexAcpLiveReply(context, context.config, {
+      createExecutor: (options) => createCodexAcpExecutor({
+        ...options,
+        createRuntime: (runtimeOptions: FakeRuntimeOptions) => {
+          const runtime = new FakeRuntime(runtimeOptions);
+          runtimes.push(runtime);
+          return runtime as never;
+        },
+      }),
+    });
+
+    expect(checks).toEqual(liveProbePassed());
+    expect(await fs.readFile(sentinelPath, "utf8")).toBe("operator-owned-bytes");
+    const remoteProbeCwd = String(runtimes[0]?.options.cwd ?? "");
+    expect(remoteProbeCwd).toMatch(/^\/tmp\/paperclip-codex-acp-envtest-/);
+    expect(remoteProbeCwd).not.toBe(operatorRemoteCwd);
+    await expect(fs.lstat(remoteProbeCwd)).rejects.toThrow();
+    expect(stagePayloads).toHaveLength(1);
+    expect(stagePayloads[0]).toEqual(expect.objectContaining({ authJson: expect.any(String) }));
+    expect(stagePayloads[0]).not.toHaveProperty("configToml");
+    expect(JSON.stringify(stagePayloads)).not.toContain("sandbox-mcp-secret");
+  });
+
+  it("runs remote removal and dangling-link verification and lets cleanup failure dominate", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-remote-cleanup-failure-");
+    const calls: Array<{ command: string; args: string[]; env?: Record<string, string> }> = [];
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+      }) => {
+        calls.push({ command: input.command, args: input.args ?? [], env: input.env });
+        const launchText = [input.command, ...(input.args ?? [])].join(" ");
+        return {
+          exitCode: launchText.includes("exec 'rm' '-rf'") ? 1 : 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const context = buildEnvironmentContext(root, {
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/operator/workspace",
+        runner,
+      } as never,
+    });
+    const checks = await probeCodexAcpLiveReply(context, context.config, {
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false, summary: "Hello." }),
+    });
+
+    expect(checks).toEqual([
+      expect.objectContaining({ code: "codex_hello_probe_cleanup_failed", level: "error" }),
+    ]);
+    const launchText = calls.map((call) => [call.command, ...call.args].join(" ")).join("\n");
+    expect(launchText).toContain("exec 'rm' '-rf'");
+    expect(launchText).toContain('[ ! -e "$1" ] && [ ! -L "$1" ]');
+    expect(JSON.stringify(calls)).not.toMatch(/sandbox-auth-secret|configured-api-secret/);
+  });
+
+  it("canonicalizes probe temp allocation failures without leaking raw errors", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-mkdtemp-failure-");
+    const realMkdtemp = fs.mkdtemp.bind(fs);
+    const mkdtempSpy = vi.spyOn(fs, "mkdtemp").mockImplementationOnce(async () => {
+      throw new Error("sk-temp-secret user@example.test /private/probe-root");
+    });
+    try {
+      const checks = await probeCodexAcpLiveReply(
+        buildEnvironmentContext(root),
+        buildEnvironmentContext(root).config,
+      );
+      expect(checks).toEqual([
+        expect.objectContaining({ code: "codex_hello_probe_failed", level: "error" }),
+      ]);
+      expect(JSON.stringify(checks)).not.toMatch(/sk-temp-secret|example\.test|private\/probe-root/);
+    } finally {
+      mkdtempSpy.mockRestore();
+      void realMkdtemp;
+    }
+  });
+
+  it("fails closed when the real ACP lifecycle cannot close its runtime", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-cleanup-error-");
+    const close = vi.fn(async () => {
+      throw new Error("sk-close-secret /private/runtime");
+    });
+
+    const checks = await probeCodexAcpLiveReply(
+      buildEnvironmentContext(root),
+      buildEnvironmentContext(root).config,
+      {
+        createExecutor: (options) => createCodexAcpExecutor({
+          ...options,
+          createRuntime: (runtimeOptions: FakeRuntimeOptions) => {
+            const runtime = new FakeRuntime(runtimeOptions);
+            runtime.close = close;
+            return runtime as never;
+          },
+        }),
+      },
+    );
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(checks).toEqual([
+      expect.objectContaining({
+        code: "codex_hello_probe_cleanup_failed",
+        level: "error",
+      }),
+    ]);
+    expect(JSON.stringify(checks)).not.toMatch(/sk-close-secret|private\/runtime/);
+  });
+
+  it("fails closed when the isolated probe root cannot be removed", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-cleanup-root-error-");
+    const probePrefix = "paperclip-codex-acp-envtest-";
+    const before = new Set(
+      (await fs.readdir(os.tmpdir())).filter((name) => name.startsWith(probePrefix)),
+    );
+    const realRm = fs.rm.bind(fs);
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (candidate, options) => {
+      if (
+        options?.recursive === true &&
+        path.basename(String(candidate)).startsWith(probePrefix)
+      ) {
+        throw new Error("sk-cleanup-secret user@example.test /private/probe-home");
+      }
+      return realRm(candidate, options);
+    });
+    try {
+      const context = buildEnvironmentContext(root);
+      const checks = await probeCodexAcpLiveReply(context, context.config, {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: "Hello.",
+        }),
+      });
+
+      expect(checks).toEqual([
+        expect.objectContaining({
+          code: "codex_hello_probe_cleanup_failed",
+          level: "error",
+        }),
+      ]);
+      expect(JSON.stringify(checks)).not.toMatch(
+        /sk-cleanup-secret|example\.test|private\/probe-home/,
+      );
+    } finally {
+      rmSpy.mockRestore();
+      const probeDirs = (await fs.readdir(os.tmpdir()))
+        .filter((name) => name.startsWith(probePrefix) && !before.has(name))
+        .map((name) => path.join(os.tmpdir(), name));
+      await Promise.all(
+        probeDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })),
+      );
+    }
+  });
+
+  it("never exposes unexpected or failed ACP provider output in diagnostics", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-redaction-");
+    const rawEvidence = "sk-secret user@example.test /private/worktree";
+    const results = [
+      {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: `Not hello ${rawEvidence}`,
+      },
+      {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: `Hello. ${rawEvidence}`,
+      },
+      {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        summary: rawEvidence,
+        errorMessage: rawEvidence,
+        errorMeta: { rawEvidence },
+        resultJson: { stopReason: rawEvidence },
+      },
+    ];
+
+    for (const result of results) {
+      const checks = await probeCodexAcpLiveReply(
+        buildEnvironmentContext(root),
+        buildEnvironmentContext(root).config,
+        { execute: async () => result },
+      );
+      expect(JSON.stringify(checks)).not.toMatch(/sk-secret|example\.test|private\/worktree/);
+      expect(checks).not.toContainEqual(expect.objectContaining({ code: "codex_hello_probe_passed" }));
+    }
+  });
+
+  it("classifies ACP auth families canonically for sandbox probes", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-auth-classification-");
+    const context = buildEnvironmentContext(root, {
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fixture",
+        remoteCwd: "/work",
+        runner: createLocalSandboxRunner(),
+      } as never,
+    });
+
+    for (const result of [
+      { errorCode: "acpx_auth_required" as const },
+      { errorFamily: "refresh_token_reused" as const },
+    ]) {
+      const checks = await probeCodexAcpLiveReply(context, context.config, {
+        execute: async () => ({
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          summary: "sensitive provider failure",
+          ...result,
+        }),
+      });
+      expect(checks.map((check) => check.code)).toEqual([
+        "codex_hello_probe_auth_required",
+        "adapter_auth_missing",
+      ]);
+      expect(JSON.stringify(checks)).not.toContain("sensitive provider failure");
+    }
+  });
+
+  it("fails closed when ACP workspace or authentication copy-back cannot be restored", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-restore-failure-");
+    const checks = await probeCodexAcpLiveReply(
+      buildEnvironmentContext(root),
+      buildEnvironmentContext(root).config,
+      {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: true,
+          summary: "Hello. leaked-refresh-token",
+          resultJson: { workspaceRestoreFailure: "sensitive-copy-back-detail" },
+        }),
+      },
+    );
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        code: "codex_hello_probe_cleanup_failed",
+        level: "error",
+      }),
+    ]);
+    expect(JSON.stringify(checks)).not.toMatch(/leaked-refresh-token|sensitive-copy-back-detail/);
+  });
+
+  it("lets the live turn validate CODEX_API_KEY and removes stale predictive auth warnings", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-codex-api-key-");
+    setNodeVersion("v24.11.0");
+
+    const result = await testCodexAcpEnvironment(
+      buildEnvironmentContext(root, {
+        config: {
+          engine: "acp",
+          cwd: root,
+          env: { CODEX_API_KEY: "codex-key" },
+        },
+      }),
+      { liveProbe: async () => liveProbePassed() },
+    );
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ code: "codex_hello_probe_passed" }),
+    );
+    expect(result.checks).not.toContainEqual(
+      expect.objectContaining({ code: "codex_acp_credentials_missing" }),
+    );
+  });
+
+  it("does not start an ACP live turn for unsupported SSH targets", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-ssh-proof-");
+    const liveProbe = vi.fn(async () => liveProbePassed());
+    setNodeVersion("v24.11.0");
+
+    const result = await testCodexAcpEnvironment(
+      buildEnvironmentContext(root, {
+        config: {
+          engine: "acp",
+          cwd: root,
+          agentCommand: "node ./fake-acp.js",
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/work",
+          spec: {
+            host: "127.0.0.1",
+            port: 22,
+            username: "fixture",
+            remoteCwd: "/work",
+            remoteWorkspacePath: "/work",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        } as never,
+      }),
+      { liveProbe },
+    );
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ code: "codex_acp_remote_target_unsupported", level: "error" }),
+    );
+    expect(liveProbe).not.toHaveBeenCalled();
   });
 
   it("executes through ACPX with Codex session config and ephemeral skills", async () => {

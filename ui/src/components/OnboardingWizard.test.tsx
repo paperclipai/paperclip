@@ -912,6 +912,229 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
   });
 
+  describe("hire gate: fresh Codex live proof", () => {
+    const SANDBOX_ENVIRONMENT = {
+      id: "env-codex-sandbox",
+      driver: "sandbox" as const,
+      status: "active" as const,
+      config: { provider: "fixture" },
+      metadata: {},
+    };
+    const CODEX_CONFIG = {
+      engine: "acp",
+      model: "gpt-5.6-sol",
+      env: { OPENAI_API_KEY: { type: "plain", value: "sk-config-secret" } },
+    };
+
+    function codexLiveResult(testedAt = new Date().toISOString()) {
+      return {
+        adapterType: "codex_local",
+        status: "pass" as const,
+        checks: [
+          {
+            code: "codex_hello_probe_passed",
+            level: "info" as const,
+            message: "raw provider message sk-result-secret user@example.test /private/worktree",
+            detail: "raw provider detail sk-result-secret",
+          },
+        ],
+        testedAt,
+      };
+    }
+
+    async function openCodexConnectStep() {
+      mockCompany.companies = [{ id: "company-new", name: "Initech", issuePrefix: "INI" }];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      mockAdapterBuild.buildAdapterConfig.mockReturnValue(CODEX_CONFIG);
+      mockEnvironmentsApi.list.mockResolvedValue([SANDBOX_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: SANDBOX_ENVIRONMENT.id });
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({
+          step: 4,
+          onboardingPath: "create",
+          companyName: "Initech",
+          agentName: "Ada",
+          createdCompanyId: "company-new",
+          adapterType: "codex_local",
+        }),
+      );
+
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      for (let i = 0; i < 5; i++) await flushReact();
+      expect(document.body.textContent).toContain("Codex live connection");
+
+      const findButton = (match: (text: string) => boolean) =>
+        [...document.body.querySelectorAll("button")].find((button) =>
+          match(button.textContent?.trim() ?? ""),
+        ) as HTMLButtonElement | undefined;
+      const clickButton = async (match: (text: string) => boolean) => {
+        const button = findButton(match);
+        expect(button).toBeDefined();
+        await act(async () => {
+          button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+      return { root, queryClient, findButton, clickButton };
+    }
+
+    it("binds one fresh proof to the exact company, config, and environment before one hire", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue(codexLiveResult());
+      const { root, findButton, clickButton } = await openCodexConnectStep();
+
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(true);
+      expect(document.body.textContent).toContain("A fresh live reply is required");
+
+      await clickButton((text) => text === "Test now");
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith(
+        "company-new",
+        "codex_local",
+        {
+          adapterConfig: CODEX_CONFIG,
+          environmentId: SANDBOX_ENVIRONMENT.id,
+        },
+      );
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(false);
+      expect(document.body.textContent).toContain("Live reply verified");
+      expect(document.body.textContent).toContain("Hello.");
+      expect(document.body.textContent).not.toMatch(/sk-result-secret|example\.test|private\/worktree/);
+
+      // The instance default is mutable global state. Model an out-of-band
+      // operator change after the proof: the hire must still carry the target
+      // captured by the proof instead of inheriting whatever default exists
+      // when the agent's first run starts.
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "env-changed-later" });
+
+      const connect = findButton((text) => text.startsWith("Connect"))!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+      const hireArgs = mockAgentsApi.hire.mock.calls[0] as unknown[];
+      expect(hireArgs[0]).toBe("company-new");
+      expect(
+        hireArgs[1] as {
+          adapterType: string;
+          adapterConfig: unknown;
+          defaultEnvironmentId: string;
+        },
+      ).toMatchObject({
+        adapterType: "codex_local",
+        adapterConfig: CODEX_CONFIG,
+        defaultEnvironmentId: SANDBOX_ENVIRONMENT.id,
+      });
+
+      await act(async () => root.unmount());
+    });
+
+    it("keeps Connect closed for an expired proof and opens only after a fresh retry", async () => {
+      mockAgentsApi.testEnvironment
+        .mockResolvedValueOnce(codexLiveResult(new Date(Date.now() - 5 * 60_000 - 1).toISOString()))
+        .mockResolvedValueOnce(codexLiveResult());
+      const { root, findButton, clickButton } = await openCodexConnectStep();
+
+      await clickButton((text) => text === "Test now");
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(true);
+      expect(document.body.textContent).toContain("connection proof has expired");
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+      await clickButton((text) => text === "Test now");
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(false);
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+
+      await act(async () => root.unmount());
+    });
+
+    it("keeps Codex request failures canonical and closed", async () => {
+      mockAgentsApi.testEnvironment.mockRejectedValue(
+        new Error("sk-server-secret user@example.test /private/server/stderr"),
+      );
+      const { root, findButton, clickButton } = await openCodexConnectStep();
+
+      await clickButton((text) => text === "Test now");
+
+      expect(document.body.textContent).toContain("Codex connection test failed");
+      expect(document.body.textContent).not.toMatch(/sk-server-secret|example\.test|private\/server/);
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(true);
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("never renders raw Codex checks, paths, or manual debug commands", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        ...codexLiveResult(),
+        status: "fail",
+        checks: [
+          {
+            code: "codex_hello_probe_failed",
+            level: "error",
+            message: "sk-server-secret user@example.test /private/server/stderr",
+            detail: "/private/effective/codex exec --json -",
+            hint: "Run /Users/operator/bin/codex manually",
+          },
+        ],
+      });
+      const { root, findButton, clickButton } = await openCodexConnectStep();
+
+      await clickButton((text) => text === "Test now");
+
+      expect(document.body.textContent).toContain("Live reply not verified");
+      expect(document.body.textContent).not.toContain("Manual debug");
+      expect(document.body.textContent).not.toContain("exec --json");
+      expect(document.body.textContent).not.toMatch(
+        /sk-server-secret|example\.test|private\/server|private\/effective|Users\/operator/,
+      );
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
+    it("ignores an in-flight Codex result after the adapter binding changes", async () => {
+      let resolveProbe: (result: ReturnType<typeof codexLiveResult>) => void = () => {};
+      mockAgentsApi.testEnvironment.mockReturnValue(
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        }),
+      );
+      const { root, findButton, clickButton } = await openCodexConnectStep();
+
+      const testButton = findButton((text) => text === "Test now")!;
+      await act(async () => {
+        testButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await clickButton((text) => text.startsWith("Advanced settings"));
+      await clickButton((text) => text === "claude_local");
+      await act(async () => resolveProbe(codexLiveResult()));
+      await flushReact();
+      await clickButton((text) => text === "codex_local");
+
+      expect(document.body.textContent).toContain("A fresh live reply is required");
+      expect(document.body.textContent).not.toContain("Live reply verified");
+      expect(findButton((text) => text.startsWith("Connect"))?.disabled).toBe(true);
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+  });
+
   it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
     // Regression for the initializer-only restore bug: the inner wizard's
     // ~20 useState(saved?.x ?? default) initializers only read `saved` on
