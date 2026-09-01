@@ -250,7 +250,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
-  // Sync disabled adapter types from server so dropdown filters them out
+  // Sync disabled adapter types from server so dropdown filters them out.
   const disabledTypes = useDisabledAdaptersSync();
 
   const { data: availableSecrets = [] } = useQuery({
@@ -292,6 +292,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
+  const adapterPickerDisabledTypes = useMemo(() => {
+    const next = new Set(disabledTypes);
+    // Fail closed while settings load. Existing native agents still render
+    // their current value in edit mode, but the picker does not offer a fresh
+    // native selection until the explicit experimental opt-in is known true.
+    if (experimentalSettings?.enableNativeRunner !== true) {
+      next.add("paperclip_runner");
+    }
+    return next;
+  }, [disabledTypes, experimentalSettings?.enableNativeRunner]);
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: every agent runs in the platform-managed
   // environment, so the form hides each host filesystem path and each
@@ -1544,7 +1554,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
-                disabledTypes={disabledTypes}
+                disabledTypes={adapterPickerDisabledTypes}
                 onChange={(t) => {
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type

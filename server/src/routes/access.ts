@@ -668,6 +668,17 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
   );
 }
 
+export function assertLegacyAgentInviteAdapterType(
+  adapterType: string | null | undefined,
+) {
+  if (adapterType === "paperclip_runner") {
+    throw badRequest(
+      "Paperclip Runner is not available through agent invite onboarding.",
+      { code: "paperclip_runner_invite_onboarding_disabled" },
+    );
+  }
+}
+
 function summarizeSecretForLog(
   value: unknown
 ): { present: true; length: number; sha256Prefix: string } | null {
@@ -3749,6 +3760,11 @@ export function accessRoutes(
           })
         );
       const adapterType = req.body.adapterType ?? null;
+      if (requestType === "agent") {
+        assertLegacyAgentInviteAdapterType(
+          adapterType ?? existingJoinRequestForInvite?.adapterType ?? null,
+        );
+      }
       if (
         inviteAlreadyAccepted &&
         !canReplayHumanInviteAccept &&
@@ -4228,6 +4244,7 @@ export function accessRoutes(
           req.actor.userId ?? null
         );
       } else {
+        assertLegacyAgentInviteAdapterType(existing.adapterType);
         const existingAgents = await agents.list(companyId);
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
         if (!managerId) {

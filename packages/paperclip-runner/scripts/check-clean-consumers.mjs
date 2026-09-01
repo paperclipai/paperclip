@@ -67,7 +67,7 @@ try {
     await publishArtifacts({ publicationRoot, runnerTarball, runnerdArtifact, conformanceRecord });
     process.stdout.write(`Published clean-consumer artifacts at ${publicationRoot}\n`);
   }
-  process.stdout.write("Clean-consumer pack/install checks passed for the runner root and testing exports.\n");
+  process.stdout.write("Clean-consumer pack/install checks passed for the runner root, evals, and testing exports.\n");
 } finally {
   if (process.env.PAPERCLIP_KEEP_PACKAGE_CONSUMERS !== "1") {
     await rm(scratchRoot, { recursive: true, force: true });
@@ -198,6 +198,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 
 import * as runtime from "@paperclipai/paperclip-runner";
+import * as evals from "@paperclipai/paperclip-runner/evals";
 import * as testing from "@paperclipai/paperclip-runner/testing";
 
 if ("MockControlPlaneAdapter" in runtime || "runControlPlanePortConformance" in runtime) {
@@ -214,6 +215,14 @@ const report = await testing.runControlPlanePortConformance({
 });
 if (report.eventCount !== 3) throw new Error("packed conformance kit returned the wrong event count");
 
+const nativeBundle = await evals.loadPaperclipNativeExecutionFixture();
+if (nativeBundle.schema !== "paperclip-runner/native-execution/v1") {
+  throw new Error("packed native execution fixture is unavailable");
+}
+if (nativeBundle.semanticTools.results[0]?.outcome !== "denied") {
+  throw new Error("native execution fixture lost its rejected tool effect");
+}
+
 runtime.assertPaperclipRunnerCompatibility({
   consumer: "paperclip-runner-clean-consumer",
   components: { catalog: 1, protocol: 1, runnerClient: 1, controlPlaneAdapter: 1, testkit: 1 },
@@ -226,6 +235,49 @@ const driverConformance = await testing.runHarnessDriverConformance({
 });
 if (!driverConformance.checks.transcriptCompleteness || driverConformance.semanticToolCallCount !== 1) {
   throw new Error("packed harness-driver conformance did not cover transcript/tools");
+}
+
+const runnerd = await evals.resolvePaperclipRunnerdArtifact({
+  executablePath: process.env.PAPERCLIP_RUNNERD_ARTIFACT,
+  expectedSha256: process.env.PAPERCLIP_RUNNERD_SHA256,
+});
+const evalCompatibility = evals.assertPaperclipRunnerEvalCompatibility({
+  consumer: "paperclip-runner-clean-consumer",
+  packageVersion: evals.PAPERCLIP_RUNNER_BUILD_METADATA.package.version,
+  runnerd: runnerd.buildMetadata,
+  nativeExecutionVersion: 1,
+  prp: { minimumVersion: 1, maximumVersion: 1 },
+  catalog: evals.PAPERCLIP_RUNNER_BUILD_METADATA.semanticCatalog,
+  driver: {
+    contractVersion: driverConformance.contractVersion,
+    descriptor: driverConformance.descriptor,
+    requiredCapabilities: ["typedEvents", "interruption", "usage", "dynamicTools"],
+  },
+});
+if (evalCompatibility.negotiatedPrpVersion !== 1) {
+  throw new Error("package/binary PRP negotiation returned the wrong version");
+}
+let mismatchFailedClosed = false;
+try {
+  evals.assertPaperclipRunnerEvalCompatibility({
+    consumer: "incompatible-runner-clean-consumer",
+    packageVersion: evals.PAPERCLIP_RUNNER_BUILD_METADATA.package.version,
+    runnerd: { ...runnerd.buildMetadata, binaryContractVersion: 999 },
+    nativeExecutionVersion: 1,
+    prp: { minimumVersion: 1, maximumVersion: 1 },
+    catalog: evals.PAPERCLIP_RUNNER_BUILD_METADATA.semanticCatalog,
+    driver: {
+      contractVersion: driverConformance.contractVersion,
+      descriptor: driverConformance.descriptor,
+      requiredCapabilities: [],
+    },
+  });
+} catch (error) {
+  mismatchFailedClosed = error?.code === "paperclip_runner_eval_incompatible"
+    && error.issues?.some((issue) => issue.code === "binary_contract_version_mismatch");
+}
+if (!mismatchFailedClosed) {
+  throw new Error("runnerd contract mismatch did not fail closed");
 }
 
 const normalized = {
@@ -273,12 +325,22 @@ await writeFile(process.env.PAPERCLIP_CONFORMANCE_RECORD, JSON.stringify({
   },
   consumer: {
     installMode: "offline-packed-artifact",
-    imports: ["@paperclipai/paperclip-runner", "@paperclipai/paperclip-runner/testing"],
+    imports: [
+      "@paperclipai/paperclip-runner",
+      "@paperclipai/paperclip-runner/evals",
+      "@paperclipai/paperclip-runner/testing",
+    ],
     appSourceTreeImports: false,
     providerCalls: 0,
   },
   checks: {
     packageExportsResolved: true,
+    nativeExecutionFixture: {
+      schema: nativeBundle.schema,
+      rejectedToolEffectPreserved: true,
+    },
+    evalCompatibility,
+    evalMismatchFailedClosed: mismatchFailedClosed,
     mockControlPlaneConformance: report,
     harnessDriverConformance: driverConformance,
     runnerdDigest: true,

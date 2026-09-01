@@ -72,6 +72,8 @@ const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 const RUNNER_PREVIEW_INGRESS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle runner preview ingress experimental setting"]';
+const PAPERCLIP_RUNNER_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle Paperclip Runner experimental setting"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
@@ -319,6 +321,27 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableRunnerPreviewIngress: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("keeps Paperclip Runner default-off and exposes an explicit opt-in", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Paperclip Runner");
+    expect(container.textContent).toContain("Onboarding continues to use legacy adapters");
+    const toggle = container.querySelector<HTMLButtonElement>(
+      PAPERCLIP_RUNNER_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableNativeRunner: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

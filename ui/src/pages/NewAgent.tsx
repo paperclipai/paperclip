@@ -30,8 +30,11 @@ import {
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { buildFixedClaudeOAuthBinding } from "../components/environment-variables-editor/model";
 import type { EnvBinding } from "@paperclipai/shared";
-import { getUIAdapter, listUIAdapters } from "../adapters";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { getUIAdapter } from "../adapters";
+import {
+  useAdapterRegistryLoaded,
+  useDisabledAdaptersSync,
+} from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
@@ -93,6 +96,8 @@ export function NewAgent() {
     result: null,
     login: null,
   });
+  const disabledTypes = useDisabledAdaptersSync();
+  const adapterRegistryLoaded = useAdapterRegistryLoaded();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -142,12 +147,13 @@ export function NewAgent() {
   useEffect(() => {
     const requested = presetAdapterType;
     if (!requested) return;
+    if (!adapterRegistryLoaded || disabledTypes.has(requested)) return;
     if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
-  }, [presetAdapterType]);
+  }, [adapterRegistryLoaded, disabledTypes, presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
