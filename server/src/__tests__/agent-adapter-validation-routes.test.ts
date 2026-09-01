@@ -603,7 +603,7 @@ describe("agent routes adapter validation", () => {
     );
   });
 
-  it("rejects non-Codex providers on fresh paperclip_runner agents and hires", async () => {
+  it("accepts qualified OpenCode and ACPX providers on fresh runner agents and hires", async () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const app = await createApp();
     const createResponse = await requestApp(app, (baseUrl) =>
@@ -612,7 +612,10 @@ describe("agent routes adapter validation", () => {
         .send({
           name: "Native OpenCode",
           adapterType: "paperclip_runner",
-          adapterConfig: { provider: "opencode" },
+          adapterConfig: {
+            provider: "opencode",
+            model: "openrouter/deepseek/deepseek-v4-flash-0731",
+          },
         }),
     );
     const hireResponse = await requestApp(app, (baseUrl) =>
@@ -621,19 +624,17 @@ describe("agent routes adapter validation", () => {
         .send({
           name: "Native ACPX",
           adapterType: "paperclip_runner",
-          adapterConfig: { provider: "acpx" },
+          adapterConfig: {
+            provider: "acpx",
+            acpxAgent: "claude",
+            model: "claude-sonnet-5",
+          },
         }),
     );
 
-    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(422);
-    expect(createResponse.body.details).toMatchObject({
-      code: "paperclip_runner_provider_unavailable",
-    });
-    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(422);
-    expect(hireResponse.body.details).toMatchObject({
-      code: "paperclip_runner_provider_unavailable",
-    });
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(201);
+    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(2);
   });
 
   it("rejects provider changes but preserves edits to historical runner agents", async () => {
@@ -658,7 +659,7 @@ describe("agent routes adapter validation", () => {
     expect(ordinaryEdit.status, JSON.stringify(ordinaryEdit.body)).toBe(200);
     expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(422);
     expect(providerChange.body.details).toMatchObject({
-      code: "paperclip_runner_provider_unavailable",
+      code: "paperclip_runner_acpx_agent_unavailable",
     });
   });
 

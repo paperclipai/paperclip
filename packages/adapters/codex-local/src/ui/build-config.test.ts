@@ -128,7 +128,7 @@ describe("buildPaperclipRunnerConfig", () => {
   it("fails closed to the Codex profile and safe defaults for stale schema values", () => {
     expect(buildPaperclipRunnerConfig(makeValues({
       adapterSchemaValues: {
-        provider: "opencode",
+        provider: "unknown",
         codexPermissionMode: "unrestricted",
         lifecycleMode: "forever",
         idleTimeoutMs: -1,
@@ -137,6 +137,74 @@ describe("buildPaperclipRunnerConfig", () => {
       provider: "codex",
       codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
+    });
+  });
+
+  it("builds a qualified OpenCode profile from schema-backed values", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "opencode",
+        opencodePermissionMode: "allow",
+      },
+    }))).toMatchObject({
+      provider: "opencode",
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      opencodePermissionMode: "allow",
+      codexPermissionMode: "untrusted",
+      acpxPermissionMode: "approve-reads",
+    });
+  });
+
+  it("does not let a stale schema model override the active Codex model", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "gpt-5.6-sol",
+      adapterSchemaValues: {
+        provider: "codex",
+        model: "openrouter/stale-model",
+        codexPermissionMode: "on-request",
+      },
+    }))).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      codexPermissionMode: "on-request",
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"],
+    ["codex", "gpt-5.6-sol"],
+  ] as const)("builds the qualified ACPX %s profile", (acpxAgent, model) => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "stale-model-from-another-provider",
+      adapterSchemaValues: {
+        provider: "acpx",
+        acpxAgent,
+        acpxPermissionMode: "approve-all",
+      },
+    }))).toMatchObject({
+      provider: "acpx",
+      acpxAgent,
+      model,
+      acpxPermissionMode: "approve-all",
+    });
+  });
+
+  it("does not materialize the unavailable ACPX Pi profile", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "acpx",
+        acpxAgent: "pi",
+      },
+    }))).toMatchObject({
+      provider: "acpx",
+      acpxAgent: "claude",
+      model: "claude-sonnet-5",
     });
   });
 

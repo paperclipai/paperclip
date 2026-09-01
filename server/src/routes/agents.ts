@@ -209,6 +209,10 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -1686,12 +1690,14 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): void {
     if (adapterType !== "paperclip_runner") return;
-    const provider = adapterConfig.provider;
-    if (provider === undefined || provider === "codex") return;
-    throw unprocessable(
-      "Paperclip Runner currently supports Codex for new or changed agent configurations.",
-      { code: "paperclip_runner_provider_unavailable" },
-    );
+    try {
+      resolvePaperclipRunnerProviderProfile(adapterConfig);
+    } catch (error) {
+      if (error instanceof PaperclipRunnerProviderProfileError) {
+        throw unprocessable(error.message, { code: error.code });
+      }
+      throw error;
+    }
   }
 
   function assertProviderTraceSettingTransition(
@@ -1997,6 +2003,10 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      assertFreshPaperclipRunnerProvider(adapterType, adapterConfig);
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);

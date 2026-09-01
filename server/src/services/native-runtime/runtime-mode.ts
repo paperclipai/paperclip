@@ -3,6 +3,11 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+  type PaperclipRunnerProviderProfile,
+} from "./provider-profile.js";
 
 /**
  * Public compatibility resolver version. This value is persisted by the
@@ -24,7 +29,7 @@ export type HeartbeatRuntimeResolution =
       kind: "native";
       resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
       reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: "codex";
+      provider: PaperclipRunnerProviderProfile["provider"];
     };
 
 export type NativeRuntimeResolution =
@@ -111,18 +116,14 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner is experimental and disabled on this instance.",
     );
   }
-  const adapterConfig = input.adapterConfig;
-  const runnerProvider =
-    typeof adapterConfig === "object"
-    && adapterConfig !== null
-    && !Array.isArray(adapterConfig)
-      ? (adapterConfig as Record<string, unknown>).provider ?? "codex"
-      : "codex";
-  if (runnerProvider !== "codex") {
-    throw ineligible(
-      "paperclip_runner_provider_unsupported",
-      "Paperclip Runner currently supports only the Codex provider.",
-    );
+  let runnerProfile: PaperclipRunnerProviderProfile;
+  try {
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+  } catch (error) {
+    if (error instanceof PaperclipRunnerProviderProfileError) {
+      throw ineligible(error.code, error.message);
+    }
+    throw error;
   }
   if (
     input.agent.adapterType !== "paperclip_runner"
@@ -157,7 +158,7 @@ export function resolveNativeRuntimeMode(input: {
     reason: "eligible_opt_in",
     profile: {
       mode: "native",
-      backend: "codex_app_server",
+      backend: runnerProfile.backend,
       protocolVersion: 1,
     },
     authorityDecision: rollout,
@@ -230,7 +231,11 @@ export function resolveHeartbeatRuntimeMode(input: {
     kind: "native",
     resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
     reason: "explicit_paperclip_runner",
-    provider: "codex",
+    provider: resolution.profile.backend === "opencode_server"
+      ? "opencode"
+      : resolution.profile.backend === "acpx_runtime"
+        ? "acpx"
+        : "codex",
   };
 }
 

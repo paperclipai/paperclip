@@ -145,6 +145,26 @@ describe("native backend factory", () => {
     ).toThrow("OpenCode native backend requires an instance runtime directory");
   });
 
+  it("routes OpenCode through runnerd when a durable transport is supplied", async () => {
+    const backend = createNativeSessionBackend(opencodeExecution(), {
+      codexTransportFactory: () => {
+        throw new Error("descriptor must not launch the transport");
+      },
+    });
+
+    await expect(backend.descriptor()).resolves.toMatchObject({
+      kind: "runner",
+      name: "opencode_server",
+      version: "1.18.17",
+      capabilities: {
+        steering: false,
+        resume: true,
+        interruption: true,
+        dynamicTools: true,
+      },
+    });
+  });
+
   it("constructs the OpenCode backend without starting its process", async () => {
     const backend = createNativeSessionBackend(opencodeExecution(), {
       opencodeRuntimeDirectory: "/runtime",
@@ -178,6 +198,28 @@ describe("native backend factory", () => {
       },
     });
   });
+
+  it.each(["codex" as const, "claude" as const])(
+    "routes qualified %s ACPX through runnerd",
+    async (agent) => {
+      const backend = createNativeSessionBackend(acpxExecution(agent), {
+        codexTransportFactory: () => {
+          throw new Error("descriptor must not launch the transport");
+        },
+      });
+
+      await expect(backend.descriptor()).resolves.toMatchObject({
+        name: "acpx_runtime",
+        version: "0.13.1",
+        capabilities: {
+          steering: false,
+          resume: true,
+          interruption: true,
+          dynamicTools: true,
+        },
+      });
+    },
+  );
 
   it("requires an explicit runtime root", () => {
     expect(() => createNativeSessionBackend(acpxExecution())).toThrow(

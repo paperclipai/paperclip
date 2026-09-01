@@ -1,5 +1,6 @@
 import {
   buildAdapterEnvConfig,
+  isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CreateConfigValues,
@@ -69,6 +70,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 /** Build a provider profile accepted by the experimental Rust runner. */
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
+  const schemaValues = { ...(v.adapterSchemaValues ?? {}) };
   for (const unsupportedKey of [
     "engine",
     "agentCommand",
@@ -86,8 +88,19 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "extraArgs",
   ]) {
     delete config[unsupportedKey];
+    delete schemaValues[unsupportedKey];
   }
-  const schemaValues = v.adapterSchemaValues ?? {};
+  const providerCandidate = schemaValues.provider;
+  const provider = isPaperclipRunnerProvider(providerCandidate)
+    ? providerCandidate
+    : "codex";
+  const acpxAgent = schemaValues.acpxAgent === "codex" ? "codex" : "claude";
+  const schemaModel = typeof schemaValues.model === "string"
+    ? schemaValues.model.trim()
+    : "";
+  const configuredModel = typeof config.model === "string"
+    ? config.model.trim()
+    : "";
   const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
   const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
   const configuredIdleTimeoutMs =
@@ -95,13 +108,47 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
     configuredIdleTimeoutMs,
   );
+  for (const normalizedKey of [
+    "provider",
+    "model",
+    "acpxAgent",
+    "codexPermissionMode",
+    "opencodePermissionMode",
+    "acpxPermissionMode",
+    "lifecycleMode",
+    "idleTimeoutMs",
+  ]) {
+    delete schemaValues[normalizedKey];
+  }
   return {
     ...config,
-    provider: "codex",
+    ...schemaValues,
+    provider,
     codexPermissionMode: resolvePaperclipRunnerPermissionMode(
       "codex",
-      v.codexPermissionMode ?? schemaValues.codexPermissionMode,
+      v.adapterSchemaValues?.codexPermissionMode ?? v.codexPermissionMode,
     ),
+    opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
+      "opencode",
+      v.adapterSchemaValues?.opencodePermissionMode,
+    ),
+    acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
+      "acpx",
+      v.adapterSchemaValues?.acpxPermissionMode,
+    ),
+    ...(provider === "opencode"
+      ? {
+          model: schemaModel
+            || configuredModel
+            || "openrouter/deepseek/deepseek-v4-flash-0731",
+        }
+      : {}),
+    ...(provider === "acpx"
+      ? {
+          acpxAgent,
+          model: acpxAgent === "claude" ? "claude-sonnet-5" : "gpt-5.6-sol",
+        }
+      : {}),
     lifecycleMode,
     ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
   };

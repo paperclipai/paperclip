@@ -5,7 +5,6 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
-  resolvePaperclipRunnerPermissionMode,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
@@ -135,6 +134,13 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  DEFAULT_OPENCODE_RUNNER_MODEL,
+  PaperclipRunnerProviderProfileError,
+  QUALIFIED_ACPX_RUNNER_MODELS,
+  QUALIFIED_OPENCODE_RUNNER_VERSION,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -362,71 +368,100 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       timedOut: false,
       errorMessage: message,
       errorCode: "paperclip_runner_coordinator_required",
-      provider: "codex",
+      provider: ctx.config.provider === "opencode"
+        ? "opencode"
+        : ctx.config.provider === "acpx"
+          ? "acpx"
+          : "codex",
       summary: message,
     };
   },
   async testEnvironment(context) {
-    const configuredProvider = context.config.provider ?? "codex";
-    if (configuredProvider !== "codex") {
+    let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(context.config);
+    } catch (error) {
+      const profileError = error instanceof PaperclipRunnerProviderProfileError
+        ? error
+        : new PaperclipRunnerProviderProfileError(
+            "paperclip_runner_provider_unsupported",
+            "Paperclip Runner provider configuration is invalid.",
+          );
       return {
         adapterType: "paperclip_runner",
         status: "fail" as const,
         testedAt: new Date().toISOString(),
         checks: [{
-          code: "paperclip_runner_provider_unsupported",
+          code: profileError.code,
           level: "error" as const,
-          message: "Paperclip Runner currently supports only the Codex provider.",
+          message: profileError.message,
         }],
       };
     }
-    if (context.executionTarget?.kind === "remote") {
+    if (profile.provider === "acpx") {
       return {
         adapterType: "paperclip_runner",
-        status: "fail" as const,
+        status: "pass" as const,
         testedAt: new Date().toISOString(),
         checks: [{
-          code: "paperclip_runner_environment_unsupported",
-          level: "error" as const,
-          message: "Paperclip Runner currently requires a local execution environment.",
+          code: "acpx_profile_qualified",
+          level: "info" as const,
+          message: `ACPX ${profile.acpxAgent} is pinned to the qualified ${profile.model} profile; process readiness is verified by runnerd before the first turn.`,
         }],
       };
     }
-    const configuredPermission = context.config.codexPermissionMode;
-    if (
-      configuredPermission !== undefined
-      && resolvePaperclipRunnerPermissionMode("codex", configuredPermission)
-        !== configuredPermission
-    ) {
-      return {
-        adapterType: "paperclip_runner",
-        status: "fail" as const,
-        testedAt: new Date().toISOString(),
-        checks: [{
-          code: "runner_permission_mode_invalid",
-          level: "error" as const,
-          message: "codexPermissionMode is not supported by Codex.",
-        }],
-      };
-    }
-    const result = await codexTestEnvironment(context);
+    const result = profile.provider === "opencode"
+      ? await openCodeTestEnvironment(context)
+      : await codexTestEnvironment(context);
     return { ...result, adapterType: "paperclip_runner" };
   },
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,
-  models: codexModels,
-  listModels: listCodexModels,
-  refreshModels: refreshCodexModels,
+  models: [
+    ...codexModels,
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+  ],
+  listModels: async () => [
+    ...await listCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+  ],
+  refreshModels: async () => [
+    ...await refreshCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+  ],
   supportsLocalAgentJwt: false,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
+  getRuntimeCommandSpec: (config) => config.provider === "acpx"
+    ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
+    : config.provider === "opencode"
+      ? buildNpmRuntimeCommandSpec(
+          config,
+          "opencode",
+          `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
+        )
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.148.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex through the Rust Paperclip runner and authenticated PRP transport.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, or a qualified Claude/Codex ACP agent through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile.\n",
   getConfigSchema: () => ({
     fields: [
+      {
+        key: "provider",
+        label: "Provider",
+        type: "select" as const,
+        default: "codex",
+        options: [
+          { value: "codex", label: "Codex" },
+          { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
+          { value: "acpx", label: "ACPX" },
+        ],
+        hint: "Select Codex, qualified OpenCode, or a qualified Claude/Codex ACPX profile.",
+      },
       {
         key: "codexPermissionMode",
         label: "Codex permission mode",
@@ -436,6 +471,50 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           ({ value, label }) => ({ value, label }),
         ),
         hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.description,
+        meta: { visibleWhen: { key: "provider", value: "codex" } },
+      },
+      {
+        key: "opencodePermissionMode",
+        label: "OpenCode permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.description,
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "acpxPermissionMode",
+        label: "ACPX permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.description,
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "acpxAgent",
+        label: "ACP agent",
+        type: "select" as const,
+        default: "claude",
+        options: [
+          { value: "claude", label: "Claude via ACPX" },
+          { value: "codex", label: "Codex via ACPX" },
+        ],
+        hint: "Only the pinned Claude and Codex profiles are qualified; Pi is unavailable.",
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "model",
+        label: "Provider model",
+        type: "text" as const,
+        default: "",
+        placeholder: DEFAULT_OPENCODE_RUNNER_MODEL,
+        hint: "OpenCode uses provider/model form. ACPX models are pinned by the selected qualified agent profile.",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
       },
       {
         key: "lifecycleMode",
@@ -454,6 +533,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         type: "number" as const,
         default: 300_000,
         hint: "Warm sessions suspend after this much inactivity.",
+        meta: { visibleWhen: { key: "lifecycleMode", value: "warm" } },
       },
     ],
   }),

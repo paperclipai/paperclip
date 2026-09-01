@@ -27,6 +27,7 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
   trustedRuntimeReadOnlyRoots,
@@ -34,6 +35,11 @@ import {
   unwrapRunnerdProviderNotifications,
   withCodexCollaborationRuntimeInstructions,
 } from "./runnerd-codex-transport.js";
+
+it("defaults runnerd ACPX permissions to approve reads", () => {
+  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
+  expect(resolveRunnerdAcpxPermissionMode("deny-all")).toBe("deny-all");
+});
 
 it("adds Codex-style turn updates only when collaboration instructions are enabled", () => {
   const base = "Base Paperclip instructions.";

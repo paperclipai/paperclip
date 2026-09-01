@@ -6,7 +6,7 @@ use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, run_durable_runner, DurableRunnerConfig,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
-use paperclip_runner_core::provider_backend::CodexCommandExecutor;
+use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use serde_json::json;
 
 const RUNNERD_BUILD_METADATA_SCHEMA: &str = "paperclip-runner/runnerd-build-metadata/v1";
@@ -129,7 +129,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
     };
-    let executor = CodexCommandExecutor::with_runner_config(state_dir, &config);
+    let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }

@@ -25,18 +25,45 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it("exposes only the qualified Codex provider and permission modes", () => {
-    const html = renderRunner({ provider: "opencode" });
+  it("exposes the qualified provider choices without managed profiles", () => {
+    const html = renderRunner({ provider: "codex" });
 
-    expect(html).toContain('disabled=""><option value="codex" selected="">Codex</option>');
+    expect(html).toContain('<option value="codex" selected="">Codex</option>');
+    expect(html).toContain("OpenCode 1.18.17");
+    expect(html).toContain("ACPX");
     expect(html).toContain("Full auto (never ask)");
     expect(html).toContain("Ask when requested");
     expect(html).toContain("Ask for untrusted operations");
-    expect(html).not.toContain("OpenCode");
-    expect(html).not.toContain("ACPX");
     expect(html).not.toContain("Claude Agent");
     expect(html).not.toContain("AWS AgentCore");
     expect(html).not.toContain("Bypass sandbox");
+  });
+
+  it("renders OpenCode's bounded permission modes", () => {
+    const html = renderRunner({
+      provider: "opencode",
+      opencodePermissionMode: "allow",
+    });
+
+    expect(html).toContain('<option value="opencode" selected="">OpenCode 1.18.17</option>');
+    expect(html).toContain('<option value="allow" selected="">Full auto (allow)</option>');
+    expect(html).toContain("Ask for permission");
+    expect(html).toContain("Deny operations");
+    expect(html).not.toContain("Ask for untrusted operations");
+  });
+
+  it("renders only the qualified ACPX Claude and Codex profiles", () => {
+    const html = renderRunner({
+      provider: "acpx",
+      acpxAgent: "claude",
+      acpxPermissionMode: "approve-reads",
+    });
+
+    expect(html).toContain('<option value="acpx" selected="">ACPX</option>');
+    expect(html).toContain('<option value="claude" selected="">Claude via ACPX</option>');
+    expect(html).toContain("Codex via ACPX");
+    expect(html).not.toContain("Pi via ACPX");
+    expect(html).toContain('<option value="approve-reads" selected="">Ask for mutations</option>');
   });
 
   it("falls back to the fail-closed Codex permission mode", () => {

@@ -2,6 +2,7 @@
 
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
+pub mod acpx_provider_backend;
 pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
@@ -11,6 +12,7 @@ pub mod durable;
 pub mod fake_harness;
 pub mod generated_acpx_sidecar_contract;
 pub mod local_runner;
+pub mod native_provider_backend;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;

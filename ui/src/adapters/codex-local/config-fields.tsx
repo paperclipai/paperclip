@@ -9,6 +9,7 @@ import {
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 import {
+  DEFAULT_CODEX_LOCAL_MODEL,
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
   isCodexLocalManualModel,
@@ -17,15 +18,24 @@ import {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
-  type CodexPermissionMode,
+  type PaperclipRunnerPermissionMode,
+  type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
+const defaultOpenCodeRunnerModel =
+  "openrouter/deepseek/deepseek-v4-flash-0731";
+const acpxRunnerModels = {
+  claude: "claude-sonnet-5",
+  codex: "gpt-5.6-sol",
+} as const;
+
 export function CodexLocalConfigFields({
   mode,
   isCreate,
@@ -45,19 +55,41 @@ export function CodexLocalConfigFields({
   // both, so the managed-sandbox-only policy hides them the same way
   // `runnerManaged` already does for the Paperclip Runner.
   const hideEngineChoice = runnerManaged || managedSandboxOnly === true;
-  const codexPermissionCapability = PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex;
+  const configuredRunnerProvider = runnerManaged
+    ? isCreate
+      ? values!.adapterSchemaValues?.provider
+      : eff("adapterConfig", "provider", config.provider ?? "codex")
+    : "codex";
+  const runnerProvider: PaperclipRunnerProvider = isPaperclipRunnerProvider(
+    configuredRunnerProvider,
+  )
+    ? configuredRunnerProvider
+    : "codex";
+  const runnerPermissionCapability =
+    PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider];
   const runnerPermissionMode = runnerManaged
     ? resolvePaperclipRunnerPermissionMode(
-        "codex",
+        runnerProvider,
         isCreate
-          ? values!.codexPermissionMode
+          ? values!.adapterSchemaValues?.[
+              runnerPermissionCapability.configKey
+            ] ??
+              (runnerProvider === "codex"
+                ? values!.codexPermissionMode
+                : undefined)
           : eff(
               "adapterConfig",
-              "codexPermissionMode",
-              config.codexPermissionMode,
+              runnerPermissionCapability.configKey,
+              config[runnerPermissionCapability.configKey],
             ),
       )
-    : codexPermissionCapability.defaultMode;
+    : runnerPermissionCapability.defaultMode;
+  const configuredAcpxAgent = runnerManaged && runnerProvider === "acpx"
+    ? isCreate
+      ? values!.adapterSchemaValues?.acpxAgent
+      : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")
+    : "claude";
+  const acpxAgent = configuredAcpxAgent === "codex" ? "codex" : "claude";
   const runnerLifecycleMode = runnerManaged
     ? isCreate
       ? values!.paperclipRunnerLifecycleMode ?? "per_turn"
@@ -119,31 +151,106 @@ export function CodexLocalConfigFields({
         </select>
       </Field>}
       {runnerManaged && (
-        <Field label="Provider" hint="Paperclip Runner currently supports Codex through app-server.">
-          <select className={inputClass} value="codex" disabled>
+        <Field
+          label="Provider"
+          hint="The runner persists this provider with each run so recovery cannot drift after configuration changes."
+        >
+          <select
+            className={inputClass}
+            value={runnerProvider}
+            onChange={(event) => {
+              const provider = isPaperclipRunnerProvider(event.target.value)
+                ? event.target.value
+                : "codex";
+              const model = provider === "opencode"
+                ? defaultOpenCodeRunnerModel
+                : provider === "acpx"
+                  ? acpxRunnerModels.claude
+                  : DEFAULT_CODEX_LOCAL_MODEL;
+              if (isCreate) {
+                set!({
+                  model,
+                  adapterSchemaValues: {
+                    ...values!.adapterSchemaValues,
+                    provider,
+                    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+                  },
+                });
+              } else {
+                mark("adapterConfig", "provider", provider);
+                mark("adapterConfig", "model", model);
+                if (provider === "acpx") {
+                  mark("adapterConfig", "acpxAgent", "claude");
+                }
+              }
+            }}
+          >
             <option value="codex">Codex</option>
+            <option value="opencode">OpenCode 1.18.17</option>
+            <option value="acpx">ACPX</option>
+          </select>
+        </Field>
+      )}
+      {runnerManaged && runnerProvider === "acpx" && (
+        <Field
+          label="ACP agent"
+          hint="Only the pinned Claude and Codex profiles are qualified; Pi is unavailable."
+        >
+          <select
+            className={inputClass}
+            value={acpxAgent}
+            onChange={(event) => {
+              const agent = event.target.value === "codex" ? "codex" : "claude";
+              const model = acpxRunnerModels[agent];
+              if (isCreate) {
+                set!({
+                  model,
+                  adapterSchemaValues: {
+                    ...values!.adapterSchemaValues,
+                    acpxAgent: agent,
+                  },
+                });
+              } else {
+                mark("adapterConfig", "acpxAgent", agent);
+                mark("adapterConfig", "model", model);
+              }
+            }}
+          >
+            <option value="claude">Claude via ACPX</option>
+            <option value="codex">Codex via ACPX</option>
           </select>
         </Field>
       )}
       {runnerManaged && (
         <Field
           label="Permission mode"
-          hint={`${codexPermissionCapability.description} Full auto does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
+          hint={`${runnerPermissionCapability.description} Full auto does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
         >
           <select
             className={inputClass}
             value={runnerPermissionMode}
             onChange={(event) => {
               const value = resolvePaperclipRunnerPermissionMode(
-                "codex",
+                runnerProvider,
                 event.target.value,
-              ) as CodexPermissionMode;
-              isCreate
-                ? set!({ codexPermissionMode: value })
-                : mark("adapterConfig", "codexPermissionMode", value);
+              ) as PaperclipRunnerPermissionMode;
+              if (isCreate) {
+                set!({
+                  adapterSchemaValues: {
+                    ...values!.adapterSchemaValues,
+                    [runnerPermissionCapability.configKey]: value,
+                  },
+                });
+              } else {
+                mark(
+                  "adapterConfig",
+                  runnerPermissionCapability.configKey,
+                  value,
+                );
+              }
             }}
           >
-            {codexPermissionCapability.options.map((option) => (
+            {runnerPermissionCapability.options.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -154,7 +261,7 @@ export function CodexLocalConfigFields({
       {runnerManaged && (
         <Field
           label="Runner lifecycle"
-          hint="Turn by turn suspends after each run. Warm keeps the same Codex process available between governed runs."
+          hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
           <select
             className={inputClass}
@@ -174,7 +281,7 @@ export function CodexLocalConfigFields({
       {runnerManaged && runnerLifecycleMode === "warm" && (
         <Field
           label="Warm idle timeout (ms)"
-          hint="After this much inactivity, runnerd checkpoints and suspends the Codex session. The maximum is 24 hours."
+          hint="After this much inactivity, runnerd checkpoints and suspends the provider session. The maximum is 24 hours."
         >
           {isCreate ? (
             <input

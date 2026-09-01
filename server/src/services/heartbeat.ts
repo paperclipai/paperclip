@@ -135,6 +135,7 @@ import {
   reconcileNativeFinalizations,
   resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
+import { resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import type { NativeRunHistoricalSpan } from "./native-runtime/native-run-trace.js";
 import {
   parseNativeExecutionInput,
@@ -373,7 +374,6 @@ import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
-  resolvePaperclipRunnerPermissionMode,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
@@ -19837,34 +19837,10 @@ export function heartbeatService(
                         : {},
                     }
                   : null,
-              provider:
-                nativeRuntimeResolution.profile.backend === "opencode_server"
-                  ? "opencode"
-                  : nativeRuntimeResolution.profile.backend === "acpx_runtime"
-                    ? "acpx"
-                    : "codex",
-              ...(nativeRuntimeResolution.profile.backend === "acpx_runtime"
-                ? {
-                    acpxAgent: parseObject(runtimeConfig).acpxAgent as
-                      "pi" | "claude" | "codex",
-                  }
-                : {}),
-              codexApprovalPolicy: resolvePaperclipRunnerPermissionMode(
-                "codex",
-                parseObject(agent.adapterConfig).codexPermissionMode,
-              ) as "never" | "on-request" | "untrusted",
-              opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
-                "opencode",
-                parseObject(runtimeConfig).opencodePermissionMode,
-              ) as "allow" | "ask" | "deny",
-              acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
-                "acpx",
-                parseObject(runtimeConfig).acpxPermissionMode,
-              ) as "approve-all" | "approve-reads" | "deny-all",
-              model:
-                typeof parseObject(agent.adapterConfig).model === "string"
-                  ? String(parseObject(agent.adapterConfig).model)
-                  : null,
+              ...resolvePaperclipRunnerNativeProviderInput({
+                backend: nativeRuntimeResolution.profile.backend,
+                adapterConfig: agent.adapterConfig,
+              }),
               lifecyclePolicy: effectiveLifecyclePolicy,
               interactionResponses,
               completionContract: {

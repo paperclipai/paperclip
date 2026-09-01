@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,13 +38,20 @@ type BackendFactoryOptions = {
   }) => Promise<void>;
 };
 
+type RunnerTransportOptions = {
+  stateDirectory?: string;
+  runnerBinary?: string;
+  provider?: "codex" | "opencode" | "acpx";
+  opencodePermissionMode?: "allow" | "ask" | "deny";
+  acpxAgent?: "claude" | "codex";
+  acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+};
+
 const state = vi.hoisted(() => ({
   execute: vi.fn(),
-  createTransport: vi.fn(
-    (_options: { stateDirectory?: string; runnerBinary?: string }) => ({
-      transport: {},
-    }),
-  ),
+  createTransport: vi.fn((_options: RunnerTransportOptions) => ({
+    transport: {},
+  })),
   createBackend: vi.fn(
     (_input: NativeExecutionInputV1, _options: BackendFactoryOptions) => ({
       kind: "test",
@@ -45,38 +59,33 @@ const state = vi.hoisted(() => ({
   ),
   cancel: vi.fn(),
   toolAuthorityExecute: vi.fn(),
-  persistActivity: vi.fn(
-    async (_db: unknown, input: { action: string }) => ({
-      activity: {
-        id:
-          input.action === "native.cancellation_intent_recorded"
-            ? "native-cancellation-audit"
-            : "native-cancellation-ack-audit",
-      },
-      publication: {
-        companyId: "company",
-        payload: { action: input.action },
-        pluginEvent: null,
-      },
-    }),
-  ),
+  persistActivity: vi.fn(async (_db: unknown, input: { action: string }) => ({
+    activity: {
+      id:
+        input.action === "native.cancellation_intent_recorded"
+          ? "native-cancellation-audit"
+          : "native-cancellation-ack-audit",
+    },
+    publication: {
+      companyId: "company",
+      payload: { action: input.action },
+      pluginEvent: null,
+    },
+  })),
   publishActivity: vi.fn(),
   resolveRunnerBinary: vi.fn(() => "/tmp/paperclip-runnerd"),
   release: null as null | (() => void),
 }));
 
-vi.mock(
-  "../../vendor/paperclip-runner/index.js",
-  async (importOriginal) => ({
-    ...(await importOriginal<
-      typeof import("../../vendor/paperclip-runner/index.js")
-    >()),
-    createNativeSessionBackend: state.createBackend,
-    createRunnerdCodexTransport: state.createTransport,
-    executeNativeSession: state.execute,
-    parsePaperclipQuestionSet: (value: unknown) => value,
-  }),
-);
+vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../vendor/paperclip-runner/index.js")
+  >()),
+  createNativeSessionBackend: state.createBackend,
+  createRunnerdCodexTransport: state.createTransport,
+  executeNativeSession: state.execute,
+  parsePaperclipQuestionSet: (value: unknown) => value,
+}));
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
@@ -798,7 +807,9 @@ describe("remote provider checkpoint snapshots", () => {
           mode: 0o700,
         }),
       ).rejects.toThrow("runner_remote_checkpoint_archive_unsafe_entry");
-      await expect(access(join(targetPath, "preserved.txt"))).resolves.toBeUndefined();
+      await expect(
+        access(join(targetPath, "preserved.txt")),
+      ).resolves.toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -960,7 +971,6 @@ describe("remote runner transport authorization", () => {
     ).toBe("listen_ws");
   });
 });
-
 
 describe("runtime question fallback", () => {
   const questionSet = {
@@ -1505,7 +1515,8 @@ function leaseDb(
         const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
           returning: () => Promise<Array<{ runId: string }>>;
         };
-        result.returning = () => Promise.resolve([{ runId: coordinator.runId }]);
+        result.returning = () =>
+          Promise.resolve([{ runId: coordinator.runId }]);
         return result;
       },
     }),
@@ -1571,7 +1582,8 @@ function cancellationDb(options?: {
       : { runId: execution.binding.runId, assessmentId: null };
   let forUpdateCount = 0;
   let resultJsonUpdateCount = 0;
-  const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
+    [];
   const select = vi.fn(() => ({
     from: (table: unknown) => {
       const rows =
@@ -2656,11 +2668,100 @@ describe("native process ownership", () => {
     );
     expect(onSpawn).toHaveBeenCalledWith(processMetadata);
   });
+
+  it.each([
+    [
+      "OpenCode",
+      {
+        kind: "opencode",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        permissionMode: "deny",
+      },
+      "opencode_server",
+    ],
+    [
+      "Claude ACPX",
+      {
+        kind: "acpx",
+        agent: "claude",
+        model: "claude-sonnet-5",
+        permissionMode: "approve-all",
+      },
+      "acpx_runtime",
+    ],
+    [
+      "Codex ACPX",
+      {
+        kind: "acpx",
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "deny-all",
+      },
+      "acpx_runtime",
+    ],
+  ])(
+    "admits the qualified %s provider",
+    async (_name, provider, driverKind) => {
+      const providerExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          runId: `run-${String(provider.kind)}-${"agent" in provider ? provider.agent : "native"}`,
+        },
+        provider,
+        session: { ...execution.session, driverKind },
+      } as unknown as NativeExecutionInputV1;
+      state.createBackend.mockClear();
+      state.execute.mockReset().mockResolvedValue({
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn",
+        normalizedSessionId: "session",
+        providerSessionId: null,
+        driverKind,
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+      });
+
+      await executePaperclipNativeSession({
+        db: leaseDb(providerExecution),
+        execution: providerExecution,
+        runnerInstanceId: "runner",
+      });
+
+      expect(state.createBackend).toHaveBeenCalledWith(
+        providerExecution,
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("rejects ACPX Pi before constructing a backend", async () => {
+    const piExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run-acpx-pi-rejected" },
+      provider: { kind: "acpx", agent: "pi", model: "pi-model" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+
+    await expect(
+      executePaperclipNativeSession({
+        db: leaseDb(piExecution),
+        execution: piExecution,
+        runnerInstanceId: "runner",
+      }),
+    ).rejects.toThrow("descriptor-confined verified launch");
+    expect(state.createBackend).not.toHaveBeenCalled();
+  });
 });
 
 describe("runnerd provider runtime wiring", () => {
   it("reuses legacy unscoped state only for its exact durable run identity", async () => {
-    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-legacy-runner-state-"));
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-legacy-runner-state-"),
+    );
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     const legacyExecution = {
@@ -2895,13 +2996,9 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     ["opencode", { kind: "opencode", model: null }, "opencode_server"],
-    [
-      "acpx",
-      { kind: "acpx", agent: "codex", model: null },
-      "acpx_runtime",
-    ],
+    ["acpx", { kind: "acpx", agent: "codex", model: null }, "acpx_runtime"],
   ])(
-    "fails closed before launching the remote %s provider",
+    "requires the build-owned provider pack before launching remote %s",
     async (providerKind, provider, driverKind) => {
       const remoteCwd = "/home/daytona/paperclip-workspace";
       const remoteProviderExecution = {
@@ -2941,7 +3038,7 @@ describe("runnerd provider runtime wiring", () => {
           },
         }),
       ).rejects.toThrow(
-        `runner_remote_provider_artifact_incompatible: remote ${providerKind} is unavailable until runnerd provider dispatch is qualified`,
+        "runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH",
       );
       expect(state.createBackend).not.toHaveBeenCalled();
     },
@@ -2950,7 +3047,7 @@ describe("runnerd provider runtime wiring", () => {
   it("passes the isolated ACPX runtime directory to the native backend factory", async () => {
     const acpxExecution = {
       ...execution,
-      schema: "paperclip.native-execution-input.v3",
+      schema: "paperclip.native-execution-input.v4",
       task: {
         identifier: "DOT-ACPX",
         title: "ACPX task",
@@ -2974,7 +3071,7 @@ describe("runnerd provider runtime wiring", () => {
         kind: "acpx",
         agent: "codex",
         model: "gpt-5.6-sol",
-        permissionPolicy: "interactive",
+        permissionMode: "approve-reads",
         profile: {
           driverKind: "acpx_runtime",
           protocolVersion: 1,
@@ -3010,6 +3107,47 @@ describe("runnerd provider runtime wiring", () => {
         acpxDynamicToolHandler: expect.any(Function),
       }),
     );
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "acpx",
+        acpxAgent: "codex",
+        acpxPermissionMode: "approve-reads",
+      }),
+    );
   });
 
+  it("passes the persisted OpenCode permission mode to runnerd", async () => {
+    const opencodeExecution = {
+      ...execution,
+      schema: "paperclip.native-execution-input.v4",
+      binding: { ...execution.binding, runId: "run-opencode-permissions" },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "opencode-permissions-session",
+        driverKind: "opencode_server",
+      },
+      provider: {
+        kind: "opencode",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        permissionMode: "deny",
+      },
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(opencodeExecution),
+      execution: opencodeExecution,
+      runnerInstanceId: "runner",
+    });
+
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "opencode",
+        opencodePermissionMode: "deny",
+      }),
+    );
+  });
 });

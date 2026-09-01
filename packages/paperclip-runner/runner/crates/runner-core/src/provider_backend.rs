@@ -30,7 +30,7 @@ use crate::provider_events::{
 };
 
 const PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.codex-provider-state.v1";
-const PROVIDER_STATE_FILE: &str = "codex-provider-state.json";
+pub const CODEX_PROVIDER_STATE_FILE: &str = "codex-provider-state.json";
 const MAX_PROVIDER_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EVENTS_PER_POLL: usize = 128;
 // One accepted semantic call can produce an input and a result event. Normal
@@ -242,16 +242,22 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
     let succeeded = event_type == "turn.completed";
     let cancelled = matches!(event_type, "turn.cancelled" | "turn.interrupted");
     let disposition = if succeeded { "done" } else { "needs_review" };
+    let provider = state.config.provider.as_str();
+    let provider_name = if provider == "opencode" {
+        "OpenCode"
+    } else {
+        "Codex"
+    };
     let summary = state.last_agent_message.clone().unwrap_or_else(|| {
         if succeeded {
-            "Codex completed the requested work.".to_owned()
+            format!("{provider_name} completed the requested work.")
         } else if cancelled {
-            "The Codex run stopped before it completed.".to_owned()
+            format!("The {provider_name} run stopped before it completed.")
         } else {
-            "The Codex run failed before it completed.".to_owned()
+            format!("The {provider_name} run failed before it completed.")
         }
     });
-    let evidence_ref = "provider:codex:agent-message";
+    let evidence_ref = format!("provider:{provider}:agent-message");
     let criteria = contract
         .criterion_ids
         .iter()
@@ -259,7 +265,7 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
             json!({
                 "criterionId": criterion_id,
                 "status": if succeeded { "satisfied" } else { "unknown" },
-                "evidenceRefs": if succeeded { vec![evidence_ref] } else { Vec::<&str>::new() },
+                "evidenceRefs": if succeeded { vec![evidence_ref.as_str()] } else { Vec::<&str>::new() },
             })
         })
         .collect::<Vec<_>>();
@@ -272,7 +278,7 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
             "objectiveSatisfied": succeeded,
             "criteria": criteria,
             "remainingWork": if succeeded { Vec::<Value>::new() } else { vec![json!({
-                "description": "Review the stopped Codex run and continue the task.",
+                "description": format!("Review the stopped {provider_name} run and continue the task."),
                 "blocksCompletion": true,
             })] },
         },
@@ -280,7 +286,7 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
         "verification": [],
         "attentionRequests": if succeeded { Vec::<Value>::new() } else { vec![json!({
             "kind": "review",
-            "summary": "Review the stopped Codex run before continuing.",
+            "summary": format!("Review the stopped {provider_name} run before continuing."),
             "ownerClass": "human",
         })] },
         "artifacts": [],
@@ -296,6 +302,7 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
     };
     let terminal = json!({
         "schema": "paperclip.prp.terminal.v1",
+        "provider": provider,
         "turnTerminalState": turn_terminal_state,
         "runTerminalState": if succeeded { "succeeded" } else if cancelled { "cancelled" } else { "failed" },
         "reportedWorkDisposition": disposition,
@@ -312,6 +319,35 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
             payload: terminal,
         },
     ]
+}
+
+fn relabel_provider_event(
+    mut event: NormalizedProviderEvent,
+    provider: &str,
+) -> NormalizedProviderEvent {
+    if provider == "codex" {
+        return event;
+    }
+    fn relabel(value: &mut Value, provider: &str) {
+        match value {
+            Value::Object(object) => {
+                if object.get("provider").and_then(Value::as_str) == Some("codex") {
+                    object.insert("provider".to_owned(), json!(provider));
+                }
+                for value in object.values_mut() {
+                    relabel(value, provider);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    relabel(value, provider);
+                }
+            }
+            _ => {}
+        }
+    }
+    relabel(&mut event.payload, provider);
+    event
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -597,7 +633,7 @@ impl CodexProviderState {
             event_type: "harness.diagnostic".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
-                "provider": "codex",
+                "provider": self.config.provider,
                 "code": "semantic_tool_turn_receipt_limit",
                 "operationId": operation_id,
                 "callId": call_id,
@@ -812,7 +848,7 @@ impl CodexCommandExecutor {
     }
 
     fn state_path(&self) -> PathBuf {
-        self.state_dir.join(PROVIDER_STATE_FILE)
+        self.state_dir.join(CODEX_PROVIDER_STATE_FILE)
     }
 
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
@@ -867,15 +903,25 @@ impl CodexCommandExecutor {
         {
             return Ok(());
         }
+        let provider_label = state.config.provider.clone();
+        let provider_name = if provider_label == "opencode" {
+            "OpenCode"
+        } else {
+            "Codex"
+        };
         let provider_had_exited = state.lifecycle == "provider_exited";
         let thread_id = state.thread_id.clone().ok_or_else(|| {
-            DurableRunnerError::invalid("recoverable Codex state omitted its thread id")
+            DurableRunnerError::invalid(format!(
+                "recoverable {provider_name} state omitted its thread id"
+            ))
         })?;
         let previous_active_turn_id = state.active_provider_turn_id.clone();
         let process_generation = state
             .provider_process_generation
             .checked_add(1)
-            .ok_or_else(|| DurableRunnerError::invalid("Codex process generation exhausted"))?;
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(format!("{provider_name} process generation exhausted"))
+            })?;
         let completed_turn_authoritative = state.completed_turn_authoritative;
         let completed_turn_process_generation = state.completed_turn_process_generation;
         let completed_provider_turn_id = state.completed_provider_turn_id.clone();
@@ -895,7 +941,9 @@ impl CodexCommandExecutor {
             process_generation,
         )
         .map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to resume Codex provider: {error}"))
+            DurableRunnerError::invalid(format!(
+                "failed to resume {provider_name} provider: {error}"
+            ))
         })?;
         provider.enable_durable_tool_call_replays();
         provider
@@ -905,7 +953,7 @@ impl CodexCommandExecutor {
             )
             .map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "failed to restore Codex provider turn identities: {error}"
+                    "failed to restore local provider turn identities: {error}"
                 ))
             })?;
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
@@ -946,9 +994,9 @@ impl CodexCommandExecutor {
                 event_type: "harness.diagnostic".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
-                    "provider": "codex",
+                    "provider": provider_label,
                     "code": "legacy_provider_turn_epoch_ambiguous",
-                    "message": "Codex recovery could not safely identify and settle active work from a saturated legacy replay epoch; Paperclip terminated the provider and closed the durable run",
+                    "message": format!("{provider_name} recovery could not safely identify and settle active work from a saturated legacy replay epoch; Paperclip terminated the provider and closed the durable run"),
                     "paperclipAccepted": false,
                     "providerReportedActive": provider_reported_active,
                     "ambiguousStartPending": ambiguous_turn_start_pending,
@@ -1001,10 +1049,10 @@ impl CodexCommandExecutor {
                 event_type: "harness.diagnostic".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
-                    "provider": "codex",
+                    "provider": provider_label,
                     "code": "provider_turn_identity_reused",
                     "providerTurnId": reused_provider_turn_id,
-                    "message": "Codex recovery reported a previously settled turn identity as active; Paperclip terminated the provider and closed the durable run",
+                    "message": format!("{provider_name} recovery reported a previously settled turn identity as active; Paperclip terminated the provider and closed the durable run"),
                     "paperclipAccepted": false,
                     "providerReportedActive": true,
                     "providerShutdownFailed": provider_shutdown_failed,
@@ -1016,12 +1064,12 @@ impl CodexCommandExecutor {
         if ambiguous_turn_start_pending {
             let recovered_turn_id = recovered_active_turn_id.as_deref().ok_or_else(|| {
                 DurableRunnerError::invalid(
-                    "cannot safely recover an ambiguous Codex turn start without an active replacement turn",
+                    format!("cannot safely recover an ambiguous {provider_name} turn start without an active replacement turn"),
                 )
             })?;
             if completed_provider_turn_id.as_deref() == Some(recovered_turn_id) {
                 return Err(DurableRunnerError::invalid(
-                    "ambiguous Codex turn recovery reused the previously completed turn identity",
+                    format!("ambiguous {provider_name} turn recovery reused the previously completed turn identity"),
                 ));
             }
         }
@@ -1035,7 +1083,7 @@ impl CodexCommandExecutor {
             )
             .map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "failed to restore Codex completion authority: {error}"
+                    "failed to restore local provider completion authority: {error}"
                 ))
             })?;
         let resumed_provider_session_id = provider.provider_session_id().map(str::to_owned);
@@ -1053,7 +1101,7 @@ impl CodexCommandExecutor {
                 event_type: "session.resumed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
-                    "provider": "codex",
+                    "provider": provider_label,
                     "providerSessionId": thread_id.clone(),
                     "providerAccountSessionId": resumed_provider_session_id,
                     "processId": resumed_process_id,
@@ -1105,7 +1153,7 @@ impl CodexCommandExecutor {
                 event_type: "session.reconciled".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
-                    "provider": "codex",
+                    "provider": provider_label,
                     "providerSessionId": thread_id,
                     "previousProviderTurnId": previous_active_turn_id.clone(),
                     "activeProviderTurnId": recovered_active_turn_id.clone(),
@@ -1121,7 +1169,7 @@ impl CodexCommandExecutor {
                     event_type: "turn.failed".to_owned(),
                     priority: EventPriority::P0,
                     payload: json!({
-                        "provider": "codex",
+                        "provider": provider_label,
                         "providerTurnId": previous_active_turn_id,
                         "status": "failed",
                         "providerTerminalObserved": false,
@@ -1207,6 +1255,8 @@ impl CodexCommandExecutor {
         config
             .validate()
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        let provider_name = config.provider.clone();
+        let driver = config.driver.clone();
         let completion_contract = completion_contract(payload)?;
         let tool_set = authorized_tool_set(payload)?;
         if let Some(state) = self.state.as_mut() {
@@ -1251,8 +1301,8 @@ impl CodexCommandExecutor {
         }
         Ok(CommandExecution::result(json!({
             "status": "prepared",
-            "provider": "codex",
-            "driver": "codex_app_server",
+            "provider": provider_name,
+            "driver": driver,
         })))
     }
 
@@ -1361,7 +1411,7 @@ impl CodexCommandExecutor {
                 provider.process_id(),
             )
         };
-        let provider_version = {
+        let (provider_name, driver, provider_version) = {
             let state = self
                 .state
                 .as_mut()
@@ -1375,14 +1425,18 @@ impl CodexCommandExecutor {
             state.receipt_limit_interrupt_attempts = 0;
             state.receipt_limit_interrupt_deadline_unix_ms = None;
             state.lifecycle = "session_open".to_owned();
-            state.config.provider_version.clone()
+            (
+                state.config.provider.clone(),
+                state.config.driver.clone(),
+                state.config.provider_version.clone(),
+            )
         };
         self.save_state()?;
         Ok(CommandExecution {
             result: json!({
                 "status": if resumed { "resumed" } else { "started" },
-                "provider": "codex",
-                "driver": "codex_app_server",
+                "provider": provider_name,
+                "driver": driver,
                 "providerVersion": provider_version,
                 "providerSessionId": thread_id,
                 "processId": process_id,
@@ -1396,7 +1450,7 @@ impl CodexCommandExecutor {
                 .to_owned(),
                 EventPriority::P0,
                 json!({
-                    "provider": "codex",
+                    "provider": provider_name,
                     "providerSessionId": thread_id,
                     "providerAccountSessionId": provider_session_id,
                     "processId": process_id,
@@ -1436,13 +1490,19 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_deadline_unix_ms = None;
         state.last_agent_message = None;
         state.lifecycle = "closed".to_owned();
+        let provider_label = state.config.provider.clone();
+        let provider_name = if provider_label == "opencode" {
+            "OpenCode"
+        } else {
+            "Codex"
+        };
         // Closure is the safety boundary. Preserve it even if a saturated
         // event queue cannot retain this additional diagnostic.
         let _ = state.push_terminal_event(NormalizedProviderEvent {
             event_type: "harness.diagnostic".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
-                "provider": "codex",
+                "provider": provider_label,
                 "code": match rejected_accepted_turn {
                     RejectedAcceptedTurn::ReusedIdentity(_) => "provider_turn_identity_reused",
                     RejectedAcceptedTurn::InvalidIdentity => "provider_turn_identity_invalid",
@@ -1452,8 +1512,8 @@ impl CodexCommandExecutor {
                     RejectedAcceptedTurn::InvalidIdentity => Value::Null,
                 },
                 "message": match rejected_accepted_turn {
-                    RejectedAcceptedTurn::ReusedIdentity(_) => "Codex accepted work with a previously settled turn identity; Paperclip terminated the provider and closed the durable run",
-                    RejectedAcceptedTurn::InvalidIdentity => "Codex accepted work without a valid bounded turn identity; Paperclip terminated the provider and closed the durable run",
+                    RejectedAcceptedTurn::ReusedIdentity(_) => format!("{provider_name} accepted work with a previously settled turn identity; Paperclip terminated the provider and closed the durable run"),
+                    RejectedAcceptedTurn::InvalidIdentity => format!("{provider_name} accepted work without a valid bounded turn identity; Paperclip terminated the provider and closed the durable run"),
                 },
                 "paperclipAccepted": false,
                 "providerAccepted": true,
@@ -1690,13 +1750,14 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_deadline_unix_ms = None;
         state.last_agent_message = None;
         state.lifecycle = "turn_active".to_owned();
+        let provider_label = state.config.provider.clone();
         self.save_state()?;
         Ok(CommandExecution {
             result: json!({"status": "accepted", "providerTurnId": provider_turn_id}),
             events: vec![(
                 "turn.accepted".to_owned(),
                 EventPriority::P0,
-                json!({"provider": "codex", "providerSessionId": thread_id, "providerTurnId": provider_turn_id}),
+                json!({"provider": provider_label, "providerSessionId": thread_id, "providerTurnId": provider_turn_id}),
             )],
         })
     }
@@ -1763,14 +1824,24 @@ impl CodexCommandExecutor {
             .get("requestId")
             .and_then(Value::as_str)
             .ok_or_else(|| DurableRunnerError::invalid("request.resolve requires requestId"))?;
+        let provider_label = self
+            .state
+            .as_ref()
+            .map(|state| state.config.provider.clone())
+            .unwrap_or_else(|| "codex".to_owned());
+        let provider_name = if provider_label == "opencode" {
+            "OpenCode"
+        } else {
+            "Codex"
+        };
         if self
             .state
             .as_ref()
             .is_none_or(|state| state.active_provider_turn_id.is_none())
         {
-            return Err(DurableRunnerError::invalid(
-                "cannot resolve a Codex runtime request outside an active turn",
-            ));
+            return Err(DurableRunnerError::invalid(format!(
+                "cannot resolve a {provider_name} runtime request outside an active turn"
+            )));
         }
         let response = payload
             .get("response")
@@ -1778,14 +1849,16 @@ impl CodexCommandExecutor {
         self.ensure_provider()?
             .resolve_runtime_request(request_id, response)
             .map_err(|error| {
-                DurableRunnerError::invalid(format!("Codex runtime response failed: {error}"))
+                DurableRunnerError::invalid(format!(
+                    "{provider_name} runtime response failed: {error}"
+                ))
             })?;
         Ok(CommandExecution {
             result: json!({"status": "delivered", "requestId": request_id}),
             events: vec![(
                 "runtime_request.resolved".to_owned(),
                 EventPriority::P0,
-                json!({"provider": "codex", "requestId": request_id, "status": "delivered"}),
+                json!({"provider": provider_label, "requestId": request_id, "status": "delivered"}),
             )],
         })
     }
@@ -1812,7 +1885,7 @@ impl CodexCommandExecutor {
             event_type: "harness.diagnostic".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
-                "provider": "codex",
+                "provider": state.config.provider,
                 "code": "semantic_tool_denied",
                 "operationId": operation_id,
                 "callId": call_id,
@@ -1961,20 +2034,26 @@ impl CodexCommandExecutor {
         } else {
             "turn.failed"
         };
+        let provider_label = state.config.provider.clone();
+        let provider_name = if provider_label == "opencode" {
+            "OpenCode"
+        } else {
+            "Codex"
+        };
         state.push_terminal_event(NormalizedProviderEvent {
             event_type: terminal_event_type.to_owned(),
             priority: EventPriority::P0,
             payload: json!({
-                "provider": "codex",
+                "provider": provider_label,
                 "code": if interrupt_accepted {
                     "semantic_tool_turn_receipt_limit_interrupt_deadline"
                 } else {
                     "semantic_tool_turn_receipt_limit_interrupt_unconfirmed"
                 },
                 "message": if interrupt_accepted {
-                    "Codex accepted the receipt-limit interruption but did not emit its terminal before the bounded shutdown deadline"
+                    format!("{provider_name} accepted the receipt-limit interruption but did not emit its terminal before the bounded shutdown deadline")
                 } else {
-                    "Codex did not confirm terminal state after the bounded receipt-limit interruption attempts"
+                    format!("{provider_name} did not confirm terminal state after the bounded receipt-limit interruption attempts")
                 },
                 "interruptAccepted": interrupt_accepted,
                 "providerTerminalObserved": false,
@@ -2181,13 +2260,14 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_deadline_unix_ms = None;
         state.lifecycle = "closed".to_owned();
         let thread_id = state.thread_id.clone();
+        let provider_name = state.config.provider.clone();
         self.save_state()?;
         Ok(CommandExecution {
             result: json!({"status": "closed", "providerSessionId": thread_id}),
             events: vec![(
                 "session.closed".to_owned(),
                 EventPriority::P0,
-                json!({"provider": "codex", "providerSessionId": thread_id}),
+                json!({"provider": provider_name, "providerSessionId": thread_id}),
             )],
         })
     }
@@ -2200,8 +2280,8 @@ impl CodexCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is not prepared"))?;
         Ok(CommandExecution::result(json!({
             "status": state.lifecycle,
-            "provider": "codex",
-            "driver": "codex_app_server",
+            "provider": state.config.provider,
+            "driver": state.config.driver,
             "providerSessionId": state.thread_id,
             "activeProviderTurnId": state.active_provider_turn_id,
         })))
@@ -2275,7 +2355,15 @@ impl CodexCommandExecutor {
                         } else {
                             None
                         };
-                    let normalized = normalize_codex_notification(&method, &params);
+                    let provider_name = self
+                        .state
+                        .as_ref()
+                        .map(|state| state.config.provider.clone())
+                        .unwrap_or_else(|| "codex".to_owned());
+                    let normalized = normalize_codex_notification(&method, &params)
+                        .into_iter()
+                        .map(|event| relabel_provider_event(event, &provider_name))
+                        .collect::<Vec<_>>();
                     let normalized_event_count = normalized.len();
                     let terminal_event_type = normalized
                         .iter()
@@ -2429,8 +2517,8 @@ impl CodexCommandExecutor {
                                 "prompt": prompt,
                                 "input": question_set,
                                 "origin": {
-                                    "adapter": "codex-app-server",
-                                    "provider": "codex",
+                                    "adapter": if state.config.provider == "opencode" { "opencode-server" } else { "codex-app-server" },
+                                    "provider": state.config.provider,
                                     "method": "item/tool/requestUserInput",
                                 },
                             },
@@ -2477,7 +2565,7 @@ impl CodexCommandExecutor {
                             .to_owned(),
                             priority: EventPriority::P0,
                             payload: json!({
-                                "provider": "codex",
+                                "provider": state.config.provider,
                                 "code": "provider_exited",
                                 "exitCode": exit_code,
                                 "expected": success,
@@ -2513,10 +2601,15 @@ impl CommandExecutor for CodexCommandExecutor {
                 }
                 self.verify_attached_tools(&command.payload)?;
                 let mut execution = self.open_session()?;
+                let provider = self
+                    .state
+                    .as_ref()
+                    .map(|state| state.config.provider.clone())
+                    .unwrap_or_else(|| "codex".to_owned());
                 execution.events.push((
                     "run.attached".to_owned(),
                     EventPriority::P0,
-                    json!({"provider": "codex"}),
+                    json!({"provider": provider}),
                 ));
                 Ok(execution)
             }
@@ -2586,6 +2679,46 @@ impl CommandExecutor for CodexCommandExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_terminal_fallback_uses_its_actual_provider_identity() {
+        let mut state = CodexProviderState::new(
+            CodexProviderConfig {
+                provider: "opencode".to_owned(),
+                driver: "opencode_server".to_owned(),
+                provider_version: "1.18.17".to_owned(),
+                command: PathBuf::from("node"),
+                args: Vec::new(),
+                cwd: std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                model: Some("openrouter/model".to_owned()),
+                provider_session_id: None,
+                instructions: String::new(),
+                approval_policy: "never".to_owned(),
+            },
+            Some(CompletionContractBinding {
+                revision: "revision-1".to_owned(),
+                criterion_ids: vec!["criterion-1".to_owned()],
+            }),
+            ProviderToolBridge::default(),
+        );
+        state.last_agent_message = None;
+
+        let events = terminal_events(&state, "turn.completed");
+
+        assert_eq!(
+            events[0].payload["summary"],
+            "OpenCode completed the requested work."
+        );
+        assert_eq!(
+            events[0].payload["evidence"][0]["ref"],
+            "provider:opencode:agent-message"
+        );
+        assert_eq!(events[1].payload["provider"], "opencode");
+        assert!(!events[0].payload.to_string().contains("Codex"));
+    }
 
     #[test]
     fn rejects_inconsistent_provider_state() {

@@ -2719,7 +2719,7 @@ export async function executePaperclipNativeSession(input: {
     processGroupId: number | null;
     startedAt: string;
   }) => Promise<void>;
-  /** Test seam at the provider boundary; production always uses the package Codex backend. */
+  /** Test seam at the provider boundary; production uses a qualified package backend. */
   backend?: NativeSessionBackend;
   useRunnerd?: boolean;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -2750,8 +2750,20 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
-  if (input.execution.provider.kind !== "codex") {
+  if (
+    input.execution.provider.kind !== "codex"
+    && input.execution.provider.kind !== "opencode"
+    && input.execution.provider.kind !== "acpx"
+  ) {
     throw new Error("paperclip_runner_provider_unsupported");
+  }
+  if (
+    input.execution.provider.kind === "acpx"
+    && input.execution.provider.agent === "pi"
+  ) {
+    throw new Error(
+      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+    );
   }
   const earliestPreparationStart = input.preparationSpans?.reduce(
     (earliest, span) => Math.min(earliest, span.startedAtMs),
@@ -4684,11 +4696,6 @@ export async function createRunnerdBackend(input: {
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend> {
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
-  if (target.kind === "remote" && input.execution.provider.kind !== "codex") {
-    throw new Error(
-      `runner_remote_provider_artifact_incompatible: remote ${input.execution.provider.kind} is unavailable until runnerd provider dispatch is qualified`,
-    );
-  }
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
@@ -6021,6 +6028,11 @@ export async function createRunnerdBackend(input: {
                     "paperclip-runner",
                     "acpx",
                   ),
+            }
+          : {}),
+        ...(input.execution.provider.kind === "opencode"
+          ? {
+              opencodePermissionMode: input.execution.provider.permissionMode,
             }
           : {}),
         ...(expectedProviderPackManifest && stagedRemoteProviderPackRoot

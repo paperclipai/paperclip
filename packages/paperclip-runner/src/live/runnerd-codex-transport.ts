@@ -870,6 +870,12 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   return environment;
 }
 
+export function resolveRunnerdAcpxPermissionMode(
+  configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
+): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
+  return configured ?? "approve-reads";
+}
+
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "PATH",
   "LANG",
@@ -1548,7 +1554,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   runId: identity.runId,
                   cwd: String(params.cwd ?? tmpdir()),
                   instructions: baseInstructions,
-                  permissionMode: this.options.acpxPermissionMode ?? "approve-all",
+                  permissionMode: resolveRunnerdAcpxPermissionMode(
+                    this.options.acpxPermissionMode,
+                  ),
                   permissionModePinned: this.options.acpxPermissionModePinned ?? true,
                   runtimeContext,
                 }

@@ -105,6 +105,10 @@ import type {
   ImportIssueWorkProductRow,
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "./native-runtime/provider-profile.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
@@ -3585,12 +3589,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType === "paperclip_runner") {
-      const provider = adapterConfig.provider ?? "codex";
-      if (provider !== "codex") {
-        throw unprocessable(
-          "Imported Paperclip Runner agents currently support only the Codex provider.",
-          { code: "paperclip_runner_provider_unavailable" },
-        );
+      try {
+        resolvePaperclipRunnerProviderProfile(adapterConfig);
+      } catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) {
+          throw unprocessable(error.message, { code: error.code });
+        }
+        throw error;
       }
       return;
     }

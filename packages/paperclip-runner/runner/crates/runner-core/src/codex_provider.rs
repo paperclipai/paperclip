@@ -256,9 +256,12 @@ pub struct CodexProviderConfig {
 
 impl CodexProviderConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if self.provider != "codex" || self.driver != "codex_app_server" {
+        if !matches!(
+            (self.provider.as_str(), self.driver.as_str()),
+            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+        ) {
             return Err(LocalRunnerError::invalid(
-                "the initial runner provider must be codex through codex_app_server",
+                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
             ));
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
@@ -290,6 +293,16 @@ impl CodexProviderConfig {
             .is_some_and(|model| model.is_empty() || model.len() > 240)
         {
             return Err(LocalRunnerError::invalid("Codex model is invalid"));
+        }
+        if self.provider == "opencode"
+            && self
+                .model
+                .as_ref()
+                .is_none_or(|model| !model.contains('/') || model.chars().any(char::is_control))
+        {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode model must be a qualified provider/model identifier",
+            ));
         }
         if self.provider_session_id.as_ref().is_some_and(|session_id| {
             session_id.is_empty()
@@ -513,12 +526,50 @@ impl CodexProvider {
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
+        let common_environment_keys = [
+            "LANGUAGE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "RUST_BACKTRACE",
+        ];
+        let provider_environment_keys = if config.provider == "opencode" {
+            vec![
+                "OPENROUTER_API_KEY",
+                "PAPERCLIP_NATIVE_MCP_NAME",
+                "PAPERCLIP_NATIVE_MCP_URL",
+                "PAPERCLIP_NATIVE_MCP_TOKEN",
+                "PAPERCLIP_OPENCODE_COMMAND",
+                "PAPERCLIP_OPENCODE_PERMISSION_MODE",
+                "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+                "PAPERCLIP_RUNNER_INSTANCE_ID",
+                "PAPERCLIP_RUN_ID",
+                "PAPERCLIP_NORMALIZED_SESSION_ID",
+                "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+            ]
+        } else {
+            vec!["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"]
+        };
+        let environment_keys = common_environment_keys
+            .iter()
+            .copied()
+            .chain(provider_environment_keys)
+            .collect::<Vec<_>>();
         let mut provider = Self {
-            process: SupervisedProcess::spawn(
+            process: SupervisedProcess::spawn_with_environment_keys(
                 &config.command,
                 &config.args,
                 Duration::from_secs(2),
                 CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                &environment_keys,
             )?,
             config: config.clone(),
             authorized_tools,
@@ -2277,6 +2328,31 @@ fn codex_question_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admits_only_exact_local_facade_provider_driver_pairs() {
+        let mut config = CodexProviderConfig {
+            provider: "opencode".to_owned(),
+            driver: "opencode_server".to_owned(),
+            provider_version: "1.18.17".to_owned(),
+            command: PathBuf::from("node"),
+            args: Vec::new(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: Some("openrouter/model".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+        };
+        config.validate().unwrap();
+        config.driver = "codex_app_server".to_owned();
+        assert!(config.validate().is_err());
+        config.driver = "opencode_server".to_owned();
+        config.model = Some("unqualified".to_owned());
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn converts_codex_questions_and_responses_without_provider_leakage() {

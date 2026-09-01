@@ -202,6 +202,16 @@ impl SupervisedProcess {
         shutdown_grace: Duration,
         max_line_bytes: usize,
     ) -> Result<Self, LocalRunnerError> {
+        Self::spawn_with_environment_keys(program, args, shutdown_grace, max_line_bytes, &[])
+    }
+
+    pub fn spawn_with_environment_keys(
+        program: &Path,
+        args: &[String],
+        shutdown_grace: Duration,
+        max_line_bytes: usize,
+        additional_environment_keys: &[&str],
+    ) -> Result<Self, LocalRunnerError> {
         let mut command = Command::new(program);
         command
             .args(args)
@@ -222,7 +232,10 @@ impl SupervisedProcess {
             "TEMP",
             "TMP",
             "TZ",
-        ] {
+        ]
+        .into_iter()
+        .chain(additional_environment_keys.iter().copied())
+        {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
