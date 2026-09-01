@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { formalQaIssuances, formalQaPolicies, formalQaPreparations, projectWorkspaces } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -115,7 +115,10 @@ function parseWorkflowRun(input: { body: RecordValue; hasNextPage: boolean; poli
   return { id: run.id!, workflowId: run.workflowId!, checkSuiteId: run.checkSuiteId!, headSha: run.headSha! };
 }
 
-async function defaultTokenProvider(db: Db, input: { companyId: string; responsibleUserId: string }) {
+/** Resolve the same scoped, audited GitHub credential used by every
+ * server-owned Formal-QA controller. Callers still receive no credential
+ * selection surface: only company and responsible-user authority are inputs. */
+export async function resolveFormalQaGitHubToken(db: Db, input: { companyId: string; responsibleUserId: string }) {
   const secrets = secretService(db);
   for (const secretName of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
     const secret = await secrets.getByName(input.companyId, secretName).catch(() => null);
@@ -150,7 +153,7 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
     testOnlyRemoteUrl: options?.checkoutTestOnlyRemoteUrl,
     testOnlyAllowFileProtocol: options?.checkoutTestOnlyAllowFileProtocol,
   });
-  const resolveToken = options?.tokenProvider ?? ((input: { companyId: string; responsibleUserId: string }) => defaultTokenProvider(db, input));
+  const resolveToken = options?.tokenProvider ?? ((input: { companyId: string; responsibleUserId: string }) => resolveFormalQaGitHubToken(db, input));
   const issue = async ({ preparationId }: FormalQaGitHubIssuerInput) => {
     const initial = await loadRequestAndPolicy(db, preparationId);
     if (initial.preparation.status === "issued") {
@@ -212,13 +215,15 @@ export function formalQaGitHubIssuerService(db: Db, options?: {
   /**
    * The scheduler owns promotion from an inert Board request to GitHub-bound
    * evidence. A temporary GitHub/credential failure leaves the durable request
-   * `prepared` for a later tick; no browser retry or agent-side input can
-   * widen the authority.
+   * `prepared` for a later tick. An issuance whose evidence committed before
+   * its checkout failed is also revisited: `issue()` reuses that exact
+   * immutable issuance and resumes only deterministic checkout materialization.
+   * No browser retry or agent-side input can widen the authority.
    */
   const reconcilePrepared = async (input: { companyId?: string; limit?: number } = {}) => {
     const candidates = await db.select({ id: formalQaPreparations.id }).from(formalQaPreparations)
       .where(and(
-        eq(formalQaPreparations.status, "prepared"),
+        inArray(formalQaPreparations.status, ["prepared", "issuing", "issued"]),
         gt(formalQaPreparations.expiresAt, new Date()),
         input.companyId ? eq(formalQaPreparations.companyId, input.companyId) : undefined,
       ))

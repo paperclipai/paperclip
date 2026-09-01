@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -119,6 +119,45 @@ describeEmbeddedPostgres("Formal-QA trusted GitHub issuer", () => {
     await expect(service(f, fake.fetch).issue({ preparationId: f.preparationId })).rejects.toMatchObject<HttpError>({ status: 409, details: { code: "formal_qa_request_expired" } });
     expect(fake.calls).toEqual([]);
     await expect(service(f, fake.fetch).reconcilePrepared()).resolves.toEqual({ scanned: 0, issued: 0, deferred: 0 });
+  });
+
+  it("reconciles an issued request after checkout materialization failed", async () => {
+    const f = await fixture();
+    const unavailableRemote = `${f.remote}.unavailable`;
+    await rename(f.remote, unavailableRemote);
+    const fake = fakeGitHub(f);
+    const issuer = service(f, fake.fetch);
+
+    await expect(issuer.issue({ preparationId: f.preparationId })).rejects.toMatchObject<HttpError>({
+      status: 409,
+      details: { code: "formal_qa_checkout_verification_failed" },
+    });
+    expect((await db.select().from(formalQaPreparations).where(eq(formalQaPreparations.id, f.preparationId)))[0]?.status).toBe("issued");
+    expect((await db.select().from(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId)))[0]?.status).toBe("creating");
+    expect(fake.calls).toHaveLength(6);
+
+    await rename(unavailableRemote, f.remote);
+    await expect(issuer.reconcilePrepared()).resolves.toEqual({ scanned: 1, issued: 1, deferred: 0 });
+    expect((await db.select().from(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId)))[0]?.status).toBe("verified");
+    // Recovery is bound to the already-persisted issuance and does not repeat
+    // mutable GitHub reads or mint a second evidence record.
+    expect(fake.calls).toHaveLength(6);
+    expect(await db.select().from(formalQaIssuances)).toHaveLength(1);
+  });
+
+  it("reconciles an issued request after process loss before checkout receipt creation", async () => {
+    const f = await fixture();
+    const fake = fakeGitHub(f);
+    const issuer = service(f, fake.fetch);
+    const result = await issuer.issue({ preparationId: f.preparationId });
+    await db.delete(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId));
+    await rm(result.checkout.checkoutPath, { recursive: true, force: true });
+    git(path.dirname(result.checkout.checkoutPath), "--git-dir", result.checkout.repoRoot, "worktree", "prune");
+
+    await expect(issuer.reconcilePrepared()).resolves.toEqual({ scanned: 1, issued: 1, deferred: 0 });
+    expect((await db.select().from(formalQaCheckouts).where(eq(formalQaCheckouts.preparationId, f.preparationId)))[0]?.status).toBe("verified");
+    expect(fake.calls).toHaveLength(6);
+    expect(await db.select().from(formalQaIssuances)).toHaveLength(1);
   });
 
   it("rejects a changed pull request, check rerun failure, lookalike app, and foreign workflow identity", async () => {
