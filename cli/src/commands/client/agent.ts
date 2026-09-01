@@ -328,6 +328,23 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("audit-roster")
+      .description("Compare the configured agent roster with live agents")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("--manifest <json>", "Repository roster manifest as JSON")
+      .action(async (opts: AgentListOptions & { manifest?: string }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const query = opts.manifest ? `?manifest=${encodeURIComponent(opts.manifest)}` : "";
+          const result = await ctx.api.get(apiPath`/api/companies/${ctx.companyId}/agents/audit-roster${query}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) { handleCommandError(err); }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
       .command("get")
       .description("Get one agent")
       .argument("<agentId>", "Agent ID")
