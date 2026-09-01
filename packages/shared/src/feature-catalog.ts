@@ -221,6 +221,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enablePaperclipDeveloperMode: {
+    title: "Paperclip Developer Mode",
+    description:
+      "Show internal Paperclip maintainer tools and observability links, including Honeycomb trace queries on run pages.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   autoRestartDevServerWhenIdle: {
     title: "Auto-Restart Dev Server When Idle",
     description:

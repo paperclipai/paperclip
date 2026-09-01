@@ -113,6 +113,12 @@ import {
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
+import { RunnerInspector } from "../components/RunnerInspector";
+import { HoneycombRunLink } from "../components/HoneycombRunLink";
+import {
+  ProviderTraceStatusBadge,
+  runRequestedProviderTrace,
+} from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -792,6 +798,14 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -1309,6 +1323,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             runLabel="Run Heartbeat"
+            canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -1507,6 +1522,7 @@ export function AgentDetail() {
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
           updatePermissions={updatePermissions}
+          canConfigureProviderTrace={canUseProviderTrace}
         />
       )}
 
@@ -1957,6 +1973,7 @@ function AgentConfigurePage({
   onCancelActionChange,
   onSavingChange,
   updatePermissions,
+  canConfigureProviderTrace,
 }: {
   agent: AgentDetailRecord;
   agentId: string;
@@ -1966,6 +1983,7 @@ function AgentConfigurePage({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
+  canConfigureProviderTrace: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2000,6 +2018,7 @@ function AgentConfigurePage({
         companyId={companyId}
         hidePromptTemplate
         hideInstructionsFile
+        canConfigureProviderTrace={canConfigureProviderTrace}
       />
       <div>
         <h3 className="text-sm font-medium mb-3">API Keys</h3>
@@ -2073,6 +2092,7 @@ function ConfigurationTab({
   hidePromptTemplate,
   hideInstructionsFile,
   content = "configuration",
+  canConfigureProviderTrace = false,
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
@@ -2084,6 +2104,7 @@ function ConfigurationTab({
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
   content?: "configuration" | "secrets";
+  canConfigureProviderTrace?: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2187,6 +2208,7 @@ function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         content={content}
         sectionLayout="cards"
+        canConfigureProviderTrace={canConfigureProviderTrace}
       />
       {content === "configuration" ? (
         <p className="text-xs text-muted-foreground">
@@ -3276,6 +3298,29 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ),
   });
   const run = hydratedRun ?? initialRun;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const paperclipDeveloperMode =
+    experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const { data: providerTraceRows } = useQuery({
+    queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
+    queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
+    enabled: canUseProviderTrace,
+    retry: false,
+    refetchInterval:
+      run.status === "running" || run.status === "queued" ? 3000 : false,
+  });
+  const providerTraceMetadata = providerTraceRows?.[0] ?? null;
   const metrics = runMetrics(run);
   const { data: userDirectory } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
@@ -3292,6 +3337,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
@@ -3372,6 +3418,27 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
   });
 
+  const rerunWithTrace = useMutation({
+    mutationFn: async () => {
+      const result = await agentsApi.wakeup(run.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "rerun_with_provider_trace",
+        payload: retryPayload,
+        debug: { providerTrace: "raw" },
+      }, run.companyId);
+      if (!("id" in result)) {
+        throw new Error(result.message ?? "Trace re-run was skipped.");
+      }
+      return result;
+    },
+    onSuccess: (newRun) => {
+      setInspectorOpen(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+    },
+  });
+
   const { data: touchedIssues } = useQuery({
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
@@ -3442,8 +3509,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         <div className="flex flex-col sm:flex-row">
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={run.status} />
+              <ProviderTraceStatusBadge
+                trace={providerTraceMetadata}
+                requested={runRequestedProviderTrace(run.contextSnapshot)}
+                showOff
+              />
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"
@@ -3479,6 +3551,31 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {retryRun.isPending ? "Retrying…" : "Retry"}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-6 px-2"
+                onClick={() => setInspectorOpen(true)}
+              >
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                Inspect run
+              </Button>
+              <HoneycombRunLink
+                runId={run.id}
+                enabled={paperclipDeveloperMode && canUseProviderTrace}
+              />
+              {canUseProviderTrace && !["queued", "running"].includes(run.status) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-6 px-2"
+                  onClick={() => rerunWithTrace.mutate()}
+                  disabled={rerunWithTrace.isPending}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {rerunWithTrace.isPending ? "Starting…" : "Re-run with provider trace"}
+                </Button>
+              ) : null}
             </div>
             {/* Adapter type · provider · model */}
             {(() => {
@@ -3761,6 +3858,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Log viewer */}
       <LogViewer run={run} adapterType={adapterType} />
       <ScrollToBottom />
+      <RunnerInspector
+        runId={run.id}
+        run={run}
+        open={inspectorOpen}
+        onOpenChange={setInspectorOpen}
+        onRerunWithTrace={
+          canUseProviderTrace && !["queued", "running"].includes(run.status)
+            ? () => rerunWithTrace.mutate()
+            : undefined
+        }
+      />
     </div>
   );
 }

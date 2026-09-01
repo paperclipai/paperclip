@@ -326,6 +326,13 @@ describe("NativeExecutionInputV1", () => {
         lifecyclePolicy: { mode: "warm", idleTimeoutMs: 0 },
       },
     })).toThrow("positive integer");
+    expect(() => parseNativeExecutionInput({
+      ...input,
+      session: {
+        ...input.session,
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: 86_400_001 },
+      },
+    })).toThrow("no greater than 86400000");
   });
 });
 

@@ -11,6 +11,13 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableServerInfoDebugView).toBe(false);
   });
 
+  it("defaults Paperclip developer mode off and accepts explicit patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enablePaperclipDeveloperMode: true }),
+    ).toEqual({ enablePaperclipDeveloperMode: true });
+  });
+
   it("defaults workspace branch repair settings on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 

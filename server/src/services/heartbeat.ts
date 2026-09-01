@@ -377,6 +377,7 @@ import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
+  resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -19935,13 +19936,9 @@ export function heartbeatService(
             parseObject(agent.adapterConfig).lifecycleMode === "warm"
               ? {
                   mode: "warm" as const,
-                  idleTimeoutMs:
-                    Number.isSafeInteger(
-                      parseObject(agent.adapterConfig).idleTimeoutMs,
-                    ) &&
-                    Number(parseObject(agent.adapterConfig).idleTimeoutMs) > 0
-                      ? Number(parseObject(agent.adapterConfig).idleTimeoutMs)
-                      : 300_000,
+                  idleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(
+                    parseObject(agent.adapterConfig).idleTimeoutMs,
+                  ),
                 }
               : { mode: "per_turn" as const, idleTimeoutMs: null };
           const environmentLifecyclePolicy =

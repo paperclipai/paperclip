@@ -2,7 +2,10 @@ import { mkdtemp, mkdir, readFile, readdir, chmod, lstat, rm, stat, writeFile } 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  type PaperclipSkillEntry,
+} from "@paperclipai/adapter-utils/server-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({
@@ -20,10 +23,7 @@ vi.mock("../tool-access.js", () => ({
   }),
 }));
 
-import {
-  LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  buildNativeRuntimeContext,
-} from "./runtime-context.js";
+import { buildNativeRuntimeContext } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -151,7 +151,7 @@ describe("buildNativeRuntimeContext", () => {
     expect(repeated.skills[0]!.bundle.rootPath).toBe(context.skills[0]!.bundle.rootPath);
   });
 
-  it("fails closed for a missing assigned skill and the unsupported legacy operational skill", async () => {
+  it("fails closed for a missing assigned skill and omits a stale legacy operational skill", async () => {
     serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Test\n" } });
     const base = {
       db: {} as Db,
@@ -175,14 +175,29 @@ describe("buildNativeRuntimeContext", () => {
         missingDetail: "assigned skill checkout is unavailable",
       }],
     })).rejects.toThrow("assigned skill checkout is unavailable");
-    await expect(buildNativeRuntimeContext({
+    const supportedRoot = await mkdtemp(path.join(tmpdir(), "paperclip-native-supported-skill-"));
+    temporaryRoots.push(supportedRoot);
+    await writeFile(path.join(supportedRoot, "SKILL.md"), "# Supported\n");
+    const context = await buildNativeRuntimeContext({
       ...base,
-      runtimeConfig: { paperclipSkillSync: { desiredSkills: [LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY] } },
-      runtimeSkillEntries: [{
-        key: LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY,
-        runtimeName: "paperclip",
-        source: "/unused",
-      }],
-    })).rejects.toThrow("does not support legacy operational skill");
+      runtimeConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [PAPERCLIP_OPERATIONAL_SKILL_KEY, "company-1/supported"],
+        },
+      },
+      runtimeSkillEntries: [
+        {
+          key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
+          runtimeName: "paperclip",
+          source: "/unused",
+        },
+        {
+          key: "company-1/supported",
+          runtimeName: "supported",
+          source: supportedRoot,
+        },
+      ],
+    });
+    expect(context.skills.map((skill) => skill.key)).toEqual(["company-1/supported"]);
   });
 });

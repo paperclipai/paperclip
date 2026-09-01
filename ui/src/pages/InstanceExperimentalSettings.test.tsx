@@ -57,6 +57,8 @@ const DECISIONS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle decisions experimental setting"]';
 const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
+const PAPERCLIP_DEVELOPER_MODE_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle Paperclip developer mode experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
 const BETA_SKILLS_TOGGLE_SELECTOR =
@@ -68,12 +70,13 @@ const STATUS_CARDS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle status cards experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
+const RUNNER_PREVIEW_INGRESS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle runner preview ingress experimental setting"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
-    enableRunnerPreviewIngress: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
@@ -93,6 +96,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
     enableServerInfoDebugView: false,
+    enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
@@ -102,6 +106,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -296,6 +301,26 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
     });
+  });
+
+  it("renders and patches the Runner Preview Ingress experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Runner Preview Ingress");
+    const toggle = container.querySelector<HTMLButtonElement>(
+      RUNNER_PREVIEW_INGRESS_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableRunnerPreviewIngress: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("renders and patches the Classic Task Interface experimental toggle on and off", async () => {
@@ -611,6 +636,28 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableServerInfoDebugView: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches Paperclip Developer Mode", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Paperclip Developer Mode");
+    expect(container.textContent).toContain("including Honeycomb trace queries on run pages");
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      PAPERCLIP_DEVELOPER_MODE_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enablePaperclipDeveloperMode: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

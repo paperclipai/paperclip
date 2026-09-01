@@ -29,7 +29,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -107,6 +107,8 @@ type AgentConfigFormProps = {
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
+  /** Allow instance administrators to configure short-lived raw provider capture. */
+  canConfigureProviderTrace?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
@@ -133,6 +135,7 @@ const emptyOverlay: AgentConfigOverlay = {
   identity: {},
   adapterConfig: {},
   heartbeat: {},
+  debug: {},
   runtime: {},
 };
 
@@ -149,6 +152,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     o.adapterType !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
+    Object.keys(o.debug).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
     o.modelProfiles?.cheap !== undefined
   );
@@ -241,6 +245,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
+  const canConfigureProviderTrace = props.canConfigureProviderTrace === true;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
@@ -365,7 +370,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
-  type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
+  type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
   /** Read effective value: overlay if dirty, else original */
   function eff<T>(group: RecordOverlayGroup, field: string, original: T): T {
@@ -451,6 +456,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
+  const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -2015,6 +2021,46 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </div>
             </div>
           </CollapsibleSection>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---- Debugging ---- */}
+      {!isCreate && canConfigureProviderTrace ? (
+        <div className={cn(!cards && "border-b border-border")}>
+          {cards ? (
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
+              <Bug className="h-3 w-3" /> Debugging
+            </h3>
+          ) : (
+            <div className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
+              <Bug className="h-3 w-3" /> Debugging
+            </div>
+          )}
+          <div
+            className={cn(
+              "border-border bg-accent/30",
+              cards
+                ? "rounded-lg border p-4"
+                : "mx-4 mb-4 rounded-md border px-3 py-3",
+            )}
+          >
+            <ToggleField
+              label="Capture raw provider traces"
+              hint="Stores exact provider traffic for every future run until disabled. Traces may contain sensitive prompts and tool arguments, are administrator-only, and expire after 24 hours."
+              checked={eff<unknown>("debug", "providerTrace", debug.providerTrace) === "raw"}
+              onChange={(enabled) =>
+                mark("debug", "providerTrace", enabled ? "raw" : undefined)
+              }
+            />
+            {eff<unknown>("debug", "providerTrace", debug.providerTrace) === "raw" ? (
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-background/60 px-3 py-2 text-xs text-foreground">
+                <Bug className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Raw tracing is on for future runs. Paperclip keeps at most 64 MiB per run and automatically deletes it after 24 hours.
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

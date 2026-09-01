@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
-import { resolvePaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  resolvePaperclipDesiredSkillNames,
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -18,7 +21,6 @@ import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import { toolAccessService } from "../tool-access.js";
 
-export const LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip" as const;
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown };
@@ -147,9 +149,10 @@ async function materializeInstructionBundle(agent: RuntimeAgent) {
   return { entryPath, bundle: await materializeAsset(files) };
 }
 
-async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], rejectLegacy: boolean) {
-  const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries);
-  if (rejectLegacy && desiredKeys.includes(LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY)) throw new Error(`paperclip_runner does not support legacy operational skill ${LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY}; remove it from this agent`);
+async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
+  const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
+    (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
   const byKey = new Map(entries.map((entry) => [entry.key, entry]));
   return Promise.all(desiredKeys.sort().map(async (key) => {
     const entry = byKey.get(key);

@@ -12,6 +12,9 @@ export type PaperclipRunnerPermissionMode =
   | OpenCodePermissionMode
   | AcpxPermissionMode;
 
+export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
+export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+
 export interface PaperclipRunnerPermissionOption<TMode extends string = string> {
   value: TMode;
   label: string;
@@ -35,7 +38,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   codex: {
     configurable: true,
     configKey: "codexPermissionMode",
-    defaultMode: "never",
+    defaultMode: "untrusted",
     description: "Controls when Codex asks before an operation inside the assigned Paperclip environment.",
     options: [
       { value: "never", label: "Full auto (never ask)", description: "Run without Codex approval pauses." },
@@ -79,4 +82,13 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? value as PaperclipRunnerPermissionMode
     : capability.defaultMode;
+}
+
+export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value > 0
+    && value <= PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS
+    ? value
+    : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
 }
