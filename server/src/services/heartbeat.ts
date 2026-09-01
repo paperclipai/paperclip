@@ -240,6 +240,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { deriveBlockedEntryPatch } from "./routable-blocked.js";
 import { projectService } from "./projects.js";
 import {
   authorizationService,
@@ -23224,6 +23225,7 @@ export function heartbeatService(
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
+            blockedTransitionAt: issues.blockedTransitionAt,
           })
           .from(issues)
           .where(
@@ -23686,6 +23688,14 @@ export function heartbeatService(
                 executionAgentNameKey: null,
                 executionLockedAt: null,
                 updatedAt: now,
+                // This pre-dispatch guard bypasses issuesSvc.update() entirely,
+                // so it is one of the write sites that never stamped
+                // blockedTransitionAt. Stamp here so isProspectiveBlockedTransition
+                // can ever be true for a row blocked this way, and clear
+                // blockedOwnerNotifiedAt the same way update()'s own entry
+                // branch does for a fresh block.
+                ...deriveBlockedEntryPatch(issue.blockedTransitionAt, now),
+                blockedOwnerNotifiedAt: null,
               })
               .where(eq(issues.id, issue.id));
             await tx.insert(issueComments).values({

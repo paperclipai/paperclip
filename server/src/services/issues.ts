@@ -135,6 +135,7 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { BLOCKED_EXIT_PATCH, deriveBlockedEntryPatch } from "./routable-blocked.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -7444,6 +7445,14 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        if (values.status === "blocked") {
+          // Born blocked (e.g. serialized watchdog children, bulk-decomposed
+          // plan children) never passes through update()'s transition check,
+          // which is the only other place this stamp gets written. Stamp
+          // here so isProspectiveBlockedTransition is never permanently false
+          // for a row that has never been anything but blocked.
+          Object.assign(values, deriveBlockedEntryPatch(values.blockedTransitionAt, new Date()));
+        }
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
@@ -7638,6 +7647,15 @@ export function issueService(db: Db) {
             description: row.description ?? null,
             assigneeAgentId: row.assigneeAgentId ?? null,
             status: row.status,
+            // The portable bundle format (ImportIssueRow) carries no
+            // blockedTransitionAt of its own, so a row imported as blocked
+            // would otherwise never get one (same defect class as create()).
+            // Best-effort reconstruction from the bundle's own preserved
+            // timestamps — never fabricate "now" for historical data — with
+            // insert time as the last resort for a bundle carrying neither.
+            ...(row.status === "blocked"
+              ? { blockedTransitionAt: row.updatedAt ?? row.createdAt ?? new Date() }
+              : {}),
             priority: row.priority,
             billingCode: row.billingCode ?? null,
             assigneeAdapterOverrides: row.assigneeAdapterOverrides ?? null,
@@ -7807,12 +7825,29 @@ export function issueService(db: Db) {
         updatedAt: new Date(),
       };
       if (existing.status !== "blocked" && issueData.status === "blocked") {
-        patch.blockedTransitionAt = patch.updatedAt;
+        // Unconditional, not deriveBlockedEntryPatch: this is a fresh
+        // transition into blocked, and blockedTransitionAt doubles as the
+        // dependency-wakeup cycle key (see
+        // wakeCoversIssueBlockersResolvedReadyState in
+        // issue-dependency-wakeups.ts). A row can carry a stamp from an
+        // earlier blocked cycle that never got cleared on exit — reusing
+        // that stale stamp here would let a completed wake from that old
+        // cycle match the new cycle's key (or the old-state key's
+        // requestedAt >= blockedTransitionAt fallback) and silently
+        // suppress the new issue_blockers_resolved wake this transition
+        // should produce. Every fresh entry must start a new cycle, so this
+        // always advances the stamp regardless of what was there before.
+        patch.blockedTransitionAt = patch.updatedAt as Date;
         patch.blockedOwnerNotifiedAt = null;
       } else if (existing.status === "blocked" && issueData.status && issueData.status !== "blocked") {
-        patch.unblockDescriptor = null;
-        patch.blockedTransitionAt = null;
-        patch.blockedOwnerNotifiedAt = null;
+        Object.assign(patch, BLOCKED_EXIT_PATCH);
+      } else if (existing.status === "blocked" && !existing.blockedTransitionAt) {
+        // Row is already blocked and this write does not change status (e.g.
+        // an unblockDescriptor added after the fact, or any unrelated field
+        // change). Self-heal a row that was born blocked without a stamp
+        // instead of leaving it permanently invisible to both
+        // isProspectiveBlockedTransition callers.
+        Object.assign(patch, deriveBlockedEntryPatch(existing.blockedTransitionAt, patch.updatedAt as Date));
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
@@ -8361,6 +8396,18 @@ export function issueService(db: Db) {
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
+          // checkout() can take a row directly out of "blocked" (it accepts
+          // "blocked" in expectedStatuses for the issue_blockers_resolved
+          // re-dispatch path) but, unlike update(), never cleared these
+          // fields on exit — a raw write outside update() that a prior audit
+          // did not originally list. Unconditional and safe: the
+          // destination status is always in_progress, never blocked, so
+          // these three fields are correct at null regardless of what the
+          // prior status was (a no-op if the row wasn't blocked to begin
+          // with). Without this, a Board-parked row with a live
+          // unblockDescriptor could be silently stranded on a non-blocked
+          // row, invisible to both isProspectiveBlockedTransition callers.
+          ...BLOCKED_EXIT_PATCH,
         })
         .where(
           and(
@@ -8685,17 +8732,28 @@ export function issueService(db: Db) {
 
         // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
         const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
+        const releaseUpdatedAt = new Date();
+        const releasePatch: Partial<typeof issues.$inferInsert> = {
+          status: releaseStatus,
+          assigneeAgentId: null,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: releaseUpdatedAt,
+        };
+        // release() preserves status:"blocked" rather than transitioning it
+        // (releaseStatus above), so it is a self-heal site under the funnel
+        // helper's own docblock: "any other write that happens to land on
+        // an already-blocked-but-unstamped row ... must run the row's
+        // current stamp through this helper". Idempotent — a no-op on a
+        // row that already has a stamp.
+        if (releaseStatus === "blocked" && !existing.blockedTransitionAt) {
+          Object.assign(releasePatch, deriveBlockedEntryPatch(existing.blockedTransitionAt, releaseUpdatedAt));
+        }
         const updated = await tx
           .update(issues)
-          .set({
-            status: releaseStatus,
-            assigneeAgentId: null,
-            checkoutRunId: null,
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
+          .set(releasePatch)
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
