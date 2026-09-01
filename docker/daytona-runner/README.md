@@ -38,11 +38,12 @@ The metadata must advertise `dial_ws_loopback`, `dial_wss`, and `listen_ws`.
 The explicit entrypoint is needed only for this local probe because Daytona's
 base image uses its own long-running sandbox entrypoint.
 
-`test:e2e:runner:image-id` hashes the audited Docker build dependency closure
-and target platform. Git commits that do not change those inputs reuse the same
-content tag. `PAPERCLIP_RUNNER_SOURCE_REVISION` remains the full Git SHA that
-built the first published copy and is retained as provenance rather than cache
-identity.
+`test:e2e:runner:image-id` hashes the audited Docker build dependency closure,
+target platform, and every immutable `FROM` reference. It fails before the paid
+workflow can build when a base is not pinned to a sha256 digest. Git commits
+that do not change those inputs reuse the same content tag.
+`PAPERCLIP_RUNNER_SOURCE_REVISION` remains the full Git SHA that built the first
+published copy and is retained as provenance rather than cache identity.
 
 ## Use in Paperclip
 

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # Keep the Rust toolchain explicit so the runner artifact is reproducible and
-# is always built for the same platform as the final Daytona image.
-ARG RUST_VERSION=1.97
-FROM rust:${RUST_VERSION}-bookworm AS runnerd-build
+# is always built for the same platform as the final Daytona image. Base-image
+# digests are the reviewed linux/amd64 manifests; the tags are annotations.
+FROM rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6 AS runnerd-build
 
 WORKDIR /workspace/packages/paperclip-runner/runner
 COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
@@ -12,7 +12,7 @@ COPY packages/paperclip-runner/protocol ../protocol
 RUN cargo build --locked --release -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
 
-FROM node:24-bookworm AS provider-pack-build
+FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS provider-pack-build
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
@@ -30,7 +30,7 @@ RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
 # Fleet sandbox base image. Keep this section aligned with
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip
 # runner-specific addition is /usr/local/bin/paperclip-runnerd below.
-FROM daytonaio/sandbox:0.8.0
+FROM daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3
 
 ARG PAPERCLIP_RUNNER_CONTENT_ID
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION

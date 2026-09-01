@@ -119,7 +119,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Compute Daytona image content ID
+      # The v2 contract fails closed unless every Docker FROM is digest-pinned,
+      # and hashes those exact base references into the immutable image tag.
+      - name: Compute Daytona image content ID with pinned bases
         id: daytona_image_content
         run: echo "content_id=$(pnpm --silent test:e2e:runner:image-id)" >> "$GITHUB_OUTPUT"
 

@@ -6,8 +6,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const DAYTONA_IMAGE_CONTENT_SCHEMA =
-  "paperclip-daytona-runner-image-content/v1";
+  "paperclip-daytona-runner-image-content/v2";
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
+export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
 // This is the audited dependency closure of docker/daytona-runner/Dockerfile.
 // Keep it conservative: a false positive only rebuilds the image, while a
@@ -35,6 +36,7 @@ export interface DaytonaImageContentOptions {
   repositoryRoot?: string;
   inputPaths?: readonly string[];
   platform?: string;
+  baseImages?: readonly string[];
 }
 
 function compareNames(left: string, right: string): number {
@@ -62,6 +64,57 @@ function updateRecord(
   hash.update("\0");
   hash.update(payload);
   hash.update("\0");
+}
+
+function assertPinnedBaseImage(reference: string): void {
+  if (!/@sha256:[0-9a-f]{64}$/.test(reference)) {
+    throw new Error(
+      `Daytona image base must use an immutable sha256 digest: ${reference}`,
+    );
+  }
+}
+
+export function extractDaytonaBaseImages(dockerfile: string): string[] {
+  const baseImages: string[] = [];
+  const stageAliases = new Set<string>();
+
+  for (const line of dockerfile.split(/\r?\n/)) {
+    if (!/^\s*FROM\s/i.test(line)) continue;
+    const match = /^\s*FROM(?:\s+--\S+)*\s+(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(
+      line,
+    );
+    if (!match) {
+      throw new Error(`Cannot parse Daytona Dockerfile FROM line: ${line}`);
+    }
+
+    const reference = match[1]!;
+    if (!stageAliases.has(reference)) {
+      assertPinnedBaseImage(reference);
+      baseImages.push(reference);
+    }
+    if (match[2]) stageAliases.add(match[2]);
+  }
+
+  if (baseImages.length === 0) {
+    throw new Error("Daytona Dockerfile does not declare a base image");
+  }
+  return baseImages;
+}
+
+async function resolveBaseImages(
+  root: string,
+  explicitBaseImages?: readonly string[],
+): Promise<string[]> {
+  const baseImages = explicitBaseImages
+    ? [...explicitBaseImages]
+    : extractDaytonaBaseImages(
+        await readFile(path.join(root, DAYTONA_IMAGE_DOCKERFILE_PATH), "utf8"),
+      );
+  if (baseImages.length === 0) {
+    throw new Error("Daytona image content identity requires a base image");
+  }
+  for (const reference of baseImages) assertPinnedBaseImage(reference);
+  return baseImages.sort(compareNames);
 }
 
 async function hashEntry(
@@ -123,6 +176,9 @@ export async function computeDaytonaImageContentId(
     DAYTONA_IMAGE_CONTENT_SCHEMA,
     options.platform ?? DAYTONA_IMAGE_PLATFORM,
   );
+  for (const baseImage of await resolveBaseImages(root, options.baseImages)) {
+    updateRecord(hash, "base-image", baseImage);
+  }
   for (const inputPath of inputPaths) {
     await hashEntry(hash, root, inputPath);
   }
