@@ -342,11 +342,13 @@ describe("adapter routes", () => {
     expect(res.body.fields).toEqual(expect.arrayContaining([
       expect.objectContaining({
         key: "provider",
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({ value: "codex" }),
           expect.objectContaining({ value: "opencode" }),
+          expect.objectContaining({ value: "claude_managed" }),
+          expect.objectContaining({ value: "aws_agentcore" }),
           expect.objectContaining({ value: "acpx" }),
-        ],
+        ]),
       }),
       expect.objectContaining({
         key: "codexPermissionMode",
