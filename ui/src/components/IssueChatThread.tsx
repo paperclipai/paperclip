@@ -36,12 +36,15 @@ import type {
   FeedbackVote,
   FeedbackVoteValue,
   IssueAttachment,
+  IssueDocumentSummary,
   IssueBlockerAttention,
   IssueRecoveryAction,
+  IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
   SuccessfulRunHandoffState,
   IssueWorkMode,
+  IssueWorkProduct,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { findUIAdapter } from "../adapters/registry";
@@ -234,6 +237,8 @@ interface IssueChatMessageContext {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** New task-view composer takeover action. The classic thread does not render it. */
+  onSkipInteraction?: (interaction: IssueThreadInteraction) => Promise<void> | void;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -435,6 +440,10 @@ interface IssueChatComposerProps {
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
   interactions?: IssueThreadInteraction[];
+  /** App-authoritative resources interleaved by the default task thread. */
+  documents?: IssueDocumentSummary[];
+  workProducts?: IssueWorkProduct[];
+  attachments?: IssueAttachment[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -480,6 +489,9 @@ interface IssueChatThreadProps {
   /** Resume a paused assignee agent so runs can start again. */
   onResumeAssignee?: () => Promise<void> | void;
   resumeAssigneePending?: boolean;
+  /** Requeues a blocked task after its no-live-execution-path recovery notice. */
+  onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
+  tryAgainNoLiveExecutionPathPending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -536,6 +548,12 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  /** Authoritative PRP queue. The classic thread intentionally ignores it. */
+  queuedCommentQueue?: IssueQueuedCommentQueue | null;
+  onEditQueuedComment?: (commentId: string, body: string, revision: string) => Promise<void>;
+  onReorderQueuedComments?: (orderedCommentIds: string[], revision: string) => Promise<void>;
+  onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  onDiscardQueuedComment?: (commentId: string, revision: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
@@ -562,6 +580,8 @@ interface IssueChatThreadProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** New task-view composer takeover action. The classic thread does not render it. */
+  onSkipInteraction?: (interaction: IssueThreadInteraction) => Promise<void> | void;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -1343,7 +1363,7 @@ function CopyablePreBlock({ children, className }: { children: string; className
 }
 
 const TOOL_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  // Extend with specific tool icons as they become known
+  paperclip_provider_activity: ClipboardList,
 };
 
 function getToolIcon(toolName: string): React.ComponentType<{ className?: string }> {
@@ -1364,6 +1384,9 @@ function IssueChatToolPart({
   isError?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  if (toolName === "paperclip_provider_activity") {
+    return <IssueChatProviderActivity args={args} running={result === undefined} open={open} onToggle={() => setOpen((current) => !current)} />;
+  }
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
   const resultText =
@@ -1445,6 +1468,51 @@ function IssueChatToolPart({
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
             ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function IssueChatProviderActivity({
+  args,
+  running,
+  open,
+  onToggle,
+}: {
+  args: unknown;
+  running: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const value = typeof args === "object" && args !== null && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const payload = typeof value.payload === "object" && value.payload !== null && !Array.isArray(value.payload) ? value.payload as Record<string, unknown> : {};
+  const title = typeof value.title === "string" ? value.title : "Provider activity";
+  const summary = typeof value.summary === "string" ? value.summary : "";
+  const steps = Array.isArray(payload.steps) ? payload.steps.slice(0, 256) : [];
+  const children = Array.isArray(payload.children) ? payload.children.slice(0, 64) : [];
+  const sources = Array.isArray(payload.sources) ? payload.sources.slice(0, 64) : [];
+  const output = typeof payload.output === "string" ? payload.output.slice(-(8 * 1024)) : "";
+  const effectiveModel = typeof payload.effectiveModel === "string" ? payload.effectiveModel : null;
+  const requestedModel = typeof payload.requestedModel === "string" ? payload.requestedModel : null;
+  const hasDetails = steps.length > 0 || children.length > 0 || sources.length > 0 || output.length > 0 || effectiveModel !== null;
+  return (
+    <div className="flex gap-2 px-1" data-provider-family={String(value.family ?? "unknown")}>
+      <div className="pt-1"><ClipboardList className="h-3.5 w-3.5 text-muted-foreground/50" /></div>
+      <div className="min-w-0 flex-1">
+        <button type="button" className="flex w-full items-center gap-2 rounded-md py-0.5 text-left hover:bg-accent/5" onClick={onToggle} aria-expanded={open}>
+          <span className="min-w-0 flex-1 truncate text-(length:--text-compact) text-muted-foreground/80">{title}{summary ? <span className="ml-1.5 text-muted-foreground/50">{summary}</span> : null}</span>
+          {running ? <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/50" /> : null}
+          {hasDetails ? <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} /> : null}
+        </button>
+        {open && hasDetails ? (
+          <div className="mt-1 space-y-2 rounded-md border border-border/50 bg-accent/15 p-2 text-xs">
+            {steps.map((entry, index) => { const step = typeof entry === "object" && entry !== null ? entry as Record<string, unknown> : {}; return <div key={String(step.stepId ?? index)} className="flex gap-2"><span aria-hidden>{step.status === "completed" ? "✓" : step.status === "blocked" ? "!" : "○"}</span><span>{String(step.body ?? "")}</span></div>; })}
+            {children.map((entry, index) => { const child = typeof entry === "object" && entry !== null ? entry as Record<string, unknown> : {}; return <div key={String(child.childId ?? index)}><span className="font-medium">{String(child.role ?? "Child agent")}</span> · {String(child.status ?? "unknown")}{child.summary ? ` — ${String(child.summary)}` : ""}</div>; })}
+            {sources.map((entry, index) => { const source = typeof entry === "object" && entry !== null ? entry as Record<string, unknown> : {}; const href = typeof source.url === "string" && /^https?:\/\//.test(source.url) ? source.url : null; return <div key={String(source.sourceId ?? index)}>{href ? <a href={href} target="_blank" rel="noreferrer" className="underline">{String(source.title ?? href)}</a> : <span>{String(source.title ?? "Unavailable source")}</span>} <span className="text-muted-foreground">(provider-reported)</span></div>; })}
+            {effectiveModel ? <div><span className="text-muted-foreground">Model</span> {requestedModel && requestedModel !== effectiveModel ? `${requestedModel} → ` : ""}{effectiveModel}</div> : null}
+            {output ? <CopyablePreBlock className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-background/70 p-2 font-mono text-(length:--text-micro)">{output}</CopyablePreBlock> : null}
           </div>
         ) : null}
       </div>
@@ -4525,6 +4593,8 @@ export function IssueChatThread({
   resumeFromBacklogPending = false,
   onResumeAssignee,
   resumeAssigneePending = false,
+  onTryAgainNoLiveExecutionPath: _onTryAgainNoLiveExecutionPath,
+  tryAgainNoLiveExecutionPathPending: _tryAgainNoLiveExecutionPathPending,
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {

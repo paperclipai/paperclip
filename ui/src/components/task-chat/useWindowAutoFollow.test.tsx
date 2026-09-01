@@ -21,8 +21,17 @@ describe("useWindowAutoFollow", () => {
 
   function fakeWindowGeometry({ scrollHeight = 2000, innerHeight = 800 } = {}) {
     const el = document.scrollingElement ?? document.documentElement;
-    Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+    let currentScrollHeight = scrollHeight;
+    Object.defineProperty(el, "scrollHeight", {
+      get: () => currentScrollHeight,
+      configurable: true,
+    });
     Object.defineProperty(window, "innerHeight", { value: innerHeight, configurable: true });
+    return {
+      setScrollHeight(value: number) {
+        currentScrollHeight = value;
+      },
+    };
   }
 
   function setWindowScrollY(y: number) {
@@ -92,6 +101,56 @@ describe("useWindowAutoFollow", () => {
     await scrollWindowTo(100); // far from the bottom
     scrollToCalls = [];
     render(1);
+    expect(scrollToCalls).toHaveLength(0);
+  });
+
+  it("follows document growth while pinned on mobile", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const geometry = fakeWindowGeometry();
+    render(0);
+    await flushRaf();
+    await scrollWindowTo(1200);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2300);
+    triggerResize();
+
+    expect(scrollToCalls).toContain(2300);
+  });
+
+  it("holds document position through mobile composer growth when scrolled up", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const geometry = fakeWindowGeometry();
+    render(0);
+    await flushRaf();
+    await scrollWindowTo(100);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2300);
+    triggerResize();
+
     expect(scrollToCalls).toHaveLength(0);
   });
 

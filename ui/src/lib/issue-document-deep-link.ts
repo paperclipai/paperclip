@@ -4,13 +4,13 @@ import { parseDocumentAnnotationHash } from "./document-annotation-hash";
 export type IssueDocumentDeepLinkRoute =
   | { kind: "continuation-summary" }
   | { kind: "properties-pane"; tab: "plans"; documentKey: "plan" }
-  | { kind: "properties-pane"; tab: "artifacts"; documentKey: string };
+  | { kind: "properties-pane"; tab: "document"; documentKey: string };
 
 /**
  * Maps an issue document hash to the surface that owns that document.
  *
  * The continuation summary remains in the activity/handoff surface, the plan
- * keeps its dedicated pane tab, and every other document belongs to Artifacts.
+ * keeps its dedicated pane tab, and every other document opens in its own tab.
  */
 export function resolveIssueDocumentDeepLink(hash: string): IssueDocumentDeepLinkRoute | null {
   const target = parseDocumentAnnotationHash(hash);
@@ -22,5 +22,5 @@ export function resolveIssueDocumentDeepLink(hash: string): IssueDocumentDeepLin
   if (target.documentKey === "plan") {
     return { kind: "properties-pane", tab: "plans", documentKey: "plan" };
   }
-  return { kind: "properties-pane", tab: "artifacts", documentKey: target.documentKey };
+  return { kind: "properties-pane", tab: "document", documentKey: target.documentKey };
 }
