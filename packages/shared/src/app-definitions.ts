@@ -123,10 +123,24 @@ export function getAvailableConnectionMethods(app: AppDefinition): ConnectionMet
 export function getRecommendedConnectionMethod(
   methods: readonly ConnectionMethodDef[],
 ): ConnectionMethodDef | null {
-  return methods.find((method) => {
+  const recommendedCapability = (candidates: readonly ConnectionMethodDef[]) => candidates.find((method) => {
     const capabilityKey = method.capabilityProfile?.key;
     return capabilityKey === "write" || capabilityKey === "draft";
-  }) ?? methods[0] ?? null;
+  });
+  const managedMethods = methods.filter((method) =>
+    method.oauthStrategy === "paperclip_cloud_connector"
+    || method.oauthStrategy === "paperclip_id_connector"
+  );
+
+  // When a managed pilot advertises only read access, defaulting to a
+  // customer-owned write method would turn the available one-click path into
+  // an OAuth client setup form. Capability-specific callers pass only the
+  // selected group, so explicit write/draft choices keep their own fallback.
+  return recommendedCapability(managedMethods)
+    ?? managedMethods[0]
+    ?? recommendedCapability(methods)
+    ?? methods[0]
+    ?? null;
 }
 
 export function getAvailableConnectionMethod(

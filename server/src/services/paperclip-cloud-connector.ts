@@ -14,7 +14,10 @@ import {
   isGoogleWorkspaceConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
-import { loadPaperclipCloudConnectorIdentity } from "./paperclip-cloud-connector-enrollment.js";
+import {
+  loadPaperclipCloudConnectorIdentity,
+  paperclipCloudConnectorEnrollmentStatus,
+} from "./paperclip-cloud-connector-enrollment.js";
 
 export const GMAIL_MCP_URL = "https://gmailmcp.googleapis.com/mcp/v1";
 export const GMAIL_CONNECTOR_SCOPES = [
@@ -106,7 +109,6 @@ export function paperclipCloudConnectorConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): PaperclipCloudConnectorConfig | null {
   const localIdentity = loadPaperclipCloudConnectorIdentity();
-  const hasActiveLocalIdentity = localIdentity?.status === "active";
   const legacyConfigured = [
     env.PAPERCLIP_ID_CONNECTOR_INSTANCE_ID,
     env.PAPERCLIP_ID_CONNECTOR_SIGN_PRIVATE_KEY,
@@ -114,32 +116,30 @@ export function paperclipCloudConnectorConfigFromEnv(
     env.PAPERCLIP_ID_CONNECTOR_ENVIRONMENT,
     env.PAPERCLIP_ID_CONNECTOR_BASE_URL,
   ].some((value) => Boolean(value?.trim()));
-  const cloudConfigured = [
-    env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
-    env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY,
-    env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY,
-    env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT,
-    env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL,
-  ].some((value) => Boolean(value?.trim()));
-  if (!cloudConfigured && !hasActiveLocalIdentity && legacyConfigured) {
+  const managedInstanceId = env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID?.trim();
+  const managedSignPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim();
+  const managedSealPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim();
+  const managedEnvironment = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim();
+  const hasManagedIdentityOverride = [managedInstanceId, managedSignPrivateKey, managedSealPrivateKey]
+    .some(Boolean);
+  const localStatus = hasManagedIdentityOverride ? null : paperclipCloudConnectorEnrollmentStatus(env);
+  const hasActiveLocalIdentity = localIdentity?.status === "active" && localStatus?.configured === true;
+  if (!hasManagedIdentityOverride && !hasActiveLocalIdentity && legacyConfigured) {
     throw new PaperclipCloudConnectorError(
       "Paperclip ID connector settings use an incompatible legacy protocol; enroll this instance with Paperclip Cloud",
       "CONNECTOR_MIGRATION_REQUIRED",
     );
   }
-  const instanceId = env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID?.trim()
-    || (hasActiveLocalIdentity ? localIdentity.instanceId : undefined);
-  const signPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim()
-    || (hasActiveLocalIdentity ? localIdentity.signPrivateKey : undefined);
-  const sealPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim()
-    || (hasActiveLocalIdentity ? localIdentity.sealPrivateKey : undefined);
-  const environment = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim()
-    || (hasActiveLocalIdentity ? localIdentity.environment : undefined);
+  if (!hasManagedIdentityOverride && !hasActiveLocalIdentity) return null;
+
+  const instanceId = hasManagedIdentityOverride ? managedInstanceId : localIdentity!.instanceId;
+  const signPrivateKey = hasManagedIdentityOverride ? managedSignPrivateKey : localIdentity!.signPrivateKey;
+  const sealPrivateKey = hasManagedIdentityOverride ? managedSealPrivateKey : localIdentity!.sealPrivateKey;
+  const environment = hasManagedIdentityOverride ? managedEnvironment : localIdentity!.environment;
   const baseUrl = env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL?.trim()
-    || (hasActiveLocalIdentity ? localIdentity.brokerBaseUrl : undefined)
+    || (hasActiveLocalIdentity ? localIdentity!.brokerBaseUrl : undefined)
     || "https://my.paperclip.app";
   const values = [instanceId, signPrivateKey, sealPrivateKey, environment];
-  if (values.every((value) => !value)) return null;
   if (values.some((value) => !value)) {
     throw new PaperclipCloudConnectorError("Paperclip Cloud connector configuration is incomplete", "CONNECTOR_CONFIG_INCOMPLETE");
   }
@@ -152,6 +152,14 @@ export function paperclipCloudConnectorConfigFromEnv(
   }
   if (parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
     throw new PaperclipCloudConnectorError("Paperclip Cloud connector URL is invalid", "CONNECTOR_CONFIG_INVALID");
+  }
+  const brokerHost = parsedBaseUrl.hostname.toLowerCase();
+  if ((brokerHost === "my.paperclip.app" && environment !== "production")
+    || (brokerHost === "my-staging.paperclip.app" && environment !== "staging")) {
+    throw new PaperclipCloudConnectorError(
+      "Paperclip Cloud connector broker and environment do not match",
+      "CONNECTOR_CONFIG_INVALID",
+    );
   }
   parsedBaseUrl.pathname = parsedBaseUrl.pathname.replace(/\/$/, "");
   return {
@@ -285,22 +293,19 @@ export function createPaperclipCloudConnector(input: {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
     },
     async getCapabilities(): Promise<GoogleWorkspaceConnectorProfileId[]> {
-      const endpoint = new URL("/v1/connector/capabilities", `${config.baseUrl}/`).toString();
-      let response: Response;
+      let response: ConnectorResponse;
       try {
-        response = await request(endpoint, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+        response = await call("status", {
+          subject: "instance-capabilities",
+          companyId: "instance-capabilities",
+        });
       } catch {
         return [];
       }
-      if (!response.ok) return [];
-      const payload = await response.json().catch(() => null) as ConnectorResponse | null;
-      if (!Array.isArray(payload?.providers)) return [];
-      const google = payload.providers.find((value) => isRecord(value) && value.key === "google");
-      if (!isRecord(google) || !Array.isArray(google.profiles)) return [];
-      return google.profiles.flatMap((value) => {
-        if (!isRecord(value) || value.enabled !== true || typeof value.key !== "string") return [];
-        return isGoogleWorkspaceConnectorProfileId(value.key) ? [value.key] : [];
-      });
+      if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) return [];
+      return [...new Set(response.profiles.flatMap((value) =>
+        typeof value === "string" && isGoogleWorkspaceConnectorProfileId(value) ? [value] : []
+      ))];
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -359,13 +364,7 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
   const connector = createPaperclipCloudConnector({ config });
-  let status: "active" | "suspended" | "removed";
-  try {
-    status = await connector.getInstanceStatus();
-  } catch {
-    return [];
-  }
-  const profiles = status === "active" ? await connector.getCapabilities() : [];
+  const profiles = await connector.getCapabilities();
   capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
   return profiles;
 }

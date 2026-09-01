@@ -1,0 +1,9 @@
+{
+  "runId": "run_budget_stop",
+  "integrity": "complete",
+  "timelineCount": 2,
+  "duplicateEventIds": [],
+  "gaps": [],
+  "turnTerminalState": "cancelled",
+  "runTerminalState": "cancelled"
+}

@@ -64,7 +64,10 @@ The setup flow asks for the capability first. It then offers the authentication
 methods available for that capability:
 
 - **Connect with Paperclip** uses the Paperclip Cloud broker when that exact
-  profile is advertised by `GET https://my.paperclip.app/v1/connector/capabilities`.
+  profile is returned for this enrolled instance by the signed
+  `POST https://my.paperclip.app/v1/connector/instance-status` request. The
+  anonymous capabilities document is global discovery only and never enables
+  an internal-pilot method locally.
 - **Use your own Google OAuth app** uses customer-supplied OAuth credentials and
   the app definition's exact reviewed scopes.
 - **Use the Paperclip robot account** remains an additional Google Sheets-only

@@ -107,9 +107,6 @@ async function protectStagedTree(root: string): Promise<void> {
     if (!opened.isDirectory()) {
       throw new Error("staged runtime context root must be a directory");
     }
-    // Keep directories owner-writable so the private staging tree can be
-    // removed without a second path-based chmod traversal.
-    await rootHandle.chmod(0o700);
     for (const entry of await readdir(root, { withFileTypes: true })) {
       const child = join(root, entry.name);
       if (entry.isDirectory()) {
@@ -130,9 +127,79 @@ async function protectStagedTree(root: string): Promise<void> {
         await childHandle.close();
       }
     }
+    // Seal directories only after their descendants. Traversal needs execute
+    // permission, but provider processes must not be able to rewrite assigned
+    // skills after the immutable snapshot has been published.
+    await rootHandle.chmod(0o555);
   } finally {
     await rootHandle.close();
   }
+}
+
+async function unprotectMaterializedTree(root: string): Promise<void> {
+  const rootHandle = await open(
+    root,
+    constants.O_RDONLY
+      | (constants.O_NOFOLLOW ?? 0)
+      | (constants.O_DIRECTORY ?? 0),
+  );
+  try {
+    const opened = await rootHandle.stat();
+    if (!opened.isDirectory()) {
+      throw new Error("materialized runtime context root must be a directory");
+    }
+    // Restore directory mutation before descending so every child can be
+    // unlinked. Handles plus O_NOFOLLOW keep cleanup inside the sealed tree.
+    await rootHandle.chmod(0o700);
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      const child = join(root, entry.name);
+      if (entry.isDirectory()) {
+        await unprotectMaterializedTree(child);
+        continue;
+      }
+      const childHandle = await open(
+        child,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const openedChild = await childHandle.stat();
+        if (!openedChild.isFile()) {
+          throw new Error("materialized runtime context asset must be a regular file");
+        }
+        await childHandle.chmod(0o600);
+      } finally {
+        await childHandle.close();
+      }
+    }
+  } finally {
+    await rootHandle.close();
+  }
+}
+
+async function removeMaterializedTree(
+  skillsHome: string,
+  removeTree: (path: string) => Promise<void>,
+): Promise<void> {
+  const exists = await lstat(skillsHome).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+  if (!exists) return;
+  await unprotectMaterializedTree(skillsHome);
+  await removeTree(skillsHome);
+}
+
+/** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
+export async function releaseMaterializedNativeRuntimeSkills(
+  skillsHome: string,
+): Promise<void> {
+  await removeMaterializedTree(
+    skillsHome,
+    (path) => rm(path, { recursive: true, force: true }),
+  );
 }
 
 export async function materializeNativeRuntimeSkills(
@@ -211,7 +278,9 @@ export async function materializeNativeRuntimeSkills(
     // filesystem. Publication therefore targets only a fresh destination.
     await renameTree(stagingHome, skillsHome);
   } catch (error) {
-    await removeTree(stagingHome).catch(() => undefined);
+    // Cleanup is best effort and must not replace the publication failure that
+    // explains why no runtime snapshot was installed.
+    await removeMaterializedTree(stagingHome, removeTree).catch(() => undefined);
     throw error;
   }
 }

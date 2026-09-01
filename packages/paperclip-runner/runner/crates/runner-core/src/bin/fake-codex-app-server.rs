@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 struct FakeState {
     thread_id: String,
     active_turn_id: Option<String>,
+    #[serde(default)]
+    next_turn: u64,
 }
 
 fn argument(args: &[String], name: &str) -> Option<String> {
@@ -36,6 +38,7 @@ fn load_state(path: &Path) -> FakeState {
         .unwrap_or_else(|| FakeState {
             thread_id: "codex-thread-1".to_owned(),
             active_turn_id: None,
+            next_turn: 0,
         })
 }
 
@@ -288,6 +291,119 @@ fn send_question(state: &FakeState) -> io::Result<()> {
     }))
 }
 
+fn send_runtime_question(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    send(json!({
+        "id": "runtime-request-1",
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "itemId": "question-item-1",
+            "isBlocking": true,
+            "title": "Deployment input",
+            "questions": [
+                {
+                    "id": "environment",
+                    "header": "Environment",
+                    "question": "Where should we deploy?",
+                    "isOther": true,
+                    "options": [
+                        {"label": "Staging", "description": "Deploy safely."},
+                        {"label": "Production", "description": "Deploy directly."}
+                    ]
+                },
+                {
+                    "id": "regions",
+                    "header": "Region",
+                    "question": "Which region should receive the deployment?",
+                    "options": [
+                        {"label": "us-east-1"},
+                        {"label": "us-west-2"}
+                    ]
+                },
+                {
+                    "id": "notes",
+                    "header": "Notes",
+                    "question": "Add deployment notes."
+                }
+            ]
+        }
+    }))
+}
+
+fn send_runtime_elicitation(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    send(json!({
+        "id": "runtime-elicitation-1",
+        "method": "mcpServer/elicitation/request",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "itemId": "elicitation-item-1",
+            "message": "Choose typed deployment settings.",
+            "requestedSchema": {
+                "type": "object",
+                "required": ["approved", "environment", "regions", "replicas"],
+                "properties": {
+                    "environment": {"type": "string", "enum": ["staging", "production"]},
+                    "regions": {"type": "array", "items": {"type": "string"}},
+                    "replicas": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "approved": {"type": "boolean"}
+                }
+            }
+        }
+    }))
+}
+
+fn send_structured_activity(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    send(json!({
+        "method": "turn/plan/updated",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "revision": 1,
+            "explanation": "Exercise the structured provider boundary.",
+            "plan": [
+                {"step": "Inspect", "status": "completed"},
+                {"step": "Implement", "status": "inProgress"}
+            ]
+        }
+    }))?;
+    send(json!({
+        "method": "item/started",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "item": {"id": "reasoning-1", "type": "reasoning", "status": "inProgress"}
+        }
+    }))?;
+    send(json!({
+        "method": "item/completed",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "item": {"id": "reasoning-1", "type": "reasoning", "status": "completed"}
+        }
+    }))?;
+    send(json!({
+        "method": "item/completed",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "item": {
+                "id": "command-1",
+                "type": "commandExecution",
+                "status": "completed",
+                "command": "verify",
+                "aggregatedOutput": "verification passed",
+                "exitCode": 0
+            }
+        }
+    }))
+}
+
 fn send_runtime_request_flood(
     state: &FakeState,
     interrupt_count: u64,
@@ -323,6 +439,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?);
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
     let emit_question = args.iter().any(|value| value == "--emit-question");
+    let emit_runtime_question = args.iter().any(|value| value == "--runtime-question");
+    let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
+    let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let require_skill_instructions = args
+        .iter()
+        .any(|value| value == "--include-skill-instructions");
+    let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
         .iter()
@@ -350,7 +473,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
-    let hold_turn = args.iter().any(|value| value == "--hold-turn");
+    let linger_after_turn_start = args
+        .iter()
+        .any(|value| value == "--linger-after-turn-start");
+    let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
         .iter()
@@ -453,6 +579,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    if require_skill_instructions {
+        let skill_path = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("skills").join("assigned").join("SKILL.md"))
+            .ok_or("HOME is required for the selected skill fixture")?;
+        if !skill_path.is_file() {
+            return Err(format!(
+                "selected skill instructions were not materialized at {}",
+                skill_path.display()
+            )
+            .into());
+        }
+    }
     let mut state = load_state(&state_path);
     let mut turn_start_count = 0_u64;
     let mut interrupt_count = 0_u64;
@@ -474,6 +613,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "runtime-response:cancelled"
             };
             log_call(call_log.as_deref(), outcome)?;
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("runtime-elicitation-1"))
+        {
+            finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
         if message.get("method").is_none() && message.get("id") == Some(&json!("runtime-request-1"))
@@ -614,6 +759,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/start" => {
                 turn_start_count += 1;
+                if durable_turn_ids {
+                    state.next_turn = state
+                        .next_turn
+                        .checked_add(1)
+                        .ok_or("fake provider turn sequence exhausted")?;
+                }
                 if reject_second_turn_start && turn_start_count == 2 {
                     send(json!({
                         "method": "warning",
@@ -648,7 +799,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     "provider-turn-1".to_owned()
                 } else {
-                    format!("provider-turn-{turn_start_count}")
+                    format!(
+                        "provider-turn-{}",
+                        if durable_turn_ids {
+                            state.next_turn
+                        } else {
+                            turn_start_count
+                        }
+                    )
                 };
                 state.active_turn_id = Some(provider_turn_id.clone());
                 save_state(&state_path, &state)?;
@@ -839,6 +997,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             return Ok(());
                         }
                     }
+                } else if emit_runtime_question {
+                    send_runtime_question(&state)?;
+                } else if emit_runtime_elicitation {
+                    send_runtime_elicitation(&state)?;
+                } else if emit_structured_activity {
+                    send_structured_activity(&state)?;
+                    finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {
@@ -881,7 +1046,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            "turn/steer" => send(json!({"id": id, "result": {"accepted": true}}))?,
+            "turn/steer" => {
+                send(json!({"id": id, "result": {"accepted": true}}))?;
+                if linger_after_turn_start {
+                    send(json!({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": state.thread_id,
+                            "turnId": state.active_turn_id,
+                            "item": {
+                                "id": "steering-acknowledgement-1",
+                                "type": "steering_acknowledgement",
+                                "status": "completed"
+                            }
+                        }
+                    }))?;
+                }
+            }
             "turn/interrupt" => {
                 interrupt_count += 1;
                 if fail_first_interrupt && interrupt_count == 1 {

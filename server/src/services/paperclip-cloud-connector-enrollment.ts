@@ -72,30 +72,46 @@ export function paperclipCloudConnectorEnrollmentStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): PaperclipCloudConnectorEnrollmentStatus {
   const identity = loadPaperclipCloudConnectorIdentity();
-  const brokerBaseUrl = normalizeBrokerOrigin(
-    env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL
-      ?? identity?.brokerBaseUrl
-      ?? "https://my.paperclip.app",
-  );
-  const environment = connectorEnvironment(env, identity?.environment, brokerBaseUrl);
-  if (!identity) {
-    const managedInstanceId = env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID?.trim();
-    const managedKeysPresent = Boolean(
-      env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim()
-      && env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim(),
-    );
-    if (managedInstanceId && managedKeysPresent) {
-      const publicOrigin = env.PAPERCLIP_PUBLIC_URL ? normalizeInstanceOrigin(env.PAPERCLIP_PUBLIC_URL) : undefined;
+  const managedInstanceId = env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID?.trim();
+  const managedSignPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim();
+  const managedSealPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim();
+  const managedEnvironment = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim();
+  const hasManagedIdentityOverride = hasManagedConnectorIdentityOverride(env);
+  if (hasManagedIdentityOverride) {
+    const { brokerBaseUrl, environment } = connectorTarget(env);
+    if (!managedInstanceId || !managedSignPrivateKey || !managedSealPrivateKey || !managedEnvironment) {
       return {
-        configured: true,
-        status: "active",
+        configured: false,
+        status: "unverified",
         brokerBaseUrl,
-        instanceId: managedInstanceId,
+        instanceId: null,
         environment,
-        origins: publicOrigin ? [publicOrigin] : [],
+        origins: [],
       };
     }
+    const publicOrigin = env.PAPERCLIP_PUBLIC_URL ? normalizeInstanceOrigin(env.PAPERCLIP_PUBLIC_URL) : undefined;
+    return {
+      configured: true,
+      status: "active",
+      brokerBaseUrl,
+      instanceId: managedInstanceId,
+      environment,
+      origins: publicOrigin ? [publicOrigin] : [],
+    };
+  }
+  const { brokerBaseUrl, environment } = connectorTarget(env, identity);
+  if (!identity) {
     return { configured: false, status: "not_configured", brokerBaseUrl, instanceId: null, environment, origins: [] };
+  }
+  if (!identityMatchesTarget(identity, { brokerBaseUrl, environment })) {
+    return {
+      configured: false,
+      status: "unverified",
+      brokerBaseUrl,
+      instanceId: null,
+      environment,
+      origins: [],
+    };
   }
   return {
     configured: identity.status === "active",
@@ -132,8 +148,23 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   const env = input.env ?? process.env;
   const request = input.request ?? fetch;
+  if (hasManagedConnectorIdentityOverride(env)) {
+    throw new Error("Paperclip Cloud self-host enrollment is unavailable with managed identity configuration");
+  }
   const origin = normalizeInstanceOrigin(input.origin);
-  let identity = loadPaperclipCloudConnectorIdentity() ?? createIdentity(env);
+  const existingIdentity = loadPaperclipCloudConnectorIdentity();
+  const target = connectorTarget(env, existingIdentity);
+  let identity: PaperclipCloudConnectorIdentity;
+  if (!existingIdentity) {
+    identity = createIdentity(env);
+  } else if (!identityMatchesTarget(existingIdentity, target)) {
+    if (existingIdentity.status === "active") {
+      throw new Error("Paperclip Cloud connector is enrolled with another target");
+    }
+    identity = createIdentity(env);
+  } else {
+    identity = existingIdentity;
+  }
   if (identity.status === "pending" && identity.pending && Date.parse(identity.pending.expiresAt) > Date.now()) {
     if (identity.pending.origin !== origin) {
       throw new Error("Paperclip Cloud enrollment is already pending for another origin");
@@ -169,7 +200,11 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
     throw new Error("Paperclip Cloud returned an invalid enrollment response");
   }
   const verificationUrl = new URL(body.verificationUrl);
-  if (verificationUrl.origin !== identity.brokerBaseUrl || verificationUrl.pathname !== "/connections/enroll") {
+  if (verificationUrl.origin !== identity.brokerBaseUrl
+    || verificationUrl.username || verificationUrl.password || verificationUrl.hash
+    || verificationUrl.pathname !== "/connections/enroll"
+    || verificationUrl.searchParams.size !== 1
+    || verificationUrl.searchParams.get("id") !== body.enrollmentId) {
     throw new Error("Paperclip Cloud returned an invalid enrollment destination");
   }
   identity = {
@@ -196,6 +231,7 @@ export async function completePaperclipCloudConnectorEnrollment(input: {
   enrollmentId: string;
   approvalCode: string;
   state: string;
+  env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   return withEnrollmentMutationLock(() => completePaperclipCloudConnectorEnrollmentUnlocked(input));
@@ -205,13 +241,16 @@ async function completePaperclipCloudConnectorEnrollmentUnlocked(input: {
   enrollmentId: string;
   approvalCode: string;
   state: string;
+  env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   const identity = loadPaperclipCloudConnectorIdentity();
   const pending = identity?.pending;
-  if (!identity || !pending || identity.status !== "pending"
+  if (hasManagedConnectorIdentityOverride(input.env ?? process.env)
+    || !identity || !pending || identity.status !== "pending"
     || pending.enrollmentId !== input.enrollmentId || pending.returnState !== input.state
-    || Date.parse(pending.expiresAt) <= Date.now()) {
+    || Date.parse(pending.expiresAt) <= Date.now()
+    || !identityMatchesTarget(identity, connectorTarget(input.env ?? process.env, identity))) {
     throw new Error("Invalid or expired Paperclip Cloud enrollment state");
   }
   const audience = `${identity.brokerBaseUrl}/v1/connector/enrollment-claims`;
@@ -247,17 +286,17 @@ async function completePaperclipCloudConnectorEnrollmentUnlocked(input: {
     pending: undefined,
     enrolledAt: new Date().toISOString(),
   });
-  return paperclipCloudConnectorEnrollmentStatus();
+  return paperclipCloudConnectorEnrollmentStatus(input.env ?? process.env);
 }
 
 function createIdentity(env: NodeJS.ProcessEnv): PaperclipCloudConnectorIdentity {
   const signing = generateKeyPairSync("ed25519");
   const sealing = generateKeyPairSync("x25519");
-  const brokerBaseUrl = normalizeBrokerOrigin(env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL ?? "https://my.paperclip.app");
+  const { brokerBaseUrl, environment } = connectorTarget(env);
   const identity: PaperclipCloudConnectorIdentity = {
     version: IDENTITY_VERSION,
     instanceId: `inst_${randomUUID()}`,
-    environment: connectorEnvironment(env, undefined, brokerBaseUrl),
+    environment,
     brokerBaseUrl,
     signPrivateKey: rawKey(signing.privateKey, "d"),
     signPublicKey: rawKey(signing.publicKey, "x"),
@@ -306,9 +345,42 @@ function connectorEnvironment(
     : host === "my-staging.paperclip.app"
       ? "staging"
       : "development";
-  const value = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT ?? fallback ?? inferred;
+  const value = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim() || fallback || inferred;
   if (!isEnvironment(value)) throw new Error("Paperclip Cloud connector environment is invalid");
+  if ((host === "my.paperclip.app" && value !== "production")
+    || (host === "my-staging.paperclip.app" && value !== "staging")) {
+    throw new Error("Paperclip Cloud connector broker and environment do not match");
+  }
   return value;
+}
+
+function connectorTarget(
+  env: NodeJS.ProcessEnv,
+  identity?: PaperclipCloudConnectorIdentity | null,
+): Pick<PaperclipCloudConnectorIdentity, "brokerBaseUrl" | "environment"> {
+  const brokerOverride = env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL?.trim() || undefined;
+  const brokerBaseUrl = normalizeBrokerOrigin(
+    brokerOverride ?? identity?.brokerBaseUrl ?? "https://my.paperclip.app",
+  );
+  return {
+    brokerBaseUrl,
+    environment: connectorEnvironment(env, brokerOverride ? undefined : identity?.environment, brokerBaseUrl),
+  };
+}
+
+function identityMatchesTarget(
+  identity: PaperclipCloudConnectorIdentity,
+  target: Pick<PaperclipCloudConnectorIdentity, "brokerBaseUrl" | "environment">,
+): boolean {
+  return identity.brokerBaseUrl === target.brokerBaseUrl && identity.environment === target.environment;
+}
+
+function hasManagedConnectorIdentityOverride(env: NodeJS.ProcessEnv): boolean {
+  return [
+    env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
+    env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY,
+    env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY,
+  ].some((value) => Boolean(value?.trim()));
 }
 
 function isEnvironment(value: unknown): value is LocalConnectorEnvironment {

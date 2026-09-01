@@ -5,6 +5,8 @@ import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isGoogleWorkspaceConnectorProfileId,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
@@ -55,6 +57,7 @@ import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
   isPaperclipCloudConnectorStrategy,
+  type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
 import {
@@ -177,6 +180,10 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
+export function cloudConnectorEnrollmentReturnPath(issuePrefix: string): string {
+  return `/${encodeURIComponent(issuePrefix)}/apps/connections?cloud_connector=enrolled`;
+}
+
 export function toolAccessRoutes(
   db: Db,
   options: {
@@ -190,6 +197,7 @@ export function toolAccessRoutes(
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
     composioClientFactory?: (apiKey: string) => ComposioClient;
     vercelConnectClient?: VercelConnectClient | null;
+    paperclipCloudConnector?: PaperclipCloudConnector | null;
     connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
   } = {},
 ) {
@@ -675,7 +683,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const googleConnectorProfiles = new Set(await paperclipCloudConnectorCapabilitiesFromEnv());
+    const advertisedProfiles = options.paperclipCloudConnector === undefined
+      ? await paperclipCloudConnectorCapabilitiesFromEnv()
+      : options.paperclipCloudConnector
+        ? await options.paperclipCloudConnector.getCapabilities()
+        : [];
+    const googleConnectorProfiles = new Set(advertisedProfiles);
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
@@ -888,6 +901,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (pending?.initiatedBy && pending.initiatedBy !== connectorEnrollmentPrincipal(req)) {
       throw notFound("Paperclip Cloud enrollment not found");
     }
+    const [company] = pending?.companyId
+      ? await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, pending.companyId))
+        .limit(1)
+      : [];
+    if (!company) throw notFound("Paperclip Cloud enrollment not found");
     let status;
     try {
       status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
@@ -905,7 +926,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { environment: status.environment, status: status.status },
       });
     }
-    res.redirect(303, "/apps/connections?cloud_connector=enrolled");
+    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix));
   });
 
   const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {
@@ -932,6 +953,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
         error,
         actor: getActorInfo(req),
       });
+      const pendingConfig = pendingConnection.config ?? {};
+      const oauthConfig = pendingConfig.oauth && typeof pendingConfig.oauth === "object"
+        ? pendingConfig.oauth as Record<string, unknown>
+        : null;
+      const connectorProfileValue = typeof oauthConfig?.connectorProfile === "string"
+        ? oauthConfig.connectorProfile
+        : null;
+      const connectorProfile = connectorProfileValue && isGoogleWorkspaceConnectorProfileId(connectorProfileValue)
+        ? connectorProfileValue
+        : null;
+      const connectorDefinition = connectorProfile
+        ? GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile]
+        : null;
       await logActivity(db, {
         companyId: result.connection.companyId,
         actorType: "user",
@@ -939,7 +973,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
         action: "tool_app.oauth_connected",
         entityType: "tool_connection",
         entityId: result.connection.id,
-        details: { applicationId: result.application.id, catalogEntryCount: result.catalog.length, provider: "gmail" },
+        details: {
+          applicationId: result.application.id,
+          catalogEntryCount: result.catalog.length,
+          provider: connectorDefinition?.appSlug ?? "google",
+          ...(connectorDefinition ? { profile: connectorProfile } : {}),
+        },
       });
       if (acceptsHtml && pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
         await finishConnectionIntentOAuth({
