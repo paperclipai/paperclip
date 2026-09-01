@@ -566,7 +566,14 @@ function braceBalanceOf(masked: string) {
   return balance;
 }
 
+// Memoized: the scan is deterministic over the on-disk sources and three tests
+// consume it; re-running it doubles the suite's runtime for identical results.
+let cachedActualRoutes: ReturnType<typeof computeActualRoutes> | undefined;
 function loadActualRoutes() {
+  return (cachedActualRoutes ??= computeActualRoutes());
+}
+
+function computeActualRoutes() {
   const routes = new Set<string>();
   const boardGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
