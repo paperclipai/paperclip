@@ -9,6 +9,7 @@ import {
   buildHistoryPointers,
   createBundleManifest,
   isHistoricalBundlePathAllowed,
+  prunePrivateHistoryEvidence,
   validateHistoryDestination,
 } from "./history-publish.js";
 import {
@@ -156,7 +157,7 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
-  it("builds a root landing page with campaign-scoped evidence links", async () => {
+  it("keeps visual and active evidence private when building the public dashboard", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
     const output = path.join(root, "landing");
     temporaryDirectories.push(root);
@@ -189,16 +190,59 @@ describe("historical publication security", () => {
       JSON.stringify(campaign),
     );
     await writeFile(path.join(evidenceDirectory, "final-state.png"), "png");
+    await writeFile(path.join(evidenceDirectory, "failure.webm"), "webm");
+    await writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />");
+    await writeFile(path.join(evidenceDirectory, "result.json"), "{}\n");
+    await mkdir(path.join(evidenceDirectory, "snapshots"));
+    await writeFile(
+      path.join(evidenceDirectory, "snapshots", "api-state.json"),
+      "{}\n",
+    );
+    await mkdir(path.join(evidenceDirectory, "html-report"));
+    await writeFile(
+      path.join(evidenceDirectory, "html-report", "index.html"),
+      "<img src='data:image/png;base64,cHJpdmF0ZQ==' />",
+    );
+    await mkdir(path.join(evidenceDirectory, "blob-report"));
+    await writeFile(
+      path.join(evidenceDirectory, "blob-report", "report.zip"),
+      "private archive",
+    );
 
+    await prunePrivateHistoryEvidence(root);
     await regenerateRunnerDashboard({
       bundle: root,
       outputDirectory: output,
       evidenceHrefPrefix: "campaigns/campaign-1",
     });
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
-    expect(dashboard).toContain(
+    expect(dashboard).not.toContain(
       `campaigns/campaign-1/evidence/${execution.id}/attempt-1/final-state.png`,
     );
+    await expect(
+      readFile(path.join(evidenceDirectory, "final-state.png")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "failure.webm")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "unsafe.svg")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "html-report", "index.html")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "blob-report", "report.zip")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
+    ).resolves.toBe("{}\n");
+    await expect(
+      readFile(
+        path.join(evidenceDirectory, "snapshots", "api-state.json"),
+        "utf8",
+      ),
+    ).resolves.toBe("{}\n");
     expect(
       JSON.parse(
         await readFile(path.join(output, "normalized-results.json"), "utf8"),
@@ -245,6 +289,36 @@ describe("historical publication security", () => {
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/final-state.png",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/failure.webm",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/unsafe.svg",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/blob-report/report.zip",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/html-report/index.html",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/result.json",
+      ),
+    ).toBe(true);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/snapshots/api-state.json",
       ),
     ).toBe(true);
     expect(isHistoricalBundlePathAllowed("paperclip-home/database")).toBe(

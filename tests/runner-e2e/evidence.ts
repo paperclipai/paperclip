@@ -26,7 +26,8 @@ const TEXT_EXTENSIONS = new Set([
   ".log",
   ".md",
 ]);
-const BINARY_EXTENSIONS = new Set([".png", ".webm", ".svg"]);
+const BINARY_EXTENSIONS = new Set([".png", ".webm"]);
+const ACTIVE_CONTENT_EXTENSIONS = new Set([".svg"]);
 const ALLOWED_DIRECTORIES = new Set([
   "snapshots",
   "playwright-output",
@@ -141,7 +142,12 @@ export async function packageEvidence(input: {
     const extension = path.extname(relative).toLowerCase();
     const destination = path.join(input.uploadDir, relative);
     await mkdir(path.dirname(destination), { recursive: true });
-    if (TEXT_EXTENSIONS.has(extension)) {
+    if (ACTIVE_CONTENT_EXTENSIONS.has(extension)) {
+      // SVG can execute script when opened directly from an artifact. Keep the
+      // source in the disposable private attempt directory, but never admit it
+      // to the sanitized CI artifact.
+      continue;
+    } else if (TEXT_EXTENSIONS.has(extension)) {
       const raw = await readFile(source, "utf8");
       const parsed = extension === ".json" ? JSON.parse(raw) : null;
       const leak =
@@ -177,6 +183,10 @@ export async function packageEvidence(input: {
       await copyFile(source, destination);
       files.push(relative);
     } else if (BINARY_EXTENSIONS.has(extension)) {
+      // This raw-byte scan catches embedded plaintext credentials, but cannot
+      // inspect rendered pixels. Raster/video files are retained in the
+      // access-controlled CI artifact and stripped at the public-history
+      // boundary by history-publish.ts.
       const raw = await readFile(source);
       const leak = findSecretLeak(raw, input.secrets);
       if (leak) {

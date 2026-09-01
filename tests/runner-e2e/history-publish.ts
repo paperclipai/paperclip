@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  lstat,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
@@ -26,6 +34,41 @@ const PUBLISH_ROOT_FILES = new Set([
   "normalized-results.json",
   "summary.md",
 ]);
+const PUBLIC_EVIDENCE_EXTENSIONS = new Set([
+  ".json",
+  ".log",
+  ".md",
+  ".txt",
+  ".xml",
+]);
+const PRIVATE_EVIDENCE_DIRECTORIES = new Set([
+  "blob-report",
+  "html-report",
+  "playwright-output",
+]);
+
+function publicEvidencePath(relative: string) {
+  const match = relative.match(
+    /^evidence\/[A-Za-z0-9._-]+\/attempt-[1-9][0-9]*\/(.+)$/,
+  );
+  if (!match) return false;
+  const evidencePath = match[1]!;
+  const segments = evidencePath.split("/");
+  if (
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        PRIVATE_EVIDENCE_DIRECTORIES.has(segment),
+    )
+  ) {
+    return false;
+  }
+  return PUBLIC_EVIDENCE_EXTENSIONS.has(
+    path.posix.extname(evidencePath).toLowerCase(),
+  );
+}
 
 export function isHistoricalBundlePathAllowed(relative: string) {
   if (
@@ -42,9 +85,35 @@ export function isHistoricalBundlePathAllowed(relative: string) {
   ) {
     return true;
   }
-  return /^evidence\/[A-Za-z0-9._-]+\/attempt-[1-9][0-9]*\/[A-Za-z0-9._/-]+$/.test(
-    relative,
-  );
+  return publicEvidencePath(relative);
+}
+
+async function pruneEvidenceDirectory(root: string, current: string) {
+  const entries = await readdir(current, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await pruneEvidenceDirectory(root, absolute);
+      if ((await readdir(absolute)).length === 0) {
+        await rm(absolute, { recursive: true });
+      }
+      continue;
+    }
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
+    if (!entry.isFile() || !publicEvidencePath(relative)) {
+      await rm(absolute, { force: true });
+    }
+  }
+}
+
+export async function prunePrivateHistoryEvidence(root: string) {
+  const evidenceRoot = path.join(root, "evidence");
+  const metadata = await lstat(evidenceRoot).catch(() => null);
+  if (!metadata) return;
+  if (!metadata.isDirectory()) {
+    throw new Error("Historical evidence root must be a directory");
+  }
+  await pruneEvidenceDirectory(root, evidenceRoot);
 }
 
 interface BundleManifest {
@@ -299,6 +368,11 @@ async function main() {
   // Campaign bundles are immutable and must not capture a mutable history
   // file left in a reused local directory. The root landing page below is the
   // only dashboard that embeds navigation across campaigns.
+  // Raster/video pixels are not OCR-scanned for secrets, and generated HTML,
+  // archives, and SVG may contain or execute active/private content. Preserve
+  // those in the access-controlled workflow artifact but remove them from the
+  // directory shared by public S3 and Pages publication.
+  await prunePrivateHistoryEvidence(reportRoot);
   await regenerateRunnerDashboard({ bundle: reportRoot, historyFile: null });
   const manifest = await createBundleManifest(reportRoot, campaign.campaignId);
   const campaignPrefix = `${destination.prefix}/campaigns/${campaign.campaignId}`;

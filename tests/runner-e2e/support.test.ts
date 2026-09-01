@@ -561,6 +561,46 @@ describe("runner E2E evidence redaction", () => {
     ).rejects.toThrow();
   });
 
+  it("keeps raster evidence private to CI and rejects active SVG content", async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), "runner-e2e-visual-evidence-test-"),
+    );
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    const uploadDir = path.join(root, "upload");
+    const playwrightOutput = path.join(privateDir, "playwright-output");
+    await mkdir(playwrightOutput, { recursive: true });
+    await writeFile(path.join(privateDir, "final-state.png"), "png");
+    await writeFile(path.join(playwrightOutput, "failure.webm"), "webm");
+    await writeFile(
+      path.join(playwrightOutput, "active.svg"),
+      "<svg onload='alert(1)' />",
+    );
+
+    const packaged = await packageEvidence({
+      privateDir,
+      uploadDir,
+      secrets: [secret],
+      expectPassScreenshot: false,
+    });
+
+    expect(packaged.files).toEqual(
+      expect.arrayContaining([
+        "final-state.png",
+        path.join("playwright-output", "failure.webm"),
+      ]),
+    );
+    expect(packaged.files).not.toContain(
+      path.join("playwright-output", "active.svg"),
+    );
+    await expect(
+      readFile(path.join(playwrightOutput, "active.svg"), "utf8"),
+    ).resolves.toContain("onload");
+    await expect(
+      readFile(path.join(uploadDir, "playwright-output", "active.svg")),
+    ).rejects.toThrow();
+  });
+
   it("preserves valid JSON while redacting escaped command diagnostics", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-json-evidence-test-"),
