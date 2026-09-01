@@ -272,6 +272,53 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
   });
 
+  it("enforces maxAttempts once and removes every automatic recovery path", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const svc = issueRecoveryActionService(db);
+    const base = {
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog" as const,
+      ownerType: "agent" as const,
+      ownerAgentId: managerId,
+      returnOwnerAgentId: managerId,
+      cause: "process_lost",
+      fingerprint: "run-process-lost",
+      nextAction: "Resume the same run.",
+      wakePolicy: { kind: "resume_native_run", runId: "run-1" },
+      monitorPolicy: { kind: "watch_run", runId: "run-1" },
+      maxAttempts: 3,
+    };
+
+    const first = await svc.upsertSourceScoped(base);
+    const second = await svc.upsertSourceScoped(base);
+    const exhausted = await svc.upsertSourceScoped(base);
+    const replay = await svc.upsertSourceScoped(base);
+
+    expect(first.attemptCount).toBe(1);
+    expect(second.attemptCount).toBe(2);
+    expect(exhausted).toMatchObject({
+      id: first.id,
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      returnOwnerAgentId: managerId,
+      attemptCount: 3,
+      maxAttempts: 3,
+      wakePolicy: null,
+      monitorPolicy: null,
+      outcome: "escalated",
+      evidence: {
+        recoveryBudget: {
+          state: "exhausted",
+          attemptsUsed: 3,
+          maxAttempts: 3,
+        },
+      },
+    });
+    expect(replay).toEqual(exhausted);
+  });
+
   it("preserves legacy recovery ownership when new evidence is folded into an active action", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const svc = issueRecoveryActionService(db);

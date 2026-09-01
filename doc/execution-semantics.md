@@ -205,13 +205,15 @@ Never instruct a low-trust delegate to comment on the parent issue. That instruc
 
 The direct-parent report comment intentionally does not open lateral comment access: no writes into sibling subtrees or other agents' boundaries. The sanctioned lateral channel is the **courier pattern**: create a new issue assigned to the target agent that carries the complete instructions and context in its description (company-scoped issue-CREATE is permitted from any run). The courier issue wakes the target agent through normal assignment, keeps the coordination auditable, and avoids widening comment access into another agent's boundary. Because the target agent's run may not be able to read your issues, the courier description must be self-contained — do not rely on links back into your own subtree for essential instructions.
 
-## 7. Accepted-Plan Decomposition
+## 7. Accepted-Plan Execution and Optional Decomposition
 
-An accepted plan confirmation is permission to decompose one specific accepted plan revision into child issues.
+An accepted plan confirmation authorizes execution of one specific accepted plan revision. Acceptance does not choose the issue topology. A `planning` source transitions atomically to `standard`; a source that is already `standard` stays `standard`. The continuation starts a fresh default-execution session on that same issue and carries the accepted document id, revision id/number, and approved Markdown.
 
-This complements the existing accepted-plan continuation rule: once a plan is accepted, the source issue may create child implementation issues, but it must not start implementation work on the source issue itself during that continuation.
+The default is to implement on the source issue. The run-scoped `paperclip-converting-plans-to-tasks` guidance decides whether a minimum child graph is justified by an ownership, parallelism, dependency, review, or lifecycle boundary. A child must not be created merely because a plan was accepted, and the source must not be blocked merely because children exist.
 
-Paperclip must treat accepted-plan decomposition as an exact-once control-plane primitive, not as a free-floating wake that any later run may interpret again.
+`create_task` and `set_dependencies` are ordinary authorized `standard`-run capabilities. `create_task` creates a standard child under the active issue, with durable idempotency scoped by source issue and caller key; blocker-free children start `todo`, children with unresolved blockers start `blocked`, and only assigned dependency-ready children wake. `set_dependencies` changes the active source issue's first-class blockers and is used only when the source genuinely waits for delegated results.
+
+The accepted-plan decomposition API and records remain as an optional compatibility surface. When that API is explicitly used, Paperclip treats it as an exact-once control-plane primitive, not as the runner's ordinary child-creation binding.
 
 ### Exact-once fingerprint
 
@@ -224,11 +226,11 @@ Where:
 - `sourceIssueId` is the issue whose `plan` document revision was accepted
 - `acceptedPlanRevisionId` is the accepted `plan` document revision
 
-This is the product contract because the accepted revision is the thing being authorized for decomposition. Re-accepting, re-waking, or re-reading the same accepted revision must not authorize a second child tree. A later accepted revision on the same source issue is a new fingerprint and may produce a different decomposition result.
+For the compatibility decomposition API, this remains the product contract because the accepted revision is the thing being decomposed. Re-accepting, re-waking, or re-reading the same accepted revision must not authorize a second child tree through that API. A later accepted revision on the same source issue is a new fingerprint and may produce a different decomposition result.
 
 An implementation may also store the accepted interaction id, acceptance run id, or other evidence, but those values must collapse onto the same uniqueness guarantee. They must not allow a second decomposition claim for the same `(sourceIssueId, acceptedPlanRevisionId)` pair.
 
-### Durable claim and durable result
+### Durable compatibility claim and result
 
 Before creating child issues, the first decomposition attempt must create or reuse a durable record for the fingerprint.
 
@@ -247,7 +249,7 @@ Paperclip does not need to mandate a specific storage shape in this document. Th
 
 If a run creates some children and then dies, retries must continue from the same fingerprint and reuse the already-recorded partial result. They must not restart decomposition as if nothing happened.
 
-### Parent live path while decomposition is in flight
+### Source live path while optional decomposition is in flight
 
 While decomposition for an accepted fingerprint is incomplete, the source issue must expose an explicit live path for that same fingerprint.
 
@@ -260,18 +262,18 @@ The accepted interaction by itself is only evidence that the plan was approved. 
 
 If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
 
-Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§9.2, "Deliberate wait is not a lost run").
+When the source retains implementation, integration, or verification responsibility and genuinely must wait for children, it must hold a first-class blocker path rather than relying on `parentId` rollup. If it can continue independently, it stays open without child blockers. If its sole deliverable was planning and all remaining work is fully delegated, it may finish after verifying the graph.
 
 ### Concurrent and repeat attempts
 
-Every later run that encounters the same accepted-plan fingerprint must consult the durable claim/result before creating children.
+Every later caller of the compatibility decomposition API for the same accepted-plan fingerprint must consult the durable claim/result before creating children.
 
 - If no claim exists, the run may atomically create the claim and become the decomposition owner.
 - If a claim exists and is `in_flight`, the later run must reuse that claim. It may resume the same decomposition if it is the valid continuation owner, or it may exit after observing that another run already owns the work.
 - If a claim exists and is `completed`, the later run must reuse the recorded child result and must not create new sibling issues.
 - If the prior attempt ended after partial child creation, the retry must continue under the same fingerprint and preserve the already-created child ids.
 
-Concurrent accepted-plan runs are therefore idempotent relative to the fingerprint. Creating multiple child trees for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
+Concurrent compatibility decomposition attempts are therefore idempotent relative to the fingerprint. Creating multiple child trees through that API for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
 
 ## 8. Non-Terminal Issue Liveness Contract
 

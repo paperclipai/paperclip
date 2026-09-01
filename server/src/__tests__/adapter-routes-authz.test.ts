@@ -249,8 +249,8 @@ describe.sequential("adapter management route authorization", () => {
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
     const [routes, middleware, registry] = await Promise.all([
-      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/adapters.js"),
+      import("../middleware/index.js"),
       vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
     ]);
     adapterRoutes = routes.adapterRoutes;

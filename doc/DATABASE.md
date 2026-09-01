@@ -239,6 +239,16 @@ that invariant. Removing or disabling a future native rollout flag must not
 delete these records; persisted experimental runs remain available for recovery
 and inspection.
 
+## Question-response delivery receipts
+
+`issue_question_response_deliveries` is the retry-safe, content-free outbox for
+answered `ask_user_questions` interactions. Its unique interaction and correlation
+indexes enforce one causal delivery per response. It records source and target
+run/turn ids, payload digest, attempt/acknowledgement state, and one of `steered`,
+`coalesced`, or `wake_fallback`; answer content remains only in
+`issue_thread_interactions.result`. Deleting the interaction cascades its receipt,
+while deleting a referenced run clears that run pointer without deleting history.
+
 ## Plugin database namespaces
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.

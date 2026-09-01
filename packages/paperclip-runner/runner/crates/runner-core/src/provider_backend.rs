@@ -58,6 +58,7 @@ fn receipt_limit_deadline_after(timeout_ms: u64) -> Result<u64, DurableRunnerErr
 
 #[derive(Clone, Debug)]
 struct ProviderEventIdentity {
+    runner_instance_id: String,
     run_id: String,
     normalized_session_id: String,
     turn_id: String,
@@ -67,11 +68,23 @@ struct ProviderEventIdentity {
 impl ProviderEventIdentity {
     fn from_config(config: &DurableRunnerConfig) -> Self {
         Self {
+            runner_instance_id: config.runner_instance_id.clone(),
             run_id: config.run_id.clone(),
             normalized_session_id: config.normalized_session_id.clone(),
             turn_id: config.turn_id.clone(),
             item_id: config.item_id.clone(),
         }
+    }
+
+    fn source_event_id(&self, executor_event_id: &str) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"paperclip.executor-event.v1\0");
+        hasher.update(self.runner_instance_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(executor_event_id.as_bytes());
+        format!("event_executor_{:x}", hasher.finalize())
     }
 }
 
@@ -1025,16 +1038,29 @@ impl CodexCommandExecutor {
                     "failed to restore Codex completion authority: {error}"
                 ))
             })?;
-        self.provider = Some(provider);
+        let resumed_provider_session_id = provider.provider_session_id().map(str::to_owned);
+        let resumed_process_id = provider.process_id();
         {
             let state = self
                 .state
                 .as_mut()
                 .expect("Codex state remains available during recovery");
             state.provider_process_generation = process_generation;
+            state.provider_session_id = resumed_provider_session_id.clone();
             state.settled_provider_turn_ids = settled_provider_turn_ids;
             state.settled_provider_turn_filter = settled_provider_turn_filter;
+            state.push_terminal_event(NormalizedProviderEvent {
+                event_type: "session.resumed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({
+                    "provider": "codex",
+                    "providerSessionId": thread_id.clone(),
+                    "providerAccountSessionId": resumed_provider_session_id,
+                    "processId": resumed_process_id,
+                }),
+            })?;
         }
+        self.provider = Some(provider);
         if provider_had_exited
             || ambiguous_turn_start_pending
             || recovered_active_turn_id != previous_active_turn_id
@@ -2217,6 +2243,10 @@ impl CodexCommandExecutor {
                     DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
                 })?;
             let Some(event) = event else { break };
+            let trace_frame_id = self
+                .provider
+                .as_mut()
+                .and_then(CodexProvider::take_provider_trace_frame_id);
             match event {
                 CodexProviderEvent::ToolCall {
                     call_id,
@@ -2246,6 +2276,7 @@ impl CodexCommandExecutor {
                             None
                         };
                     let normalized = normalize_codex_notification(&method, &params);
+                    let normalized_event_count = normalized.len();
                     let terminal_event_type = normalized
                         .iter()
                         .find(|event| event.event_type.starts_with("turn."))
@@ -2328,6 +2359,7 @@ impl CodexCommandExecutor {
                         state.ambiguous_turn_start_pending = false;
                         state.lifecycle = "session_open".to_owned();
                     }
+                    let trace_first_event_sequence = state.next_provider_event_seq;
                     if terminal_event_type.is_some() {
                         state.extend_terminal_events(normalized)?;
                     } else if receipt_limit_terminal_poll {
@@ -2337,10 +2369,39 @@ impl CodexCommandExecutor {
                     } else {
                         state.extend_events(normalized)?;
                     }
+                    let trace_last_event_sequence = state.next_provider_event_seq;
                     if let Some(event_type) = terminal_event_type {
                         state.extend_terminal_events(terminal_events(state, &event_type))?;
                     }
+                    let trace_emitted_event_ids = identity
+                        .as_ref()
+                        .map(|identity| {
+                            (trace_first_event_sequence..trace_last_event_sequence)
+                                .map(provider_event_id)
+                                .map(|event_id| identity.source_event_id(&event_id))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
                     self.save_state()?;
+                    if let (Some(frame_id), Some(provider)) =
+                        (trace_frame_id, self.provider.as_mut())
+                    {
+                        provider.record_provider_trace_interpretation(
+                            frame_id,
+                            &format!("codex.normalize.{}", method.replace('/', ".")),
+                            if normalized_event_count > 0 {
+                                "mapped"
+                            } else {
+                                "ignored"
+                            },
+                            trace_emitted_event_ids,
+                            if normalized_event_count > 0 {
+                                "Provider notification normalized into durable PRP events"
+                            } else {
+                                "Provider notification did not produce a durable PRP event"
+                            },
+                        );
+                    }
                 }
                 CodexProviderEvent::RuntimeRequest {
                     request_id,
@@ -2646,6 +2707,7 @@ mod tests {
     #[test]
     fn semantic_input_digest_covers_the_transmitted_redacted_value() {
         let identity = ProviderEventIdentity {
+            runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
@@ -2798,6 +2860,7 @@ mod tests {
             ProviderToolBridge::default(),
         );
         let identity = ProviderEventIdentity {
+            runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
@@ -2918,6 +2981,7 @@ mod tests {
             bridge,
         );
         let identity = ProviderEventIdentity {
+            runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
@@ -3361,6 +3425,7 @@ mod tests {
         let mut executor = CodexCommandExecutor::new(&directory);
         executor.state = Some(state);
         executor.event_identity = Some(ProviderEventIdentity {
+            runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),

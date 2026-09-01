@@ -38,6 +38,39 @@ impl CommandExecution {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandLifecycle {
+    Continue,
+    Suspend,
+    Shutdown,
+}
+
+impl CommandLifecycle {
+    fn for_completed(command: &Command) -> Self {
+        match command.command_type.as_str() {
+            "runner.suspend" => Self::Suspend,
+            "runner.shutdown" => Self::Shutdown,
+            _ => Self::Continue,
+        }
+    }
+
+    fn merge(self, next: Self) -> Self {
+        match (self, next) {
+            (Self::Shutdown, _) | (_, Self::Shutdown) => Self::Shutdown,
+            (Self::Suspend, _) | (_, Self::Suspend) => Self::Suspend,
+            _ => Self::Continue,
+        }
+    }
+
+    fn durable_state(self) -> Option<&'static str> {
+        match self {
+            Self::Continue => None,
+            Self::Suspend => Some("suspended"),
+            Self::Shutdown => Some("stopped"),
+        }
+    }
+}
+
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
@@ -148,12 +181,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
         store.save(&state)?;
         let mut sent_source_seq = state.acked_source_seq;
 
-        let mut stop_after_reply = false;
+        let mut lifecycle_after_reply = CommandLifecycle::Continue;
         let mut disconnected = false;
         for command in welcome.pending_commands {
-            let (result, stop) =
+            let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
-            stop_after_reply |= stop;
+            lifecycle_after_reply = lifecycle_after_reply.merge(lifecycle);
             if let Err(error) = transport.send_json(&command_result_envelope(&state, &result)) {
                 state.record_diagnostic(error.to_string());
                 disconnected = true;
@@ -164,9 +197,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
             state.record_diagnostic("outbox delivery failed; unacknowledged suffix will replay");
             disconnected = true;
         }
-        if stop_after_reply && !disconnected {
+        if let Some(durable_lifecycle) = lifecycle_after_reply
+            .durable_state()
+            .filter(|_| !disconnected)
+        {
             executor.shutdown()?;
-            state.lifecycle = "stopped".to_owned();
+            state.lifecycle = durable_lifecycle.to_owned();
             store.save(&state)?;
             return Ok(());
         }
@@ -234,7 +270,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         .map_err(|error| {
                             DurableRunnerError::invalid(format!("command is malformed: {error}"))
                         })?;
-                    let (result, stop) =
+                    let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     let delivery = transport
                         .send_json(&command_result_envelope(&state, &result))
@@ -245,9 +281,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         store.save(&state)?;
                         break;
                     }
-                    if stop {
+                    if let Some(durable_lifecycle) = lifecycle.durable_state() {
                         executor.shutdown()?;
-                        state.lifecycle = "stopped".to_owned();
+                        state.lifecycle = durable_lifecycle.to_owned();
                         store.save(&state)?;
                         return Ok(());
                     }
@@ -338,18 +374,18 @@ fn process_command<E: CommandExecutor>(
     config: &DurableRunnerConfig,
     executor: &mut E,
     command: &Command,
-) -> Result<(StoredCommandResult, bool), DurableRunnerError> {
+) -> Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError> {
     match state.begin_command(command)? {
         CommandDisposition::Replay(result) => {
-            let stop = result.status == "completed"
-                && matches!(
-                    command.command_type.as_str(),
-                    "runner.shutdown" | "runner.suspend"
-                );
-            return Ok((result, stop));
+            let lifecycle = if result.status == "completed" {
+                CommandLifecycle::for_completed(command)
+            } else {
+                CommandLifecycle::Continue
+            };
+            return Ok((result, lifecycle));
         }
         CommandDisposition::Reject(result) => {
-            return Ok((result, false));
+            return Ok((result, CommandLifecycle::Continue));
         }
         CommandDisposition::Execute => {}
     }
@@ -363,11 +399,7 @@ fn process_command<E: CommandExecutor>(
     }
     let result = state.complete_command(command, execution.result)?;
     store.save(state)?;
-    let stop = matches!(
-        command.command_type.as_str(),
-        "runner.shutdown" | "runner.suspend"
-    );
-    Ok((result, stop))
+    Ok((result, CommandLifecycle::for_completed(command)))
 }
 
 fn send_outbox(
@@ -641,8 +673,33 @@ mod tests {
         let (_, replay_stop) =
             process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
 
-        assert!(first_stop);
-        assert!(replay_stop);
+        assert_eq!(first_stop, CommandLifecycle::Shutdown);
+        assert_eq!(replay_stop, CommandLifecycle::Shutdown);
+        assert_eq!(executor.calls, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn completed_suspend_replay_remains_restartable() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-suspend-replay-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = CountingExecutor { calls: 0 };
+        let command = command("runner.suspend");
+
+        let (_, first_lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+        let (_, replay_lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+
+        assert_eq!(first_lifecycle, CommandLifecycle::Suspend);
+        assert_eq!(replay_lifecycle, CommandLifecycle::Suspend);
+        assert_eq!(first_lifecycle.durable_state(), Some("suspended"));
         assert_eq!(executor.calls, 1);
         fs::remove_dir_all(directory).unwrap();
     }

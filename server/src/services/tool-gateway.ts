@@ -91,11 +91,12 @@ import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { composioChildConfig, createComposioSessionManager } from "./composio-session-manager.js";
 import type { ComposioClient } from "./composio.js";
 import {
-  createPaperclipIdGmailConnector,
-  paperclipIdGmailConnectorConfigFromEnv,
-  PaperclipIdConnectorError,
-  type PaperclipIdGmailConnector,
-} from "./paperclip-id-gmail-connector.js";
+  createPaperclipCloudConnector,
+  isPaperclipCloudConnectorStrategy,
+  paperclipCloudConnectorConfigFromEnv,
+  PaperclipCloudConnectorError,
+  type PaperclipCloudConnector,
+} from "./paperclip-cloud-connector.js";
 import {
   createVercelConnectClient,
   vercelGrantReference,
@@ -166,7 +167,14 @@ const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-type McpGatewayProtocolMethod = "initialize" | "tools/list" | "tools/call";
+type McpGatewayProtocolMethod =
+  | "initialize"
+  | "tools/list"
+  | "tools/call"
+  | "resources/list"
+  | "resources/read"
+  | "prompts/list"
+  | "prompts/get";
 type McpGatewayRateLimitConfig = { windowMs: number; max: number };
 type McpGatewayRateLimitState = { limited: boolean; count: number; retryAfterMs: number };
 type McpGatewayProtocolLimitOptions = {
@@ -239,6 +247,7 @@ export interface ToolGatewaySession {
   gatewayId?: string | null;
   gatewayPublicId?: string | null;
   gatewayName?: string | null;
+  gatewayProfileId?: string | null;
   gatewayTokenId?: string | null;
   gatewayTokenAllowedActions?: ToolMcpGatewayTokenAction[];
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -832,7 +841,9 @@ export function createToolGatewayService(
     /** Test seam for Composio session creation without vendor traffic. */
     composioClientFactory?: (apiKey: string) => ComposioClient;
     /** Test seam for refreshing personal Gmail grants. */
-    paperclipIdGmailConnector?: PaperclipIdGmailConnector | null;
+    paperclipCloudConnector?: PaperclipCloudConnector | null;
+    /** @deprecated Use paperclipCloudConnector. */
+    paperclipIdGmailConnector?: PaperclipCloudConnector | null;
     /** Refreshes customer-owned/DCR OAuth grants before remote MCP execution. */
     oauthGrantRefresher?: (input: {
       companyId: string;
@@ -871,13 +882,17 @@ export function createToolGatewayService(
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
-  const gmailConnectorConfig = options.paperclipIdGmailConnector === undefined
-    ? paperclipIdGmailConnectorConfigFromEnv()
-    : null;
-  const gmailConnector = options.paperclipIdGmailConnector
-    ?? (gmailConnectorConfig
-      ? createPaperclipIdGmailConnector({ config: gmailConnectorConfig, now: options.now })
-      : null);
+  const configuredCloudConnector = options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined || options.paperclipIdGmailConnector !== undefined;
+  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const currentCloudConnector = (): PaperclipCloudConnector | null => {
+    if (cachedCloudConnector || connectorWasProvided) return cachedCloudConnector;
+    const config = paperclipCloudConnectorConfigFromEnv();
+    cachedCloudConnector = config
+      ? createPaperclipCloudConnector({ config, now: options.now })
+      : null;
+    return cachedCloudConnector;
+  };
   const gmailRefreshFlights = new Map<string, Promise<typeof connectionGrants.$inferSelect>>();
   const vercelConnect = options.vercelConnectClient === undefined
     ? createVercelConnectClient()
@@ -1436,10 +1451,13 @@ export function createToolGatewayService(
   }
 
   function normalizeGatewayTokenActions(value: unknown): ToolMcpGatewayTokenAction[] {
+    const known = new Set<ToolMcpGatewayTokenAction>([
+      "tools/list", "tools/call", "resources/list", "resources/read", "prompts/list", "prompts/get",
+    ]);
     const actions = Array.isArray(value)
-      ? value.filter((action): action is ToolMcpGatewayTokenAction => action === "tools/list" || action === "tools/call")
+      ? value.filter((action): action is ToolMcpGatewayTokenAction => known.has(action as ToolMcpGatewayTokenAction))
       : [];
-    return actions.length > 0 ? actions : ["tools/list", "tools/call"];
+    return actions.length > 0 ? actions : [...known];
   }
 
   async function assertGatewayTokenAction(session: ToolGatewaySession, action: ToolMcpGatewayTokenAction) {
@@ -1451,7 +1469,7 @@ export function createToolGatewayService(
       agentId: session.agentId,
       runId: session.runId,
       issueId: session.issueId,
-      action: action === "tools/list" ? "tool_gateway.discovery" : "tool_gateway.call_denied",
+      action: action.endsWith("/list") ? "tool_gateway.discovery" : "tool_gateway.call_denied",
       details: {
         decision: "deny",
         reasonCode: "gateway_token_action_denied",
@@ -2618,13 +2636,13 @@ export function createToolGatewayService(
     return resolved.value;
   }
 
-  async function maybeRefreshPaperclipIdGoogleGrant(
+  async function maybeRefreshPaperclipCloudGoogleGrant(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
   ): Promise<typeof connectionGrants.$inferSelect> {
     const oauth = asRecord(asRecord(connection.config)?.oauth);
-    if (oauth?.strategy !== "paperclip_id_connector") return grant;
+    if (!oauth || !isPaperclipCloudConnectorStrategy(oauth.strategy)) return grant;
     const configuredProfile = oauth.connectorProfile;
     const connectorProfile: GoogleWorkspaceConnectorProfileId = configuredProfile === undefined
       ? "gmail.draft"
@@ -2645,10 +2663,24 @@ export function createToolGatewayService(
       : Number.NaN;
     const currentTime = options.now?.() ?? Date.now();
     if (Number.isFinite(expiresAt) && expiresAt > currentTime + 60_000) return grant;
+    if (oauth.strategy === "paperclip_id_connector") {
+      // Paperclip ID used different endpoints, signing metadata, envelope
+      // purposes, and a different Google client. Its refresh token cannot be
+      // exchanged through Paperclip Cloud. Let an unexpired access token finish
+      // its useful life, then require an explicit managed-connector enrollment
+      // and provider reconnect instead of sending it to the wrong client.
+      await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
+        .where(eq(connectionGrants.id, grant.id));
+      throw new ToolGatewayHttpError(409, "Legacy Google authorization must be reconnected through Paperclip Cloud", "google_reauthorization_required", {
+        connectionId: connection.id,
+        grantId: grant.id,
+      });
+    }
     const existingFlight = gmailRefreshFlights.get(grant.id);
     if (existingFlight) return existingFlight;
     const refresh = (async () => {
-      if (!gmailConnector || !connectorSubject) {
+      const cloudConnector = currentCloudConnector();
+      if (!cloudConnector || !connectorSubject) {
         await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
           .where(eq(connectionGrants.id, grant.id));
         throw new ToolGatewayHttpError(409, "Google authorization must be reconnected", "google_reauthorization_required", {
@@ -2668,7 +2700,7 @@ export function createToolGatewayService(
       }
       const refreshToken = await resolveGrantSecretValue(session, connection, grant, refreshRef);
       try {
-        const credentials = await gmailConnector.refresh({
+        const credentials = await cloudConnector.refresh({
           subject: connectorSubject,
           companyId: connection.companyId,
           profile: connectorProfile,
@@ -2682,7 +2714,7 @@ export function createToolGatewayService(
           ...(grant.providerTenant ?? {}),
           oauth: {
             ...(grant.providerTenant?.oauth ?? {}),
-            strategy: "paperclip_id_connector",
+            strategy: "paperclip_cloud_connector",
             accessTokenExpiresAt: credentials.accessTokenExpiresAt,
             scopes: credentials.scopes,
             tokenType: credentials.tokenType,
@@ -2700,7 +2732,7 @@ export function createToolGatewayService(
         return updated;
       } catch (error) {
         if (error instanceof ToolGatewayHttpError) throw error;
-        if (error instanceof PaperclipIdConnectorError && error.code === "REAUTHORIZATION_REQUIRED") {
+        if (error instanceof PaperclipCloudConnectorError && error.code === "REAUTHORIZATION_REQUIRED") {
           await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(options.now?.() ?? Date.now()) })
             .where(eq(connectionGrants.id, grant.id));
           throw new ToolGatewayHttpError(409, "Google authorization must be reconnected", "google_reauthorization_required", {
@@ -2814,12 +2846,12 @@ export function createToolGatewayService(
         });
       }
     }
-    grant = await maybeRefreshPaperclipIdGoogleGrant(session, connection, grant);
+    grant = await maybeRefreshPaperclipCloudGoogleGrant(session, connection, grant);
     const oauth = asRecord(asRecord(connection.config)?.oauth);
     if (
       connection.authKind === "oauth"
       && connection.credentialSource === "paperclip_vault"
-      && oauth?.strategy !== "paperclip_id_connector"
+      && !isPaperclipCloudConnectorStrategy(oauth?.strategy)
       && options.oauthGrantRefresher
     ) {
       try {
@@ -3399,10 +3431,12 @@ export function createToolGatewayService(
 
   async function callLocalStdioMcp(input: {
     connection: typeof toolConnections.$inferSelect;
-    entry: typeof toolCatalogEntries.$inferSelect;
+    entry?: typeof toolCatalogEntries.$inferSelect;
     template: LocalStdioRuntimeTemplate;
     env: NodeJS.ProcessEnv;
-    parameters: unknown;
+    parameters?: unknown;
+    protocolMethod?: string;
+    protocolParams?: Record<string, unknown>;
     timeoutMs: number;
   }): Promise<unknown> {
     if (!input.template.command) {
@@ -3429,7 +3463,7 @@ export function createToolGatewayService(
       for (const { reject } of pending.values()) {
         reject(new ToolGatewayHttpError(504, "Local stdio MCP tool call timed out", "tool_timeout", {
           connectionId: input.connection.id,
-          catalogEntryId: input.entry.id,
+          catalogEntryId: input.entry?.id ?? null,
         }));
       }
       pending.clear();
@@ -3453,7 +3487,7 @@ export function createToolGatewayService(
               if (message.error !== undefined) {
                 waiter.reject(stdioProtocolError("Local stdio MCP server returned a JSON-RPC error", {
                   connectionId: input.connection.id,
-                  catalogEntryId: input.entry.id,
+                  catalogEntryId: input.entry?.id ?? null,
                   error: message.error,
                 }));
               } else {
@@ -3464,7 +3498,7 @@ export function createToolGatewayService(
             for (const { reject } of pending.values()) {
               reject(stdioProtocolError("Local stdio MCP server returned invalid JSON", {
                 connectionId: input.connection.id,
-                catalogEntryId: input.entry.id,
+                catalogEntryId: input.entry?.id ?? null,
               }));
             }
             pending.clear();
@@ -3497,7 +3531,7 @@ export function createToolGatewayService(
         for (const { reject: rejectPending } of pending.values()) {
           rejectPending(new ToolGatewayHttpError(502, "Local stdio MCP command exited before responding", "local_stdio_process_exited", {
             connectionId: input.connection.id,
-            catalogEntryId: input.entry.id,
+            catalogEntryId: input.entry?.id ?? null,
             code,
             signal,
             stderr,
@@ -3523,16 +3557,237 @@ export function createToolGatewayService(
         clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
       });
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
-      return await request("tools/call", {
-        name: input.entry.toolName,
-        arguments: input.parameters ?? {},
-      });
+      return await request(
+        input.protocolMethod ?? "tools/call",
+        input.protocolParams ?? {
+          name: input.entry?.toolName,
+          arguments: input.parameters ?? {},
+        },
+      );
     } finally {
       clearTimeout(timer);
       child.stdin.end();
       child.kill("SIGTERM");
       await exitPromise.catch(() => undefined);
     }
+  }
+
+  async function fullyAssignedMcpConnections(session: ToolGatewaySession) {
+    if (!session.gatewayProfileId) return [];
+    return db
+      .select({ connection: toolConnections })
+      .from(toolProfileEntries)
+      .innerJoin(toolConnections, eq(toolProfileEntries.connectionId, toolConnections.id))
+      .where(and(
+        eq(toolProfileEntries.companyId, session.companyId),
+        eq(toolProfileEntries.profileId, session.gatewayProfileId),
+        eq(toolProfileEntries.selectorType, "connection"),
+        eq(toolProfileEntries.effect, "include"),
+        eq(toolConnections.companyId, session.companyId),
+        eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"),
+        inArray(toolConnections.transport, ["mcp_remote", "local_stdio"]),
+      ))
+      .then((rows) => rows.map((row) => row.connection));
+  }
+
+  async function callRemoteConnectionProtocol(input: {
+    session: ToolGatewaySession;
+    connection: typeof toolConnections.$inferSelect;
+    method: string;
+    params: Record<string, unknown>;
+    callerHeaders?: Record<string, string | string[] | undefined>;
+  }): Promise<unknown> {
+    const grant = await resolveConnectionGrant(input.session, input.connection);
+    const endpoint = await resolvedRemoteEndpoint(
+      input.session,
+      input.connection,
+      grant,
+    );
+    const credentialHeaders = {
+      ...projectedConnectionHeaders(input.connection),
+      ...(await resolveCredentialHeaders(input.session, input.connection, grant)),
+    };
+    const { headers } = buildRemoteHeaders({
+      session: input.session,
+      connection: input.connection,
+      credentialHeaders,
+      callerHeaders: input.callerHeaders,
+    });
+    const response = await guardedRemoteHttpFetch(
+      endpoint,
+      {
+        method: "POST",
+        redirect: "manual",
+        headers: mcpHttpRequestHeaders(headers),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `paperclip-context-${randomUUID()}`,
+          method: input.method,
+          params: input.params,
+        }),
+      },
+      remoteHttpFetchOptions(),
+    );
+    const body = await readBoundedRemoteResponse(response);
+    if (!response.ok) {
+      await markRemoteConnectionHealth(input.connection, "error", `Remote MCP server failed ${input.method}.`);
+      throw new ToolGatewayHttpError(502, "Remote MCP context request failed", "mcp_remote_status", {
+        status: response.status,
+        connectionId: input.connection.id,
+        method: input.method,
+      });
+    }
+    let payload: unknown;
+    try {
+      payload = parseMcpHttpResponseBody(body, response.headers.get("content-type"));
+    } catch {
+      throw new ToolGatewayHttpError(502, "Remote MCP context response was invalid", "mcp_remote_invalid_json", {
+        connectionId: input.connection.id,
+        method: input.method,
+      });
+    }
+    const record = asRecord(payload);
+    if (!record || record.error !== undefined || !Object.prototype.hasOwnProperty.call(record, "result")) {
+      throw new ToolGatewayHttpError(502, "Remote MCP context request returned an error", "remote_mcp_error", {
+        connectionId: input.connection.id,
+        method: input.method,
+      });
+    }
+    await markRemoteConnectionHealth(input.connection, "ok", `Remote MCP server responded to ${input.method}.`);
+    return record.result;
+  }
+
+  async function callAssignedConnectionProtocol(input: {
+    session: ToolGatewaySession;
+    connection: typeof toolConnections.$inferSelect;
+    method: string;
+    params?: Record<string, unknown>;
+    callerHeaders?: Record<string, string | string[] | undefined>;
+  }): Promise<unknown> {
+    if (input.connection.transport === "mcp_remote") {
+      return callRemoteConnectionProtocol({ ...input, params: input.params ?? {} });
+    }
+    if (input.connection.transport !== "local_stdio") {
+      throw new ToolGatewayHttpError(501, "Assigned MCP connection transport is unsupported", "mcp_transport_unsupported");
+    }
+    const template = await resolveLocalStdioRuntimeTemplate(input.connection);
+    const grant = await resolveConnectionGrant(input.session, input.connection);
+    const env = await localStdioEnvironment(
+      input.session,
+      input.connection,
+      template,
+      grant,
+    );
+    return runtimeSupervisor.useConnectionSlot(
+      {
+        companyId: input.session.companyId,
+        applicationId: input.connection.applicationId,
+        connectionId: input.connection.id,
+        connectionKey: `mcp:${input.session.companyId}:${input.connection.id}`,
+        runId: input.session.runId,
+        issueId: input.session.issueId,
+        agentId: input.session.agentId,
+        commandTemplateKey: template.templateId,
+        metadata: { source: "native-runtime-context", protocolMethod: input.method },
+      },
+      async () => callLocalStdioMcp({
+        connection: input.connection,
+        template,
+        env,
+        protocolMethod: input.method,
+        protocolParams: input.params ?? {},
+        timeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
+      }),
+    );
+  }
+
+  function contextHandle(kind: "resource" | "prompt", connectionId: string, value: string) {
+    return `paperclip-${kind}://${connectionId}/${Buffer.from(value, "utf8").toString("base64url")}`;
+  }
+
+  function parseContextHandle(kind: "resource" | "prompt", value: unknown) {
+    if (typeof value !== "string") return null;
+    const match = value.match(new RegExp(`^paperclip-${kind}://([0-9a-f-]{36})/([A-Za-z0-9_-]+)$`, "i"));
+    if (!match) return null;
+    try {
+      return { connectionId: match[1]!, value: Buffer.from(match[2]!, "base64url").toString("utf8") };
+    } catch {
+      return null;
+    }
+  }
+
+  async function namedGatewayContextProtocol(input: {
+    gatewayId?: string | null;
+    gatewayPublicId?: string | null;
+    bearerToken: string;
+    method: "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
+    params?: Record<string, unknown>;
+    callerHeaders?: Record<string, string | string[] | undefined>;
+  }) {
+    const session = await namedGatewaySessionFromBearer({
+      gatewayId: input.gatewayId ?? null,
+      gatewayPublicId: input.gatewayPublicId ?? null,
+      bearerToken: input.bearerToken,
+      protocolMethod: input.method,
+      callerHeaders: input.callerHeaders,
+    });
+    await assertGatewayTokenAction(session, input.method);
+    const connections = await fullyAssignedMcpConnections(session);
+    if (input.method === "resources/list") {
+      const resources = [] as Array<Record<string, unknown>>;
+      for (const connection of connections) {
+        const result = asRecord(await callAssignedConnectionProtocol({ ...input, session, connection, method: input.method }));
+        for (const resource of Array.isArray(result?.resources) ? result.resources : []) {
+          const record = asRecord(resource);
+          if (!record || typeof record.uri !== "string") continue;
+          resources.push({
+            ...record,
+            uri: contextHandle("resource", connection.id, record.uri),
+            name: `${connection.name}: ${typeof record.name === "string" ? record.name : record.uri}`,
+          });
+        }
+      }
+      return { resources };
+    }
+    if (input.method === "prompts/list") {
+      const prompts = [] as Array<Record<string, unknown>>;
+      for (const connection of connections) {
+        const result = asRecord(await callAssignedConnectionProtocol({ ...input, session, connection, method: input.method }));
+        for (const prompt of Array.isArray(result?.prompts) ? result.prompts : []) {
+          const record = asRecord(prompt);
+          if (!record || typeof record.name !== "string") continue;
+          prompts.push({
+            ...record,
+            name: contextHandle("prompt", connection.id, record.name),
+            title: `${connection.name}: ${typeof record.title === "string" ? record.title : record.name}`,
+          });
+        }
+      }
+      return { prompts };
+    }
+    const kind = input.method === "resources/read" ? "resource" : "prompt";
+    const handle = parseContextHandle(kind, input.params?.[kind === "resource" ? "uri" : "name"]);
+    const connection = handle ? connections.find((candidate) => candidate.id === handle.connectionId) : null;
+    if (!handle || !connection) {
+      throw new ToolGatewayHttpError(404, `Assigned MCP ${kind} was not found`, `mcp_${kind}_not_found`);
+    }
+    const params = kind === "resource"
+      ? { uri: handle.value }
+      : { name: handle.value, arguments: input.params?.arguments ?? {} };
+    const result = asRecord(await callAssignedConnectionProtocol({ ...input, session, connection, method: input.method, params }));
+    if (kind === "resource" && Array.isArray(result?.contents)) {
+      return {
+        ...result,
+        contents: result.contents.map((content) => {
+          const record = asRecord(content);
+          return record && typeof record.uri === "string"
+            ? { ...record, uri: contextHandle("resource", connection.id, record.uri) }
+            : content;
+        }),
+      };
+    }
+    return result ?? {};
   }
 
   async function connectedRemoteApprovalSnapshot(
@@ -3933,7 +4188,7 @@ export function createToolGatewayService(
         response.status === 401
         && connection.authKind === "oauth"
         && connection.credentialSource === "paperclip_vault"
-        && oauth?.strategy !== "paperclip_id_connector"
+        && !isPaperclipCloudConnectorStrategy(oauth?.strategy)
         && options.oauthGrantRefresher
       ) {
         credentialHeaders = {
@@ -4612,6 +4867,7 @@ export function createToolGatewayService(
       gatewayId: row.gateway.id,
       gatewayPublicId: row.gateway.gatewayPublicId,
       gatewayName: row.gateway.name,
+      gatewayProfileId: row.gateway.profileId,
       gatewayTokenId: row.token.id || tokenId,
       gatewayTokenAllowedActions: normalizeGatewayTokenActions(row.token.allowedActions),
       actorType: runId ? "agent" : "system",
@@ -5820,7 +6076,7 @@ export function createToolGatewayService(
           subjectId: input.body.subjectId ?? null,
           clientLabel: input.body.clientLabel,
           ownerNote: input.body.ownerNote,
-          allowedActions: input.body.allowedActions ?? ["tools/list", "tools/call"],
+          allowedActions: input.body.allowedActions ?? ["tools/list", "tools/call", "resources/list", "resources/read", "prompts/list", "prompts/get"],
           expiresAt: input.body.expiresAt ?? null,
           expiryOverrideReason: input.body.expiryOverrideReason ?? null,
           expiryOverrideByAgentId: input.actor?.agentId && input.body.expiryOverrideReason ? input.actor.agentId : null,
@@ -5891,6 +6147,17 @@ export function createToolGatewayService(
         },
       });
       return tools;
+    },
+
+    async executeContextForNamedGateway(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      method: "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
+      params?: Record<string, unknown>;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    }): Promise<Record<string, unknown>> {
+      return namedGatewayContextProtocol(input);
     },
 
     async createSession(input: {

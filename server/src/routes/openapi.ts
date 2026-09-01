@@ -146,6 +146,7 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  skipIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
@@ -916,6 +917,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "POST /api/issues/{id}/interactions/{interactionId}/skip",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "GET /api/companies/{companyId}/tools/gallery",
   "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
@@ -4547,6 +4549,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/provider-traces",
+  tags: ["runs"],
+  summary: "List provider trace metadata for selected runs",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",
@@ -4588,6 +4599,127 @@ registry.registerPath({
   summary: "Cancel a heartbeat run",
   request: { params: z.object({ runId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/provider-trace",
+  tags: ["runs"],
+  summary: "Inspect a redacted provider trace",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/reproject-workspace-diffs",
+  tags: ["runs"],
+  summary: "Reproject retained Codex workspace diffs into run events",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/frames/{frameId}/reveal",
+  tags: ["runs"],
+  summary: "Reveal one exact provider trace frame",
+  request: { params: z.object({ runId: z.string(), frameId: z.coerce.number().int().positive() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/download",
+  tags: ["runs"],
+  summary: "Download an exact provider trace as NDJSON",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/heartbeat-runs/{runId}/provider-trace",
+  tags: ["runs"],
+  summary: "Permanently delete a provider trace",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/queued-comments",
+  tags: ["issues"],
+  summary: "List queued comments for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/issues/{id}/queued-comments/{commentId}",
+  tags: ["issues"],
+  summary: "Edit a queued issue comment",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+      body: z.string().min(1).max(200_000),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/queued-comments/order",
+  tags: ["issues"],
+  summary: "Reorder queued issue comments",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+      orderedCommentIds: z.array(z.string().min(1)).max(500),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/queued-comments/{commentId}",
+  tags: ["issues"],
+  summary: "Delete a queued issue comment",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/runtime-requests/{requestId}/resolve",
+  tags: ["runs"],
+  summary: "Resolve a pending Paperclip runner runtime request",
+  request: {
+    params: z.object({ runId: z.string(), requestId: z.string() }),
+    body: jsonBody(z.object({
+      turnId: z.string().min(1).max(160),
+      requestKind: z.enum(["command_approval", "file_approval", "permission_approval", "user_input", "elicitation"]),
+      resolution: z.union([
+        z.object({ action: z.enum(["accept", "accept_for_session", "decline", "cancel"]) }),
+        z.object({ action: z.literal("submit"), answers: z.record(z.string(), z.object({ answers: z.array(z.string()) })) }),
+        z.object({ action: z.literal("submit"), content: z.record(z.string(), z.unknown()) }),
+      ]),
+    })),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -7113,6 +7245,14 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/skip",
+  tags: ["issues"],
+  summary: "Skip a pending issue thread interaction",
+  body: skipIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
   summary: "Withdraw a pending issue thread interaction",
@@ -7592,9 +7732,44 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/tools/oauth/cloud-connector/callback",
+  tags: ["tool-access"],
+  summary: "Handle a brokered Paperclip Cloud OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/tools/oauth/paperclip-id/callback",
   tags: ["tool-access"],
-  summary: "Handle a brokered Paperclip ID OAuth callback",
+  summary: "Handle a legacy brokered Paperclip ID OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/cloud-connector/enrollment",
+  tags: ["tool-access"],
+  summary: "Get Paperclip Cloud connector enrollment status",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tools/oauth/cloud-connector/enrollment",
+  tags: ["tool-access"],
+  summary: "Start Paperclip Cloud connector enrollment",
+  body: z.object({ companyId: z.string().min(1), label: z.string().optional() }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/cloud-connector/enrollment-callback",
+  tags: ["tool-access"],
+  summary: "Complete Paperclip Cloud connector enrollment",
+  query: z.object({
+    enrollment_id: z.string().min(1),
+    approval_code: z.string().min(1),
+    state: z.string().min(1),
+  }).strict(),
 });
 
 registerCurrentRoute({

@@ -20,6 +20,16 @@ function asDatabaseDate(value: string | Date | null) {
   return typeof value === "string" ? new Date(value) : value;
 }
 
+function isRecoveryBudgetExhausted(evidence: Record<string, unknown>) {
+  const budget = evidence.recoveryBudget;
+  return Boolean(
+    budget &&
+      typeof budget === "object" &&
+      !Array.isArray(budget) &&
+      (budget as Record<string, unknown>).state === "exhausted",
+  );
+}
+
 export type UpsertIssueRecoveryActionInput = {
   companyId: string;
   sourceIssueId: string;
@@ -289,6 +299,83 @@ export function issueRecoveryActionService(db: Db) {
       ) {
         return supersedePriorAndInsert(input, existing.id, ownerType, now, retryCount);
       }
+      // `maxAttempts` is an execution budget, not display metadata. Once the
+      // same recovery identity consumes it, retain one inspectable board-owned
+      // action but remove every automatic wake/monitor path. Repeated sweep or
+      // finalizer writes then become idempotent instead of silently advancing
+      // beyond the advertised cap. A distinct identity can still supersede the
+      // exhausted action through the branch above.
+      if (isRecoveryBudgetExhausted(existing.evidence ?? {})) {
+        return existing;
+      }
+      const nextAttemptCount =
+        input.attemptCount ?? existing.attemptCount + 1;
+      const effectiveMaxAttempts = input.preserveExistingOwner
+        ? existing.maxAttempts
+        : input.maxAttempts === undefined
+          ? existing.maxAttempts
+          : input.maxAttempts;
+      if (
+        effectiveMaxAttempts !== null &&
+        nextAttemptCount >= effectiveMaxAttempts
+      ) {
+        const attemptsUsed = Math.max(
+          existing.attemptCount,
+          Math.min(nextAttemptCount, effectiveMaxAttempts),
+        );
+        const [exhausted] = await db
+          .update(issueRecoveryActions)
+          .set({
+            status: "escalated",
+            ownerType: "board",
+            ownerAgentId: null,
+            ownerUserId: null,
+            previousOwnerAgentId:
+              existing.ownerAgentId ?? existing.previousOwnerAgentId,
+            returnOwnerAgentId:
+              input.returnOwnerAgentId ??
+              existing.returnOwnerAgentId ??
+              existing.ownerAgentId,
+            evidence: {
+              ...(existing.evidence ?? {}),
+              ...(input.evidence ?? {}),
+              recoveryBudget: {
+                state: "exhausted",
+                attemptsUsed,
+                maxAttempts: effectiveMaxAttempts,
+                exhaustedAt: now.toISOString(),
+                cause: existing.cause,
+                fingerprint: existing.fingerprint,
+              },
+            },
+            nextAction:
+              `Automatic recovery exhausted after ${attemptsUsed}/${effectiveMaxAttempts} attempts. ` +
+              "Review the infrastructure failure and explicitly choose a replacement run or provider configuration.",
+            wakePolicy: null,
+            monitorPolicy: null,
+            attemptCount: attemptsUsed,
+            maxAttempts: effectiveMaxAttempts,
+            timeoutAt: null,
+            lastAttemptAt: input.lastAttemptAt ?? now,
+            outcome: "escalated",
+            resolutionNote: null,
+            resolvedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issueRecoveryActions.id, existing.id),
+              inArray(issueRecoveryActions.status, [
+                ...ACTIVE_RECOVERY_ACTION_STATUSES,
+              ]),
+            ),
+          )
+          .returning();
+        if (!exhausted) {
+          return retryUpsertSourceScoped(input, retryCount);
+        }
+        return toReadModel(exhausted);
+      }
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -325,10 +412,12 @@ export function issueRecoveryActionService(db: Db) {
           monitorPolicy: input.preserveExistingOwner
             ? existing.monitorPolicy
             : input.monitorPolicy ?? null,
-          attemptCount: input.attemptCount ?? existing.attemptCount + 1,
+          attemptCount: nextAttemptCount,
           maxAttempts: input.preserveExistingOwner
             ? existing.maxAttempts
-            : input.maxAttempts ?? null,
+            : input.maxAttempts === undefined
+              ? existing.maxAttempts
+              : input.maxAttempts,
           timeoutAt: input.preserveExistingOwner
             ? asDatabaseDate(existing.timeoutAt)
             : input.timeoutAt ?? null,

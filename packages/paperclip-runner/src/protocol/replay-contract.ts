@@ -1,4 +1,3 @@
-import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
@@ -6,7 +5,6 @@ import {
   capabilitiesSchema,
   commandSchema,
   eventSchema,
-  fixtureSchema,
   identitySchema,
   questionSetSchema,
   requestSchema,
@@ -14,8 +12,12 @@ import {
   semanticToolSchema,
   stopReasonSchema,
   terminalSchema,
-  prpSchemaBundle,
 } from "./generated/schema-bundle.js";
+import {
+  eventValidator as standaloneEventValidator,
+  fixtureValidator as standaloneFixtureValidator,
+  resultValidator as standaloneResultValidator,
+} from "./generated/standalone-validators.js";
 import { normalizeLegacyPrpStructuredRunResult } from "./result-normalization.js";
 
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
@@ -39,10 +41,7 @@ export type PrpTerminalState = FromSchema<
   { references: TerminalReferences }
 >;
 type RequestReferences = [typeof questionSetSchema];
-export type PrpRequest = FromSchema<
-  typeof requestSchema,
-  { references: RequestReferences }
->;
+export type PrpRequest = FromSchema<typeof requestSchema, { references: RequestReferences }>;
 export type PrpStructuredRunResult = FromSchema<typeof resultSchema>;
 export type PrpEvent = FromSchema<
   typeof eventSchema,
@@ -85,30 +84,12 @@ export interface ProtocolVersionRange {
   max: number;
 }
 
-// Runtime validation compiles the same checked-in schemas used to generate
-// the public TypeScript types. Browser/CSP-specific precompiled validators are
-// intentionally deferred until the browser SDK package boundary is introduced.
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: true,
-  strictRequired: false,
-  formats: {
-    "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/,
-  },
-});
-for (const schema of Object.values(prpSchemaBundle)) ajv.addSchema(schema);
-
-function validatorFor<T>(schemaId: string): ValidateFunction<T> {
-  const validator = ajv.getSchema<T>(schemaId);
-  if (validator === undefined) {
-    throw new Error(`Missing generated PRP validator for ${schemaId}`);
-  }
-  return validator;
-}
-
-const fixtureValidator = validatorFor<PrpFixture>(fixtureSchema.$id);
-const eventValidator = validatorFor<PrpEvent>(eventSchema.$id);
-const resultValidator = validatorFor<PrpStructuredRunResult>(resultSchema.$id);
+// The validators are generated from the same checked-in schemas as the types.
+// Keeping compilation out of the runtime lets strict CSP deployments retain
+// `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
+const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
+const eventValidator = standaloneEventValidator as ValidateFunction<PrpEvent>;
+const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -165,10 +146,7 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
       const payload = asRecord(event?.payload);
       const semanticTool = asRecord(payload?.semantic_tool);
       const semanticToolVersion = semanticTool?.schemaVersion;
-      if (
-        typeof semanticToolVersion === "number" &&
-        semanticToolVersion !== 1
-      ) {
+      if (typeof semanticToolVersion === "number" && semanticToolVersion !== 1) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/payload/semantic_tool/schemaVersion`,
@@ -238,8 +216,7 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       issues.push({
         code: "binding_mismatch",
         path: `/events/${index}/normalizedSessionId`,
-        message:
-          "event normalizedSessionId must match identity.normalizedSessionId",
+        message: "event normalizedSessionId must match identity.normalizedSessionId",
       });
     }
     const existing = uniqueEvents.get(event.sourceEventId);
@@ -257,18 +234,12 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       return;
     }
     const payload = asRecord(event.payload);
-    const semanticTool = asRecord(
-      payload?.semantic_tool,
-    ) as PrpSemanticToolEnvelope | null;
+    const semanticTool = asRecord(payload?.semantic_tool) as PrpSemanticToolEnvelope | null;
     if (semanticTool !== null) {
       const correlation = asRecord(semanticTool.correlation);
       for (const [field, actual, expected] of [
         ["runId", correlation?.runId, event.runId],
-        [
-          "normalizedSessionId",
-          correlation?.normalizedSessionId,
-          event.normalizedSessionId,
-        ],
+        ["normalizedSessionId", correlation?.normalizedSessionId, event.normalizedSessionId],
         ["turnId", correlation?.turnId, event.turnId],
         ["itemId", correlation?.itemId, event.itemId],
       ] as const) {
@@ -382,17 +353,13 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message:
-        "scripted fixtures must contain exactly one unique run.result.proposed event",
+      message: "scripted fixtures must contain exactly one unique run.result.proposed event",
     });
-  } else if (
-    canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)
-  ) {
+  } else if (canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)) {
     issues.push({
       code: "binding_mismatch",
       path: "/result",
-      message:
-        "fixture result must match the run.result.proposed event payload",
+      message: "fixture result must match the run.result.proposed event payload",
     });
   }
 
@@ -403,8 +370,7 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message:
-        "scripted fixtures must contain exactly one unique run.terminal event",
+      message: "scripted fixtures must contain exactly one unique run.terminal event",
     });
   }
   return issues;
@@ -440,10 +406,7 @@ export function parsePrpFixtureText(text: string): ProtocolValidationResult {
         {
           code: "invalid_json",
           path: "/",
-          message:
-            error instanceof Error
-              ? error.message
-              : "fixture is not valid JSON",
+          message: error instanceof Error ? error.message : "fixture is not valid JSON",
         },
       ],
     };

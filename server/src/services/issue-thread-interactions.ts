@@ -38,6 +38,7 @@ import type {
   RequestItemVerdictsResult,
   RequestItemVerdictsResultItem,
   RejectIssueThreadInteraction,
+  SkipIssueThreadInteraction,
   RespondIssueThreadInteraction,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
@@ -61,6 +62,7 @@ import {
   requestConfirmationResultSchema,
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
+  skipIssueThreadInteractionSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
@@ -69,13 +71,17 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
 } from "./issue-review-policy.js";
-import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import {
+  issueService,
+  readAcceptedPlanConfirmationTarget,
+  runWorkspaceIsFinalized,
+} from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
   assertIssueThreadInteractionResolverAudience,
@@ -251,6 +257,7 @@ type IssueWakeTarget = {
   assigneeAgentId: string | null;
   assigneeUserId?: string | null;
   status: string;
+  workMode?: string;
 };
 
 type ResolvedInteractionResult = {
@@ -261,6 +268,17 @@ type ResolvedInteractionResult = {
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
+
+function isNativeCompletionReview(row: Pick<IssueThreadInteractionRow, "kind" | "payload">) {
+  if (row.kind !== "request_confirmation") return false;
+  const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+    ? row.payload as unknown as Record<string, unknown>
+    : {};
+  const target = payload.target && typeof payload.target === "object" && !Array.isArray(payload.target)
+    ? payload.target as Record<string, unknown>
+    : {};
+  return target.type === "custom" && target.key === "native_completion_review";
+}
 
 export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
   IssueThreadInteractionKind,
@@ -346,6 +364,7 @@ type IssueResolutionContext = {
   id: string;
   companyId: string;
   status: string;
+  workMode: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   reviewPolicy: IssueReviewPolicy | null;
@@ -796,6 +815,43 @@ function buildAdministrativeOutcomeResult(
   } as const;
 }
 
+function buildSkippedOutcomeResult(
+  row: IssueThreadInteractionRow,
+  reason: string | null,
+) {
+  if (row.kind === "ask_user_questions") {
+    return {
+      version: 1,
+      outcome: "skipped",
+      reason,
+      answers: [],
+      cancelled: true,
+      cancellationReason: reason,
+      summaryMarkdown: null,
+    } as const;
+  }
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome: "skipped",
+      reason,
+      complete: false,
+      items: interaction.result?.items ?? [],
+    } satisfies RequestItemVerdictsResult;
+  }
+  if (row.kind === "suggest_tasks") {
+    return {
+      version: 1,
+      outcome: "skipped",
+      reason,
+      createdTasks: [],
+      skippedClientKeys: [],
+    } as const;
+  }
+  return { version: 1, outcome: "skipped", reason } as const;
+}
+
 // Rollback sentinel: the interaction was resolved by another actor between the
 // pending-rows read and the conditional update, so the enclosing transaction's
 // tool-action revocation must be undone.
@@ -945,6 +1001,9 @@ function deriveResolutionReason(interaction: IssueThreadInteraction) {
     case "rejected":
       return "rejected";
     case "cancelled":
+      if (interaction.result && "outcome" in interaction.result && interaction.result.outcome === "skipped") {
+        return "skipped";
+      }
       return "cancelled";
     case "expired": {
       if (interaction.kind === "connection_intent") {
@@ -1627,6 +1686,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const now = new Date();
+    const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
@@ -1638,6 +1698,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           id: issues.id,
           companyId: issues.companyId,
           status: issues.status,
+          workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           reviewPolicy: issues.reviewPolicy,
@@ -1720,7 +1781,29 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
-      if (shouldReturnAcceptedConfirmationToCreatorAgent({
+      const acceptedPlanTarget = readAcceptedPlanConfirmationTarget(
+        lockedCurrent.payload,
+        issueContext.id,
+      );
+      const acceptedPlanStartsExecution =
+        acceptedPlanTarget?.issueId === issueContext.id
+        && acceptedPlanTarget.key === "plan"
+        && issueContext.workMode === "planning";
+      if (isNativeCompletionReview(lockedCurrent)) {
+        const completedIssue = await issueService(db).update(args.issue.id, {
+          status: "done",
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx, postCommitActivityPublications);
+        if (completedIssue) {
+          continuationIssue = {
+            id: completedIssue.id,
+            assigneeAgentId: completedIssue.assigneeAgentId ?? null,
+            assigneeUserId: completedIssue.assigneeUserId ?? null,
+            status: completedIssue.status,
+          };
+        }
+      } else if (shouldReturnAcceptedConfirmationToCreatorAgent({
         issue: issueContext,
         current: lockedCurrent,
         actor: args.actor,
@@ -1728,11 +1811,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
+          ...(acceptedPlanStartsExecution ? { workMode: "standard" } : {}),
           assigneeAgentId: lockedCurrent.createdByAgentId,
           assigneeUserId: null,
           actorAgentId: args.actor.agentId ?? null,
           actorUserId: args.actor.userId ?? null,
-        }, tx);
+        }, tx, postCommitActivityPublications);
 
         if (returnedIssue) {
           continuationIssue = {
@@ -1740,6 +1824,22 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
             assigneeUserId: returnedIssue.assigneeUserId ?? null,
             status: returnedIssue.status,
+            ...(acceptedPlanStartsExecution ? { workMode: returnedIssue.workMode } : {}),
+          };
+        }
+      } else if (acceptedPlanStartsExecution) {
+        const executionIssue = await issueService(db).update(args.issue.id, {
+          workMode: "standard",
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx, postCommitActivityPublications);
+        if (executionIssue) {
+          continuationIssue = {
+            id: executionIssue.id,
+            assigneeAgentId: executionIssue.assigneeAgentId ?? null,
+            assigneeUserId: executionIssue.assigneeUserId ?? null,
+            status: executionIssue.status,
+            workMode: executionIssue.workMode,
           };
         }
       } else {
@@ -1773,6 +1873,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         continuationIssue,
       };
     });
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
     await emitInteractionResolvedTelemetry(db, result.interaction);
     return result;
   }
@@ -1802,6 +1903,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           id: issues.id,
           companyId: issues.companyId,
           status: issues.status,
+          workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           reviewPolicy: issues.reviewPolicy,
@@ -1886,7 +1988,17 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "Interaction has already been resolved",
         );
       }
-      await touchIssue(tx, args.issue.id);
+      if (isNativeCompletionReview(lockedCurrent)) {
+        await issueService(db).update(args.issue.id, {
+          status: "todo",
+          assigneeAgentId: issueContext.assigneeAgentId,
+          assigneeUserId: null,
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+      } else {
+        await touchIssue(tx, args.issue.id);
+      }
       return resolved;
     });
 
@@ -3640,6 +3752,80 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const answered = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, answered);
       return answered;
+    },
+
+    skipInteraction: async (
+      issue: { id: string; companyId: string; status?: string },
+      interactionId: string,
+      input: SkipIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      assertIssueOpenForInteractionResolution(issue);
+      const data = skipIssueThreadInteractionSchema.parse(input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw interactionNotFoundError();
+      }
+      if (current.status !== "pending") throw interactionTerminalError(current);
+
+      const reason = data.reason?.trim() || null;
+      const now = new Date();
+      const updated = await db.transaction(async (tx) => {
+        await resolveLinkedToolActionRequests(tx, current, {
+          status: "cancelled",
+          fromStatuses: ["pending", "approved"],
+          actor,
+          now,
+        });
+        await resolveLinkedSecretProposal(tx as unknown as Db, current, {
+          status: "withdrawn",
+          actor,
+          reason: reason ?? "Skipped from the task composer",
+          now,
+        });
+
+        if (current.kind === "request_confirmation") {
+          const active = await tx
+            .select({ id: toolActionRequests.id })
+            .from(toolActionRequests)
+            .where(and(
+              eq(toolActionRequests.companyId, current.companyId),
+              eq(toolActionRequests.interactionId, current.id),
+              inArray(toolActionRequests.status, ["executing", "executed"]),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (active) throw conflict("The linked tool action has begun executing and can no longer be skipped");
+        }
+
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildSkippedOutcomeResult(current, reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
+
+      await touchIssue(db, issue.id);
+      const skipped = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, skipped);
+      return skipped;
     },
 
     cancelQuestions: async (

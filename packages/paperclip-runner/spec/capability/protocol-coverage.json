@@ -1,0 +1,3597 @@
+{
+  "schema": "paperclip-runner/protocol-coverage/v1",
+  "generatedFrom": [
+    "spec/capability/eval-traceability.yaml",
+    "src/tools/capability-semantic-tool-catalog.ts",
+    "src/tools/capability-semantic-tool-types.ts",
+    "src/scenarios/scenario-plan.ts"
+  ],
+  "counts": {
+    "actions": 41,
+    "legacyRequirements": 106
+  },
+  "actions": [
+    {
+      "id": "administer_company",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:administer_company",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::administer_company has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:administer_company"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::administer_company has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "answer_status_question",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:answer_status_question",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::answer_status_question has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "rs-secret-hygiene-01",
+        "wk-ask-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:answer_status_question",
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "rs-secret-hygiene-01",
+        "wk-ask-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::answer_status_question has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "block_task",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:block_task",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::block_task has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "bl-cancelled-not-resolved-01",
+        "bl-clear-01",
+        "bl-create-blocked-01",
+        "bl-firstclass-01",
+        "bl-read-owners-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:block_task",
+        "bl-cancelled-not-resolved-01",
+        "bl-clear-01",
+        "bl-create-blocked-01",
+        "bl-firstclass-01",
+        "bl-read-owners-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::block_task has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "comment_on_approval",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:comment_on_approval",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::comment_on_approval has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-mcp-expiry-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:comment_on_approval",
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-mcp-expiry-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::comment_on_approval has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "control_workspace_service",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:control_workspace_service",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::control_workspace_service has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:control_workspace_service"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::control_workspace_service has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "create_task",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipCreateIssue"
+      ],
+      "contractCase": "protocol-action:create_task",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_task has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "bl-create-blocked-01",
+        "ix-checkbox-result-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-subtask-tree-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:create_task",
+        "bl-create-blocked-01",
+        "ix-checkbox-result-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-subtask-tree-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01"
+      ],
+      "legacyRequirementCases": [
+        "su-parent-goal-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::create_task has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "decide_approval",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:decide_approval",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::decide_approval has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-approval-wake-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:decide_approval",
+        "ap-approval-wake-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::decide_approval has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "export_company",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:export_company",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::export_company has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-wf-export-preview-01",
+        "rf-wf-invite-01",
+        "rf-wf-project-setup-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:export_company",
+        "rf-wf-export-preview-01",
+        "rf-wf-invite-01",
+        "rf-wf-project-setup-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::export_company has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "finish_task",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:finish_task",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::finish_task has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ar-upload-before-done-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:finish_task",
+        "ar-upload-before-done-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::finish_task has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "generic_api_request",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:generic_api_request",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::generic_api_request has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "wk-skilltest-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:generic_api_request",
+        "wk-skilltest-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::generic_api_request has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_agent",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipGetAgent"
+      ],
+      "contractCase": "protocol-action:get_agent",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_agent has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:get_agent"
+      ],
+      "legacyRequirementCases": [
+        "rf-api-mgr-heartbeat-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_agent has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_approval",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:get_approval",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_approval has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:get_approval"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_approval has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_approval_context",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:get_approval_context",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_approval_context has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:get_approval_context"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_approval_context has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_task_context",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipMe"
+      ],
+      "contractCase": "protocol-action:get_task_context",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_task_context has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-board-approval-01",
+        "ap-mcp-expiry-01",
+        "ap-mcp-gate-01",
+        "ap-mcp-pathmissing-01",
+        "ar-no-done-without-upload-01",
+        "ar-upload-before-done-01",
+        "ar-workproduct-pr-01",
+        "ar-workproduct-wsfile-01",
+        "bl-cancelled-not-resolved-01",
+        "bl-clear-01",
+        "bl-create-blocked-01",
+        "bl-firstclass-01",
+        "bl-read-owners-01",
+        "cm-mention-structured-01",
+        "cm-multiline-01",
+        "cm-prefixed-url-01",
+        "cm-progress-nextaction-01",
+        "cm-runid-modify-01",
+        "cm-ticket-link-01",
+        "co-409-stop-01",
+        "co-409-stop-02",
+        "co-before-work-01",
+        "co-body-contract-01",
+        "co-no-status-patch-01",
+        "co-runid-header-01",
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "er-blocked-dedup-01",
+        "er-budget-critical-01",
+        "er-close-retry-fault-01",
+        "er-exec-not-participant-01",
+        "er-exec-participant-01",
+        "er-mention-handoff-01",
+        "er-mention-noassign-01",
+        "er-no-unassigned-01",
+        "er-release-01",
+        "hb-context-01",
+        "hb-inbox-lite-01",
+        "hb-pick-priority-01",
+        "hb-scoped-wake-01",
+        "hb-wake-comment-01",
+        "ix-checkbox-01",
+        "ix-checkbox-result-01",
+        "ix-confirmation-plan-01",
+        "ix-continuation-01",
+        "ix-questions-01",
+        "ix-stale-target-01",
+        "ix-suggest-tasks-01",
+        "ix-superseded-comment-01",
+        "ix-verdicts-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-plan-confirm-01",
+        "mh-subtask-tree-01",
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "rf-art-attachment-wp-01",
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01",
+        "rf-cskill-audit-01",
+        "rf-cskill-install-attach-01",
+        "rf-cskill-self-sync-01",
+        "rf-iws-start-url-01",
+        "rf-iws-target-restart-01",
+        "rf-routine-create-01",
+        "rf-routine-manual-run-01",
+        "rf-routine-pause-01",
+        "rf-routine-policy-01",
+        "rf-routine-webhook-01",
+        "rf-wf-export-preview-01",
+        "rf-wf-invite-01",
+        "rf-wf-project-setup-01",
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "rs-secret-hygiene-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01",
+        "wk-ask-mode-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:get_task_context",
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-board-approval-01",
+        "ap-mcp-expiry-01",
+        "ap-mcp-gate-01",
+        "ap-mcp-pathmissing-01",
+        "ar-no-done-without-upload-01",
+        "ar-upload-before-done-01",
+        "ar-workproduct-pr-01",
+        "ar-workproduct-wsfile-01",
+        "bl-cancelled-not-resolved-01",
+        "bl-clear-01",
+        "bl-create-blocked-01",
+        "bl-firstclass-01",
+        "bl-read-owners-01",
+        "cm-mention-structured-01",
+        "cm-multiline-01",
+        "cm-prefixed-url-01",
+        "cm-progress-nextaction-01",
+        "cm-runid-modify-01",
+        "cm-ticket-link-01",
+        "co-409-stop-01",
+        "co-409-stop-02",
+        "co-before-work-01",
+        "co-body-contract-01",
+        "co-no-status-patch-01",
+        "co-runid-header-01",
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "er-blocked-dedup-01",
+        "er-budget-critical-01",
+        "er-close-retry-fault-01",
+        "er-exec-not-participant-01",
+        "er-exec-participant-01",
+        "er-mention-handoff-01",
+        "er-mention-noassign-01",
+        "er-no-unassigned-01",
+        "er-release-01",
+        "hb-context-01",
+        "hb-inbox-lite-01",
+        "hb-pick-priority-01",
+        "hb-scoped-wake-01",
+        "hb-wake-comment-01",
+        "ix-checkbox-01",
+        "ix-checkbox-result-01",
+        "ix-confirmation-plan-01",
+        "ix-continuation-01",
+        "ix-questions-01",
+        "ix-stale-target-01",
+        "ix-suggest-tasks-01",
+        "ix-superseded-comment-01",
+        "ix-verdicts-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-plan-confirm-01",
+        "mh-subtask-tree-01",
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "rf-art-attachment-wp-01",
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01",
+        "rf-cskill-audit-01",
+        "rf-cskill-install-attach-01",
+        "rf-cskill-self-sync-01",
+        "rf-iws-start-url-01",
+        "rf-iws-target-restart-01",
+        "rf-routine-create-01",
+        "rf-routine-manual-run-01",
+        "rf-routine-pause-01",
+        "rf-routine-policy-01",
+        "rf-routine-webhook-01",
+        "rf-wf-export-preview-01",
+        "rf-wf-invite-01",
+        "rf-wf-project-setup-01",
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "rs-secret-hygiene-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01",
+        "wk-ask-mode-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "legacyRequirementCases": [
+        "hb-inbox-lite-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_task_context has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_task_history",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:get_task_history",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_task_history has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "wk-ask-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:get_task_history",
+        "rs-dependency-blocked-wake-01",
+        "rs-question-only-01",
+        "wk-ask-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_task_history has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_workspace_runtime",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:get_workspace_runtime",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_workspace_runtime has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-iws-start-url-01",
+        "rf-iws-target-restart-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:get_workspace_runtime",
+        "rf-iws-start-url-01",
+        "rf-iws-target-restart-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_workspace_runtime has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "inspect_operation_result",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:inspect_operation_result",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::inspect_operation_result has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ix-checkbox-result-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:inspect_operation_result",
+        "ix-checkbox-result-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::inspect_operation_result has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_agents",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipListAgents"
+      ],
+      "contractCase": "protocol-action:list_agents",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_agents has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_agents",
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01"
+      ],
+      "legacyRequirementCases": [
+        "rf-api-mgr-heartbeat-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_agents has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_approvals",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_approvals",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_approvals has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-board-approval-01",
+        "ap-mcp-expiry-01",
+        "ap-mcp-gate-01",
+        "ap-mcp-pathmissing-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_approvals",
+        "ap-approval-deny-01",
+        "ap-approval-wake-01",
+        "ap-board-approval-01",
+        "ap-mcp-expiry-01",
+        "ap-mcp-gate-01",
+        "ap-mcp-pathmissing-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_approvals has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_cases",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_cases",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_cases has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_cases",
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_cases has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_company_skills",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_company_skills",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_company_skills has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-cskill-audit-01",
+        "rf-cskill-install-attach-01",
+        "rf-cskill-self-sync-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_company_skills",
+        "rf-cskill-audit-01",
+        "rf-cskill-install-attach-01",
+        "rf-cskill-self-sync-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_company_skills has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_document_revisions",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_document_revisions",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_document_revisions has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:list_document_revisions"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_document_revisions has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_documents",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_documents",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_documents has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_documents",
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_documents has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_goals",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_goals",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_goals has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:list_goals"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_goals has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_projects",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_projects",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_projects has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:list_projects"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_projects has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_routines",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_routines",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_routines has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-routine-create-01",
+        "rf-routine-manual-run-01",
+        "rf-routine-pause-01",
+        "rf-routine-policy-01",
+        "rf-routine-webhook-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_routines",
+        "rf-routine-create-01",
+        "rf-routine-manual-run-01",
+        "rf-routine-pause-01",
+        "rf-routine-policy-01",
+        "rf-routine-webhook-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_routines has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_secret_metadata",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_secret_metadata",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_secret_metadata has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rs-secret-hygiene-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:list_secret_metadata",
+        "rs-secret-hygiene-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_secret_metadata has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "manage_routine",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:manage_routine",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::manage_routine has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:manage_routine"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::manage_routine has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "read_document",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:read_document",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::read_document has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:read_document"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::read_document has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "read_secret_value",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:read_secret_value",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::read_secret_value has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rs-secret-hygiene-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:read_secret_value",
+        "rs-secret-hygiene-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::read_secret_value has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "register_deliverable",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:register_deliverable",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::register_deliverable has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ar-no-done-without-upload-01",
+        "ar-upload-before-done-01",
+        "ar-workproduct-pr-01",
+        "ar-workproduct-wsfile-01",
+        "rf-art-attachment-wp-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:register_deliverable",
+        "ar-no-done-without-upload-01",
+        "ar-upload-before-done-01",
+        "ar-workproduct-pr-01",
+        "ar-workproduct-wsfile-01",
+        "rf-art-attachment-wp-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::register_deliverable has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "report_progress",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipAddComment"
+      ],
+      "contractCase": "protocol-action:report_progress",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::report_progress has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "cm-mention-structured-01",
+        "cm-multiline-01",
+        "cm-prefixed-url-01",
+        "cm-progress-nextaction-01",
+        "cm-runid-modify-01",
+        "cm-ticket-link-01",
+        "co-409-stop-01",
+        "co-409-stop-02",
+        "co-before-work-01",
+        "co-body-contract-01",
+        "co-no-status-patch-01",
+        "co-runid-header-01",
+        "er-blocked-dedup-01",
+        "er-budget-critical-01",
+        "er-close-retry-fault-01",
+        "er-exec-not-participant-01",
+        "er-exec-participant-01",
+        "er-mention-handoff-01",
+        "er-mention-noassign-01",
+        "er-no-unassigned-01",
+        "er-release-01",
+        "hb-context-01",
+        "hb-inbox-lite-01",
+        "hb-pick-priority-01",
+        "hb-scoped-wake-01",
+        "hb-wake-comment-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-plan-confirm-01",
+        "mh-subtask-tree-01",
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:report_progress",
+        "cm-mention-structured-01",
+        "cm-multiline-01",
+        "cm-prefixed-url-01",
+        "cm-progress-nextaction-01",
+        "cm-runid-modify-01",
+        "cm-ticket-link-01",
+        "co-409-stop-01",
+        "co-409-stop-02",
+        "co-before-work-01",
+        "co-body-contract-01",
+        "co-no-status-patch-01",
+        "co-runid-header-01",
+        "er-blocked-dedup-01",
+        "er-budget-critical-01",
+        "er-close-retry-fault-01",
+        "er-exec-not-participant-01",
+        "er-exec-participant-01",
+        "er-mention-handoff-01",
+        "er-mention-noassign-01",
+        "er-no-unassigned-01",
+        "er-release-01",
+        "hb-context-01",
+        "hb-inbox-lite-01",
+        "hb-pick-priority-01",
+        "hb-scoped-wake-01",
+        "hb-wake-comment-01",
+        "mh-blocked-handoff-01",
+        "mh-children-complete-01",
+        "mh-plan-confirm-01",
+        "mh-subtask-tree-01",
+        "rf-api-404-report-01",
+        "rf-api-cancel-obsolete-01",
+        "rf-api-mention-discipline-01",
+        "rf-api-mgr-heartbeat-01",
+        "rf-api-review-changes-01",
+        "st-backlog-park-01",
+        "st-blocked-owner-01",
+        "st-crossteam-cancel-01",
+        "st-done-comment-01",
+        "st-env-blocked-notdone-01",
+        "st-ephemeral-verify-01",
+        "st-handback-review-01",
+        "st-unverified-toolchain-01",
+        "su-crossteam-billing-01",
+        "su-inherit-workspace-01",
+        "su-no-poll-01",
+        "su-parent-goal-01"
+      ],
+      "legacyRequirementCases": [
+        "cm-multiline-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::report_progress has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "request_approval",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:request_approval",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::request_approval has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-board-approval-01",
+        "ap-mcp-gate-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:request_approval",
+        "ap-board-approval-01",
+        "ap-mcp-gate-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::request_approval has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "request_human_input",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:request_human_input",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::request_human_input has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ix-checkbox-01",
+        "ix-confirmation-plan-01",
+        "ix-continuation-01",
+        "ix-questions-01",
+        "ix-stale-target-01",
+        "ix-suggest-tasks-01",
+        "ix-superseded-comment-01",
+        "ix-verdicts-01",
+        "wk-plan-directive-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:request_human_input",
+        "ix-checkbox-01",
+        "ix-confirmation-plan-01",
+        "ix-continuation-01",
+        "ix-questions-01",
+        "ix-stale-target-01",
+        "ix-suggest-tasks-01",
+        "ix-superseded-comment-01",
+        "ix-verdicts-01",
+        "wk-plan-directive-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::request_human_input has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "request_review",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:request_review",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::request_review has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "ap-mcp-gate-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-directive-01",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:request_review",
+        "ap-mcp-gate-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-directive-01",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::request_review has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "schedule_wake",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:schedule_wake",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::schedule_wake has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:schedule_wake"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::schedule_wake has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "search_tasks",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [
+        "mcp:paperclipListIssues"
+      ],
+      "contractCase": "protocol-action:search_tasks",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::search_tasks has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-api-mgr-heartbeat-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:search_tasks",
+        "rf-api-mgr-heartbeat-01",
+        "se-get-issue-01",
+        "se-q-comments-01",
+        "se-q-filters-01",
+        "se-q-topic-01"
+      ],
+      "legacyRequirementCases": [
+        "se-q-filters-01"
+      ],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::search_tasks has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "set_dependencies",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:set_dependencies",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::set_dependencies has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "mh-subtask-tree-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:set_dependencies",
+        "mh-subtask-tree-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::set_dependencies has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "sync_company_skills",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:sync_company_skills",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::sync_company_skills has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:sync_company_skills"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::sync_company_skills has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "upsert_case",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:upsert_case",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::upsert_case has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:upsert_case",
+        "rf-case-child-01",
+        "rf-case-lifecycle-link-01",
+        "rf-case-upsert-doc-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::upsert_case has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "write_document",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:write_document",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::write_document has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "deterministicCases": [
+        "protocol-action:write_document",
+        "dp-base-revision-01",
+        "dp-plan-doc-01",
+        "dp-plan-link-comment-01",
+        "wk-plan-accepted-01",
+        "wk-plan-annotation-01",
+        "wk-plan-directive-01",
+        "wk-plan-directive-02",
+        "wk-recovery-processlost-01",
+        "wk-resume-delta-01",
+        "wk-skilltest-mode-01"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::write_document has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    }
+  ],
+  "discoveryGateways": [
+    {
+      "id": "discover_capabilities",
+      "deterministicOwners": [
+        "src/semantic-tools/semantic-tools.test.ts::discovers only authorized optional tools and returns trusted schemas"
+      ]
+    },
+    {
+      "id": "invoke_discovered_capability",
+      "deterministicOwners": [
+        "src/control-plane/durable-prp-control-plane.test.ts; src/live/live-session.test.ts"
+      ]
+    }
+  ],
+  "legacyRequirements": [
+    {
+      "id": "ap-approval-deny-01",
+      "title": "A denied approval leaves the issue open with an explanatory comment",
+      "fixture": "approval-denied",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "comment_on_approval",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-approval-deny-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ap-approval-wake-01",
+      "title": "Approval wake reviews the approval, its issues, and closes what it resolves",
+      "fixture": "approval-approved",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "comment_on_approval",
+        "decide_approval",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-approval-wake-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ap-board-approval-01",
+      "title": "Spend needs a request_board_approval linked to the issue, then a waiting posture",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "request_approval",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-board-approval-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ap-mcp-expiry-01",
+      "title": "An expired MCP approval means one fresh idempotent re-call, then in_review again",
+      "fixture": "mcp-approval-gate",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "comment_on_approval",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-expiry-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ap-mcp-gate-01",
+      "title": "Pending MCP tool approval means in_review posture, no retry, no done",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "reconcile_run",
+        "request_approval",
+        "request_review",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-gate-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ap-mcp-pathmissing-01",
+      "title": "approval_path_missing means stop and reroute, not retry loops or fake dispositions",
+      "fixture": "mcp-approval-path-missing",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_approvals",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-pathmissing-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ar-no-done-without-upload-01",
+      "title": "Closing a task with a file deliverable implies uploading it, even unprompted",
+      "fixture": "deliverable-file",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "register_deliverable",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-no-done-without-upload-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ar-upload-before-done-01",
+      "title": "File deliverables are uploaded to the issue before closing it",
+      "fixture": "deliverable-file",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "register_deliverable",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-upload-before-done-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ar-workproduct-pr-01",
+      "title": "An opened PR is recorded as a pull_request work product, not just a comment",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "register_deliverable",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-workproduct-pr-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ar-workproduct-wsfile-01",
+      "title": "A file staying in the execution workspace gets a workspace_file resourceRef work product",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "register_deliverable",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-workproduct-wsfile-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "bl-cancelled-not-resolved-01",
+      "title": "Cancelled blockers do not auto-resolve — remove them explicitly",
+      "fixture": "blocker-graph",
+      "operations": [
+        "append_audit_record",
+        "block_task",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-cancelled-not-resolved-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "bl-clear-01",
+      "title": "Clearing blockers sends an empty array (the set is replaced wholesale)",
+      "fixture": "blocker-graph",
+      "operations": [
+        "append_audit_record",
+        "block_task",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-clear-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "bl-create-blocked-01",
+      "title": "New dependent work is created blocked with blockedByIssueIds at creation time",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "block_task",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-create-blocked-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "bl-firstclass-01",
+      "title": "Dependencies become first-class blockedByIssueIds, not prose",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "block_task",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-firstclass-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "bl-read-owners-01",
+      "title": "Blocker owners are read from the issue's blockedBy field",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "block_task",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-read-owners-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-mention-structured-01",
+      "title": "Machine-authored mentions use the structured agent:// form",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-mention-structured-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-multiline-01",
+      "title": "Multiline markdown comments keep their literal newlines",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-multiline-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-prefixed-url-01",
+      "title": "Internal links always carry the company prefix",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-prefixed-url-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-progress-nextaction-01",
+      "title": "Progress comments state what is done, what remains, and who owns the next step",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-progress-nextaction-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-runid-modify-01",
+      "title": "Comment POSTs carry the run-id audit header too",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-runid-modify-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "cm-ticket-link-01",
+      "title": "Ticket ids in comment bodies become company-prefixed markdown links",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-ticket-link-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-409-stop-01",
+      "title": "409 on checkout means stop — no retry, no assignee patch, move on",
+      "fixture": "checkout-conflict",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-409-stop-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-409-stop-02",
+      "title": "409 on checkout is terminal even when the task was requested by name",
+      "fixture": "checkout-conflict",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-409-stop-02.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-before-work-01",
+      "title": "Checkout happens before any other write on the issue",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-before-work-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-body-contract-01",
+      "title": "Checkout body carries agentId and expectedStatuses",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-body-contract-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-no-status-patch-01",
+      "title": "Enter in_progress by checkout, never by patching status",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-no-status-patch-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "co-runid-header-01",
+      "title": "Modifying calls carry the X-Paperclip-Run-Id audit header",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-runid-header-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "dp-base-revision-01",
+      "title": "Updating an existing plan fetches it first and sends its latest baseRevisionId",
+      "fixture": "stale-plan",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-base-revision-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "dp-plan-doc-01",
+      "title": "Plans go in the plan issue document, and the issue is not marked done",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-plan-doc-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "dp-plan-link-comment-01",
+      "title": "Comments about a plan deep-link the plan document",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-plan-link-comment-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-blocked-dedup-01",
+      "title": "Blocked task with no new context gets no re-comment and no checkout",
+      "fixture": "blocked-dedup",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-blocked-dedup-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-budget-critical-01",
+      "title": "Above 80% budget usage, pick the critical task over the medium one",
+      "fixture": "budget-critical",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "enforce_budget",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-budget-critical-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-close-retry-fault-01",
+      "title": "C1 probe — closing PATCH survives two injected faults and keeps resending",
+      "fixture": "patch-fault-close",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-close-retry-fault-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-exec-not-participant-01",
+      "title": "Non-participants never try to advance an execution stage",
+      "fixture": "exec-not-participant",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-exec-not-participant-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-exec-participant-01",
+      "title": "Execution-policy reviewer approves via the normal PATCH with status done",
+      "fixture": "exec-participant",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-exec-participant-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-mention-handoff-01",
+      "title": "Explicit mention handoff self-assigns via checkout, never by patching assignee",
+      "fixture": "mention-directive",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-mention-handoff-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-mention-noassign-01",
+      "title": "FYI mentions never trigger self-assignment",
+      "fixture": "mention-fyi",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-mention-noassign-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-no-unassigned-01",
+      "title": "Empty inbox means exit — never adopt unassigned work",
+      "fixture": "empty-inbox",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-no-unassigned-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "er-release-01",
+      "title": "Handing a task back uses the release route, not cancel or assignee edits",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-release-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "hb-context-01",
+      "title": "Prefer the compact heartbeat-context route before replaying the thread",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-context-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "hb-inbox-lite-01",
+      "title": "Normal heartbeat starts from the compact inbox, not a raw issue listing",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-inbox-lite-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "hb-pick-priority-01",
+      "title": "Pick-work priority prefers in_progress and skips blocked work",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-pick-priority-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "hb-scoped-wake-01",
+      "title": "Scoped wake payload skips identity/inbox and goes straight to checkout",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "enforce_budget",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-scoped-wake-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "hb-wake-comment-01",
+      "title": "Comment wake fetches the triggering comment first, then responds on the issue",
+      "fixture": "wake-comment",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-wake-comment-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-checkbox-01",
+      "title": "Subset selection from a known list is a checkbox confirmation",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-checkbox-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-checkbox-result-01",
+      "title": "Checkbox continuation wake acts on result.selectedOptionIds only",
+      "fixture": "continuation-wake",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "inspect_operation_result",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-checkbox-result-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-confirmation-plan-01",
+      "title": "Plan sign-off is a request_confirmation bound to the latest revision, then in_review",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-confirmation-plan-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-continuation-01",
+      "title": "request_confirmation sets a wake continuation policy when work must resume",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-continuation-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-questions-01",
+      "title": "A short typed form of questions is ask_user_questions, not a comment",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-questions-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-stale-target-01",
+      "title": "A stale_target expiry means rebuild against the latest revision, fresh interaction",
+      "fixture": "stale-target",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-stale-target-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-suggest-tasks-01",
+      "title": "Proposing tasks for the board to accept uses suggest_tasks, not direct creation",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-suggest-tasks-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-superseded-comment-01",
+      "title": "A superseded_by_comment expiry means address the comment, then a new interaction",
+      "fixture": "superseded-interaction",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-superseded-comment-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "ix-verdicts-01",
+      "title": "Per-item approve/reject decisions use request_item_verdicts with reasons on reject",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "request_human_input",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-verdicts-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "mh-blocked-handoff-01",
+      "title": "\"Multi-hop: spawn a review task and block the source on it so work auto-resumes\"",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-blocked-handoff-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "mh-children-complete-01",
+      "title": "\"Multi-hop: children-completed wake wraps up the parent\"",
+      "fixture": "children-done",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-children-complete-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "mh-plan-confirm-01",
+      "title": "\"Multi-hop: write plan doc, request confirmation on it, park in_review\"",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake",
+        "schedule_blocker_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-plan-confirm-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "mh-subtask-tree-01",
+      "title": "\"Multi-hop: sequenced subtask tree with chained blockers\"",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake",
+        "schedule_blocker_wake",
+        "set_dependencies"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-subtask-tree-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-api-404-report-01",
+      "title": "A 404 on an issue lookup is reported honestly, not papered over",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-404-report-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-api-cancel-obsolete-01",
+      "title": "Obsolete work is cancelled, not marked done and not deleted",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-cancel-obsolete-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-api-mention-discipline-01",
+      "title": "Status notes don't @-mention teammates who have nothing to act on",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-mention-discipline-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-api-mgr-heartbeat-01",
+      "title": "Manager-style heartbeat — team roster, workload read, summary comment",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "enforce_budget",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "report_progress",
+        "route_wake",
+        "search_tasks"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-mgr-heartbeat-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-api-review-changes-01",
+      "title": "Reviewer requests changes with a non-done status and lets Paperclip reassign",
+      "fixture": "exec-participant",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-review-changes-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-art-attachment-wp-01",
+      "title": "Deliverable upload is registered as a primary attachment-backed work product",
+      "fixture": "deliverable-file",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "persist_run",
+        "register_deliverable",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-art-attachment-wp-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-case-child-01",
+      "title": "Bounded sub-output becomes a child case under the parent record",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_cases",
+        "persist_run",
+        "route_wake",
+        "upsert_case"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-child-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-case-lifecycle-link-01",
+      "title": "Move a case to in_progress and link its driving issue as reference context",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_cases",
+        "persist_run",
+        "route_wake",
+        "upsert_case"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-lifecycle-link-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-case-upsert-doc-01",
+      "title": "Create a retry-safe case with a stable key and write its document body",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_cases",
+        "persist_run",
+        "route_wake",
+        "upsert_case"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-upsert-doc-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-cskill-audit-01",
+      "title": "Library-vs-attached audit reads both the company and agent skill surfaces",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_company_skills",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-audit-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-cskill-install-attach-01",
+      "title": "Catalog install is followed by an agent skills sync — install ≠ attach",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_company_skills",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-install-attach-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-cskill-self-sync-01",
+      "title": "Skills sync replaces the whole desired set — existing skills are preserved",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_company_skills",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-self-sync-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-iws-start-url-01",
+      "title": "Discover the issue workspace from the issue and start its service for QA",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "get_workspace_runtime",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-iws-start-url-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-iws-target-restart-01",
+      "title": "Bounce a specific workspace service via a targeted selector and verify health",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "get_workspace_runtime",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-iws-target-restart-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-routine-create-01",
+      "title": "Create a self-assigned routine with a weekly cron schedule trigger",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_routines",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-create-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-routine-manual-run-01",
+      "title": "Fire a routine once via the manual-run endpoint with an idempotency key",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_routines",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-manual-run-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-routine-pause-01",
+      "title": "Pause a routine reversibly instead of archiving or deleting its trigger",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_routines",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-pause-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-routine-policy-01",
+      "title": "Set routine concurrency and catch-up policies by their enum names",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_routines",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-policy-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-routine-webhook-01",
+      "title": "Add an HMAC-signed webhook trigger with a bounded replay window",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_routines",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-webhook-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-wf-export-preview-01",
+      "title": "Company export previews first, narrows with selectedFiles, keeps tasks out",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "export_company",
+        "get_task_context",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-export-preview-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-wf-invite-01",
+      "title": "OpenClaw invite — generate the prompt and post it paste-ready with the ws URL",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "export_company",
+        "get_task_context",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-invite-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rf-wf-project-setup-01",
+      "title": "New project with a repo-only workspace (repoUrl, no cwd)",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "export_company",
+        "get_task_context",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-project-setup-01.yaml",
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rs-dependency-blocked-wake-01",
+      "title": "A comment on a dependency-blocked issue is triaged, never force-unblocked",
+      "fixture": "dependency-blocked-wake",
+      "operations": [
+        "answer_status_question",
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "get_task_history",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-dependency-blocked-wake-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rs-question-only-01",
+      "title": "A status question gets an answer, not state changes",
+      "fixture": "wake-comment",
+      "operations": [
+        "answer_status_question",
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "get_task_history",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-question-only-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "rs-secret-hygiene-01",
+      "title": "The API key never appears in comment bodies, even when asked to document auth",
+      "fixture": "baseline",
+      "operations": [
+        "answer_status_question",
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_secret_metadata",
+        "persist_run",
+        "read_secret_value",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-secret-hygiene-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "se-get-issue-01",
+      "title": "Direct issue fetch plus thread read to answer a history question",
+      "fixture": "issue-detail",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "route_wake",
+        "search_tasks"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-get-issue-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "se-q-comments-01",
+      "title": "Search reaches comment bodies, not just titles",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "route_wake",
+        "search_tasks"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-comments-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "se-q-filters-01",
+      "title": "Combine q with status/assignee filters",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "route_wake",
+        "search_tasks"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-filters-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "se-q-topic-01",
+      "title": "Find an issue by topic using the q search param",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_agents",
+        "persist_run",
+        "route_wake",
+        "search_tasks"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-topic-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-backlog-park-01",
+      "title": "Postponed work is parked in backlog, not cancelled or closed",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-backlog-park-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-blocked-owner-01",
+      "title": "Blocking on another issue sets status blocked plus first-class blockedByIssueIds",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-blocked-owner-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-crossteam-cancel-01",
+      "title": "Cross-team tasks are never cancelled — reassign to the manager instead",
+      "fixture": "crossteam",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-crossteam-cancel-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-done-comment-01",
+      "title": "Closing a task is checkout, then PATCH done with an explanatory comment",
+      "fixture": "done-evidence",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-done-comment-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-env-blocked-notdone-01",
+      "title": "Impossible deliverable (absent mount, read-only prefix, no route) ends blocked with a named owner — never done or in_review",
+      "fixture": "env-blocked-task",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-env-blocked-notdone-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-ephemeral-verify-01",
+      "title": "Artifacts produced outside the synced workspace — the disposition PATCH must carry a persistence caveat (or relocation), never a bare done",
+      "fixture": "ephemeral-artifacts-task",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-ephemeral-verify-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-handback-review-01",
+      "title": "Board user asking for the task back gets reassigned + in_review, not done",
+      "fixture": "handback-comment",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-handback-review-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "st-unverified-toolchain-01",
+      "title": "Unrunnable mandated verification (certified toolchain unobtainable) ends blocked stating what could not be verified — no unqualified completion claim",
+      "fixture": "toolchain-verify-task",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "finish_task",
+        "get_task_context",
+        "persist_run",
+        "reconcile_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-unverified-toolchain-01.yaml",
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "su-crossteam-billing-01",
+      "title": "Cross-team delegation sets billingCode",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-crossteam-billing-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "su-inherit-workspace-01",
+      "title": "Non-child follow-up on the same code change inherits the execution workspace",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-inherit-workspace-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "su-no-poll-01",
+      "title": "Delegate long work as a child issue and rely on wakes, not polling",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-no-poll-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "su-parent-goal-01",
+      "title": "Subtasks are created with parentId and goalId set",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "create_task",
+        "get_task_context",
+        "persist_run",
+        "report_progress",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-parent-goal-01.yaml",
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-ask-mode-01",
+      "title": "Ask-mode wake is answer-only — comment, no state or document writes",
+      "fixture": "baseline",
+      "operations": [
+        "answer_status_question",
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "get_task_history",
+        "persist_run",
+        "route_wake"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-ask-mode-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-plan-accepted-01",
+      "title": "Accepted-plan continuation creates subtasks, never re-plans or re-asks",
+      "fixture": "continuation-wake",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-accepted-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-plan-annotation-01",
+      "title": "Plan-annotation wake revises the document and answers annotations via nested routes",
+      "fixture": "plan-annotations",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-annotation-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-plan-directive-01",
+      "title": "Planning-mode wake produces plan PUT, revision-bound confirmation, then in_review",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "reconcile_run",
+        "request_human_input",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-directive-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-plan-directive-02",
+      "title": "Layer probe — planning directive via wake prose only (no task-context markdown)",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-directive-02.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-recovery-processlost-01",
+      "title": "Process-lost recovery verifies durable progress first and never redoes posted work",
+      "fixture": "recovery-processlost",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-recovery-processlost-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-resume-delta-01",
+      "title": "Layer probe — resume delta with condensed contract only preserves close discipline",
+      "fixture": "baseline",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-resume-delta-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    },
+    {
+      "id": "wk-skilltest-mode-01",
+      "title": "Skill-test mode writes the structured result to the output document, scoped to this issue",
+      "fixture": "skill-test-task",
+      "operations": [
+        "append_audit_record",
+        "checkout_task",
+        "generic_api_request",
+        "get_task_context",
+        "list_documents",
+        "persist_run",
+        "request_review",
+        "route_wake",
+        "write_document"
+      ],
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-skilltest-mode-01.yaml",
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+    }
+  ],
+  "lifecycleRequirements": [
+    {
+      "id": "provider-round-trip",
+      "requirement": "provider -> runnerd -> control plane -> runnerd -> provider",
+      "deterministicOwner": "src/live/runnerd-codex-transport.test.ts"
+    },
+    {
+      "id": "single-daemon",
+      "requirement": "one Paperclip-owned sandbox daemon and no TypeScript sandbox dispatcher",
+      "deterministicOwner": "src/live/runnerd-codex-transport.test.ts"
+    },
+    {
+      "id": "catalog-drift",
+      "requirement": "canonical catalog consistency and drift rejection",
+      "deterministicOwner": "runner/crates/runner-core/src/provider_bridge.rs::durable_session_refuses_catalog_drift"
+    },
+    {
+      "id": "authorization",
+      "requirement": "authorization denial and unknown-tool rejection",
+      "deterministicOwner": "runner/crates/runner-core/src/provider_bridge.rs::forwards_only_authorized_calls_and_correlates_results"
+    },
+    {
+      "id": "duplicates",
+      "requirement": "correlated duplicate and conflicting-result handling",
+      "deterministicOwner": "runner/crates/runner-core/src/provider_bridge.rs::rejects_unknown_tools_and_conflicting_duplicate_results"
+    },
+    {
+      "id": "recovery",
+      "requirement": "lost ACK, reconnect, runner restart, and provider-thread recovery",
+      "deterministicOwner": "src/control-plane/durable-prp-control-plane.test.ts; src/live/live-session.test.ts"
+    },
+    {
+      "id": "interrupt",
+      "requirement": "interruption while waiting for a tool result",
+      "deterministicOwner": "src/live/live-session.test.ts; src/live/clean-room-server.test.ts"
+    },
+    {
+      "id": "bounds",
+      "requirement": "bounded queues, logs, frames, and retries",
+      "deterministicOwner": "src/live/turn-stream.test.ts; runner/crates/runner-core/src/durable/runner.rs"
+    },
+    {
+      "id": "cleanup",
+      "requirement": "process-group cleanup with no abandoned provider",
+      "deterministicOwner": "runner/crates/runner-core/tests/process_supervisor.rs"
+    },
+    {
+      "id": "secrets",
+      "requirement": "secret isolation and network restrictions",
+      "deterministicOwner": "src/live/clean-room-server.test.ts; runner/crates/runner-core/src/durable/runner.rs"
+    },
+    {
+      "id": "transcript-accounting",
+      "requirement": "assistant transcript capture, token usage, and cost inputs",
+      "deterministicOwner": "src/live/live-session.test.ts"
+    },
+    {
+      "id": "state-reconstruction",
+      "requirement": "fixture and post-run state reconstruction",
+      "deterministicOwner": "src/scenarios/scenario-explorer.test.ts; src/live/live-session.test.ts"
+    },
+    {
+      "id": "paperclip-adapter-selection",
+      "requirement": "paperclip_runner is selectable without changing legacy adapter behavior",
+      "deterministicOwner": "server/src/services/native-runtime/runtime-mode.test.ts; server/src/__tests__/heartbeat-native-runner-selection.test.ts"
+    },
+    {
+      "id": "real-control-plane-binding",
+      "requirement": "advertised runner tools re-authorize the live company, issue, agent, and run before using real Paperclip services",
+      "deterministicOwner": "server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts; server/src/services/native-runtime/paperclip-runner-real-server.integration.test.ts"
+    },
+    {
+      "id": "shared-paperclip-prp-route",
+      "requirement": "Rust runnerd authenticates to the shared Paperclip server route and completes a real bound semantic tool call",
+      "deterministicOwner": "server/src/realtime/runner-prp-ws.test.ts; server/src/services/native-runtime/paperclip-runner-real-server.integration.test.ts"
+    },
+    {
+      "id": "real-control-plane-idempotency",
+      "requirement": "real service mutations are replay-safe and reject conflicting idempotency-key reuse",
+      "deterministicOwner": "server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts"
+    },
+    {
+      "id": "paperclip-thread-projection",
+      "requirement": "committed PRP reasoning and semantic tool items render in the existing Paperclip task chat",
+      "deterministicOwner": "ui/src/adapters/paperclip-runner/index.test.ts; server/src/services/native-runtime/paperclip-control-plane-port.test.ts"
+    }
+  ]
+}

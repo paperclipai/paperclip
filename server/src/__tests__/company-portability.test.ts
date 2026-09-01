@@ -5906,6 +5906,20 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
 
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    await expect(portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "opencode" },
+        },
+      },
+    }, "user-1")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "paperclip_runner_provider_unavailable" },
+    });
+    expect(agentSvc.create).not.toHaveBeenCalled();
+
     await portability.importBundle(request, "user-1");
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "paperclip_runner",

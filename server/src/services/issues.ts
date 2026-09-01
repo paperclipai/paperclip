@@ -95,6 +95,10 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  LEGACY_WITHHELD_RUN_COMMENT,
+  projectHistoricalHeartbeatRunComment,
+} from "./heartbeat-run-summary.js";
 import { DEFAULT_INSERT_CHUNK_ROWS, insertRowsInChunks } from "./batch-insert.js";
 import type {
   ImportIssueRow,
@@ -929,7 +933,7 @@ function normalizeIssuePlanDecompositionChildIds(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-export function readAcceptedPlanConfirmationTarget(payload: unknown): {
+export function readAcceptedPlanConfirmationTarget(payload: unknown, fallbackIssueId?: string): {
   revisionId: string;
   key: string;
   issueId: string;
@@ -941,7 +945,7 @@ export function readAcceptedPlanConfirmationTarget(payload: unknown): {
   if (record.type !== "issue_document") return null;
   const revisionId = readStringFromRecord(record, "revisionId");
   const key = readStringFromRecord(record, "key");
-  const issueId = readStringFromRecord(record, "issueId");
+  const issueId = readStringFromRecord(record, "issueId") ?? fallbackIssueId;
   if (!revisionId || !key || !issueId) return null;
   return { revisionId, key, issueId };
 }
@@ -1009,7 +1013,7 @@ async function findAcceptedPlanDocumentInteraction(
     .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
 
   for (const row of rows) {
-    const target = readAcceptedPlanConfirmationTarget(row.payload);
+    const target = readAcceptedPlanConfirmationTarget(row.payload, input.sourceIssueId);
     if (
       target?.issueId === input.sourceIssueId &&
       target.key === "plan" &&
@@ -4516,6 +4520,37 @@ export function issueService(db: Db) {
     return enriched;
   }
 
+  async function projectHistoricalRunComments<
+    T extends { body: string; createdByRunId: string | null },
+  >(comments: T[]): Promise<T[]> {
+    const runIds = [
+      ...new Set(
+        comments.flatMap((comment) =>
+          comment.createdByRunId &&
+          comment.body === LEGACY_WITHHELD_RUN_COMMENT
+            ? [comment.createdByRunId]
+            : [],
+        ),
+      ),
+    ];
+    if (runIds.length === 0) return comments;
+    const runResults = await db
+      .select({ id: heartbeatRuns.id, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    const resultByRunId = new Map(
+      runResults.map((run) => [run.id, parseObject(run.resultJson)]),
+    );
+    return comments.map((comment) => {
+      if (!comment.createdByRunId) return comment;
+      const body = projectHistoricalHeartbeatRunComment(
+        comment.body,
+        resultByRunId.get(comment.createdByRunId),
+      );
+      return body === comment.body ? comment : { ...comment, body };
+    });
+  }
+
   async function getCurrentScheduledRetriesForIssues(
     issueIds: string[],
     companyId: string,
@@ -6655,7 +6690,10 @@ export function issueService(db: Db) {
         }));
     },
 
-    getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
+    getWakeableParentAfterChildCompletion: async (
+      parentIssueId: string,
+      completedChildResult?: { issueId: string; summary: string | null } | null,
+    ) => {
       const parent = await db
         .select({
           id: issues.id,
@@ -6715,7 +6753,11 @@ export function issueService(db: Db) {
         .slice(0, MAX_CHILD_COMPLETION_SUMMARIES)
         .map((child) => ({
           ...child,
-          summary: truncateInlineSummary(latestCommentByIssueId.get(child.id)),
+          summary: truncateInlineSummary(
+            child.id === completedChildResult?.issueId
+              ? (completedChildResult.summary ?? latestCommentByIssueId.get(child.id))
+              : latestCommentByIssueId.get(child.id),
+          ),
         }));
 
       return {
@@ -6737,6 +6779,36 @@ export function issueService(db: Db) {
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
+
+      const idempotencyKey = data.idempotencyKey?.trim();
+      if (idempotencyKey) {
+        const existingChild = await db
+          .select({ issue: issues })
+          .from(issueCreateIdempotencyKeys)
+          .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+          .where(and(
+            eq(issueCreateIdempotencyKeys.companyId, parent.companyId),
+            eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+          ))
+          .limit(1)
+          .then((rows) => rows[0]?.issue ?? null);
+        if (existingChild) {
+          if (existingChild.parentId !== parent.id) {
+            throw conflict("Child creation idempotency key belongs to another parent issue");
+          }
+          data.onDeduplicated?.("idempotency_key");
+          const [enriched] = await withIssueLabels(db, [existingChild]);
+          const [withRelations] = await withIssueRelationSummaries(
+            parent.companyId,
+            [enriched],
+            db,
+          );
+          return {
+            issue: withRelations,
+            parentBlockerAdded: false,
+          };
+        }
+      }
 
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
@@ -8767,7 +8839,8 @@ export function issueService(db: Db) {
 
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
+      const projectedComments = await projectHistoricalRunComments(comments);
+      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(projectedComments);
       return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
@@ -8807,8 +8880,14 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId))
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
-      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+      const [projectedComment] = await projectHistoricalRunComments([comment]);
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([
+        projectedComment ?? comment,
+      ]);
+      return redactIssueComment(
+        enrichedComment ?? projectedComment ?? comment,
+        censorUsernameInLogs,
+      );
     },
 
     removeComment: async (commentId: string) => {

@@ -107,6 +107,7 @@ describe("Codex ACPX runtime adapter", () => {
       const runtime = fakeRuntime();
       const command = fakeCommand();
       const options = openOptions(command);
+      let runtimeOptions: AcpRuntimeOptions | undefined;
       options.profile = resolveQualifiedAcpxProfile(agent, model);
       options.launchEnvironment = { PATH: "/verified/bin" };
 
@@ -118,9 +119,16 @@ describe("Codex ACPX runtime adapter", () => {
           return registry();
         },
         createStore: () => store(),
-        createRuntime: () => runtime,
+        createRuntime: (createdOptions) => {
+          runtimeOptions = createdOptions;
+          return runtime;
+        },
       });
 
+      expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+        PATH: "/verified/bin",
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+      });
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({
           agent,

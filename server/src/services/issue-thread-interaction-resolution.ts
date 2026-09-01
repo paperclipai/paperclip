@@ -255,6 +255,16 @@ export function evaluateIssueThreadInteractionResolverAudience(
     };
   }
 
+  if (input.interaction.addresseeUserId) {
+    return {
+      allowed: false,
+      effectiveResolverPolicy,
+      status: 403,
+      code: "interaction_addressee_mismatch",
+      message: "This issue-thread interaction is addressed to a specific user",
+    };
+  }
+
   if (
     input.interaction.addresseeAgentId
     && input.interaction.addresseeAgentId !== input.actor.agentId

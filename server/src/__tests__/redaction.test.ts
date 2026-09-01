@@ -45,15 +45,34 @@ describe("redaction", () => {
   });
 
   it("redacts jwt-looking values even when key name is not sensitive", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const input = {
-      session: "aaa.bbb.ccc",
+      session: jwt,
+      opaque: "aaa.bbb.ccc",
       normal: "plain",
     };
 
     const result = sanitizeRecord(input);
 
     expect(result.session).toBe(REDACTED_EVENT_VALUE);
+    expect(result.opaque).toBe(REDACTED_EVENT_VALUE);
     expect(result.normal).toBe("plain");
+  });
+
+  it("preserves Paperclip protocol schema identifiers", () => {
+    expect(sanitizeRecord({
+      schema: "paperclip.question_set.v1",
+      nested: {
+        schema: "paperclip.question_response.v1",
+        runtimeSchema: "paperclip.runtime_request.v2",
+      },
+    })).toEqual({
+      schema: "paperclip.question_set.v1",
+      nested: {
+        schema: "paperclip.question_response.v1",
+        runtimeSchema: "paperclip.runtime_request.v2",
+      },
+    });
   });
 
   it("redacts payload objects while preserving null", () => {

@@ -8,6 +8,8 @@ import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerPermissionMode,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
@@ -379,6 +381,48 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     };
   },
   async testEnvironment(context) {
+    const configuredProvider = context.config.provider ?? "codex";
+    if (configuredProvider !== "codex") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "paperclip_runner_provider_unsupported",
+          level: "error" as const,
+          message: "Paperclip Runner currently supports only the Codex provider.",
+        }],
+      };
+    }
+    if (context.executionTarget?.kind === "remote") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "paperclip_runner_environment_unsupported",
+          level: "error" as const,
+          message: "Paperclip Runner currently requires a local execution environment.",
+        }],
+      };
+    }
+    const configuredPermission = context.config.codexPermissionMode;
+    if (
+      configuredPermission !== undefined
+      && resolvePaperclipRunnerPermissionMode("codex", configuredPermission)
+        !== configuredPermission
+    ) {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "runner_permission_mode_invalid",
+          level: "error" as const,
+          message: "codexPermissionMode is not supported by Codex.",
+        }],
+      };
+    }
     const result = await codexTestEnvironment(context);
     return { ...result, adapterType: "paperclip_runner" };
   },
@@ -386,6 +430,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,
   models: codexModels,
+  modelProfiles: codexModelProfiles,
   listModels: listCodexModels,
   refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: false,
@@ -397,12 +442,32 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   getConfigSchema: () => ({
     fields: [
       {
-        key: "provider",
-        label: "Provider",
-        type: "select",
-        default: "codex",
-        options: [{ value: "codex", label: "Codex" }],
-        hint: "Paperclip Runner currently supports only Codex app-server.",
+        key: "codexPermissionMode",
+        label: "Codex permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.description,
+      },
+      {
+        key: "lifecycleMode",
+        label: "Runner lifecycle",
+        type: "select" as const,
+        default: "per_turn",
+        options: [
+          { value: "per_turn", label: "Turn by turn" },
+          { value: "warm", label: "Warm session" },
+        ],
+        hint: "Warm sessions retain runnerd and Codex between governed runs.",
+      },
+      {
+        key: "idleTimeoutMs",
+        label: "Warm idle timeout (ms)",
+        type: "number" as const,
+        default: 300_000,
+        hint: "Warm sessions suspend after this much inactivity.",
       },
     ],
   }),

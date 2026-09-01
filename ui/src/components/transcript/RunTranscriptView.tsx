@@ -144,6 +144,16 @@ type TranscriptBlock =
       detail?: string;
     }
   | {
+      type: "provider_activity";
+      ts: string;
+      family: Extract<TranscriptEntry, { kind: "provider_activity" }>["family"];
+      eventType: string;
+      status: Extract<TranscriptEntry, { kind: "provider_activity" }>["status"];
+      title: string;
+      summary: string;
+      payload: Record<string, unknown>;
+    }
+  | {
       type: "diff_group";
       ts: string;
       endTs?: string;
@@ -584,6 +594,43 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       continue;
     }
 
+    if (entry.kind === "provider_activity") {
+      blocks.push({ type: "provider_activity", ts: entry.ts, family: entry.family, eventType: entry.eventType, status: entry.status, title: entry.title, summary: entry.summary, payload: entry.payload });
+      continue;
+    }
+
+    if (entry.kind === "workspace_change") {
+      blocks.push({
+        type: "event",
+        ts: entry.ts,
+        label: entry.complete ? "workspace diff" : "workspace changes",
+        tone: "info",
+        text: `${entry.totals.files} changed ${entry.totals.files === 1 ? "file" : "files"}`,
+        detail: entry.source === "runner_verified" ? "Verified from workspace" : "Reported by harness",
+      });
+      continue;
+    }
+
+    if (entry.kind === "workspace_file_reference") {
+      blocks.push({ type: "event", ts: entry.ts, label: "file reference", tone: "info", text: entry.displayName, detail: entry.path });
+      continue;
+    }
+
+    if (entry.kind === "runtime_request") {
+      blocks.push({ type: "event", ts: entry.ts, label: `runtime ${entry.requestType}`, tone: entry.status === "pending" ? "warn" : "info", text: entry.prompt, detail: entry.status });
+      continue;
+    }
+
+    if (entry.kind === "run_result") {
+      blocks.push({ type: "event", ts: entry.ts, label: `result · ${entry.disposition}`, tone: entry.disposition === "blocked" ? "warn" : "info", text: entry.summary });
+      continue;
+    }
+
+    if (entry.kind === "run_terminal") {
+      blocks.push({ type: "event", ts: entry.ts, label: "terminal", tone: entry.runState === "failed" ? "error" : "info", text: `${entry.runState} · ${entry.disposition}`, detail: entry.stopReason });
+      continue;
+    }
+
     if (entry.kind === "tool_call") {
       const toolUseId = entry.toolUseId ?? extractToolUseId(entry.input);
       // Streaming runtimes (e.g. ACPX) re-emit the same tool call as its
@@ -809,7 +856,32 @@ function transcriptBlockIdentity(block: TranscriptBlock): string {
       return `diff_group:${block.ts}`;
     case "event":
       return `event:${block.label}:${block.ts}`;
+    case "provider_activity":
+      return `provider_activity:${block.eventType}:${block.ts}`;
   }
+}
+
+function TranscriptProviderActivity({ block, density }: { block: Extract<TranscriptBlock, { type: "provider_activity" }>; density: TranscriptDensity }) {
+  const [open, setOpen] = useState(block.status === "running");
+  const steps = Array.isArray(block.payload.steps) ? block.payload.steps.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const children = Array.isArray(block.payload.children) ? block.payload.children.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const sources = Array.isArray(block.payload.sources) ? block.payload.sources.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const output = typeof block.payload.output === "string" ? block.payload.output.slice(-(8 * 1024)) : "";
+  return <div className={cn("rounded-xl border p-2", block.status === "failed" ? "border-red-500/30 bg-red-500/[0.05]" : "border-border/70 bg-muted/20")} data-provider-family={block.family}>
+    <button type="button" className="flex min-h-8 w-full items-center gap-2 text-left" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      <span aria-hidden="true">{block.status === "running" ? "⏳" : block.status === "failed" ? "✕" : block.status === "interrupted" ? "■" : "✓"}</span>
+      <strong className={cn("font-mono", density === "compact" ? "text-(length:--text-micro)" : "text-xs")}>{block.title}</strong>
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{block.summary}</span>
+      {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+    </button>
+    {open ? <div className="mt-2 space-y-2 border-l border-border pl-5 text-xs">
+      {steps.length > 0 ? <ol className="space-y-1">{steps.map((step, index) => <li key={String(step.stepId ?? index)}><span className="mr-2" aria-hidden="true">{step.status === "completed" ? "✓" : step.status === "blocked" ? "!" : "○"}</span>{String(step.body ?? "")}</li>)}</ol> : null}
+      {children.length > 0 ? <ul className="space-y-1">{children.map((child, index) => <li key={String(child.childId ?? index)}><strong>{String(child.role ?? "Child agent")}</strong> · {String(child.status ?? "unknown")}<div className="text-muted-foreground">{String(child.summary ?? "")}</div></li>)}</ul> : null}
+      {sources.length > 0 ? <ul className="space-y-1">{sources.map((source, index) => { const url = typeof source.url === "string" && /^https?:\/\//.test(source.url) ? source.url : null; return <li key={String(source.sourceId ?? index)}>{url ? <a className="underline" href={url} target="_blank" rel="noreferrer">{String(source.title ?? url)}</a> : String(source.title ?? "Unavailable source")} <span className="text-muted-foreground">Provider-reported</span></li>; })}</ul> : null}
+      {output ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono">{output}</pre> : null}
+      {block.family === "model_identity" ? <div><span className="text-muted-foreground">Requested</span> {String(block.payload.requestedModel ?? "—")} · <span className="text-muted-foreground">Effective</span> {String(block.payload.effectiveModel ?? "—")}</div> : null}
+    </div> : null}
+  </div>;
 }
 
 /**
@@ -1665,6 +1737,9 @@ function findScrollParent(element: HTMLElement): HTMLElement | Window {
 }
 
 function rawEntryContent(entry: TranscriptEntry): string {
+  if (entry.kind === "provider_activity") {
+    return `${entry.eventType}\n${entry.title}: ${entry.summary}`;
+  }
   if (entry.kind === "tool_call") {
     return `${entry.name}\n${formatToolPayload(entry.input)}`;
   }
@@ -1677,6 +1752,11 @@ function rawEntryContent(entry: TranscriptEntry): string {
   if (entry.kind === "init") {
     return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
   }
+  if (entry.kind === "workspace_change") return `${entry.totals.files} files · ${entry.source} · revision ${entry.revision}`;
+  if (entry.kind === "workspace_file_reference") return `${entry.displayName}\n${entry.path}`;
+  if (entry.kind === "runtime_request") return `${entry.requestType} · ${entry.status}\n${entry.prompt}`;
+  if (entry.kind === "run_result") return `${entry.disposition}\n${entry.summary}`;
+  if (entry.kind === "run_terminal") return `${entry.runState} · ${entry.turnState} · ${entry.disposition}${entry.stopReason ? `\n${entry.stopReason}` : ""}`;
   return entry.text;
 }
 
@@ -1850,6 +1930,7 @@ export function RunTranscriptView({
               externalReferences={externalReferences}
             />
           )}
+          {block.type === "provider_activity" && <TranscriptProviderActivity block={block} density={density} />}
         </div>
       ))}
     </div>

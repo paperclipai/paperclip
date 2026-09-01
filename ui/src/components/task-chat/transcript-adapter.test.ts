@@ -163,6 +163,38 @@ describe("transcriptToTaskChatItems tool_call updates", () => {
 });
 
 describe("transcriptToTaskChatItems native usage", () => {
+  it("does not merge progress and final runner messages", () => {
+    const items = transcriptToTaskChatItems([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "Checking files.",
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "The change is ready.",
+        channel: "final",
+      },
+    ], { runId: "native-run", running: true });
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        text: "Checking files.",
+        channel: "progress",
+        interstitial: true,
+      }),
+      expect.objectContaining({
+        kind: "message",
+        text: "The change is ready.",
+        channel: "final",
+        interstitial: false,
+      }),
+    ]);
+  });
+
   it("renders runner usage without inventing a context-window size", () => {
     const items = transcriptToTaskChatItems([{
       kind: "result",
@@ -475,6 +507,37 @@ describe("settledRunChildren (PAP-361)", () => {
     const phase = children[0];
     expect(phase.kind === "activity_phase" && phase.interstitial?.text).toBe("Checking the adapter first.");
     expect(phase.kind === "activity_phase" && phase.items.map((item) => item.kind)).toEqual(["tool", "tool"]);
+  });
+
+  it("excludes an explicit final reply when runner usage follows it", () => {
+    const finalThenUsage = transcriptToTaskChatItems([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "Done — the limiter is wired in.",
+        channel: "final",
+      } as TranscriptEntry,
+      {
+        kind: "result",
+        ts: TS,
+        text: "",
+        inputTokens: 40,
+        outputTokens: 10,
+        cachedTokens: 0,
+        costUsd: 0,
+        subtype: "paperclip_runner_usage",
+        isError: false,
+        errors: [],
+      } as TranscriptEntry,
+    ], { runId: "native-run", running: false });
+
+    const children = settledRunChildren(finalThenUsage);
+    expect(children).toHaveLength(1);
+    const phase = children[0];
+    expect(phase.kind).toBe("activity_phase");
+    if (phase.kind !== "activity_phase") return;
+    expect(phase.interstitial).toBeUndefined();
+    expect(phase.items.map((item) => item.kind)).toEqual(["usage"]);
   });
 
   it("matches the folded summary's tool count exactly (row-count parity)", () => {

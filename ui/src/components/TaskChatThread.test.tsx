@@ -16,13 +16,13 @@ const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
     transcriptHookRuns.legacy.push(runs);
-    return transcriptState;
+    return { transcriptByRun: new Map(transcriptState.transcriptByRun) };
   },
 }));
 vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
   useNativeRunTranscripts: (runs: unknown[]) => {
     transcriptHookRuns.native.push(runs);
-    return nativeTranscriptState;
+    return { transcriptByRun: new Map(nativeTranscriptState.transcriptByRun) };
   },
 }));
 vi.mock("@/context/SidebarContext", () => ({
@@ -163,6 +163,225 @@ describe("TaskChatThread runtime transcript selection", () => {
     const nativeRuns = transcriptHookRuns.native.at(-1) as Array<{ id: string }>;
     expect(legacyRuns.map((run) => run.id)).toEqual(["legacy-run"]);
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
+  });
+
+  it("uses runner-only controls only for an actual native Paperclip Runner run", () => {
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Checking the task.",
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:02.000Z",
+        text: "The task is ready.",
+        channel: "final",
+      },
+    ]);
+
+    const run = {
+      id: "native-run",
+      runtimeMode: "native" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+    };
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).not.toBeNull();
+    expect(container.textContent).toContain("Checking the task.");
+    expect(container.textContent).toContain("The task is ready.");
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...run, runtimeMode: "legacy" }}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...run, adapterType: "codex_local" }}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
+  });
+
+  it("keeps legacy channel-less native messages readable across settlement", () => {
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Persisted before message channels existed.",
+        channel: "unknown",
+      },
+    ]);
+
+    const run = {
+      id: "native-run",
+      runtimeMode: "native" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+    };
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-progress-update"]')?.textContent)
+      .toContain("Persisted before message channels existed.");
+    expect(container.querySelector('[data-testid="task-chat-final-response"]')).toBeNull();
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="done"
+        activeRun={{ ...run, status: "succeeded", finishedAt: "2026-08-25T18:00:02.000Z" }}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-progress-update"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-final-response"]')?.textContent)
+      .toContain("Persisted before message channels existed.");
+  });
+
+  it("recomputes a runner turn when only the message channel changes", () => {
+    const run = {
+      id: "native-run",
+      runtimeMode: "native" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+    };
+    const renderRun = () => render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+      />,
+    );
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [{
+      kind: "assistant",
+      ts: "2026-08-25T18:00:01.000Z",
+      text: "Same text.",
+      channel: "progress",
+    }]);
+    renderRun();
+    expect(container.querySelector('[data-testid="task-chat-progress-update"]')?.textContent)
+      .toContain("Same text.");
+    expect(container.querySelector('[data-testid="task-chat-final-response"]')).toBeNull();
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [{
+      kind: "assistant",
+      ts: "2026-08-25T18:00:01.000Z",
+      text: "Same text.",
+      channel: "final",
+    }]);
+    renderRun();
+    expect(container.querySelector('[data-testid="task-chat-progress-update"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-final-response"]')?.textContent)
+      .toContain("Same text.");
+  });
+
+  it("recomputes a runner turn when only usage totals change", () => {
+    const run = {
+      id: "native-run",
+      runtimeMode: "native" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+    };
+    const usageEntry = (inputTokens: number) => ({
+      kind: "result" as const,
+      ts: "2026-08-25T18:00:01.000Z",
+      text: "",
+      inputTokens,
+      outputTokens: 5,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    });
+    const renderRun = () => render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+      />,
+    );
+    const revealUsage = () => {
+      const summary = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-phase-summary"]',
+      );
+      expect(summary).not.toBeNull();
+      if (summary?.getAttribute("aria-expanded") !== "true") {
+        flushSync(() => summary!.click());
+      }
+    };
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(10)]);
+    renderRun();
+    revealUsage();
+    expect(container.textContent).toContain("↑10");
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(20)]);
+    renderRun();
+    revealUsage();
+    expect(container.textContent).toContain("↑20");
+    expect(container.textContent).not.toContain("↑10");
   });
 });
 

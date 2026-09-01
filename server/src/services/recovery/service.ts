@@ -17,7 +17,6 @@ import {
   approvals,
   activityLog,
   companies,
-  heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -27,6 +26,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -37,6 +37,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { logActivity } from "../activity-log.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -169,7 +170,7 @@ type LatestIssueRun = Pick<
 } | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
-type StrandedRecoveryCause =
+export type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "deliberate_wait_without_target"
   | "process_lost"
@@ -177,8 +178,26 @@ type StrandedRecoveryCause =
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
+  | "native_session_interrupted"
+  | "native_runner_process_exited"
+  | "provider_transport_failed"
+  | "provider_frame_too_large"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
+
+const NATIVE_RUNNER_RECOVERY_CAUSES = new Set<StrandedRecoveryCause>([
+  "native_session_interrupted",
+  "native_runner_process_exited",
+  "provider_transport_failed",
+  "provider_frame_too_large",
+]);
+
+export function shouldRouteRecoveryToOriginalAgent(cause: StrandedRecoveryCause): boolean {
+  return cause === "process_lost"
+    || cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+    || cause === "codex_output_inactivity_monitor"
+    || NATIVE_RUNNER_RECOVERY_CAUSES.has(cause);
+}
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
 
@@ -269,7 +288,7 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
-  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
+  return /(?:usage|rate|quota) limit|you(?:'|’)ve hit your (?:\w+ )?limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
 }
 
 function resolveStrandedRecoveryCause(
@@ -281,6 +300,9 @@ function resolveStrandedRecoveryCause(
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
+  }
+  if (NATIVE_RUNNER_RECOVERY_CAUSES.has(latestRun?.errorCode as StrandedRecoveryCause)) {
+    return latestRun!.errorCode as StrandedRecoveryCause;
   }
   return "stranded_assigned_issue";
 }
@@ -384,7 +406,7 @@ const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -395,7 +417,7 @@ export type AdapterFailureRecoveryClassification =
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
-    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
+    /(?:try again at|resets?(?:\s+at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );
   if (!match) return null;
 
@@ -996,7 +1018,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issueThreadInteractions.companyId, companyId),
           eq(issueThreadInteractions.issueId, issueId),
-          eq(issueThreadInteractions.status, "accepted"),
+          inArray(issueThreadInteractions.status, ["accepted", "answered"]),
           inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
         ),
       )
@@ -1466,14 +1488,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
-  async function nextRunEventSeq(runId: string) {
-    const [row] = await db
-      .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
-      .from(heartbeatRunEvents)
-      .where(eq(heartbeatRunEvents.runId, runId));
-    return Number(row?.maxSeq ?? 0) + 1;
-  }
-
   async function appendRecoveryRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     event: {
@@ -1482,11 +1496,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       payload?: Record<string, unknown>;
     },
   ) {
-    await db.insert(heartbeatRunEvents).values({
+    await appendHeartbeatRunEvent(db, {
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq: await nextRunEventSeq(run.id),
       eventType: "lifecycle",
       stream: "system",
       level: event.level,
@@ -3633,6 +3646,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // A board-owned recovery action is already the durable, human-owned
+      // continuation path. Generic stranded-work recovery must not race that
+      // authority by launching another provider turn (most importantly after
+      // bounded native-session recovery has reached terminal exhaustion).
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+        issue.companyId,
+        issue.id,
+      );
+      if (activeRecoveryAction?.ownerType === "board") {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
         continue;
@@ -5595,6 +5621,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           (typeof pid === "number" && isPidAlive(pid)) ||
           (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
         processGone = !processAlive;
+      }
+    }
+
+    // A result-less native run may intentionally have no live provider process
+    // while the native finalization coordinator waits to resume the same
+    // provider session. That coordinator, rather than this generic
+    // process-death backstop, owns retryable/resumed attempts. Preserve issue
+    // terminality as the stronger authority, but never interrupt coordinator-
+    // owned recovery merely because the provider process has exited.
+    if (!issueTerminalStatus && processGone && run.runtimeMode === "native") {
+      const coordinator = await db
+        .select({
+          phase: nativeRunFinalizations.phase,
+          resultId: nativeRunFinalizations.resultId,
+          attempt: nativeRunFinalizations.attempt,
+        })
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, run.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const nativeResumeOwnsRun = coordinator?.resultId === null && (
+        coordinator.phase === "retryable_failure"
+        || (coordinator.phase === "observed" && coordinator.attempt > 0)
+      );
+      if (nativeResumeOwnsRun) {
+        return { terminalized: false, status: run.status };
       }
     }
 

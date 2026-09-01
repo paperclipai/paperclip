@@ -255,7 +255,12 @@ export async function openQualifiedAcpxRuntime(
       );
       return disposition === "delegate" ? undefined : { outcome: disposition };
     },
-    spawnEnvironment: () => definedEnvironment(options.launchEnvironment),
+    spawnEnvironment: () => ({
+      ...definedEnvironment(options.launchEnvironment),
+      ...(options.profile.agent === "claude"
+        ? { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }
+        : {}),
+    }),
     spawnCwd: options.cwd,
     spawnAgent: (input) => {
       // ACPX can invoke this callback after its handshake caller has already

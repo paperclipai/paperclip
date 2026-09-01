@@ -3566,6 +3566,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterType: string,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      const provider = adapterConfig.provider ?? "codex";
+      if (provider !== "codex") {
+        throw unprocessable(
+          "Imported Paperclip Runner agents currently support only the Codex provider.",
+          { code: "paperclip_runner_provider_unavailable" },
+        );
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);

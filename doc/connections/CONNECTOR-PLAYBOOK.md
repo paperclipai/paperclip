@@ -150,7 +150,7 @@ fixture. `env` belongs primarily to approved local stdio templates.
 | Automatic OAuth | `auth: "oauth"`, `ownershipModes: ["dcr"]` | Browser sign-in | DCR/CIMD client binding plus token secret refs. |
 | Automatic OAuth with own-app escape hatch | `ownershipModes: ["customer", "dcr"]` | Recommended browser sign-in; own client under **Advanced** | Same as automatic, or supplied client ID plus encrypted client secret. |
 | Customer OAuth only | `ownershipModes: ["customer"]` | Required client ID and optional/required client secret, then browser sign-in | Client ID in redacted config; client secret and provider tokens as secret refs. |
-| Paperclip-managed OAuth | `oauthStrategy: "paperclip_id_connector"`, `connectorProfile`, `platform_shared` | Browser sign-in through the managed connector | Provider tokens still land in the instance vault on a user grant. Paperclip ID does not retain them. |
+| Paperclip-managed OAuth | `oauthStrategy: "paperclip_cloud_connector"`, `connectorProfile`, `platform_shared` | Browser sign-in through Paperclip Cloud | Provider tokens still land in the instance vault on a user grant. Cloud handles the fixed provider callback but does not persist plaintext credentials; Paperclip ID remains identity-only. |
 | API key/PAT | `auth: "api_key"`, `credentialFields`, `keyPlacement` | Write-only credential field | Encrypted secret version plus placement-only refs. |
 | Generated URL | `auth: "none"`, no fixed URL/default template | Paste provider-generated MCP URL | Public URL shape in config; full secret-bearing URL in the vault. |
 | No auth | `auth: "none"`, fixed `serverUrl` or validated `serverUrlTemplate` | Zero fields or only required tenant/resource fields | No provider credential. |
@@ -931,7 +931,7 @@ Suggested PR verification block:
 | `transport` | `mcp_remote`, `local_stdio`, or specialized `rest_api`. |
 | `auth` | `oauth`, `api_key`, or `none`. |
 | `ownershipModes` | Allowed OAuth client ownership modes; also present for non-OAuth customer configuration. |
-| `oauthStrategy` | Managed broker strategy. Currently `paperclip_id_connector`. Only valid for OAuth. |
+| `oauthStrategy` | Managed broker strategy. New definitions use `paperclip_cloud_connector`; `paperclip_id_connector` is recognized only to require migration when an old grant expires. The protocols and provider clients are not interchangeable. Only valid for OAuth. |
 | `connectorProfile` | Managed connector capability/scope profile, required with `oauthStrategy`. |
 | `capabilityProfile` | User-facing read/write/mode grouping used for method selection. |
 | `grantKinds` | Restricts identity to `organization` and/or `user`; omit for flexible methods. |
@@ -1065,7 +1065,7 @@ Choose one method auth mode:
 
 - OAuth: delegated user or workspace authorization. The OAuth client may come
   from DCR/CIMD, a customer-created client, a deployment-preconfigured client,
-  or a reviewed Paperclip ID connector profile. Do not assume Paperclip owns a
+  or a reviewed Paperclip Cloud connector profile. Do not assume Paperclip owns a
   shared client registration.
 - API key: operator-supplied token or key. Use only when the provider supports
   a suitably restricted key and the value is stored as a `company_secrets`

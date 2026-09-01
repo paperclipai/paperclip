@@ -47,7 +47,7 @@ used_deprecated_resolver_policy_alias: boolean
 export interface PaperclipInteractionResolvedDimensions {
 interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "request_item_verdicts" | "other")
 status: ("accepted" | "rejected" | "answered" | "cancelled" | "expired" | "failed" | "other")
-resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "other")
+resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "skipped" | "other")
 resolved_by_kind: ("user" | "agent" | "system" | "other")
 created_by_kind?: ("agent" | "user" | "other")
 creator_agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
@@ -280,6 +280,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "superseded_by_newer_request": "A newer confirmation from the same agent superseded the pending confirmation.",
       "expired": "Interaction expired for a generic expiration reason.",
       "cancelled": "Interaction was explicitly cancelled.",
+      "skipped": "The board skipped the interaction and returned to ordinary task input.",
       "other": "Fallback when the resolution reason is unknown or not represented by the tracked enum."
     },
     "resolved_by_kind": {

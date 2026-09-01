@@ -38,6 +38,10 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,
+  PaperclipQuestion,
+  PaperclipQuestionOption,
+  PaperclipQuestionResponse,
+  PaperclipQuestionSet,
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
@@ -110,6 +114,18 @@ export type {
   LoginRunnerDisposable,
   LoginRunnerRaceResult,
 } from "./login-runner-lifecycle.js";
+export {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  isPaperclipRunnerProvider,
+  resolvePaperclipRunnerPermissionMode,
+} from "./paperclip-runner-permissions.js";
+export type {
+  CodexPermissionMode,
+  PaperclipRunnerPermissionCapability,
+  PaperclipRunnerPermissionMode,
+  PaperclipRunnerPermissionOption,
+  PaperclipRunnerProvider,
+} from "./paperclip-runner-permissions.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {
