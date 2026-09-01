@@ -6,7 +6,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 - **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 24 + git + tini + non-root user (uid 1000) + the agent shim.
 - **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
-- **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
+- **`agent-runtime-pi`**: Extends base with `@earendil-works/pi-coding-agent`.
 - **`agent-runtime-codex`**: Extends base with `@openai/codex`.
 - **`agent-runtime-gemini`**: Extends base with `@google/gemini-cli` plus headless auth-mode settings.
 - **`agent-runtime-claude`**: Extends base with `@anthropic-ai/claude-code` (symlinked as `claude-code`).
