@@ -123,6 +123,12 @@ const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
   "paperclip_runner",
 ]);
 
+function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+  return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
+    ? savedAdapterType
+    : "claude_local";
+}
+
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
   if (q1.trim()) parts.push(q1.trim());
@@ -482,7 +488,9 @@ function OnboardingWizardInner({
     // one.
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
-  const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>(() =>
+    restoreOnboardingAdapterType(saved?.adapterType),
+  );
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
   const [command, setCommand] = useState((saved?.command as string) ?? "");
@@ -1440,6 +1448,15 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // The grid and restore path both exclude native runner. Keep this final
+    // guard at the mutation boundary so a stale or modified client cannot use
+    // first-run onboarding to create a native agent.
+    if (adapterType === "paperclip_runner") {
+      setAdapterType("claude_local");
+      setModel("");
+      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
+      return;
+    }
     // Guarded at the button and the Enter path too; repeated here because this
     // seeds the agent's instructions from `companyGoal`, and hiring with an
     // unhydrated mission fails silently - the agent exists, and simply never
