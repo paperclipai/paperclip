@@ -5530,9 +5530,13 @@ export function issueRoutes(
         .limit(1)
         .then((rows) => rows[0] ?? null)
       : null;
-    const protocol = input.activeRun?.runtimeMode === "native"
-      || queueState?.queueRun?.runtimeMode === "native"
-      || assignedAgent?.adapterType === "paperclip_runner"
+    const persistedRuntimeMode = queueState?.state === "queued" && queueState.queueRun
+      ? queueState.queueRun.runtimeMode
+      : queueState?.state === "deferred" && input.activeRun
+        ? input.activeRun.runtimeMode
+        : null;
+    const protocol = persistedRuntimeMode === "native"
+      || (persistedRuntimeMode === null && assignedAgent?.adapterType === "paperclip_runner")
       ? "paperclip_runner_v1" as const
       : "legacy" as const;
     const steeringRun = queueState?.state === "deferred" ? input.activeRun : null;

@@ -601,6 +601,27 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(wake?.status).toBe("cancelled");
   });
 
+  it("keeps a persisted legacy queue on the legacy protocol after the agent changes adapters", async () => {
+    const seeded = await seedQueue();
+    const queueRunId = await promoteQueue(seeded);
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy" })
+      .where(eq(heartbeatRuns.id, queueRunId));
+
+    const queued = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+
+    expect(queued.status, JSON.stringify(queued.body)).toBe(200);
+    expect(queued.body).toMatchObject({
+      queueId: seeded.wakeId,
+      state: "queued",
+      targetRunId: null,
+      protocol: "legacy",
+      steeringDisposition: "unsupported",
+    });
+  });
+
   it("serializes discard against queued-run claim", async () => {
     const seeded = await seedQueue();
     await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
