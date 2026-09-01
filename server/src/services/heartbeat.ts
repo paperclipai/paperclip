@@ -356,6 +356,7 @@ import {
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { blockedOwnerNotificationReconcilerService } from "./blocked-owner-notification-reconciler.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -8413,6 +8414,7 @@ export function heartbeatService(
 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
+  const blockedOwnerNotifications = blockedOwnerNotificationReconcilerService(db, { wakeup: enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {
@@ -16849,6 +16851,10 @@ export function heartbeatService(
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
+  }
+
+  async function reconcileBlockedOwnerNotifications(opts?: { companyId?: string }) {
+    return blockedOwnerNotifications.reconcileBlockedOwnerNotifications(opts);
   }
 
   async function reconcileTaskWatchdogs(opts?: {
@@ -25299,6 +25305,8 @@ export function heartbeatService(
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    reconcileBlockedOwnerNotifications,
 
     reconcileTaskWatchdogs,
 
