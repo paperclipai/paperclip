@@ -25,6 +25,7 @@ use super::{
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+const WELCOME_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
@@ -344,18 +345,6 @@ impl RunnerTransportEndpoint {
             }
         }
     }
-
-    fn bootstrap_failure_may_have_consumed_ticket(&self, credential_proven: bool) -> bool {
-        match self {
-            // In dial mode the configured server owns bootstrap admission. Once
-            // authentication starts, a lost response may hide consumption.
-            Self::Dial(_) => true,
-            // A listener peer is untrusted until it proves possession of the
-            // bootstrap-derived authentication key. Malformed upgrades and
-            // challenges before that point cannot consume the runner's ticket.
-            Self::Listen { .. } => credential_proven,
-        }
-    }
 }
 
 fn validate_listener_path(path: &str) -> Result<(), DurableRunnerError> {
@@ -619,6 +608,22 @@ fn send_auth_plain(
 ) -> Result<(), DurableRunnerError> {
     socket.configure_auth_timeouts(lifecycle_deadline)?;
     send_plain(socket, value, max_frame_bytes)?;
+    ensure_connection_deadline(lifecycle_deadline)
+}
+
+fn send_auth_response_plain(
+    socket: &mut RunnerSocket,
+    value: &Value,
+    max_frame_bytes: usize,
+    lifecycle_deadline: Instant,
+    send_started: &mut bool,
+) -> Result<(), DurableRunnerError> {
+    socket.configure_auth_timeouts(lifecycle_deadline)?;
+    let message = encode_plain_message(value, max_frame_bytes)?;
+    // A write error can occur after the peer receives the complete response,
+    // so the one-use ticket becomes ambiguous immediately before this call.
+    *send_started = true;
+    socket.send_message(message).map_err(map_websocket_error)?;
     ensure_connection_deadline(lifecycle_deadline)
 }
 
@@ -922,7 +927,7 @@ impl AuthenticatedTransport {
         else {
             return Ok(None);
         };
-        let mut credential_proven = false;
+        let mut auth_response_send_started = false;
 
         let authenticate = || -> Result<(Self, Welcome), DurableRunnerError> {
             let client_nonce = random_nonce()?;
@@ -986,17 +991,12 @@ impl AuthenticatedTransport {
                 &[&signing_bytes],
                 &challenge.server_proof,
             )?;
-            // A valid server proof demonstrates that this peer possesses
-            // the bootstrap-derived key. Failures before this point in
-            // listener mode are safe to reject without discarding the
-            // still-unused one-use ticket.
-            credential_proven = true;
             let client_proof = hex_encode(&hmac_domain(
                 &credential.auth_key,
                 "paperclip-runner-client-proof-v1",
                 &[&signing_bytes, challenge.server_proof.as_bytes()],
             ));
-            send_auth_plain(
+            send_auth_response_plain(
                 &mut socket,
                 &json!({
                     "protocol": PROTOCOL,
@@ -1011,6 +1011,7 @@ impl AuthenticatedTransport {
                 }),
                 config.max_frame_bytes,
                 connect_deadline,
+                &mut auth_response_send_started,
             )?;
             let secure_channel = SecureChannel::client(
                 &credential.auth_key,
@@ -1023,8 +1024,10 @@ impl AuthenticatedTransport {
                 secure_channel,
                 max_frame_bytes: config.max_frame_bytes,
             };
-            let welcome_deadline =
-                bounded_operation_deadline(connect_deadline, Duration::from_millis(250))?;
+            // Ticket validation and lease persistence happen before the server
+            // emits welcome. Keep that work bounded without assuming a loaded
+            // control-plane event loop can always respond within 250 ms.
+            let welcome_deadline = bounded_operation_deadline(connect_deadline, WELCOME_TIMEOUT)?;
             let welcome_timeout = welcome_deadline.saturating_duration_since(Instant::now());
             if welcome_timeout.is_zero() {
                 return Err(DurableRunnerError::invalid(
@@ -1045,11 +1048,7 @@ impl AuthenticatedTransport {
         };
         let result = authenticate();
         result.map(Some).map_err(|error| {
-            ConnectFailure::after_auth_started(
-                error,
-                credential_kind,
-                endpoint.bootstrap_failure_may_have_consumed_ticket(credential_proven),
-            )
+            ConnectFailure::after_auth_started(error, credential_kind, auth_response_send_started)
         })
     }
 
@@ -1393,6 +1392,14 @@ fn send_plain(
     value: &Value,
     max_frame_bytes: usize,
 ) -> Result<(), DurableRunnerError> {
+    let message = encode_plain_message(value, max_frame_bytes)?;
+    socket.send_message(message).map_err(map_websocket_error)
+}
+
+fn encode_plain_message(
+    value: &Value,
+    max_frame_bytes: usize,
+) -> Result<Message, DurableRunnerError> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
     if bytes.len() > max_frame_bytes {
@@ -1402,9 +1409,7 @@ fn send_plain(
     }
     let text =
         String::from_utf8(bytes).map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-    socket
-        .send_message(Message::Text(text.into()))
-        .map_err(map_websocket_error)
+    Ok(Message::Text(text.into()))
 }
 
 fn receive_plain(
@@ -1922,6 +1927,91 @@ mod tests {
         ] {
             assert!(validate_listener_path(path).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn dial_bootstrap_failure_before_auth_response_is_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = config(port);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            receive_plain(&mut socket, server_config.max_frame_bytes).unwrap();
+            send_plain(
+                &mut socket,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_challenge",
+                    "payload": {},
+                }),
+                server_config.max_frame_bytes,
+            )
+            .unwrap();
+        });
+
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid challenge unexpectedly authenticated"),
+        };
+        assert!(!failure.bootstrap_maybe_consumed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn dial_bootstrap_failure_after_auth_response_is_fail_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = config(port);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server_state = state.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            server_authenticate(
+                &mut socket,
+                &server_config,
+                &server_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: current_unix_ms().unwrap() + 60_000,
+                    revocation_epoch: 0,
+                },
+            );
+            // Disconnect after receiving the authenticated response but before
+            // welcome, when the authority may already have consumed the ticket.
+        });
+
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let failure = match AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("connection without welcome unexpectedly authenticated"),
+        };
+        assert!(failure.bootstrap_maybe_consumed);
+        server.join().unwrap();
     }
 
     #[test]
