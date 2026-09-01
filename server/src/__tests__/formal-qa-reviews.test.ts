@@ -101,6 +101,10 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     tempDirs.push(root, instanceRoot);
     await mkdir(source, { recursive: true });
     git(source, "init");
+    await writeFile(path.join(source, "README.md"), "base source\n");
+    git(source, "add", "README.md");
+    git(source, "commit", "-m", "base source");
+    const baseSha = git(source, "rev-parse", "HEAD");
     await writeFile(path.join(source, "README.md"), "sealed formal QA source\n");
     await populate?.(source);
     git(source, "add", "-A");
@@ -117,7 +121,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     const reviewerAgentId = randomUUID();
     const headSha = git(source, "rev-parse", "HEAD");
     const treeSha = git(source, "rev-parse", "HEAD^{tree}");
-    const evidenceJson = JSON.stringify({ schema: "test", headSha, treeSha });
+    const evidenceJson = JSON.stringify({ schema: "test", headSha, baseSha, treeSha });
 
     await db.insert(companies).values({
       id: companyId,
@@ -182,7 +186,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     await db.update(formalQaPreparations).set({
       headSha,
       baseRef: "main",
-      baseSha: headSha,
+      baseSha,
       treeSha,
       evidenceSha256: "a".repeat(64),
       issuerReceiptSha256: "a".repeat(64),
@@ -202,7 +206,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       prNumber: "1902",
       headSha,
       baseRef: "main",
-      baseSha: headSha,
+      baseSha,
       treeSha,
       requiredCheckName: "PR Policy",
       requiredCheckAppId: 15368,
@@ -237,6 +241,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       policyId,
       reviewerAgentId,
       headSha,
+      baseSha,
       treeSha,
       checkout: checkout.checkout,
       reviews,
@@ -309,7 +314,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       prNumber: 1902,
       headSha: f.headSha,
       baseRef: "main",
-      baseSha: f.headSha,
+      baseSha: f.baseSha,
       treeSha: f.treeSha,
       checkoutPath: f.checkout.checkoutPath,
       issuanceSha256: expect.any(String),
@@ -322,7 +327,9 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     expect(JSON.parse(review.sourceManifestJson)).toMatchObject({
       schema: "paperclip.formal-qa-source-manifest/v1",
       headSha: f.headSha,
+      baseSha: f.baseSha,
       treeSha: f.treeSha,
+      changedPaths: [{ path: "README.md", status: "M" }],
       entries: [expect.objectContaining({ path: "README.md", mode: "100644", sha256: expect.any(String), size: 24 })],
     });
     expect(wake).toMatchObject({
@@ -369,6 +376,11 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       expect.objectContaining({ path: "inert-link", mode: "120000", size: 25 }),
     ]));
     expect(JSON.stringify(files)).not.toContain(f.checkout.checkoutPath);
+    expect(JSON.parse(review.sourceManifestJson).changedPaths).toEqual([
+      { path: "README.md", status: "M" },
+      { path: "inert-link", status: "A" },
+      { path: "large-model.bin", status: "A" },
+    ]);
     const link = await f.reviews.readSourceFile({ ...binding, path: "inert-link" });
     expect(link).toMatchObject({ path: "inert-link", mode: "120000", size: 25 });
     expect(link.content.toString("utf8")).toBe("../../outside-review-root");
@@ -447,6 +459,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     expect(claim.review.status).toBe("running");
     expect(claim.prompt).toContain(`Review ID: ${claim.review.id}`);
     expect(claim.prompt).toContain(`Exact head: ${f.headSha}`);
+    expect(claim.prompt).toContain('Exact changed paths from base to head (status/path): [{"path":"README.md","status":"M"}]');
 
     const approved = await f.reviews.finishRun({
       reviewId: claim.review.id,

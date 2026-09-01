@@ -272,14 +272,16 @@ export function formalQaCheckoutService(db: Db, options?: {
         code: "formal_qa_checkout_credential_unavailable",
       });
     }
+    const exactCommits = [...new Set([preparation.headSha, preparation.baseSha])];
     await gitOrThrow([
       ...(auth?.configArgs ?? []),
       ...(options?.testOnlyAllowFileProtocol ? ["-c", "protocol.file.allow=always"] : []),
-      "fetch", "--no-tags", "--no-write-fetch-head", "origin", preparation.headSha,
+      "fetch", "--no-tags", "--no-write-fetch-head", "origin", ...exactCommits,
     ], plan.repoRoot, "Formal-QA exact head could not be fetched from the clean mirror", auth?.env);
     const head = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{commit}`], plan.repoRoot, "Formal-QA exact head is unavailable from the clean mirror");
+    const base = await gitOrThrow(["rev-parse", "--verify", `${preparation.baseSha}^{commit}`], plan.repoRoot, "Formal-QA exact base is unavailable from the clean mirror");
     const tree = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{tree}`], plan.repoRoot, "Formal-QA exact tree is unavailable from the clean mirror");
-    if (!SHA40_RE.test(head) || head !== preparation.headSha || tree !== preparation.treeSha) {
+    if (!SHA40_RE.test(head) || head !== preparation.headSha || !SHA40_RE.test(base) || base !== preparation.baseSha || tree !== preparation.treeSha) {
       throw conflict("Formal-QA clean mirror does not contain the sealed exact head and tree", {
         code: "formal_qa_checkout_source_mismatch",
       });

@@ -145,15 +145,20 @@ const SOURCE_MANIFEST_MAX_BLOB_BYTES = 64 * 1024 * 1024;
 const SOURCE_MANIFEST_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 const SOURCE_MANIFEST_MAX_JSON_BYTES = 16 * 1024 * 1024;
 const SOURCE_MANIFEST_MAX_LISTING_BYTES = 16 * 1024 * 1024;
+const SOURCE_MANIFEST_MAX_CHANGED_PATHS = 2_000;
+const SOURCE_MANIFEST_MAX_CHANGED_PATH_BYTES = 256 * 1024;
 const GIT_BLOB_RE = /^[0-9a-f]{40,64}$/;
 const TRUSTED_GIT_BINARY = "/usr/bin/git";
 let trustedGitBinaryCheck: Promise<void> | null = null;
 type FormalQaSourceMode = "100644" | "100755" | "120000";
 type FormalQaSourceEntry = Readonly<{ path: string; mode: FormalQaSourceMode; blobSha: string; sha256: string; size: number }>;
+type FormalQaChangedPath = Readonly<{ path: string; status: "A" | "D" | "M" | "T" }>;
 type FormalQaSourceManifest = Readonly<{
   schema: "paperclip.formal-qa-source-manifest/v1";
   headSha: string;
+  baseSha: string;
   treeSha: string;
+  changedPaths: readonly FormalQaChangedPath[];
   entries: readonly FormalQaSourceEntry[];
 }>;
 
@@ -288,7 +293,7 @@ async function hashGitBlobs(entries: readonly Pick<FormalQaSourceEntry, "blobSha
   }
 }
 
-function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect): FormalQaSourceManifest {
+function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect, expectedBaseSha: string): FormalQaSourceManifest {
   if (Buffer.byteLength(raw, "utf8") > SOURCE_MANIFEST_MAX_JSON_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw conflict("Formal-QA source manifest is invalid", { code: "formal_qa_review_source_snapshot_mismatch" }); }
@@ -297,7 +302,9 @@ function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect)
   }
   const manifest = parsed as FormalQaSourceManifest;
   if (manifest.schema !== "paperclip.formal-qa-source-manifest/v1" || manifest.headSha !== review.headSha ||
-    manifest.treeSha !== review.treeSha || !Array.isArray(manifest.entries) || manifest.entries.length > SOURCE_MANIFEST_MAX_ENTRIES ||
+    manifest.baseSha !== expectedBaseSha || manifest.treeSha !== review.treeSha ||
+    !Array.isArray(manifest.changedPaths) || manifest.changedPaths.length > SOURCE_MANIFEST_MAX_CHANGED_PATHS ||
+    !Array.isArray(manifest.entries) || manifest.entries.length > SOURCE_MANIFEST_MAX_ENTRIES ||
     sha256(raw) !== review.sourceManifestSha256) {
     throw conflict("Formal-QA source manifest does not bind the review", { code: "formal_qa_review_source_snapshot_mismatch" });
   }
@@ -313,10 +320,48 @@ function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect)
     total += entry.size;
     if (total > SOURCE_MANIFEST_MAX_TOTAL_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
   }
+  let previousChangedPath = "";
+  for (const change of manifest.changedPaths) {
+    if (!change || typeof change.path !== "string" || !change.path || change.path.startsWith("/") ||
+      change.path.length > 1024 || change.path.split("/").some((part: string) => part === "" || part === "." || part === "..") ||
+      !["A", "D", "M", "T"].includes(change.status) || change.path <= previousChangedPath) {
+      throw conflict("Formal-QA changed-path manifest is invalid", { code: "formal_qa_review_source_snapshot_mismatch" });
+    }
+    previousChangedPath = change.path;
+  }
+  if (Buffer.byteLength(canonicalJson(manifest.changedPaths), "utf8") > SOURCE_MANIFEST_MAX_CHANGED_PATH_BYTES) {
+    throw conflict("Formal-QA changed-path manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+  }
   return manifest;
 }
 
-async function buildSourceManifest(authority: Awaited<ReturnType<ReturnType<typeof formalQaCheckoutService>["verifyForDispatch"]>>): Promise<{ json: string; sha256: string }> {
+function parseChangedPaths(raw: Buffer): FormalQaChangedPath[] {
+  const decoded = raw.toString("utf8");
+  if (!Buffer.from(decoded, "utf8").equals(raw)) throw conflict("Formal-QA comparison contains an unsupported path", { code: "formal_qa_review_source_snapshot_mismatch" });
+  const fields = decoded.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  if (fields.length % 2 !== 0 || fields.length / 2 > SOURCE_MANIFEST_MAX_CHANGED_PATHS) {
+    throw conflict("Formal-QA comparison exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+  }
+  const changes: FormalQaChangedPath[] = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const status = fields[index];
+    const sourcePath = fields[index + 1]!;
+    if (!status || !["A", "D", "M", "T"].includes(status) || !sourcePath || sourcePath.startsWith("/") ||
+      sourcePath.length > 1024 || sourcePath.split("/").some((part) => part === "" || part === "." || part === "..")) {
+      throw conflict("Formal-QA comparison contains an unsupported change", { code: "formal_qa_review_source_snapshot_mismatch" });
+    }
+    changes.push({ path: sourcePath, status: status as FormalQaChangedPath["status"] });
+  }
+  changes.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  if (changes.some((change, index) => index > 0 && change.path === changes[index - 1]!.path) ||
+    Buffer.byteLength(canonicalJson(changes), "utf8") > SOURCE_MANIFEST_MAX_CHANGED_PATH_BYTES) {
+    throw conflict("Formal-QA comparison exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+  }
+  return changes;
+}
+
+async function buildSourceManifest(authority: Awaited<ReturnType<ReturnType<typeof formalQaCheckoutService>["verifyForDispatch"]>>): Promise<{ json: string; sha256: string; changedPaths: readonly FormalQaChangedPath[] }> {
   const listingBuffer = await gitBuffer(["ls-tree", "-r", "-l", "-z", authority.preparation.headSha], authority.checkout.repoRoot, SOURCE_MANIFEST_MAX_LISTING_BYTES);
   const listing = listingBuffer.toString("utf8");
   if (!Buffer.from(listing, "utf8").equals(listingBuffer)) throw conflict("Formal-QA source tree contains an unsupported path", { code: "formal_qa_review_source_snapshot_mismatch" });
@@ -338,13 +383,23 @@ async function buildSourceManifest(authority: Awaited<ReturnType<ReturnType<type
   unsignedEntries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const hashes = await hashGitBlobs(unsignedEntries, authority.checkout.repoRoot);
   const entries: FormalQaSourceEntry[] = unsignedEntries.map((entry, index) => ({ ...entry, sha256: hashes[index]! }));
-  const json = canonicalJson({ schema: "paperclip.formal-qa-source-manifest/v1", headSha: authority.preparation.headSha, treeSha: authority.preparation.treeSha, entries });
+  const changedPaths = parseChangedPaths(await gitBuffer([
+    "diff", "--name-status", "--no-renames", "-z", authority.preparation.baseSha, authority.preparation.headSha, "--",
+  ], authority.checkout.repoRoot, SOURCE_MANIFEST_MAX_CHANGED_PATH_BYTES + 1024));
+  const json = canonicalJson({
+    schema: "paperclip.formal-qa-source-manifest/v1",
+    headSha: authority.preparation.headSha,
+    baseSha: authority.preparation.baseSha,
+    treeSha: authority.preparation.treeSha,
+    changedPaths,
+    entries,
+  });
   if (Buffer.byteLength(json, "utf8") > SOURCE_MANIFEST_MAX_JSON_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
-  return { json, sha256: sha256(json) };
+  return { json, sha256: sha256(json), changedPaths };
 }
 
 async function assertSourceManifest(review: typeof formalQaReviews.$inferSelect, authority: Awaited<ReturnType<ReturnType<typeof formalQaCheckoutService>["verifyForDispatch"]>>): Promise<FormalQaSourceManifest> {
-  const manifest = parseManifest(review.sourceManifestJson, review);
+  const manifest = parseManifest(review.sourceManifestJson, review, authority.preparation.baseSha);
   const hashes = await hashGitBlobs(manifest.entries, authority.checkout.repoRoot);
   for (const [index, entry] of manifest.entries.entries()) {
     if (hashes[index] !== entry.sha256) {
@@ -372,6 +427,7 @@ function buildReviewPrompt(input: {
   headSha: string;
   treeSha: string;
   contractSha256: string;
+  changedPaths: readonly FormalQaChangedPath[];
 }): string {
   const outputExample = {
     schema: "paperclip.formal-qa-review-decision/v1",
@@ -393,6 +449,8 @@ function buildReviewPrompt(input: {
     `Exact head: ${input.headSha}`,
     `Exact tree: ${input.treeSha}`,
     `Contract SHA-256: ${input.contractSha256}`,
+    `Exact changed paths from base to head (status/path): ${canonicalJson(input.changedPaths)}`,
+    "Prioritize the changed paths and use surrounding sealed source only to evaluate their effects.",
     "The exact source is available only through the server-provided Formal-QA source tools. Do not use a filesystem checkout.",
     "Do not review any other source. Do not modify source. Do not push, merge, publish a status, or call Paperclip APIs.",
     `Return only one JSON object with these exact keys (decision may be approved or rejected): ${canonicalJson(outputExample)}`,
@@ -471,6 +529,7 @@ export function formalQaReviewService(db: Db, options?: {
         headSha: preparation.headSha,
         treeSha: preparation.treeSha,
         contractSha256: FORMAL_QA_REVIEW_CONTRACT_SHA256,
+        changedPaths: sourceManifest.changedPaths,
       });
       const sealedPromptSha256 = sha256(prompt);
 
@@ -584,7 +643,7 @@ export function formalQaReviewService(db: Db, options?: {
     const current = await loadRunBinding(input);
     const authority = await checkouts.verifyForDispatch({ preparationId: current.preparationId });
     assertSourceSnapshot({ review: current, authority });
-    await assertSourceManifest(current, authority);
+    const sourceManifest = await assertSourceManifest(current, authority);
     const prompt = buildReviewPrompt({
       reviewId: current.id,
       heartbeatRunId: current.heartbeatRunId,
@@ -593,6 +652,7 @@ export function formalQaReviewService(db: Db, options?: {
       headSha: current.headSha,
       treeSha: current.treeSha,
       contractSha256: current.contractSha256,
+      changedPaths: sourceManifest.changedPaths,
     });
     if (current.promptSha256 !== sha256(prompt)) {
       throw conflict("Formal-QA review prompt binding changed before claim", { code: "formal_qa_review_authority_changed" });
@@ -1134,4 +1194,5 @@ export const formalQaReviewTestOnly = {
   contract: REVIEW_CONTRACT,
   buildReviewPrompt,
   buildSourceSnapshot,
+  buildSourceManifest,
 };
