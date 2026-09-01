@@ -103,7 +103,10 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
-  /** Default-off rollout gate for paperclip_runner provider WebSocket ingress. */
+  /**
+   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
+   * enableNativeRunner and this value has no runtime effect.
+   */
   enableRunnerPreviewIngress: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the

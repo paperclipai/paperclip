@@ -29,9 +29,10 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
 Daytona connectivity for `paperclip_runner` uses authenticated preview WSS and
-is gated by the instance experimental setting `enableRunnerPreviewIngress`
-(default `false`). The setting has no effect on legacy adapters or callback
-bridges.
+follows the instance experimental setting `enableNativeRunner` (default
+`false`). There is no separate ingress opt-in. Disabling Paperclip Runner
+blocks fresh native starts while persisted native runs retain their recovery
+path. The setting has no effect on legacy adapters or callback bridges.
 
 ### Preinstalled remote runner images
 

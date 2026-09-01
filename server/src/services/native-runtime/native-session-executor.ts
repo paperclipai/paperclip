@@ -2728,7 +2728,8 @@ export async function executePaperclipNativeSession(input: {
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-  enableRunnerPreviewIngress?: boolean;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
   runnerRemoteBinaryPath?: string | null;
@@ -4635,7 +4636,8 @@ export async function createRunnerdBackend(input: {
   }) => Promise<void>;
   runnerEnvironment?: NodeJS.ProcessEnv;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-  enableRunnerPreviewIngress?: boolean;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
   runnerRemoteBinaryPath?: string | null;
@@ -6111,7 +6113,7 @@ export async function createRunnerdBackend(input: {
                   : "dial_wss";
               if (
                 requiredMode === "listen_ws" &&
-                input.enableRunnerPreviewIngress !== true
+                input.runnerIngressAuthorized !== true
               ) {
                 throw new Error("runner_ingress_unavailable");
               }
@@ -6128,8 +6130,8 @@ export async function createRunnerdBackend(input: {
                       localConnectUrl: "ws://127.0.0.1/unused",
                       runnerPublicUrl: input.runnerPublicUrl,
                       runnerCaBundlePath: input.runnerCaBundlePath,
-                      enableRunnerPreviewIngress:
-                        input.enableRunnerPreviewIngress === true,
+                      runnerIngressAuthorized:
+                        input.runnerIngressAuthorized === true,
                     }),
                 );
                 if (
@@ -6164,7 +6166,7 @@ export async function createRunnerdBackend(input: {
                       localConnectUrl: "ws://127.0.0.1/unused",
                       runnerPublicUrl: input.runnerPublicUrl,
                       runnerCaBundlePath: input.runnerCaBundlePath,
-                      enableRunnerPreviewIngress: true,
+                      runnerIngressAuthorized: true,
                     }),
                 );
               }

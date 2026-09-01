@@ -128,6 +128,7 @@ import {
   executePaperclipNativeSession,
   finalizeNativeRun,
   isNativeSessionId,
+  isRunnerIngressAuthorized,
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
   NativeCancellationPendingRecoveryError,
@@ -20613,9 +20614,8 @@ export function heartbeatService(
                         : {}),
                     },
                     runnerExecutionTarget: executionTarget,
-                    enableRunnerPreviewIngress:
-                      resolvedInstanceSettings.experimental
-                        .enableRunnerPreviewIngress === true,
+                    runnerIngressAuthorized:
+                      isRunnerIngressAuthorized(nativeRuntimeResolution),
                     runnerPublicUrl:
                       runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
                     runnerCaBundlePath:

@@ -46,6 +46,17 @@ export type NativeRuntimeResolution =
       authorityDecision: NativeStatusDecision;
     };
 
+/**
+ * Runner ingress follows the resolved runtime decision, not a second instance
+ * flag. Persisted native runs therefore keep their transport during recovery
+ * after the rollout flag is disabled, while legacy runs never gain ingress.
+ */
+export function isRunnerIngressAuthorized(
+  resolution: NativeRuntimeResolution,
+): boolean {
+  return resolution.kind === "native";
+}
+
 export class NativeRunnerSelectionError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);

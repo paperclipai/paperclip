@@ -98,7 +98,10 @@ export async function resolvePaperclipRunnerTransport(input: {
   localConnectUrl: string;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
-  enableRunnerPreviewIngress: boolean;
+  /** Per-run authorization resolved by the native runtime selection policy. */
+  runnerIngressAuthorized?: boolean;
+  /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
+  enableRunnerPreviewIngress?: boolean;
   getRunnerIngressEndpoint?: (input: {
     leaseId: string;
     port: number;
@@ -124,10 +127,12 @@ export async function resolvePaperclipRunnerTransport(input: {
     input.target.transport === "sandbox" &&
     input.target.effectiveCapabilities?.runnerWebSocketIngress === true
   ) {
-    if (!input.enableRunnerPreviewIngress) {
+    const ingressAuthorized =
+      input.runnerIngressAuthorized ?? input.enableRunnerPreviewIngress ?? false;
+    if (!ingressAuthorized) {
       throw new PaperclipRunnerTransportError(
         "runner_ingress_unavailable",
-        "Runner preview ingress is disabled for this Paperclip instance.",
+        "Runner ingress is not authorized for this Paperclip Runner run.",
       );
     }
     const getRunnerIngressEndpoint =
