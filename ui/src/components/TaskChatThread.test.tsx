@@ -362,13 +362,24 @@ describe("TaskChatThread runtime transcript selection", () => {
         activeRun={run}
       />,
     );
+    const revealUsage = () => {
+      const summary = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-phase-summary"]',
+      );
+      expect(summary).not.toBeNull();
+      if (summary?.getAttribute("aria-expanded") !== "true") {
+        flushSync(() => summary!.click());
+      }
+    };
 
     nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(10)]);
     renderRun();
+    revealUsage();
     expect(container.textContent).toContain("↑10");
 
     nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(20)]);
     renderRun();
+    revealUsage();
     expect(container.textContent).toContain("↑20");
     expect(container.textContent).not.toContain("↑10");
   });
