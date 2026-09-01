@@ -42,7 +42,10 @@ import {
 } from "../drivers/acpx/qualified-profiles.js";
 import { createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
-import type { NativeAcpxPermissionMode } from "../contracts/native-execution.js";
+import type {
+  NativeAcpxPermissionMode,
+  NativeOpenCodePermissionMode,
+} from "../contracts/native-execution.js";
 import { nativeMcpLaunchBinding } from "../drivers/native-mcp.js";
 import {
   prepareIsolatedCodexHome,
@@ -235,6 +238,7 @@ export interface CapabilityRunnerdProcessEvidence {
 
 export interface CapabilityRunnerdCodexTransportOptions {
   provider?: "codex" | "opencode" | "acpx";
+  opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxPermissionModePinned?: boolean;
@@ -828,9 +832,10 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   };
   if (input.provider === "opencode") {
     return {
-      ...process.env,
-      ...input.options.environment,
+      ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
       PAPERCLIP_OPENCODE_COMMAND: input.options.opencodeCommand ?? "opencode",
+      PAPERCLIP_OPENCODE_PERMISSION_MODE:
+        input.options.opencodePermissionMode ?? "ask",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
@@ -863,6 +868,51 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     if (apiKey?.trim()) environment[key] = apiKey;
   }
   return environment;
+}
+
+const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
+  "PATH",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "SystemRoot",
+  "PATHEXT",
+  "WINDIR",
+  "RUST_BACKTRACE",
+  "OPENROUTER_API_KEY",
+  "PAPERCLIP_NATIVE_MCP_NAME",
+  "PAPERCLIP_NATIVE_MCP_URL",
+  "PAPERCLIP_NATIVE_MCP_TOKEN",
+]);
+
+function createSanitizedOpenCodeRunnerEnvironment(
+  source: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  const candidate = { ...process.env, ...source };
+  return Object.fromEntries(
+    Object.entries(candidate).filter(
+      ([key, value]) =>
+        typeof value === "string"
+        && (OPEN_CODE_RUNNER_ENVIRONMENT_KEYS.has(key)
+          || /^LC_[A-Z0-9_]{1,32}$/.test(key)),
+    ),
+  );
 }
 
 export function resolveSourceCodexHome(
@@ -1003,7 +1053,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               options.environment,
               options.acpxAgent ?? "codex",
             ).env
-          : createSanitizedCodexEnvironment(options.environment),
+          : options.provider === "opencode"
+            ? createSanitizedOpenCodeRunnerEnvironment(options.environment)
+            : createSanitizedCodexEnvironment(options.environment),
       ).sort(),
       diagnostics: ["lab transport selected authenticated durable PRP"],
     };

@@ -52,12 +52,27 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
     identity: {},
     adapterConfig: {},
     heartbeat: {},
+    debug: {},
     runtime: {},
     ...patch,
   };
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("merges the agent-scoped provider trace debug setting into runtime config", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({ debug: { providerTrace: "raw" } }),
+    );
+
+    expect(patch).toMatchObject({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300 },
+        debug: { providerTrace: "raw" },
+      },
+    });
+  });
+
   it("replaces adapter config and drops env when the last env binding is cleared", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

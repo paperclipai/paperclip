@@ -201,6 +201,71 @@ describe("OnboardingWizard adapter selection", () => {
       root.unmount();
     });
   });
+
+  it("keeps onboarding on legacy adapters even when Paperclip Runner is enabled", async () => {
+    mockAdapterRegistry.list = [
+      { type: "paperclip_runner" },
+      { type: "codex_local" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 0,
+        adapterType: "paperclip_runner",
+        model: "gpt-runner-only",
+        command: "runnerd",
+        args: "--native",
+        url: "ws://runner",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("codex_local");
+    expect(saved.model).toBe("");
+    expect(saved.command).toBe("");
+    expect(saved.args).toBe("");
+    expect(saved.url).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("normalizes a saved Paperclip Runner draft before adapter discovery resolves", async () => {
+    mockAdapterRegistry.loaded = false;
+    mockAdapterRegistry.list = [{ type: "codex_local" }];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 0,
+        adapterType: "paperclip_runner",
+        model: "gpt-runner-only",
+        command: "runnerd",
+        args: "--native",
+        url: "ws://runner",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("claude_local");
+    expect(saved.model).toBe("");
+    expect(saved.command).toBe("");
+    expect(saved.args).toBe("");
+    expect(saved.url).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not replace a saved adapter before the registry has loaded", async () => {
     // External adapter types are only registered once the adapters query
     // resolves. Until then `listUIAdapters()` returns the built-ins alone, so

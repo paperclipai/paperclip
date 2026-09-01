@@ -28,10 +28,14 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
-Daytona connectivity for `paperclip_runner` uses authenticated preview WSS and
-is gated by the instance experimental setting `enableRunnerPreviewIngress`
-(default `false`). The setting has no effect on legacy adapters or callback
-bridges.
+Daytona connectivity for `paperclip_runner` uses authenticated provider
+WebSocket ingress and follows the instance experimental setting
+`enableNativeRunner` (default `false`). There is no separate ingress opt-in.
+Disabling Paperclip Runner blocks fresh native starts while persisted native
+runs retain their recovery path. The deprecated `enableRunnerPreviewIngress`
+key remains accepted in stored and managed configuration for version-skew
+compatibility, but it has no runtime effect. The setting has no effect on
+legacy adapters or callback bridges.
 
 ### Preinstalled remote runner images
 

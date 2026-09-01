@@ -69,7 +69,7 @@ export function buildNativeExecutionInput(input: {
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
   const acpxProfile = input.provider === "acpx"
     ? resolveQualifiedAcpxProfile(
-        input.acpxAgent ?? "pi",
+        input.acpxAgent ?? "codex",
         input.model ?? "",
       )
     : null;
@@ -119,7 +119,7 @@ export function buildNativeExecutionInput(input: {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-all",
+          permissionMode: input.acpxPermissionMode ?? "approve-reads",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -137,12 +137,12 @@ export function buildNativeExecutionInput(input: {
         ? {
             kind: "opencode",
             model: input.model,
-            permissionMode: input.opencodePermissionMode ?? "allow",
+            permissionMode: input.opencodePermissionMode ?? "ask",
           }
         : {
             kind: "codex",
             model: input.model ?? null,
-            approvalPolicy: input.codexApprovalPolicy ?? "never",
+            approvalPolicy: input.codexApprovalPolicy ?? "untrusted",
           },
     completionContract: input.completionContract,
     interactionResponses: input.interactionResponses ?? [],

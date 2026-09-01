@@ -6,6 +6,7 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -200,6 +201,14 @@ export function Agents() {
   const [view, setView] = useState<"list" | "org">("org");
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -456,6 +465,7 @@ export function Agents() {
                   companyId={selectedCompanyId}
                   runLabel="Run Heartbeat"
                   showStatus={false}
+                  canRunWithProviderTrace={canUseProviderTrace}
                 />
               </div>
               <StarToggle

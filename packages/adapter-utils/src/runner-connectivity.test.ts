@@ -38,7 +38,7 @@ describe("paperclip runner transport routing", () => {
       runId: "00000000-0000-4000-8000-000000000001",
       localConnectUrl:
         "ws://127.0.0.1:3100/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
-      enableRunnerPreviewIngress: false,
+      runnerIngressAuthorized: false,
     });
     expect(result.mode).toBe("local_loopback");
   });
@@ -59,13 +59,34 @@ describe("paperclip runner transport routing", () => {
       runId: "00000000-0000-4000-8000-000000000001",
       localConnectUrl: "ws://127.0.0.1/unused",
       runnerPublicUrl: "wss://paperclip.example.test",
-      enableRunnerPreviewIngress: true,
+      runnerIngressAuthorized: true,
     });
     expect(result.mode).toBe("provider_ingress");
     expect(getRunnerIngressEndpoint).toHaveBeenCalledOnce();
   });
 
-  it("does not request preview ingress while the new-runner rollout flag is off", async () => {
+  it("accepts the deprecated ingress input alias for existing consumers", async () => {
+    const target: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: "/workspace",
+      leaseId: "lease-legacy",
+      effectiveCapabilities: capabilities,
+      getRunnerIngressEndpoint: vi.fn(async () => ingress()),
+    };
+
+    const result = await resolvePaperclipRunnerTransport({
+      target,
+      runId: "00000000-0000-4000-8000-000000000001",
+      localConnectUrl: "ws://127.0.0.1/unused",
+      enableRunnerPreviewIngress: true,
+    });
+
+    expect(result.mode).toBe("provider_ingress");
+  });
+
+  it("lets resolved authorization override the deprecated ingress alias", async () => {
     const getRunnerIngressEndpoint = vi.fn(async () => ingress());
     const target: AdapterExecutionTarget = {
       kind: "remote",
@@ -82,8 +103,17 @@ describe("paperclip runner transport routing", () => {
         runId: "00000000-0000-4000-8000-000000000001",
         localConnectUrl: "ws://127.0.0.1/unused",
         runnerPublicUrl: "wss://paperclip.example.test",
-        enableRunnerPreviewIngress: false,
+        runnerIngressAuthorized: false,
+        enableRunnerPreviewIngress: true,
       }),
+    ).rejects.toMatchObject({ code: "runner_ingress_unavailable" });
+    const missingAuthorization = {
+      target,
+      runId: "00000000-0000-4000-8000-000000000002",
+      localConnectUrl: "ws://127.0.0.1/unused",
+    } as Parameters<typeof resolvePaperclipRunnerTransport>[0];
+    await expect(
+      resolvePaperclipRunnerTransport(missingAuthorization),
     ).rejects.toMatchObject({ code: "runner_ingress_unavailable" });
     expect(getRunnerIngressEndpoint).not.toHaveBeenCalled();
   });
@@ -110,7 +140,7 @@ describe("paperclip runner transport routing", () => {
       localConnectUrl: "ws://127.0.0.1/unused",
       runnerPublicUrl: "wss://paperclip.example.test/runner-base/",
       runnerCaBundlePath: "/etc/paperclip/runner-ca.pem",
-      enableRunnerPreviewIngress: false,
+      runnerIngressAuthorized: false,
     });
     expect(result).toEqual({
       mode: "direct_outbound",
@@ -138,7 +168,7 @@ describe("paperclip runner transport routing", () => {
         runId: "00000000-0000-4000-8000-000000000001",
         localConnectUrl: "ws://127.0.0.1/unused",
         runnerPublicUrl: "wss://paperclip.example.test",
-        enableRunnerPreviewIngress: true,
+        runnerIngressAuthorized: true,
       }),
     ).rejects.toThrow("preview unavailable");
   });
@@ -161,7 +191,7 @@ describe("paperclip runner transport routing", () => {
         runId: "00000000-0000-4000-8000-000000000001",
         localConnectUrl: "ws://127.0.0.1/unused",
         runnerPublicUrl: "wss://paperclip.example.test",
-        enableRunnerPreviewIngress: true,
+        runnerIngressAuthorized: true,
       }),
     ).rejects.toMatchObject({ code: "runner_ingress_unavailable" });
   });

@@ -87,6 +87,8 @@ describe("buildPaperclipRunnerConfig", () => {
 
     expect(config).toMatchObject({
       provider: "codex",
+      codexPermissionMode: "untrusted",
+      lifecycleMode: "per_turn",
       model: "gpt-5.4",
       timeoutSec: 0,
       graceSec: 15,
@@ -107,43 +109,53 @@ describe("buildPaperclipRunnerConfig", () => {
     }
   });
 
-  it("builds a bounded OpenCode runner profile from schema values", () => {
+  it("persists bounded Codex permission and warm lifecycle values", () => {
     const config = buildPaperclipRunnerConfig(makeValues({
       adapterType: "paperclip_runner",
-      model: "",
-      codexEngine: "acp",
-      dangerouslyBypassSandbox: true,
-      adapterSchemaValues: {
-        provider: "opencode",
-        opencodePermissionMode: "ask",
-        lifecycleMode: "warm",
-        idleTimeoutMs: 45_000,
-      },
+      codexPermissionMode: "untrusted",
+      paperclipRunnerLifecycleMode: "warm",
+      paperclipRunnerIdleTimeoutMs: 45_000,
     }));
 
     expect(config).toMatchObject({
-      provider: "opencode",
-      model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      opencodePermissionMode: "ask",
+      provider: "codex",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "warm",
       idleTimeoutMs: 45_000,
     });
-    expect(config).not.toHaveProperty("engine");
-    expect(config).not.toHaveProperty("dangerouslyBypassApprovalsAndSandbox");
   });
 
-  it("falls back to safe OpenCode defaults for invalid schema values", () => {
+  it("fails closed to the Codex profile and safe defaults for stale schema values", () => {
     expect(buildPaperclipRunnerConfig(makeValues({
       adapterSchemaValues: {
         provider: "opencode",
-        opencodePermissionMode: "unrestricted",
+        codexPermissionMode: "unrestricted",
         lifecycleMode: "forever",
         idleTimeoutMs: -1,
       },
     }))).toMatchObject({
-      provider: "opencode",
-      opencodePermissionMode: "allow",
+      provider: "codex",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
     });
+  });
+
+  it("bounds warm lifecycle values to the shared safe default", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      paperclipRunnerLifecycleMode: "warm",
+      paperclipRunnerIdleTimeoutMs: 86_400_001,
+    }))).toMatchObject({
+      lifecycleMode: "warm",
+      idleTimeoutMs: 300_000,
+    });
+  });
+
+  it("omits an idle timeout for turn-by-turn sessions", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      paperclipRunnerLifecycleMode: "per_turn",
+      paperclipRunnerIdleTimeoutMs: 45_000,
+    }));
+
+    expect(config).not.toHaveProperty("idleTimeoutMs");
   });
 });

@@ -35,6 +35,19 @@ export type PaperclipRunnerTransport =
       readonly ingress: RunnerIngressEndpoint;
     };
 
+type RunnerIngressAuthorization =
+  | {
+      /** Per-run authorization resolved by the native runtime selection policy. */
+      readonly runnerIngressAuthorized: boolean;
+      /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
+      readonly enableRunnerPreviewIngress?: boolean;
+    }
+  | {
+      readonly runnerIngressAuthorized?: never;
+      /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
+      readonly enableRunnerPreviewIngress: boolean;
+    };
+
 export class PaperclipRunnerTransportError extends Error {
   readonly code:
     | "runner_transport_ineligible"
@@ -98,13 +111,12 @@ export async function resolvePaperclipRunnerTransport(input: {
   localConnectUrl: string;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
-  enableRunnerPreviewIngress: boolean;
   getRunnerIngressEndpoint?: (input: {
     leaseId: string;
     port: number;
     path: string;
   }) => Promise<RunnerIngressEndpoint>;
-}): Promise<PaperclipRunnerTransport> {
+} & RunnerIngressAuthorization): Promise<PaperclipRunnerTransport> {
   if (input.target.kind === "local") {
     return { mode: "local_loopback", connectUrl: input.localConnectUrl };
   }
@@ -124,10 +136,12 @@ export async function resolvePaperclipRunnerTransport(input: {
     input.target.transport === "sandbox" &&
     input.target.effectiveCapabilities?.runnerWebSocketIngress === true
   ) {
-    if (!input.enableRunnerPreviewIngress) {
+    const ingressAuthorized =
+      input.runnerIngressAuthorized ?? input.enableRunnerPreviewIngress ?? false;
+    if (!ingressAuthorized) {
       throw new PaperclipRunnerTransportError(
         "runner_ingress_unavailable",
-        "Runner preview ingress is disabled for this Paperclip instance.",
+        "Runner ingress is not authorized for this Paperclip Runner run.",
       );
     }
     const getRunnerIngressEndpoint =

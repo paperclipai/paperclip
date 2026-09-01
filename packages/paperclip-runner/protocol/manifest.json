@@ -139,6 +139,12 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/evals/native-execution-seeded.json",
+      "sha256": "3a10ca2da2dfd1e945eae8af4518f1cd4ae5c1100adc269ca808144a78cdbcfa",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/local-runner/scripts/duplicate-terminal.json",
       "sha256": "56928a21318ea4b390c65fb34f0d3114760619d79301f4d535391a8566b693ab",
       "expectation": "accept",
