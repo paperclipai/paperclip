@@ -2221,7 +2221,28 @@ export class CapabilityLiveSession {
         this.#publishAssistantProgress(turnId || this.#activeTurnId);
       }
     } else if (notification.method === "turn/completed") {
-      pendingCompletion = this.#completeTurn(turnId, terminalStatus(turn.status));
+      const status = terminalStatus(turn.status);
+      const settled = this.#terminalTurns.find(
+        (terminal) => terminal.turnId === turnId,
+      );
+      if (settled !== undefined && turnId !== this.#activeTurnId) {
+        if (settled.status !== status) {
+          throw new Error("capability_live_terminal_fact_conflict");
+        }
+        // A recovered provider can replay the already-settled terminal after
+        // the next turn starts. Keep that fact, but never let it resolve the
+        // newer turn's waiter or clear its active identity.
+      } else if (
+        this.#activeTurnId !== null &&
+        turnId.length > 0 &&
+        turnId !== this.#activeTurnId
+      ) {
+        throw new Error(
+          "capability_live_provider_session_drift: terminal named an unknown inactive turn",
+        );
+      } else {
+        pendingCompletion = this.#completeTurn(turnId, status);
+      }
     }
     try {
       await this.#persist();

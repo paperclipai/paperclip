@@ -666,7 +666,10 @@ export function rehydrateRunnerdTurnNotification(
       : typeof rawParams.turnId === "string" && rawParams.turnId.length > 0
         ? rawParams.turnId
         : activeTurnId);
-  const boundTurnId = method === "turn/completed" ? activeTurnId : rawTurnId;
+  const boundTurnId =
+    method === "turn/completed"
+      ? providerTurnId ?? activeTurnId
+      : rawTurnId;
   return {
     ...rawParams,
     // A canonical runnerd terminal is bound by the authenticated PRP envelope.
@@ -677,6 +680,29 @@ export function rehydrateRunnerdTurnNotification(
     turn: {
       ...rawTurn,
       id: boundTurnId,
+      ...(rawTurn.status === undefined && rawParams.status !== undefined
+        ? { status: rawParams.status }
+        : {}),
+    },
+  };
+}
+
+export function rehydrateRunnerdItemNotification(
+  rawParams: Record<string, unknown>,
+  openedThreadId: string,
+  activeTurnId: string,
+): Record<string, unknown> {
+  const rawItem = record(rawParams.item);
+  return {
+    ...rawParams,
+    threadId: openedThreadId,
+    turnId: activeTurnId,
+    item: {
+      ...rawItem,
+      id: rawItem.id ?? rawParams.itemId,
+      type: rawItem.type ?? rawParams.kind,
+      status: rawItem.status ?? rawParams.status,
+      text: rawItem.text ?? rawParams.text,
     },
   };
 }
@@ -2064,6 +2090,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   typeof event.envelope.itemId === "string"
                     ? event.envelope.itemId
                     : "semantic-result",
+                )
+            : event.eventType !== "provider.event" &&
+                (method === "item/started" || method === "item/completed")
+              ? rehydrateRunnerdItemNotification(
+                  rawParams,
+                  this.#threadId,
+                  this.#turnId,
                 )
             : event.eventType !== "provider.event" &&
                 (method === "turn/started" || method === "turn/completed")

@@ -20,6 +20,7 @@ import {
   createCapabilityRunnerdProviderEnvironment,
   defaultCapabilityRunnerdBinary,
   expandRunnerdCanonicalNotifications,
+  rehydrateRunnerdItemNotification,
   rehydrateRunnerdPlanNotification,
   rehydrateRunnerdResultNotification,
   rehydrateRunnerdThreadTokenUsage,
@@ -291,6 +292,34 @@ it("binds a durable semantic result to the active provider turn", () => {
   });
 });
 
+it("rehydrates a canonical agent item for the strict Codex facade", () => {
+  expect(
+    rehydrateRunnerdItemNotification(
+      {
+        itemId: "message-1",
+        kind: "agentMessage",
+        status: "completed",
+        text: "Durable final reply",
+      },
+      "opened-thread-1",
+      "provider-turn-1",
+    ),
+  ).toEqual({
+    itemId: "message-1",
+    kind: "agentMessage",
+    status: "completed",
+    text: "Durable final reply",
+    threadId: "opened-thread-1",
+    turnId: "provider-turn-1",
+    item: {
+      id: "message-1",
+      type: "agentMessage",
+      status: "completed",
+      text: "Durable final reply",
+    },
+  });
+});
+
 it("binds a canonical runnerd terminal to the active provider turn", () => {
   expect(
     rehydrateRunnerdTurnNotification(
@@ -306,6 +335,24 @@ it("binds a canonical runnerd terminal to the active provider turn", () => {
     threadId: "opened-thread-1",
     turnId: "provider-turn-1",
     turn: { id: "provider-turn-1", status: "completed", items: [] },
+  });
+});
+
+it("preserves the provider identity on a late canonical terminal", () => {
+  expect(
+    rehydrateRunnerdTurnNotification(
+      {
+        providerTurnId: "provider-turn-settled",
+        status: "interrupted",
+      },
+      "opened-thread-1",
+      "provider-turn-active",
+      "turn/completed",
+    ),
+  ).toMatchObject({
+    threadId: "opened-thread-1",
+    turnId: "provider-turn-settled",
+    turn: { id: "provider-turn-settled", status: "interrupted" },
   });
 });
 
@@ -1099,11 +1146,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
       ),
     ) as { toolBridge?: { authorized?: Record<string, unknown> } };
     expect(Object.keys(providerState.toolBridge?.authorized ?? {})).toEqual(
-      expect.arrayContaining([
-        "get_task_context",
-        "paperclip_finish",
-        "paperclip_block",
-      ]),
+      ["get_task_context"],
     );
     await restored.transport.request("turn/start", {
       input: [{ type: "text", text: "restored process" }],

@@ -615,6 +615,40 @@ describe("Capability live runnerd and Codex session", () => {
     await service.shutdown(session.id);
   });
 
+  it("does not let a settled terminal replay resolve the next turn", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+    });
+    const session = await service.create({
+      runId: "run-live-late-terminal",
+      sessionId: "session-live-late-terminal",
+    });
+    const first = await session.sendMessage("Remember this response.");
+    state.onTurnStart = async () => {
+      state.transports.at(-1)?.notificationsQueue.push({
+        method: "turn/completed",
+        params: {
+          threadId: state.threadId,
+          turn: { id: first.turnId, status: first.status },
+        },
+      });
+      state.onTurnStart = undefined;
+    };
+
+    const second = await session.sendMessage("Return the remembered response.");
+
+    expect(second.turnId).not.toBe(first.turnId);
+    expect(second.assistantText).toContain("Same thread remembers");
+    expect(second.snapshot.terminalTurns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ turnId: first.turnId, status: first.status }),
+        expect.objectContaining({ turnId: second.turnId, status: "completed" }),
+      ]),
+    );
+    await service.shutdown(session.id);
+  });
+
   it("restores transcript, mock state, and pending interactions before resuming the same Codex thread", async () => {
     const state = providerState();
     const store = new InMemoryCapabilityLiveSessionStore();
