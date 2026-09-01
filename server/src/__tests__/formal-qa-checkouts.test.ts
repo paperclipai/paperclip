@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -119,7 +120,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       requestSha256: "c".repeat(64),
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
-    return { companyId, preparationId };
+    return { companyId, projectId, projectWorkspaceId, preparationId };
   }
 
   it("creates one detached, registered exact checkout without an execution workspace or heartbeat run", async () => {
@@ -161,6 +162,69 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       status: 409,
       details: { code: "formal_qa_checkout_verification_failed" },
     });
+  });
+
+  it("recovers a durable creating receipt after worktree creation was interrupted", async () => {
+    const fixture = await makeRepository();
+    const ids = await seed({ ...fixture, cwd: fixture.root });
+    const checkoutPath = path.join(fixture.instanceRoot, "formal-qa-checkouts", ids.companyId, ids.preparationId);
+    await mkdir(path.dirname(checkoutPath), { recursive: true });
+    const digest = createHash("sha256").update(JSON.stringify({
+      preparationId: ids.preparationId,
+      companyId: ids.companyId,
+      projectId: ids.projectId,
+      projectWorkspaceId: ids.projectWorkspaceId,
+      repository: "vivus-tech/music-tracker",
+      headSha: fixture.headSha,
+      treeSha: fixture.treeSha,
+      repoRoot: fixture.root,
+      checkoutPath,
+    })).digest("hex");
+    await db.insert(formalQaCheckouts).values({
+      preparationId: ids.preparationId,
+      companyId: ids.companyId,
+      projectId: ids.projectId,
+      projectWorkspaceId: ids.projectWorkspaceId,
+      repository: "vivus-tech/music-tracker",
+      repoRoot: fixture.root,
+      checkoutPath,
+      headSha: fixture.headSha,
+      treeSha: fixture.treeSha,
+      checkoutSha256: digest,
+      status: "creating",
+    });
+    // This simulates process loss after Git succeeded but before the receipt
+    // could be marked verified. The retry must reconcile, not deadlock.
+    git(fixture.root, "worktree", "add", "--detach", checkoutPath, fixture.headSha);
+
+    const result = await formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot })
+      .materialize({ preparationId: ids.preparationId });
+
+    expect(result.replayed).toBe(false);
+    expect(result.checkout.status).toBe("verified");
+    expect(git(checkoutPath, "rev-parse", "HEAD")).toBe(fixture.headSha);
+  });
+
+  it("rejects a receipt whose tenant identifiers no longer match its preparation", async () => {
+    const fixture = await makeRepository();
+    const { companyId, preparationId } = await seed({ ...fixture, cwd: fixture.root });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const created = await service.materialize({ preparationId });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.update(formalQaCheckouts).set({ companyId: otherCompanyId })
+      .where(eq(formalQaCheckouts.id, created.checkout.id));
+
+    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
+      status: 409,
+      details: { code: "formal_qa_checkout_receipt_mismatch" },
+    });
+    expect(companyId).not.toBe(otherCompanyId);
   });
 
   it("fails closed for an absent object, a tree mismatch, and an origin mismatch", async () => {

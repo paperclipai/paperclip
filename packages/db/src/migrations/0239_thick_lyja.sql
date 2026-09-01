@@ -1,0 +1,1 @@
+ALTER TABLE "formal_qa_checkouts" ALTER COLUMN "status" SET DEFAULT 'creating';

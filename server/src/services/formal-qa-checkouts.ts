@@ -117,6 +117,9 @@ function checkoutDigest(input: {
 }): string {
   return createHash("sha256").update(JSON.stringify({
     preparationId: input.preparation.id,
+    companyId: input.preparation.companyId,
+    projectId: input.preparation.projectId,
+    projectWorkspaceId: input.preparation.projectWorkspaceId,
     repository: input.preparation.repository,
     headSha: input.preparation.headSha,
     treeSha: input.preparation.treeSha,
@@ -164,28 +167,75 @@ export type FormalQaCheckoutService = ReturnType<typeof formalQaCheckoutService>
 export function formalQaCheckoutService(db: Db, options?: { instanceRoot?: string }) {
   const instanceRoot = path.resolve(options?.instanceRoot ?? resolvePaperclipInstanceRoot());
 
-  async function loadPreparation(preparationId: string) {
-    const [preparation] = await db.select().from(formalQaPreparations)
-      .where(eq(formalQaPreparations.id, preparationId)).limit(1);
-    if (!preparation) throw notFound("Formal-QA preparation not found");
-    if (preparation.status !== "prepared" || preparation.expiresAt.getTime() <= Date.now()) {
+  function assertPreparationStatus(preparation: PreparationRow, canReconcile: boolean) {
+    if (preparation.status !== "prepared" || (!canReconcile && preparation.expiresAt.getTime() <= Date.now())) {
       throw conflict("Formal-QA preparation is not eligible for exact checkout", {
         code: "formal_qa_preparation_not_eligible",
       });
     }
-    const [workspace] = await db.select({ cwd: projectWorkspaces.cwd })
-      .from(projectWorkspaces)
-      .where(and(
-        eq(projectWorkspaces.id, preparation.projectWorkspaceId),
-        eq(projectWorkspaces.companyId, preparation.companyId),
-        eq(projectWorkspaces.projectId, preparation.projectId),
-      )).limit(1);
-    if (!workspace?.cwd || !path.isAbsolute(workspace.cwd)) {
+  }
+
+  async function resolvePlan(preparation: PreparationRow, cwd: string) {
+    if (!path.isAbsolute(cwd)) {
       throw conflict("Formal-QA preparation has no local source repository", {
         code: "formal_qa_checkout_source_unavailable",
       });
     }
-    return { preparation, cwd: workspace.cwd };
+    const declaredRepoRoot = path.resolve(await gitOrThrow(["rev-parse", "--show-toplevel"], cwd, "Formal-QA source repository is unavailable"));
+    const repoRoot = await fs.realpath(declaredRepoRoot).catch(() => {
+      throw conflict("Formal-QA source repository is unavailable", {
+        code: "formal_qa_checkout_source_unavailable",
+      });
+    });
+    await ensureDirectoryNoSymlink(repoRoot);
+    const origin = canonicalRepository(await gitOrThrow(["remote", "get-url", "origin"], repoRoot, "Formal-QA source repository has no origin"));
+    if (!origin || origin !== canonicalRepository(preparation.repository)) {
+      throw conflict("Formal-QA source repository does not match the sealed authority", {
+        code: "formal_qa_checkout_repository_mismatch",
+      });
+    }
+    const sourceHead = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{commit}`], repoRoot, "Formal-QA exact head is unavailable locally");
+    const sourceTree = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{tree}`], repoRoot, "Formal-QA exact tree is unavailable locally");
+    if (!SHA40_RE.test(sourceHead) || sourceHead !== preparation.headSha || sourceTree !== preparation.treeSha) {
+      throw conflict("Formal-QA source does not contain the sealed exact head and tree", {
+        code: "formal_qa_checkout_source_mismatch",
+      });
+    }
+
+    await fs.mkdir(instanceRoot, { recursive: true, mode: 0o700 });
+    await ensureDirectoryNoSymlink(instanceRoot);
+    const checkoutRoot = path.resolve(instanceRoot, "formal-qa-checkouts");
+    await fs.mkdir(checkoutRoot, { recursive: true, mode: 0o700 });
+    await ensureDirectoryNoSymlink(checkoutRoot);
+    const companyRoot = path.resolve(checkoutRoot, preparation.companyId);
+    if (!isPathInside(checkoutRoot, companyRoot)) throw new Error("Formal-QA checkout company path escaped its root");
+    await fs.mkdir(companyRoot, { recursive: true, mode: 0o700 });
+    await ensureDirectoryNoSymlink(companyRoot);
+    const checkoutPath = path.resolve(companyRoot, preparation.id);
+    if (!isPathInside(companyRoot, checkoutPath)) throw new Error("Formal-QA checkout path escaped its company root");
+    return { repoRoot, checkoutPath };
+  }
+
+  function assertReceipt(input: {
+    checkout: CheckoutRow;
+    preparation: PreparationRow;
+    plan: { repoRoot: string; checkoutPath: string };
+  }) {
+    const { checkout, preparation, plan } = input;
+    if (checkout.status !== "creating" && checkout.status !== "verified") {
+      throw conflict("Formal-QA checkout receipt has an invalid state", {
+        code: "formal_qa_checkout_receipt_mismatch",
+      });
+    }
+    if (checkout.companyId !== preparation.companyId || checkout.projectId !== preparation.projectId ||
+      checkout.projectWorkspaceId !== preparation.projectWorkspaceId || checkout.repoRoot !== plan.repoRoot ||
+      checkout.checkoutPath !== plan.checkoutPath || checkout.repository !== preparation.repository ||
+      checkout.headSha !== preparation.headSha || checkout.treeSha !== preparation.treeSha ||
+      checkout.checkoutSha256 !== checkoutDigest({ preparation, repoRoot: plan.repoRoot, checkoutPath: plan.checkoutPath })) {
+      throw conflict("Formal-QA checkout receipt differs from its sealed authority", {
+        code: "formal_qa_checkout_receipt_mismatch",
+      });
+    }
   }
 
   return {
@@ -195,98 +245,98 @@ export function formalQaCheckoutService(db: Db, options?: { instanceRoot?: strin
       return checkout ?? null;
     },
 
-    materialize: async ({ preparationId }: { preparationId: string }) => db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_checkout:${preparationId}`}, 0))`);
-      const [preparation] = await tx.select().from(formalQaPreparations)
-        .where(eq(formalQaPreparations.id, preparationId)).limit(1);
-      if (!preparation) throw notFound("Formal-QA preparation not found");
-      if (preparation.status !== "prepared" || preparation.expiresAt.getTime() <= Date.now()) {
-        throw conflict("Formal-QA preparation is not eligible for exact checkout", {
-          code: "formal_qa_preparation_not_eligible",
-        });
-      }
-      const [workspace] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
-        .where(and(
-          eq(projectWorkspaces.id, preparation.projectWorkspaceId),
-          eq(projectWorkspaces.companyId, preparation.companyId),
-          eq(projectWorkspaces.projectId, preparation.projectId),
-        )).limit(1);
-      if (!workspace?.cwd || !path.isAbsolute(workspace.cwd)) {
-        throw conflict("Formal-QA preparation has no local source repository", {
-          code: "formal_qa_checkout_source_unavailable",
-        });
-      }
-
-      const declaredRepoRoot = path.resolve(await gitOrThrow(["rev-parse", "--show-toplevel"], workspace.cwd, "Formal-QA source repository is unavailable"));
-      const repoRoot = await fs.realpath(declaredRepoRoot).catch(() => {
-        throw conflict("Formal-QA source repository is unavailable", {
-          code: "formal_qa_checkout_source_unavailable",
-        });
-      });
-      await ensureDirectoryNoSymlink(repoRoot);
-      const origin = canonicalRepository(await gitOrThrow(["remote", "get-url", "origin"], repoRoot, "Formal-QA source repository has no origin"));
-      if (!origin || origin !== canonicalRepository(preparation.repository)) {
-        throw conflict("Formal-QA source repository does not match the sealed authority", {
-          code: "formal_qa_checkout_repository_mismatch",
-        });
-      }
-      const sourceHead = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{commit}`], repoRoot, "Formal-QA exact head is unavailable locally");
-      const sourceTree = await gitOrThrow(["rev-parse", "--verify", `${preparation.headSha}^{tree}`], repoRoot, "Formal-QA exact tree is unavailable locally");
-      if (!SHA40_RE.test(sourceHead) || sourceHead !== preparation.headSha || sourceTree !== preparation.treeSha) {
-        throw conflict("Formal-QA source does not contain the sealed exact head and tree", {
-          code: "formal_qa_checkout_source_mismatch",
-        });
-      }
-
-      await fs.mkdir(instanceRoot, { recursive: true, mode: 0o700 });
-      await ensureDirectoryNoSymlink(instanceRoot);
-      const checkoutRoot = path.resolve(instanceRoot, "formal-qa-checkouts");
-      await fs.mkdir(checkoutRoot, { recursive: true, mode: 0o700 });
-      await ensureDirectoryNoSymlink(checkoutRoot);
-      const companyRoot = path.resolve(checkoutRoot, preparation.companyId);
-      if (!isPathInside(checkoutRoot, companyRoot)) throw new Error("Formal-QA checkout company path escaped its root");
-      await fs.mkdir(companyRoot, { recursive: true, mode: 0o700 });
-      await ensureDirectoryNoSymlink(companyRoot);
-      const checkoutPath = path.resolve(companyRoot, preparation.id);
-      if (!isPathInside(companyRoot, checkoutPath)) throw new Error("Formal-QA checkout path escaped its company root");
-
-      const [existing] = await tx.select().from(formalQaCheckouts)
-        .where(eq(formalQaCheckouts.preparationId, preparation.id)).limit(1);
-      if (existing) {
-        if (existing.repoRoot !== repoRoot || existing.checkoutPath !== checkoutPath ||
-          existing.repository !== preparation.repository || existing.headSha !== preparation.headSha ||
-          existing.treeSha !== preparation.treeSha || existing.checkoutSha256 !== checkoutDigest({ preparation, repoRoot, checkoutPath })) {
-          throw conflict("Formal-QA checkout receipt differs from its sealed authority", {
-            code: "formal_qa_checkout_receipt_mismatch",
+    materialize: async ({ preparationId }: { preparationId: string }) => {
+      // First commit a durable, deterministic destination before an external
+      // Git operation. A process death after `worktree add` then leaves a
+      // recoverable `creating` receipt rather than an orphan that blocks every
+      // future attempt.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_checkout:${preparationId}`}, 0))`);
+        const [preparation] = await tx.select().from(formalQaPreparations)
+          .where(eq(formalQaPreparations.id, preparationId)).limit(1);
+        if (!preparation) throw notFound("Formal-QA preparation not found");
+        const [existing] = await tx.select().from(formalQaCheckouts)
+          .where(eq(formalQaCheckouts.preparationId, preparation.id)).limit(1);
+        assertPreparationStatus(preparation, Boolean(existing));
+        const [workspace] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.id, preparation.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, preparation.companyId),
+            eq(projectWorkspaces.projectId, preparation.projectId),
+          )).limit(1);
+        if (!workspace?.cwd) {
+          throw conflict("Formal-QA preparation has no local source repository", {
+            code: "formal_qa_checkout_source_unavailable",
           });
         }
-        await assertExactCheckout({ repoRoot, checkoutPath, preparation });
-        return { checkout: existing, replayed: true };
-      }
-
-      const kind = await pathKind(checkoutPath);
-      if (kind !== "missing") {
-        throw conflict("Formal-QA checkout destination already exists without an immutable receipt", {
-          code: "formal_qa_checkout_destination_occupied",
+        const plan = await resolvePlan(preparation, workspace.cwd);
+        if (existing) {
+          assertReceipt({ checkout: existing, preparation, plan });
+          return;
+        }
+        if (await pathKind(plan.checkoutPath) !== "missing") {
+          throw conflict("Formal-QA checkout destination already exists without an immutable receipt", {
+            code: "formal_qa_checkout_destination_occupied",
+          });
+        }
+        await tx.insert(formalQaCheckouts).values({
+          preparationId: preparation.id,
+          companyId: preparation.companyId,
+          projectId: preparation.projectId,
+          projectWorkspaceId: preparation.projectWorkspaceId,
+          repository: preparation.repository,
+          repoRoot: plan.repoRoot,
+          checkoutPath: plan.checkoutPath,
+          headSha: preparation.headSha,
+          treeSha: preparation.treeSha,
+          checkoutSha256: checkoutDigest({ preparation, ...plan }),
+          status: "creating",
         });
-      }
-      await gitOrThrow(["worktree", "add", "--detach", checkoutPath, preparation.headSha], repoRoot, "Formal-QA exact checkout could not be created");
-      await assertExactCheckout({ repoRoot, checkoutPath, preparation });
-      const [checkout] = await tx.insert(formalQaCheckouts).values({
-        preparationId: preparation.id,
-        companyId: preparation.companyId,
-        projectId: preparation.projectId,
-        projectWorkspaceId: preparation.projectWorkspaceId,
-        repository: preparation.repository,
-        repoRoot,
-        checkoutPath,
-        headSha: preparation.headSha,
-        treeSha: preparation.treeSha,
-        checkoutSha256: checkoutDigest({ preparation, repoRoot, checkoutPath }),
-      }).returning();
-      return { checkout: checkout!, replayed: false };
-    }),
+      });
 
-    inspectPreparation: loadPreparation,
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_checkout:${preparationId}`}, 0))`);
+        const [preparation] = await tx.select().from(formalQaPreparations)
+          .where(eq(formalQaPreparations.id, preparationId)).limit(1);
+        if (!preparation) throw notFound("Formal-QA preparation not found");
+        const [checkout] = await tx.select().from(formalQaCheckouts)
+          .where(eq(formalQaCheckouts.preparationId, preparation.id)).limit(1);
+        if (!checkout) throw new Error("Formal-QA checkout receipt disappeared during materialization");
+        assertPreparationStatus(preparation, true);
+        const [workspace] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.id, preparation.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, preparation.companyId),
+            eq(projectWorkspaces.projectId, preparation.projectId),
+          )).limit(1);
+        if (!workspace?.cwd) {
+          throw conflict("Formal-QA preparation has no local source repository", {
+            code: "formal_qa_checkout_source_unavailable",
+          });
+        }
+        const plan = await resolvePlan(preparation, workspace.cwd);
+        assertReceipt({ checkout, preparation, plan });
+        if (checkout.status === "verified") {
+          await assertExactCheckout({ ...plan, preparation });
+          return { checkout, replayed: true };
+        }
+
+        const kind = await pathKind(plan.checkoutPath);
+        if (kind === "missing") {
+          await gitOrThrow(["worktree", "add", "--detach", plan.checkoutPath, preparation.headSha], plan.repoRoot, "Formal-QA exact checkout could not be created");
+        } else if (kind !== "directory") {
+          throw conflict("Formal-QA checkout destination is not a trusted directory", {
+            code: "formal_qa_checkout_destination_occupied",
+          });
+        }
+        await assertExactCheckout({ ...plan, preparation });
+        const [verified] = await tx.update(formalQaCheckouts)
+          .set({ status: "verified" })
+          .where(and(eq(formalQaCheckouts.id, checkout.id), eq(formalQaCheckouts.status, "creating")))
+          .returning();
+        if (!verified) throw new Error("Formal-QA checkout receipt changed during materialization");
+        return { checkout: verified, replayed: false };
+      });
+    },
   };
 }

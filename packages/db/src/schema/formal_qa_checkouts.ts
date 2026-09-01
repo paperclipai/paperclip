@@ -35,7 +35,7 @@ export const formalQaCheckouts = pgTable(
     headSha: text("head_sha").notNull(),
     treeSha: text("tree_sha").notNull(),
     checkoutSha256: text("checkout_sha256").notNull(),
-    status: text("status").notNull().default("verified"),
+    status: text("status").notNull().default("creating"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({

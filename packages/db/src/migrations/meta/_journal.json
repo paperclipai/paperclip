@@ -1660,6 +1660,13 @@
       "when": 1788295238179,
       "tag": "0238_massive_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1788295686585,
+      "tag": "0239_thick_lyja",
+      "breakpoints": true
     }
   ]
 }
