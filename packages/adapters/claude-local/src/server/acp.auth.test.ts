@@ -492,6 +492,8 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
     "CLAUDE_CODE_USE_BEDROCK",
     "ANTHROPIC_BEDROCK_BASE_URL",
   ];
@@ -671,6 +673,8 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
   });
 
   it("runs the host login probe with local Bedrock config and reports a passing result", async () => {
+    process.env.AWS_CONFIG_FILE = "/trusted/aws/config";
+    process.env.AWS_SHARED_CREDENTIALS_FILE = "/trusted/aws/credentials";
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
     const result = await testClaudeAcpEnvironment({
@@ -693,6 +697,8 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
     expect(spawnedEnv.CLAUDE_CODE_USE_BEDROCK).toBe("1");
     expect(spawnedEnv.ANTHROPIC_BEDROCK_BASE_URL).toBe("https://bedrock.us-east-1.amazonaws.com");
+    expect(spawnedEnv.AWS_CONFIG_FILE).toBe("/trusted/aws/config");
+    expect(spawnedEnv.AWS_SHARED_CREDENTIALS_FILE).toBe("/trusted/aws/credentials");
     expect(result.checks.some((check) => check.code === "claude_acp_bedrock_auth")).toBe(true);
     expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
     expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);

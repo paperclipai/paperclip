@@ -682,6 +682,10 @@ export async function testClaudeAcpEnvironment(
   const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
   const hostAuthToken = considerHostEnv ? process.env.ANTHROPIC_AUTH_TOKEN : undefined;
   const hostConfigDir = considerHostEnv ? process.env.CLAUDE_CONFIG_DIR : undefined;
+  const hostAwsConfigFile = considerHostEnv ? process.env.AWS_CONFIG_FILE : undefined;
+  const hostAwsCredentialsFile = considerHostEnv
+    ? process.env.AWS_SHARED_CREDENTIALS_FILE
+    : undefined;
   if (hasBedrock) {
     checks.push({
       code: "claude_acp_bedrock_auth",
@@ -767,6 +771,19 @@ export async function testClaudeAcpEnvironment(
     // reports a false claude_hello_probe_auth_required and fails the Test lane.
     if (isNonEmpty(hostConfigDir) && !isNonEmpty(probeEnv.CLAUDE_CONFIG_DIR)) {
       probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
+    }
+    // A local Bedrock run inherits the host AWS config and shared-credentials
+    // file locations. Preserve the same trusted host paths for the mandatory
+    // probe so a valid non-default AWS setup is not rejected by the Test lane.
+    if (hasBedrock && isNonEmpty(hostAwsConfigFile) && !isNonEmpty(probeEnv.AWS_CONFIG_FILE)) {
+      probeEnv.AWS_CONFIG_FILE = hostAwsConfigFile.trim();
+    }
+    if (
+      hasBedrock &&
+      isNonEmpty(hostAwsCredentialsFile) &&
+      !isNonEmpty(probeEnv.AWS_SHARED_CREDENTIALS_FILE)
+    ) {
+      probeEnv.AWS_SHARED_CREDENTIALS_FILE = hostAwsCredentialsFile.trim();
     }
     checks.push(
       ...(await prepareSandboxClaudeProbeRuntime({

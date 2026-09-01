@@ -147,7 +147,23 @@ export async function runClaudeHelloProbe(input: {
   }
 
   if (exitCode === 0) {
-    const hasHello = /\bhello\b/i.test(parsedStream.summary);
+    const hasSuccessfulTerminalResult =
+      parsed !== null && parsed.subtype === "success" && parsed.is_error === false;
+    const hasHello = hasSuccessfulTerminalResult && /\bhello\b/i.test(parsedStream.summary);
+    if (!hasSuccessfulTerminalResult) {
+      logSandboxProbeDiagnostic(
+        "Claude hello probe ended without a successful terminal result",
+        "incomplete_result",
+      );
+      return [
+        {
+          code: "claude_hello_probe_failed",
+          level: "error",
+          message: "Claude hello probe ended without a successful terminal result.",
+          hint: "Retry after verifying the provider completes the fixed hello check.",
+        },
+      ];
+    }
     if (!hasHello) {
       logSandboxProbeDiagnostic(
         "Claude hello probe returned unexpected output",

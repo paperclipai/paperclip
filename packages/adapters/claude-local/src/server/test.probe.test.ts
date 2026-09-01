@@ -194,6 +194,32 @@ afterEach(() => {
 });
 
 describe("claude sandbox hello probe diagnostics", () => {
+  it("rejects exit-zero assistant text without a successful terminal result", async () => {
+    probeResult.value = {
+      exitCode: 0,
+      stdout: [
+        initLine,
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(true);
+    expect(JSON.stringify(warnSpy.mock.calls)).toContain("incomplete_result");
+    warnSpy.mockRestore();
+  });
+
   it("keeps the raw failure result out of every check and out of the log", async () => {
     // The non-zero result event carries a marker. The check must not repeat the
     // marker, and the log must carry only the allowlisted classification.

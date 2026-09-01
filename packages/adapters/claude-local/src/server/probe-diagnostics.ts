@@ -28,6 +28,8 @@ const MAX_ERROR_CLASS_NAME_CHARS = 64;
  *   - `empty_output`: the probe produced no output.
  *   - `unexpected_output`: the probe ran and exited zero, but the output did
  *     not match the expected reply.
+ *   - `incomplete_result`: the probe exited zero without a successful terminal
+ *     result event.
  */
 export type SandboxProbeDiagnosticClassification =
   | "timeout"
@@ -35,7 +37,8 @@ export type SandboxProbeDiagnosticClassification =
   | "nonzero_exit"
   | "spawn_error"
   | "empty_output"
-  | "unexpected_output";
+  | "unexpected_output"
+  | "incomplete_result";
 
 /**
  * The safe structured fields a call site may add to a probe diagnostic. Each

@@ -58,7 +58,7 @@ if (argv.includes("--effort")) {
   process.exit(1);
 }
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -298,7 +298,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
 
-  it("uses --allowedTools instead of --dangerously-skip-permissions for sandbox hello probes", async () => {
+  it("uses the fixed no-tool boundary for sandbox hello probes", async () => {
     const executeCalls: Array<{ command: string; args?: string[] }> = [];
 
     const result = await testEnvironment({
@@ -325,6 +325,8 @@ describe("claude_local environment diagnostics", () => {
                   JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
                   JSON.stringify({
                     type: "result",
+                    subtype: "success",
+                    is_error: false,
                     result: "hello",
                     usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
                   }),
@@ -353,10 +355,12 @@ describe("claude_local environment diagnostics", () => {
     const probeCall = executeCalls.find((call) => call.command === "claude");
     expect(probeCall?.args).not.toContain("--dangerously-skip-permissions");
     expect(probeCall?.args).not.toContain("--permission-mode");
-    // Sandbox probes pass `--allowedTools` so any tool invocation triggered
-    // by the probe prompt cannot stall waiting for an interactive permission
-    // approval that no human is present to answer.
-    expect(probeCall?.args).toContain("--allowedTools");
+    expect(probeCall?.args).not.toContain("--allowedTools");
+    expect(probeCall?.args).not.toContain("--allowed-tools");
+    expect(probeCall?.args).toContain("--safe-mode");
+    const toolsIndex = probeCall?.args.indexOf("--tools") ?? -1;
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(probeCall?.args[toolsIndex + 1]).toBe("");
   });
 
   it("uses the managed Claude config seed for sandbox hello probes", async () => {
@@ -403,7 +407,7 @@ if (fs.readFileSync(path.join(configDir, "CLAUDE.md"), "utf8") !== "seed instruc
   fail("CLAUDE.md seed was not materialized");
 }
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `, "utf8");
     await fs.chmod(commandPath, 0o755);
 
