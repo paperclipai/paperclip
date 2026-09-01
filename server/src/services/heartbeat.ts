@@ -23700,7 +23700,32 @@ export function heartbeatService(
                 // can ever be true for a row blocked this way, and clear
                 // blockedOwnerNotifiedAt the same way update()'s own entry
                 // branch does for a fresh block.
-                ...deriveBlockedEntryPatch(issue.blockedTransitionAt, now),
+                //
+                // This guard's own condition above (issue.status !== "done"
+                // && issue.status !== "cancelled") does not require the row
+                // to already be "blocked" -- the common case reaching this
+                // line is a fresh transition into blocked from todo/
+                // in_progress, exactly like update()'s entry branch in
+                // issues.ts. deriveBlockedEntryPatch is idempotent (no-op
+                // when a stamp already exists), which is correct for a true
+                // self-heal (a row that re-hits this guard on a later tick
+                // while it is still "blocked") but wrong for a fresh entry:
+                // blockedTransitionAt doubles as the issue_blockers_resolved
+                // dependency-wake cycle key (see
+                // wakeCoversIssueBlockersResolvedReadyState in
+                // issue-dependency-wakeups.ts), and a stale stamp left over
+                // from an earlier blocked cycle that exited without clearing
+                // it would let a completed wake from that old cycle match
+                // the new cycle's key and silently suppress the new wake
+                // this transition should produce. So: advance the stamp
+                // unconditionally on a fresh (non-"blocked") entry, and only
+                // fall back to the idempotent self-heal helper once the row
+                // is already "blocked" -- mirroring the same split
+                // issues.ts's update() makes between its entry branch and
+                // its self-heal branch.
+                ...(issue.status === "blocked"
+                  ? deriveBlockedEntryPatch(issue.blockedTransitionAt, now)
+                  : { blockedTransitionAt: now }),
                 blockedOwnerNotifiedAt: null,
               })
               .where(eq(issues.id, issue.id));
