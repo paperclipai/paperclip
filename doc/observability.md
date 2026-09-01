@@ -237,10 +237,10 @@ OpenTelemetry packages above. `@sentry/node` is an *optional peer
 dependency*: it is not in the default lockfile, and the server loads it
 dynamically only when the backend DSN resolves to a value.
 `server/package.json` declares this exact version; installing a different
-version defeats the audit, so
-the server checks the installed version against the declared one at
-startup and logs one diagnostic instead of enabling error monitoring on a
-mismatch (see "Server request data" below).
+version defeats the audit, so the server checks the installed version
+against the declared one at startup and logs one diagnostic instead of
+enabling error monitoring on a mismatch (see "Server request data"
+below).
 
 ```bash
 pnpm add @sentry/node@10.71.0
