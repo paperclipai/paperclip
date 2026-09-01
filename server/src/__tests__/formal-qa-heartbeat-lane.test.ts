@@ -100,7 +100,7 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
     await tempDb?.cleanup();
   });
 
-  async function fixture() {
+  async function fixture(input: { expiresAt?: Date } = {}) {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-heartbeat-repo-"));
     const paperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-heartbeat-home-"));
     tempDirs.push(root, paperclipHome);
@@ -167,6 +167,7 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
       createdByUserId: "board-user",
       updatedByUserId: "board-user",
     });
+    const expiresAt = input.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
     await db.insert(formalQaPreparations).values({
       id: preparationId,
       companyId,
@@ -174,19 +175,31 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
       projectWorkspaceId,
       repository: "vivus-tech/music-tracker",
       prNumber: 1902,
+      headSha: "0".repeat(40),
+      baseRef: "pending",
+      baseSha: "0".repeat(40),
+      treeSha: "0".repeat(40),
+      evidenceSha256: "0".repeat(64),
+      issuerReceiptSha256: "0".repeat(64),
+      issuerOperationId: `request:${preparationId}:v1`,
+      issuedByUserId: "board-user",
+      idempotencyKey: `formal-heartbeat-${preparationId}`,
+      requestSha256: "c".repeat(64),
+      expiresAt,
+      status: "prepared",
+    });
+    await db.update(formalQaPreparations).set({
       headSha,
       baseRef: "main",
       baseSha: headSha,
       treeSha,
       evidenceSha256: "a".repeat(64),
-      issuerReceiptSha256: "b".repeat(64),
-      issuerOperationId: "test-heartbeat-formal-qa-issuance",
-      issuedByUserId: "board-user",
-      idempotencyKey: `formal-heartbeat-${preparationId}`,
-      requestSha256: "c".repeat(64),
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      issuerReceiptSha256: "a".repeat(64),
+      issuerOperationId: `github-pr:vivus-tech/music-tracker#1902@${headSha}:policy:${policyId}:v1`,
       status: "issued",
-    });
+      expiresAt,
+      updatedAt: new Date(),
+    }).where(eq(formalQaPreparations.id, preparationId));
     await db.insert(formalQaIssuances).values({
       preparationId,
       policyId,
@@ -423,5 +436,129 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
       terminalReason: "Formal-QA reviewer process was lost after its bounded retry",
     });
     await expect(access(claimed.scratchPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("atomically cancels the bound review on agent pause and aborts the live Formal-QA executor", async () => {
+    const f = await fixture();
+    let observedAbort = false;
+    formalQaExecutor.mockImplementation(async (input: { signal?: AbortSignal }) => new Promise((_, reject) => {
+      const abort = () => {
+        observedAbort = true;
+        reject(new Error("formal_qa_codex_cancelled"));
+      };
+      if (input.signal?.aborted) abort();
+      else input.signal?.addEventListener("abort", abort, { once: true });
+    }));
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, formalQaExecutor });
+    await heartbeat.resumeQueuedRuns();
+    const deadline = Date.now() + 5_000;
+    while (formalQaExecutor.mock.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(formalQaExecutor).toHaveBeenCalledOnce();
+
+    expect(await heartbeat.cancelActiveForAgent(f.reviewerAgentId, "Cancelled due to agent pause")).toBe(1);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(observedAbort).toBe(true);
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({
+      status: "cancelled",
+      decision: null,
+      terminalReason: "Cancelled due to agent pause",
+    });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "cancelled" });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "cancelled" })]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.review.executionWorkspaceId)))
+      .toEqual([expect.objectContaining({ status: "archived", cleanupReason: "formal_qa_terminal:cancelled" })]);
+    await expect(access(path.join(f.instanceRoot, "formal-qa-review-scratch", f.companyId, f.review.id)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reaper preserves a committed approval and converges stale run, wakeup, and workspace rows", async () => {
+    const f = await fixture();
+    await f.reviews.claimRun({
+      reviewId: f.review.id,
+      runId: f.review.heartbeatRunId,
+      companyId: f.companyId,
+      agentId: f.reviewerAgentId,
+    });
+    const artifact = JSON.stringify({
+      schema: "paperclip.formal-qa-review-decision/v1",
+      reviewId: f.review.id,
+      runId: f.review.heartbeatRunId,
+      headSha: f.review.headSha,
+      treeSha: f.review.treeSha,
+      contractSha256: f.review.contractSha256,
+      decision: "approved",
+      summary: "Approval committed before scheduler projection.",
+      findings: [],
+    });
+    await f.reviews.finishRun({
+      reviewId: f.review.id,
+      runId: f.review.heartbeatRunId,
+      companyId: f.companyId,
+      agentId: f.reviewerAgentId,
+      succeeded: true,
+      output: artifact,
+    });
+    const stale = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, updatedAt: stale })
+      .where(eq(heartbeatRuns.id, f.review.heartbeatRunId));
+    await db.update(agentWakeupRequests).set({ status: "running", finishedAt: null, updatedAt: stale })
+      .where(eq(agentWakeupRequests.id, f.review.wakeupRequestId));
+    await db.update(executionWorkspaces).set({ status: "active", closedAt: null, cleanupReason: null, updatedAt: stale })
+      .where(eq(executionWorkspaces.id, f.review.executionWorkspaceId));
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, formalQaExecutor });
+    expect(await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 }))
+      .toEqual({ reaped: 1, runIds: [f.review.heartbeatRunId] });
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({ status: "approved", decision: "approved" });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "succeeded", error: null });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "completed", error: null })]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.review.executionWorkspaceId)))
+      .toEqual([expect.objectContaining({ status: "archived", cleanupReason: "formal_qa_terminal:approved" })]);
+  });
+
+  it("expires queued Formal-QA authority while the reviewer fleet is paused", async () => {
+    const f = await fixture({ expiresAt: new Date(Date.now() + 1_500) });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.reviewerAgentId));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, f.review.expiresAt.getTime() - Date.now() + 20)));
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, formalQaExecutor });
+    expect(await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).toEqual({ reaped: 0, runIds: [] });
+    expect(formalQaExecutor).not.toHaveBeenCalled();
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({ status: "expired", decision: null });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "failed", errorCode: "formal_qa_review_expired" });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "failed" })]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.review.executionWorkspaceId)))
+      .toEqual([expect.objectContaining({ status: "archived", cleanupReason: "formal_qa_terminal:expired" })]);
+  });
+
+  it("expiry aborts a running Formal-QA executor and late completion cannot replace expiry", async () => {
+    const f = await fixture({ expiresAt: new Date(Date.now() + 1_500) });
+    let observedAbort = false;
+    formalQaExecutor.mockImplementation(async (input: { signal?: AbortSignal }) => new Promise((_, reject) => {
+      const abort = () => { observedAbort = true; reject(new Error("formal_qa_review_expired")); };
+      if (input.signal?.aborted) abort();
+      else input.signal?.addEventListener("abort", abort, { once: true });
+    }));
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, formalQaExecutor });
+    await heartbeat.resumeQueuedRuns();
+    const startedDeadline = Date.now() + 5_000;
+    while (formalQaExecutor.mock.calls.length === 0 && Date.now() < startedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(formalQaExecutor).toHaveBeenCalledOnce();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, f.review.expiresAt.getTime() - Date.now() + 20)));
+    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 60_000 });
+    await heartbeat.drainActiveRunExecutions();
+    expect(observedAbort).toBe(true);
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({ status: "expired", decision: null });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({ status: "failed", errorCode: "formal_qa_review_expired" });
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.review.executionWorkspaceId)))
+      .toEqual([expect.objectContaining({ status: "archived", cleanupReason: "formal_qa_terminal:expired" })]);
   });
 });

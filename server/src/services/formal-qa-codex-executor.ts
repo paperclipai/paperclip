@@ -49,7 +49,7 @@ const MAX_SEARCH_RESULTS = 100;
 
 type SealedSourceEntry = Readonly<{
   path: string;
-  mode: "100644" | "100755";
+  mode: "100644" | "100755" | "120000";
   sha256: string;
   size: number;
 }>;
@@ -168,6 +168,7 @@ export async function executeFormalQaCodexAppServer(input: {
   prompt: string;
   model: string | null;
   timeoutMs: number;
+  signal?: AbortSignal;
   environment?: NodeJS.ProcessEnv;
   sealedContent: FormalQaSealedContent;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -229,6 +230,15 @@ export async function executeFormalQaCodexAppServer(input: {
     rejectTimeout?.(error);
   }, input.timeoutMs);
   timer.unref?.();
+  const abortFromCaller = () => {
+    const reason = input.signal?.reason instanceof Error
+      ? input.signal.reason
+      : new Error("formal_qa_codex_cancelled");
+    controller.abort(reason);
+    rejectTimeout?.(reason);
+  };
+  if (input.signal?.aborted) abortFromCaller();
+  else input.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const options: CodexAppServerDriverOptions = {
     taskEnvelope: FORMAL_QA_ENVELOPE,
     conversationMode: "direct",
@@ -293,8 +303,12 @@ export async function executeFormalQaCodexAppServer(input: {
     return await Promise.race([complete, timeout]);
   } finally {
     clearTimeout(timer);
-    if (timedOut && executionState.activeTurnId && executionState.session?.interrupt) {
-      await executionState.session.interrupt({ turnId: executionState.activeTurnId, reason: "formal_qa_codex_timeout" }).catch(() => undefined);
+    input.signal?.removeEventListener("abort", abortFromCaller);
+    if (controller.signal.aborted && executionState.activeTurnId && executionState.session?.interrupt) {
+      await executionState.session.interrupt({
+        turnId: executionState.activeTurnId,
+        reason: timedOut ? "formal_qa_codex_timeout" : "formal_qa_codex_cancelled",
+      }).catch(() => undefined);
     }
     await executionState.session?.close({ reason: "formal_qa_terminal", force: true }).catch(() => undefined);
     await rm(providerHome, { recursive: true, force: true }).catch(() => undefined);

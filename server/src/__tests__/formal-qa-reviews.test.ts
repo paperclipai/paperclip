@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
@@ -78,7 +78,10 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     await db.delete(formalQaCheckouts);
     await db.delete(formalQaIssuances);
     await db.delete(formalQaPolicies);
-    await db.delete(formalQaPreparations);
+    // Preparation receipts are immutable while their tenant exists. Tests use
+    // PostgreSQL's administrative reset path rather than exercising a direct
+    // application DELETE that production correctly rejects.
+    await db.execute(sql`TRUNCATE TABLE formal_qa_preparations CASCADE`);
     await db.delete(agents);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -90,7 +93,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     await tempDb?.cleanup();
   });
 
-  async function fixture() {
+  async function fixture(populate?: (source: string) => Promise<void>) {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-review-repo-"));
     const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-review-home-"));
     const source = path.join(root, "source");
@@ -99,7 +102,8 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
     await mkdir(source, { recursive: true });
     git(source, "init");
     await writeFile(path.join(source, "README.md"), "sealed formal QA source\n");
-    git(source, "add", "README.md");
+    await populate?.(source);
+    git(source, "add", "-A");
     git(source, "commit", "-m", "sealed source");
     git(root, "init", "--bare", remote);
     git(source, "remote", "add", "origin", remote);
@@ -154,6 +158,7 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       createdByUserId: "board-user",
       updatedByUserId: "board-user",
     });
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
     await db.insert(formalQaPreparations).values({
       id: preparationId,
       companyId,
@@ -161,19 +166,31 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       projectWorkspaceId,
       repository: "vivus-tech/music-tracker",
       prNumber: 1902,
+      headSha: "0".repeat(40),
+      baseRef: "pending",
+      baseSha: "0".repeat(40),
+      treeSha: "0".repeat(40),
+      evidenceSha256: "0".repeat(64),
+      issuerReceiptSha256: "0".repeat(64),
+      issuerOperationId: `request:${preparationId}:v1`,
+      issuedByUserId: "board-user",
+      idempotencyKey: `formal-review-${preparationId}`,
+      requestSha256: "c".repeat(64),
+      expiresAt,
+      status: "prepared",
+    });
+    await db.update(formalQaPreparations).set({
       headSha,
       baseRef: "main",
       baseSha: headSha,
       treeSha,
       evidenceSha256: "a".repeat(64),
-      issuerReceiptSha256: "b".repeat(64),
-      issuerOperationId: "test-formal-qa-issuance",
-      issuedByUserId: "board-user",
-      idempotencyKey: `formal-review-${preparationId}`,
-      requestSha256: "c".repeat(64),
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      issuerReceiptSha256: "a".repeat(64),
+      issuerOperationId: `github-pr:vivus-tech/music-tracker#1902@${headSha}:policy:${policyId}:v1`,
       status: "issued",
-    });
+      expiresAt,
+      updatedAt: new Date(),
+    }).where(eq(formalQaPreparations.id, preparationId));
     await db.insert(formalQaIssuances).values({
       preparationId,
       policyId,
@@ -330,6 +347,33 @@ describeEmbeddedPostgres("Formal-QA review lifecycle", () => {
       contextSnapshot: { schema: "paperclip.formal-qa-review-context/v1", formalQaReviewId: review.id },
     });
   });
+
+  it("seals repositories larger than 32 MiB and exposes tracked symlinks only as inert Git blobs", async () => {
+    const largeSize = 33 * 1024 * 1024;
+    const f = await fixture(async (source) => {
+      await writeFile(path.join(source, "large-model.bin"), "");
+      await truncate(path.join(source, "large-model.bin"), largeSize);
+      await symlink("../../outside-review-root", path.join(source, "inert-link"));
+    });
+    const { review } = await f.reviews.queue({ preparationId: f.preparationId });
+    await f.reviews.claimRun({
+      reviewId: review.id,
+      runId: review.heartbeatRunId,
+      companyId: f.companyId,
+      agentId: f.reviewerAgentId,
+    });
+    const binding = { reviewId: review.id, runId: review.heartbeatRunId, companyId: f.companyId, agentId: f.reviewerAgentId };
+    const files = await f.reviews.listSourceFiles(binding);
+    expect(files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "large-model.bin", mode: "100644", size: largeSize }),
+      expect.objectContaining({ path: "inert-link", mode: "120000", size: 25 }),
+    ]));
+    expect(JSON.stringify(files)).not.toContain(f.checkout.checkoutPath);
+    const link = await f.reviews.readSourceFile({ ...binding, path: "inert-link" });
+    expect(link).toMatchObject({ path: "inert-link", mode: "120000", size: 25 });
+    expect(link.content.toString("utf8")).toBe("../../outside-review-root");
+    expect(JSON.stringify({ path: link.path, mode: link.mode, sha256: link.sha256, size: link.size })).not.toContain(f.checkout.checkoutPath);
+  }, 30_000);
 
   it("rejects wrong review/run/agent/company bindings before claim", async () => {
     const f = await fixture();

@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -137,12 +137,19 @@ function assertSourceSnapshot(input: {
   return expected;
 }
 
-const SOURCE_MANIFEST_MAX_ENTRIES = 10_000;
-const SOURCE_MANIFEST_MAX_BYTES = 32 * 1024 * 1024;
+// These bounds admit both of the repositories this lane is designed to
+// review (currently ~6k entries / 150-170 MiB) without allowing a policy to
+// turn manifest publication into unbounded memory or database growth.
+const SOURCE_MANIFEST_MAX_ENTRIES = 25_000;
+const SOURCE_MANIFEST_MAX_BLOB_BYTES = 64 * 1024 * 1024;
+const SOURCE_MANIFEST_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+const SOURCE_MANIFEST_MAX_JSON_BYTES = 16 * 1024 * 1024;
+const SOURCE_MANIFEST_MAX_LISTING_BYTES = 16 * 1024 * 1024;
 const GIT_BLOB_RE = /^[0-9a-f]{40,64}$/;
 const TRUSTED_GIT_BINARY = "/usr/bin/git";
 let trustedGitBinaryCheck: Promise<void> | null = null;
-type FormalQaSourceEntry = Readonly<{ path: string; mode: "100644" | "100755"; blobSha: string; sha256: string; size: number }>;
+type FormalQaSourceMode = "100644" | "100755" | "120000";
+type FormalQaSourceEntry = Readonly<{ path: string; mode: FormalQaSourceMode; blobSha: string; sha256: string; size: number }>;
 type FormalQaSourceManifest = Readonly<{
   schema: "paperclip.formal-qa-source-manifest/v1";
   headSha: string;
@@ -160,18 +167,27 @@ function assertTrustedGitBinary(): Promise<void> {
   return trustedGitBinaryCheck;
 }
 
-async function gitBuffer(args: string[], cwd: string): Promise<Buffer> {
+function isolatedGitArgs(args: string[]): string[] {
+  return [
+    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesfile=/dev/null",
+    "-c", "protocol.file.allow=never", "-c", "protocol.allow=never", ...args,
+  ];
+}
+
+const ISOLATED_GIT_ENV = {
+  PATH: "/usr/bin:/bin", HOME: "/nonexistent", LANG: "C.UTF-8", LC_ALL: "C.UTF-8",
+  GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1",
+};
+
+async function gitBuffer(args: string[], cwd: string, maxBuffer = SOURCE_MANIFEST_MAX_BLOB_BYTES + 1024 * 1024): Promise<Buffer> {
   try {
     await assertTrustedGitBinary();
-    const result = await execFileAsync(TRUSTED_GIT_BINARY, [
-      "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesfile=/dev/null",
-      "-c", "protocol.file.allow=never", "-c", "protocol.allow=never", ...args,
-    ], {
+    const result = await execFileAsync(TRUSTED_GIT_BINARY, isolatedGitArgs(args), {
       cwd,
       encoding: "buffer",
-      env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LANG: "C.UTF-8", LC_ALL: "C.UTF-8", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1" },
+      env: ISOLATED_GIT_ENV,
       timeout: 30_000,
-      maxBuffer: SOURCE_MANIFEST_MAX_BYTES + 1024 * 1024,
+      maxBuffer,
     });
     return result.stdout as unknown as Buffer;
   } catch {
@@ -179,7 +195,101 @@ async function gitBuffer(args: string[], cwd: string): Promise<Buffer> {
   }
 }
 
+/** Hash exact Git blobs with one bounded streaming `cat-file --batch`
+ * process. Blob bytes are fed directly into hashes and are never accumulated
+ * as a repository-sized buffer. Git's response order is required to match
+ * the sealed request order exactly. */
+async function hashGitBlobs(entries: readonly Pick<FormalQaSourceEntry, "blobSha" | "size">[], cwd: string): Promise<string[]> {
+  if (entries.length > SOURCE_MANIFEST_MAX_ENTRIES) {
+    throw conflict("Formal-QA source tree exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+  }
+  let declaredTotal = 0;
+  for (const entry of entries) {
+    if (!GIT_BLOB_RE.test(entry.blobSha) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > SOURCE_MANIFEST_MAX_BLOB_BYTES) {
+      throw conflict("Formal-QA source blob exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+    }
+    declaredTotal += entry.size;
+    if (declaredTotal > SOURCE_MANIFEST_MAX_TOTAL_BYTES) {
+      throw conflict("Formal-QA source tree exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+    }
+  }
+
+  try {
+    await assertTrustedGitBinary();
+    const child = spawn(TRUSTED_GIT_BINARY, isolatedGitArgs(["cat-file", "--batch"]), {
+      cwd,
+      env: ISOLATED_GIT_ENV,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const exit = new Promise<number | null>((resolve) => {
+      child.once("error", () => resolve(-1));
+      child.once("close", resolve);
+    });
+    const hashes: string[] = [];
+    let index = 0;
+    let pending = Buffer.alloc(0);
+    let remaining = -1;
+    let digest: ReturnType<typeof createHash> | null = null;
+    let stderrBytes = 0;
+    child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes > 64 * 1024) child.kill("SIGKILL"); });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+    try {
+      child.stdin.end(entries.map((entry) => `${entry.blobSha}\n`).join(""));
+
+      for await (const rawChunk of child.stdout) {
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+        pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+        while (pending.length) {
+          if (remaining < 0) {
+            const newline = pending.indexOf(0x0a);
+            if (newline < 0) {
+              if (pending.length > 256) throw new Error("oversized cat-file header");
+              break;
+            }
+            const entry = entries[index];
+            if (!entry) throw new Error("unexpected cat-file response");
+            const header = pending.subarray(0, newline).toString("ascii");
+            const match = header.match(/^([0-9a-f]{40,64}) blob (\d+)$/);
+            if (!match || match[1] !== entry.blobSha || Number(match[2]) !== entry.size) throw new Error("cat-file response mismatch");
+            pending = pending.subarray(newline + 1);
+            remaining = entry.size;
+            digest = createHash("sha256");
+          }
+          if (remaining > 0) {
+            const take = Math.min(remaining, pending.length);
+            digest!.update(pending.subarray(0, take));
+            pending = pending.subarray(take);
+            remaining -= take;
+            if (remaining > 0) break;
+          }
+          if (remaining === 0) {
+            if (!pending.length) break;
+            if (pending[0] !== 0x0a) throw new Error("cat-file response missing separator");
+            pending = pending.subarray(1);
+            hashes.push(digest!.digest("hex"));
+            digest = null;
+            remaining = -1;
+            index += 1;
+          }
+        }
+      }
+      const exitCode = await exit;
+      if (exitCode !== 0 || index !== entries.length || remaining !== -1 || pending.length !== 0 || hashes.length !== entries.length || stderrBytes !== 0) {
+        throw new Error("incomplete cat-file response");
+      }
+      return hashes;
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  } catch {
+    throw conflict("Formal-QA exact Git objects could not be read", { code: "formal_qa_review_source_snapshot_mismatch" });
+  }
+}
+
 function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect): FormalQaSourceManifest {
+  if (Buffer.byteLength(raw, "utf8") > SOURCE_MANIFEST_MAX_JSON_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw conflict("Formal-QA source manifest is invalid", { code: "formal_qa_review_source_snapshot_mismatch" }); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || canonicalJson(parsed) !== raw) {
@@ -195,44 +305,49 @@ function parseManifest(raw: string, review: typeof formalQaReviews.$inferSelect)
   let total = 0;
   for (const entry of manifest.entries) {
     if (!entry || typeof entry.path !== "string" || !entry.path || entry.path.startsWith("/") || entry.path.split("/").some((part: string) => part === "" || part === "." || part === "..") ||
-      (entry.mode !== "100644" && entry.mode !== "100755") || !GIT_BLOB_RE.test(entry.blobSha) || !/^[0-9a-f]{64}$/.test(entry.sha256) ||
-      !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > SOURCE_MANIFEST_MAX_BYTES || entry.path <= previous) {
+      (entry.mode !== "100644" && entry.mode !== "100755" && entry.mode !== "120000") || !GIT_BLOB_RE.test(entry.blobSha) || !/^[0-9a-f]{64}$/.test(entry.sha256) ||
+      !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > SOURCE_MANIFEST_MAX_BLOB_BYTES || entry.path <= previous) {
       throw conflict("Formal-QA source manifest entry is invalid", { code: "formal_qa_review_source_snapshot_mismatch" });
     }
     previous = entry.path;
     total += entry.size;
-    if (total > SOURCE_MANIFEST_MAX_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
+    if (total > SOURCE_MANIFEST_MAX_TOTAL_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
   }
   return manifest;
 }
 
 async function buildSourceManifest(authority: Awaited<ReturnType<ReturnType<typeof formalQaCheckoutService>["verifyForDispatch"]>>): Promise<{ json: string; sha256: string }> {
-  const listing = (await gitBuffer(["ls-tree", "-r", "-l", "-z", authority.preparation.headSha], authority.checkout.repoRoot)).toString("utf8");
-  const entries: FormalQaSourceEntry[] = [];
+  const listingBuffer = await gitBuffer(["ls-tree", "-r", "-l", "-z", authority.preparation.headSha], authority.checkout.repoRoot, SOURCE_MANIFEST_MAX_LISTING_BYTES);
+  const listing = listingBuffer.toString("utf8");
+  if (!Buffer.from(listing, "utf8").equals(listingBuffer)) throw conflict("Formal-QA source tree contains an unsupported path", { code: "formal_qa_review_source_snapshot_mismatch" });
+  const unsignedEntries: Omit<FormalQaSourceEntry, "sha256">[] = [];
   let total = 0;
   for (const item of listing.split("\0")) {
     if (!item) continue;
-    const match = item.match(/^(100644|100755) blob ([0-9a-f]{40,64})\s+(\d+)\t(.+)$/);
+    const match = item.match(/^(100644|100755|120000) blob ([0-9a-f]{40,64})\s+(\d+)\t(.+)$/);
     if (!match) throw conflict("Formal-QA source tree contains an unsupported entry", { code: "formal_qa_review_source_snapshot_mismatch" });
     const size = Number(match[3]);
-    const content = await gitBuffer(["cat-file", "blob", match[2]!], authority.checkout.repoRoot);
-    if (content.length !== size) throw conflict("Formal-QA source blob size differs from its tree", { code: "formal_qa_review_source_snapshot_mismatch" });
     total += size;
-    if (entries.length + 1 > SOURCE_MANIFEST_MAX_ENTRIES || total > SOURCE_MANIFEST_MAX_BYTES) {
+    if (!Number.isSafeInteger(size) || size < 0 || size > SOURCE_MANIFEST_MAX_BLOB_BYTES || unsignedEntries.length + 1 > SOURCE_MANIFEST_MAX_ENTRIES || total > SOURCE_MANIFEST_MAX_TOTAL_BYTES) {
       throw conflict("Formal-QA source tree exceeds its review bound", { code: "formal_qa_review_source_snapshot_mismatch" });
     }
-    entries.push({ path: match[4]!, mode: match[1] as "100644" | "100755", blobSha: match[2]!, sha256: createHash("sha256").update(content).digest("hex"), size });
+    unsignedEntries.push({ path: match[4]!, mode: match[1] as FormalQaSourceMode, blobSha: match[2]!, size });
   }
-  entries.sort((a, b) => a.path.localeCompare(b.path));
+  // Canonical JSON validation uses code-unit ordering; do not make the sealed
+  // order dependent on the host's ICU locale.
+  unsignedEntries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const hashes = await hashGitBlobs(unsignedEntries, authority.checkout.repoRoot);
+  const entries: FormalQaSourceEntry[] = unsignedEntries.map((entry, index) => ({ ...entry, sha256: hashes[index]! }));
   const json = canonicalJson({ schema: "paperclip.formal-qa-source-manifest/v1", headSha: authority.preparation.headSha, treeSha: authority.preparation.treeSha, entries });
+  if (Buffer.byteLength(json, "utf8") > SOURCE_MANIFEST_MAX_JSON_BYTES) throw conflict("Formal-QA source manifest exceeds its bound", { code: "formal_qa_review_source_snapshot_mismatch" });
   return { json, sha256: sha256(json) };
 }
 
 async function assertSourceManifest(review: typeof formalQaReviews.$inferSelect, authority: Awaited<ReturnType<ReturnType<typeof formalQaCheckoutService>["verifyForDispatch"]>>): Promise<FormalQaSourceManifest> {
   const manifest = parseManifest(review.sourceManifestJson, review);
-  for (const entry of manifest.entries) {
-    const content = await gitBuffer(["cat-file", "blob", entry.blobSha], authority.checkout.repoRoot);
-    if (content.length !== entry.size || createHash("sha256").update(content).digest("hex") !== entry.sha256) {
+  const hashes = await hashGitBlobs(manifest.entries, authority.checkout.repoRoot);
+  for (const [index, entry] of manifest.entries.entries()) {
+    if (hashes[index] !== entry.sha256) {
       throw conflict("Formal-QA source blob changed before execution", { code: "formal_qa_review_source_snapshot_mismatch" });
     }
   }
@@ -556,7 +671,24 @@ export function formalQaReviewService(db: Db, options?: {
       finishedAt: new Date(),
       updatedAt: new Date(),
     }).where(and(eq(formalQaReviews.id, review.id), eq(formalQaReviews.status, "queued"))).returning();
-    return failed ?? review;
+    const terminal = failed ?? review;
+    if (terminal.status === "failed") {
+      const reason = terminal.terminalReason ?? (input.reason.slice(0, 2_000) || "Formal-QA review failed before claim");
+      const now = terminal.finishedAt ?? new Date();
+      await tx.update(heartbeatRuns).set({
+        status: "failed", finishedAt: now, error: reason,
+        errorCode: "formal_qa_review_failed",
+        resultJson: { formalQaReviewId: terminal.id, formalQaReviewStatus: "failed", formalQaDecisionSha256: null },
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.id, terminal.heartbeatRunId), sql`${heartbeatRuns.status} in ('queued', 'running')`));
+      await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: now, error: reason, updatedAt: new Date() })
+        .where(and(eq(agentWakeupRequests.id, terminal.wakeupRequestId), sql`${agentWakeupRequests.status} in ('queued', 'running')`));
+      await tx.update(executionWorkspaces).set({
+        status: "archived", closedAt: now, cleanupEligibleAt: now,
+        cleanupReason: "formal_qa_terminal:failed", updatedAt: new Date(),
+      }).where(and(eq(executionWorkspaces.id, terminal.executionWorkspaceId), sql`${executionWorkspaces.status} <> 'archived'`));
+    }
+    return terminal;
   });
 
   function isFormalQaFinding(finding: unknown): finding is Record<string, unknown> {
@@ -646,8 +778,263 @@ export function formalQaReviewService(db: Db, options?: {
         updatedAt: new Date(),
       }).where(and(eq(formalQaReviews.id, locked.id), eq(formalQaReviews.status, "running"))).returning();
       if (!finished) throw conflict("Formal-QA review terminal claim was lost", { code: "formal_qa_review_not_running" });
+      const reviewCompleted = finished.status === "approved" || finished.status === "rejected";
+      const runStatus = reviewCompleted ? "succeeded" : "failed";
+      const terminalError = reviewCompleted ? null : (finished.terminalReason ?? "Formal-QA review failed closed");
+      await tx.update(heartbeatRuns).set({
+        status: runStatus,
+        finishedAt: new Date(),
+        error: terminalError,
+        errorCode: reviewCompleted ? null : `formal_qa_review_${finished.status}`,
+        resultJson: {
+          formalQaReviewId: finished.id,
+          formalQaReviewStatus: finished.status,
+          formalQaDecisionSha256: finished.decisionSha256,
+        },
+        updatedAt: new Date(),
+      }).where(and(
+        eq(heartbeatRuns.id, finished.heartbeatRunId),
+        eq(heartbeatRuns.companyId, finished.companyId),
+        eq(heartbeatRuns.agentId, finished.reviewerAgentId),
+        sql`${heartbeatRuns.status} in ('queued', 'running')`,
+      ));
+      await tx.update(agentWakeupRequests).set({
+        status: reviewCompleted ? "completed" : "failed",
+        finishedAt: new Date(),
+        error: terminalError,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(agentWakeupRequests.id, finished.wakeupRequestId),
+        eq(agentWakeupRequests.runId, finished.heartbeatRunId),
+        sql`${agentWakeupRequests.status} in ('queued', 'running')`,
+      ));
+      await tx.update(executionWorkspaces).set({
+        status: "archived",
+        closedAt: new Date(),
+        cleanupEligibleAt: new Date(),
+        cleanupReason: `formal_qa_terminal:${finished.status}`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(executionWorkspaces.id, finished.executionWorkspaceId),
+        eq(executionWorkspaces.companyId, finished.companyId),
+        sql`${executionWorkspaces.status} <> 'archived'`,
+      ));
       return finished;
     });
+  };
+
+  /**
+   * Cancel the review and its bound heartbeat rows under one review-scoped
+   * transaction lock. This is the control-plane cancellation boundary: after
+   * it commits, a late provider result can only observe the terminal review
+   * and cannot replace cancellation with a decision.
+   */
+  const cancelRun = async (input: {
+    reviewId: string;
+    runId: string;
+    companyId: string;
+    agentId: string;
+    reason: string;
+  }) => db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_review_run:${input.reviewId}`}, 0))`);
+    const locked = await tx.select().from(formalQaReviews).where(and(
+      eq(formalQaReviews.id, input.reviewId),
+      eq(formalQaReviews.heartbeatRunId, input.runId),
+      eq(formalQaReviews.companyId, input.companyId),
+      eq(formalQaReviews.reviewerAgentId, input.agentId),
+    )).for("update").limit(1).then((rows) => rows[0] ?? null);
+    if (!locked) throw conflict("Heartbeat run is not bound to this Formal-QA review", { code: "formal_qa_review_run_mismatch" });
+    const reason = input.reason.slice(0, 2_000) || "Formal-QA review cancelled by control plane";
+    let review = locked;
+    if (locked.status === "queued" || locked.status === "running") {
+      review = await tx.update(formalQaReviews).set({
+        status: "cancelled",
+        decision: null,
+        decisionArtifact: null,
+        decisionSha256: null,
+        terminalReason: reason,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(formalQaReviews.id, locked.id),
+        sql`${formalQaReviews.status} in ('queued', 'running')`,
+      )).returning().then((rows) => rows[0] ?? locked);
+    }
+    if (review.status === "cancelled") {
+      await tx.update(heartbeatRuns).set({
+        status: "cancelled",
+        finishedAt: new Date(),
+        error: review.terminalReason ?? reason,
+        errorCode: "cancelled",
+        resultJson: {
+          formalQaReviewId: review.id,
+          formalQaReviewStatus: review.status,
+          formalQaDecisionSha256: null,
+        },
+        updatedAt: new Date(),
+      }).where(and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        sql`${heartbeatRuns.status} in ('queued', 'running')`,
+      ));
+      await tx.update(agentWakeupRequests).set({
+        status: "cancelled",
+        finishedAt: new Date(),
+        error: review.terminalReason ?? reason,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(agentWakeupRequests.id, review.wakeupRequestId),
+        eq(agentWakeupRequests.runId, input.runId),
+        sql`${agentWakeupRequests.status} in ('queued', 'running')`,
+      ));
+      await tx.update(executionWorkspaces).set({
+        status: "archived",
+        closedAt: new Date(),
+        cleanupEligibleAt: new Date(),
+        cleanupReason: "formal_qa_terminal:cancelled",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(executionWorkspaces.id, review.executionWorkspaceId),
+        eq(executionWorkspaces.companyId, review.companyId),
+        sql`${executionWorkspaces.status} <> 'archived'`,
+      ));
+    }
+    return review;
+  });
+
+  /** Idempotently project an already-terminal immutable review onto the two
+   * mutable scheduler rows and archive its synthetic workspace. Used by the
+   * orphan reaper to close a process-death window after the decision commit. */
+  const convergeTerminalRun = async (input: {
+    reviewId: string;
+    runId: string;
+    companyId: string;
+    agentId: string;
+  }) => db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_review_run:${input.reviewId}`}, 0))`);
+    const review = await tx.select().from(formalQaReviews).where(and(
+      eq(formalQaReviews.id, input.reviewId),
+      eq(formalQaReviews.heartbeatRunId, input.runId),
+      eq(formalQaReviews.companyId, input.companyId),
+      eq(formalQaReviews.reviewerAgentId, input.agentId),
+    )).for("update").limit(1).then((rows) => rows[0] ?? null);
+    if (!review) throw conflict("Heartbeat run is not bound to this Formal-QA review", { code: "formal_qa_review_run_mismatch" });
+    if (!["approved", "rejected", "failed", "cancelled", "expired", "tainted"].includes(review.status)) {
+      return { review, converged: false as const };
+    }
+    const reviewCompleted = review.status === "approved" || review.status === "rejected";
+    const reviewCancelled = review.status === "cancelled";
+    const runStatus = reviewCompleted ? "succeeded" : reviewCancelled ? "cancelled" : "failed";
+    const wakeStatus = reviewCompleted ? "completed" : reviewCancelled ? "cancelled" : "failed";
+    const terminalError = reviewCompleted ? null : (review.terminalReason ?? `Formal-QA review ${review.status}`);
+    await tx.update(heartbeatRuns).set({
+      status: runStatus,
+      finishedAt: review.finishedAt ?? new Date(),
+      error: terminalError,
+      errorCode: reviewCompleted ? null : reviewCancelled ? "cancelled" : `formal_qa_review_${review.status}`,
+      resultJson: {
+        formalQaReviewId: review.id,
+        formalQaReviewStatus: review.status,
+        formalQaDecisionSha256: review.decisionSha256,
+      },
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      sql`${heartbeatRuns.status} in ('queued', 'running')`,
+    ));
+    await tx.update(agentWakeupRequests).set({
+      status: wakeStatus,
+      finishedAt: review.finishedAt ?? new Date(),
+      error: terminalError,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(agentWakeupRequests.id, review.wakeupRequestId),
+      eq(agentWakeupRequests.runId, input.runId),
+      sql`${agentWakeupRequests.status} in ('queued', 'running')`,
+    ));
+    await tx.update(executionWorkspaces).set({
+      status: "archived",
+      closedAt: review.finishedAt ?? new Date(),
+      cleanupEligibleAt: review.finishedAt ?? new Date(),
+      cleanupReason: `formal_qa_terminal:${review.status}`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(executionWorkspaces.id, review.executionWorkspaceId),
+      eq(executionWorkspaces.companyId, review.companyId),
+      sql`${executionWorkspaces.status} <> 'archived'`,
+    ));
+    return { review, converged: true as const, runStatus, wakeStatus, terminalError };
+  });
+
+  const expireRun = async (input: {
+    reviewId: string;
+    runId: string;
+    companyId: string;
+    agentId: string;
+    now?: Date;
+  }) => db.transaction(async (tx) => {
+    const now = input.now ?? new Date();
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`formal_qa_review_run:${input.reviewId}`}, 0))`);
+    const locked = await tx.select().from(formalQaReviews).where(and(
+      eq(formalQaReviews.id, input.reviewId),
+      eq(formalQaReviews.heartbeatRunId, input.runId),
+      eq(formalQaReviews.companyId, input.companyId),
+      eq(formalQaReviews.reviewerAgentId, input.agentId),
+    )).for("update").limit(1).then((rows) => rows[0] ?? null);
+    if (!locked) throw conflict("Heartbeat run is not bound to this Formal-QA review", { code: "formal_qa_review_run_mismatch" });
+    if (locked.expiresAt.getTime() > now.getTime() || !["queued", "running"].includes(locked.status)) return locked;
+    const reason = "Formal-QA review authority expired before a terminal decision";
+    const review = await tx.update(formalQaReviews).set({
+      status: "expired",
+      decision: null,
+      decisionArtifact: null,
+      decisionSha256: null,
+      terminalReason: reason,
+      finishedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(formalQaReviews.id, locked.id),
+      sql`${formalQaReviews.status} in ('queued', 'running')`,
+      lte(formalQaReviews.expiresAt, now),
+    )).returning().then((rows) => rows[0] ?? locked);
+    if (review.status !== "expired") return review;
+    await tx.update(heartbeatRuns).set({
+      status: "failed",
+      finishedAt: now,
+      error: reason,
+      errorCode: "formal_qa_review_expired",
+      resultJson: { formalQaReviewId: review.id, formalQaReviewStatus: "expired", formalQaDecisionSha256: null },
+      updatedAt: now,
+    }).where(and(eq(heartbeatRuns.id, input.runId), sql`${heartbeatRuns.status} in ('queued', 'running')`));
+    await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: now, error: reason, updatedAt: now })
+      .where(and(eq(agentWakeupRequests.id, review.wakeupRequestId), sql`${agentWakeupRequests.status} in ('queued', 'running')`));
+    await tx.update(executionWorkspaces).set({
+      status: "archived", closedAt: now, cleanupEligibleAt: now,
+      cleanupReason: "formal_qa_terminal:expired", updatedAt: now,
+    }).where(and(eq(executionWorkspaces.id, review.executionWorkspaceId), sql`${executionWorkspaces.status} <> 'archived'`));
+    return review;
+  });
+
+  const expireDueRuns = async (input: { now?: Date; limit?: number } = {}) => {
+    const now = input.now ?? new Date();
+    const due = await db.select({
+      reviewId: formalQaReviews.id,
+      runId: formalQaReviews.heartbeatRunId,
+      companyId: formalQaReviews.companyId,
+      agentId: formalQaReviews.reviewerAgentId,
+    }).from(formalQaReviews).where(and(
+      sql`${formalQaReviews.status} in ('queued', 'running')`,
+      lte(formalQaReviews.expiresAt, now),
+    )).orderBy(asc(formalQaReviews.expiresAt)).limit(Math.max(1, Math.min(input.limit ?? 100, 500)));
+    const expired: Array<{ reviewId: string; runId: string; companyId: string; agentId: string }> = [];
+    for (const candidate of due) {
+      const result = await expireRun({ ...candidate, now });
+      if (result.status === "expired") expired.push(candidate);
+    }
+    return expired;
   };
 
   const reconcileVerified = async (input: { companyId?: string; limit?: number } = {}) => {
@@ -739,7 +1126,7 @@ export function formalQaReviewService(db: Db, options?: {
     return { path: entry.path, mode: entry.mode, sha256: entry.sha256, size: entry.size, content };
   };
 
-  return { queue, reconcileVerified, loadRunBinding, claimRun, failQueuedRun, finishRun, verifyRetryAuthority, listSourceFiles, readSourceFile, list, getById };
+  return { queue, reconcileVerified, loadRunBinding, claimRun, failQueuedRun, finishRun, cancelRun, convergeTerminalRun, expireRun, expireDueRuns, verifyRetryAuthority, listSourceFiles, readSourceFile, list, getById };
 }
 
 export const formalQaReviewTestOnly = {

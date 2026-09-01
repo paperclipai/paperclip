@@ -17,6 +17,35 @@ afterEach(async () => {
 });
 
 describe("Formal-QA Codex executor", () => {
+  it("interrupts and force-closes a live turn when the control plane aborts it", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "formal-qa-scratch-"));
+    const hostHome = await mkdtemp(path.join(os.tmpdir(), "formal-qa-host-home-"));
+    tempDirs.push(scratch, hostHome);
+    const controller = new AbortController();
+    const interrupt = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    let turnStarted = false;
+    const execution = executeFormalQaCodexAppServer({
+      runId: "run-cancel", reviewId: "review-cancel", scratchPath: scratch, prompt: "sealed", model: null,
+      timeoutMs: 5_000, signal: controller.signal,
+      environment: { PATH: "/bin", HOME: hostHome, CODEX_HOME: hostHome },
+      sealedContent: { list: async () => [], read: async () => { throw new Error("unexpected_read"); } },
+      driverFactory: () => ({
+        openSession: async () => ({
+          startTurn: async () => { turnStarted = true; return { turnId: "turn-cancel" }; },
+          events: () => ({ [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<never>>(() => {}) }) }),
+          interrupt,
+          close,
+        }),
+      }) as never,
+    });
+    while (!turnStarted) await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort(new Error("board_cancelled"));
+    await expect(execution).rejects.toThrow("board_cancelled");
+    expect(interrupt).toHaveBeenCalledWith({ turnId: "turn-cancel", reason: "formal_qa_codex_cancelled" });
+    expect(close).toHaveBeenCalledWith({ reason: "formal_qa_terminal", force: true });
+  });
+
   it("bounds a hung provider, interrupts its accepted turn, and removes its disposable credential home", async () => {
     const scratch = await mkdtemp(path.join(os.tmpdir(), "formal-qa-scratch-"));
     const hostHome = await mkdtemp(path.join(os.tmpdir(), "formal-qa-host-home-"));
