@@ -221,6 +221,16 @@ describe("buildNativeExecutionInput wake projection", () => {
       model: "claude-sonnet-5",
       acpxPermissionMode: "deny-all",
     });
+    const defaultOpenCode = buildNativeExecutionInput({
+      ...common,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
+    });
+    const defaultAcpx = buildNativeExecutionInput({
+      ...common,
+      provider: "acpx",
+      model: "gpt-5.6-sol",
+    });
 
     expect(codex).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
@@ -233,6 +243,16 @@ describe("buildNativeExecutionInput wake projection", () => {
     expect(acpx).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "acpx", permissionMode: "deny-all" },
+    });
+    expect(defaultOpenCode).toMatchObject({
+      provider: { kind: "opencode", permissionMode: "ask" },
+    });
+    expect(defaultAcpx).toMatchObject({
+      provider: {
+        kind: "acpx",
+        agent: "codex",
+        permissionMode: "approve-reads",
+      },
     });
     expect(JSON.stringify([codex, opencode, acpx]))
       .not.toMatch(/OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET_ACCESS_KEY|PAPERCLIP_API_KEY/);

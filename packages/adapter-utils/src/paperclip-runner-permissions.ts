@@ -49,7 +49,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "allow",
+    defaultMode: "ask",
     description: "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
       { value: "allow", label: "Full auto (allow)", description: "Allow OpenCode operations without approval pauses." },
@@ -60,7 +60,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-all",
+    defaultMode: "approve-reads",
     description: "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [
       { value: "approve-all", label: "Full auto (approve all)", description: "Approve ACPX operations without approval pauses." },
@@ -71,7 +71,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
 } as const satisfies Record<PaperclipRunnerProvider, PaperclipRunnerPermissionCapability>;
 
 export function isPaperclipRunnerProvider(value: unknown): value is PaperclipRunnerProvider {
-  return typeof value === "string" && value in PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES;
+  return value === "codex" || value === "opencode" || value === "acpx";
 }
 
 export function resolvePaperclipRunnerPermissionMode(

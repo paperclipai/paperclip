@@ -62,7 +62,16 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     options: {
       provider: "opencode",
       stateDirectory: "/isolated/session",
-      environment: { PATH: "/bin", OPENROUTER_API_KEY: "test-provider-key" },
+      opencodePermissionMode: "deny",
+      environment: {
+        PATH: "/bin",
+        OPENROUTER_API_KEY: "test-provider-key",
+        HOME: "/host/home",
+        CODEX_HOME: "/host/codex-home",
+        DATABASE_URL: "must-not-reach-runnerd",
+        PAPERCLIP_API_KEY: "must-not-reach-runnerd",
+        NODE_OPTIONS: "--require=/untrusted/bootstrap.cjs",
+      },
       opencodeCommand: "/provider-pack/opencode",
       opencodeRuntimeDirectory: "/isolated/session/opencode",
     },
@@ -80,6 +89,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
   });
   expect(environment).toMatchObject({
     PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
+    PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/isolated/session/opencode",
     PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
     PAPERCLIP_RUN_ID: "run-1",
@@ -87,6 +97,35 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
     OPENROUTER_API_KEY: "test-provider-key",
   });
+  expect(environment.HOME).toBeUndefined();
+  expect(environment.CODEX_HOME).toBeUndefined();
+  expect(environment.DATABASE_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(environment.NODE_OPTIONS).toBeUndefined();
+
+  const defaultPermissionEnvironment =
+    createCapabilityRunnerdProviderEnvironment({
+      provider: "opencode",
+      options: {
+        provider: "opencode",
+        stateDirectory: "/isolated/session",
+        environment: { PATH: "/bin" },
+      },
+      identity: {
+        runnerInstanceId: "runner-1",
+        environmentLeaseId: "lease-1",
+        runId: "run-1",
+        normalizedSessionId: "session-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+      },
+      codexHome: "/isolated/codex-home",
+      runtimeContextPath: "/isolated/runtime-context.json",
+      hasRuntimeContext: false,
+    });
+  expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_PERMISSION_MODE).toBe(
+    "ask",
+  );
 });
 
 it("passes the configured Codex API key only through the provider process environment", () => {

@@ -17,6 +17,7 @@ import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
 } from "./opencode-proxy-collaboration-mode.js";
+import { parseOpenCodeProxyPermissionMode } from "./opencode-proxy-permission-mode.js";
 
 type RpcMessage = { id?: string | number; method?: string; params?: unknown; result?: unknown; error?: unknown };
 
@@ -78,6 +79,9 @@ async function open(params: Record<string, unknown>, resume: boolean): Promise<R
     : null;
   driver = new OpenCodeServerDriver({
     model,
+    permissionMode: parseOpenCodeProxyPermissionMode(
+      process.env.PAPERCLIP_OPENCODE_PERMISSION_MODE,
+    ),
     command: openCodeCommand(),
     runtimeDirectory: runtimeDirectory(),
     environment: process.env,
