@@ -389,17 +389,6 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
-          title="Managed Environment Only"
-          description="Hide the local environment and run all agents in the platform-managed environment."
-          checked={enableManagedSandboxOnly}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableManagedSandboxOnly: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableManagedSandboxOnly"
-          managed={managedKeys.enableManagedSandboxOnly}
-          ariaLabel="Toggle managed environment only experimental setting"
-        />
-
-        <ExperimentalToggleCard
           title="Paperclip Runner"
           description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
           checked={enableNativeRunner}
@@ -484,6 +473,19 @@ export function InstanceExperimentalSettings() {
           settingKey="enablePaperclipDeveloperMode"
           managed={managedKeys.enablePaperclipDeveloperMode}
           ariaLabel="Toggle Paperclip developer mode experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Managed Environment Only"
+          description="Hide the local environment and run all agents in the platform-managed environment."
+          checked={enableManagedSandboxOnly}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableManagedSandboxOnly: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableManagedSandboxOnly"
+          managed={managedKeys.enableManagedSandboxOnly}
+          ariaLabel="Toggle managed environment only experimental setting"
         />
 
         {inWorktree ? (
