@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetIssueOwnedByRun = true,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -24,6 +25,11 @@ function counterDb(
             };
           }
           return {
+            then: (resolve: (rows: unknown[]) => unknown) => resolve(
+              targetIssueOwnedByRun
+                ? [{ id: "55555555-5555-4555-8555-555555555555" }]
+                : [],
+            ),
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
                 id: "11111111-1111-4111-8111-111111111111",
@@ -223,6 +229,23 @@ describe("cross-issue influence limit rollout", () => {
         contextSnapshot: { issueId: "55555555-5555-4555-8555-555555555555", source: "first_write_bind" },
       }),
     ]);
+  });
+
+  it("fails closed when an unbound run first writes to an issue it has not checked out", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, false);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.updated).toEqual([]);
+    expect(fake.inserted).toEqual([]);
   });
 
   it("merges the bind into an existing populated contextSnapshot instead of replacing it", async () => {
