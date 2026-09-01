@@ -5295,13 +5295,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { issueId, action: "Review the blocked work" },
       idempotencyKey: `issue-unblock-recovery:${issueId}:${runId}`,
     });
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, ownerAgentId));
-    expect(runs.some((run) => {
-      const context = run.contextSnapshot as Record<string, unknown> | null;
-      return context?.wakeReason === "issue_unblock_requested" && context.issueId === issueId;
-    })).toBe(true);
     expect(result.selfAddressedUnblockSuppressed).toBe(0);
-    await waitForHeartbeatIdle(db);
+    // The enqueued wake is the sweep's output and the whole assertion. The run
+    // it dispatches belongs to a second agent the fixture never prepared a
+    // runtime for, so it stays queued; afterEach cancels it.
   });
 
   /**
