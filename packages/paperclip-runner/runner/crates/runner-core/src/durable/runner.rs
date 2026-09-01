@@ -1,5 +1,5 @@
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,7 +10,7 @@ use super::state::{
 };
 use super::transport::{
     current_unix_ms, validate_control_identity, AuthenticatedTransport, ConnectionMetadata,
-    LeaseCredential, ResolvedWsTarget,
+    LeaseCredential, RunnerTransportEndpoint,
 };
 use super::{BootstrapTicket, DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
 
@@ -43,6 +43,20 @@ enum CommandLifecycle {
     Continue,
     Suspend,
     Shutdown,
+}
+
+fn sleep_for_reconnect(base: Duration, attempt: &mut u32) {
+    let multiplier = 1_u128 << (*attempt).min(5);
+    let uncapped = base.as_millis().saturating_mul(multiplier);
+    let capped = uncapped.clamp(1, 5_000) as u64;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| u64::from(duration.subsec_nanos()));
+    let jitter_percent = 75 + nanos % 51;
+    *attempt = attempt.saturating_add(1);
+    thread::sleep(Duration::from_millis(
+        capped.saturating_mul(jitter_percent) / 100,
+    ));
 }
 
 impl CommandLifecycle {
@@ -112,14 +126,36 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
-    // Resolve once. Every reconnect uses the same validated concrete addresses,
-    // so DNS cannot redirect a retry after the trust decision.
-    let target = ResolvedWsTarget::resolve(&config.connect_url)?;
+    // Bind listener mode or resolve dial mode before processing commands. Dial
+    // reconnects retain the same validated addresses so DNS cannot redirect a
+    // retry after the trust decision.
+    let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
     let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
+    let mut authenticated_once = false;
+    let mut disconnected_since: Option<Instant> = None;
+    let mut reconnect_attempt = 0_u32;
 
     loop {
+        if authenticated_once {
+            let disconnected_at = disconnected_since.get_or_insert_with(Instant::now);
+            if config
+                .reconnect_grace
+                .is_some_and(|grace| disconnected_at.elapsed() >= grace)
+            {
+                let _ = executor.shutdown();
+                state.lifecycle = "recoverable_failure".to_owned();
+                state.recoverable_failure = Some("transport_reconnect_grace_exceeded".to_owned());
+                state.record_diagnostic(
+                    "transport reconnect grace exceeded; durable state is preserved",
+                );
+                store.save(&state)?;
+                return Err(DurableRunnerError::invalid(
+                    "transport reconnect grace exceeded; durable state is preserved",
+                ));
+            }
+        }
         if started.elapsed() >= config.max_runtime {
             let _ = executor.shutdown();
             state.lifecycle = "recoverable_failure".to_owned();
@@ -147,14 +183,18 @@ pub fn run_durable_runner<E: CommandExecutor>(
 
         let using_bootstrap = lease.is_none();
         let connection = AuthenticatedTransport::connect(
-            &target,
+            &endpoint,
             &config,
             &state,
             bootstrap_ticket.as_ref(),
             lease.as_ref(),
         );
         let (mut transport, welcome) = match connection {
-            Ok(connection) => connection,
+            Ok(Some(connection)) => connection,
+            Ok(None) => {
+                thread::sleep(config.reconnect_delay);
+                continue;
+            }
             Err(error) => {
                 state.record_diagnostic(format!("transport reconnect scheduled: {error}"));
                 store.save(&state)?;
@@ -163,10 +203,13 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         "bootstrap connection failed closed; provide a fresh one-use ticket",
                     ));
                 }
-                thread::sleep(config.reconnect_delay);
+                sleep_for_reconnect(config.reconnect_delay, &mut reconnect_attempt);
                 continue;
             }
         };
+        authenticated_once = true;
+        disconnected_since = None;
+        reconnect_attempt = 0;
         if let Some(next_lease) = welcome.lease {
             lease = Some(next_lease);
             // A bootstrap capability is one-use. It is destroyed only after a
@@ -507,6 +550,7 @@ mod tests {
     fn config(directory: PathBuf) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: "ws://127.0.0.1:3000/path".to_owned(),
+            ca_bundle_path: None,
             state_dir: directory,
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
@@ -520,6 +564,7 @@ mod tests {
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
         }
     }

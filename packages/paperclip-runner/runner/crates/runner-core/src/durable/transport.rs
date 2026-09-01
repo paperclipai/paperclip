@@ -1,5 +1,7 @@
-use std::io;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::io::{self, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, Payload};
@@ -8,22 +10,26 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tungstenite::client::{client_with_config, IntoClientRequest};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::server::ErrorResponse;
 use tungstenite::protocol::WebSocketConfig;
-use tungstenite::{Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{accept_hdr_with_config, client_tls_with_config, Connector, Message, WebSocket};
 
-use super::state::{Command, DurableState};
+use super::state::{open_private_regular_file, Command, DurableState};
 use super::{
     BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL, PROTOCOL_VERSION,
 };
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug)]
 struct ParsedWsUrl {
+    secure: bool,
     host: String,
     authority: String,
     port: u16,
@@ -32,6 +38,7 @@ struct ParsedWsUrl {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedWsTarget {
+    secure: bool,
     authority: String,
     path: String,
     addresses: Vec<SocketAddr>,
@@ -47,14 +54,21 @@ impl ResolvedWsTarget {
     }
 
     fn request_url(&self) -> String {
-        format!("ws://{}{}", self.authority, self.path)
+        let scheme = if self.secure { "wss" } else { "ws" };
+        format!("{scheme}://{}{}", self.authority, self.path)
     }
 }
 
 fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
-    let remainder = input
-        .strip_prefix("ws://")
-        .ok_or_else(|| DurableRunnerError::invalid("runner transport accepts exactly ws://"))?;
+    let (secure, remainder, default_port) = if let Some(value) = input.strip_prefix("ws://") {
+        (false, value, 80)
+    } else if let Some(value) = input.strip_prefix("wss://") {
+        (true, value, 443)
+    } else {
+        return Err(DurableRunnerError::invalid(
+            "runner connect URL must use ws:// or wss://",
+        ));
+    };
     if remainder.is_empty()
         || remainder
             .chars()
@@ -80,16 +94,26 @@ fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
             .find(']')
             .ok_or_else(|| DurableRunnerError::invalid("bracketed IPv6 authority is malformed"))?;
         let host = &authority[1..closing];
-        let port = authority[closing + 1..].strip_prefix(':').ok_or_else(|| {
-            DurableRunnerError::invalid("bracketed IPv6 authority requires a port")
-        })?;
+        let suffix = &authority[closing + 1..];
+        let port = if suffix.is_empty() {
+            default_port.to_string()
+        } else {
+            suffix
+                .strip_prefix(':')
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("bracketed IPv6 authority is malformed")
+                })?
+                .to_owned()
+        };
         host.parse::<std::net::Ipv6Addr>()
             .map_err(|_| DurableRunnerError::invalid("bracketed WebSocket host must be IPv6"))?;
         (host, port)
     } else {
-        let (host, port) = authority.rsplit_once(':').ok_or_else(|| {
-            DurableRunnerError::invalid("WebSocket URL requires an explicit port")
-        })?;
+        let (host, port) = authority
+            .rsplit_once(':')
+            .map_or((authority, default_port.to_string()), |(host, port)| {
+                (host, port.to_owned())
+            });
         if host.is_empty() || host.contains(':') {
             return Err(DurableRunnerError::invalid(
                 "WebSocket host is empty or contains unbracketed IPv6",
@@ -106,6 +130,7 @@ fn parse_ws_url(input: &str) -> Result<ParsedWsUrl, DurableRunnerError> {
         ));
     }
     Ok(ParsedWsUrl {
+        secure,
         host: host.to_owned(),
         authority: authority.to_owned(),
         port,
@@ -131,16 +156,259 @@ where
             "WebSocket destination resolved to no addresses",
         ));
     }
-    if addresses.iter().any(|address| !address.ip().is_loopback()) {
+    if !parsed.secure && addresses.iter().any(|address| !address.ip().is_loopback()) {
         return Err(DurableRunnerError::invalid(
-            "every WebSocket destination must resolve to loopback",
+            "plaintext WebSocket destinations must all resolve to loopback",
         ));
     }
     Ok(ResolvedWsTarget {
+        secure: parsed.secure,
         authority: parsed.authority,
         path: parsed.path,
         addresses,
     })
+}
+
+pub(crate) enum RunnerTransportEndpoint {
+    Dial(ResolvedWsTarget),
+    Listen { listener: TcpListener, path: String },
+}
+
+impl RunnerTransportEndpoint {
+    pub(crate) fn new(input: &str, run_id: &str) -> Result<Self, DurableRunnerError> {
+        if let Some(remainder) = input.strip_prefix("listen://") {
+            let (authority, path) = remainder.split_once('/').ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "runner_ingress_bind_conflict: listener path is required",
+                )
+            })?;
+            if authority != "0.0.0.0:43127" {
+                return Err(DurableRunnerError::invalid(
+                    "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                ));
+            }
+            let path = format!("/{path}");
+            validate_listener_path(&path)?;
+            if path != format!("/api/runner/v1/connect/{run_id}") {
+                return Err(DurableRunnerError::invalid(
+                    "runner listener path does not match the configured run",
+                ));
+            }
+            let listener = TcpListener::bind(authority).map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "runner_ingress_bind_conflict: failed to bind fixed listener: {error}"
+                ))
+            })?;
+            listener.set_nonblocking(true).map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "runner_ingress_bind_conflict: failed to configure listener: {error}"
+                ))
+            })?;
+            return Ok(Self::Listen { listener, path });
+        }
+        Ok(Self::Dial(ResolvedWsTarget::resolve(input)?))
+    }
+
+    fn open(
+        &self,
+        max_frame_bytes: usize,
+        ca_bundle_path: Option<&Path>,
+    ) -> Result<Option<RunnerSocket>, DurableRunnerError> {
+        let websocket_config = || {
+            WebSocketConfig::default()
+                .max_message_size(Some(max_frame_bytes))
+                .max_frame_size(Some(max_frame_bytes))
+        };
+        match self {
+            Self::Dial(target) => {
+                if ca_bundle_path.is_some() && !target.secure {
+                    return Err(DurableRunnerError::invalid(
+                        "--ca-bundle-path is accepted only with wss://",
+                    ));
+                }
+                let stream = TcpStream::connect(target.addresses.as_slice()).map_err(|error| {
+                    DurableRunnerError::invalid(format!("WebSocket connect failed: {error}"))
+                })?;
+                configure_auth_timeouts(&stream)?;
+                let request = target
+                    .request_url()
+                    .into_client_request()
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!("invalid WebSocket request: {error}"))
+                    })?;
+                let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
+                let (socket, _) =
+                    client_tls_with_config(request, stream, Some(websocket_config()), connector)
+                        .map_err(|error| {
+                            DurableRunnerError::invalid(format!(
+                                "WebSocket upgrade failed: {error}"
+                            ))
+                        })?;
+                Ok(Some(RunnerSocket::Dial(socket)))
+            }
+            Self::Listen { listener, path } => {
+                if ca_bundle_path.is_some() {
+                    return Err(DurableRunnerError::invalid(
+                        "--ca-bundle-path is not accepted in listener mode",
+                    ));
+                }
+                let (stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                    Err(error) => {
+                        return Err(DurableRunnerError::invalid(format!(
+                            "runner ingress listener accept failed: {error}"
+                        )))
+                    }
+                };
+                stream.set_nonblocking(false).map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner ingress stream configuration failed: {error}"
+                    ))
+                })?;
+                configure_auth_timeouts(&stream)?;
+                let expected_path = path.clone();
+                let socket = accept_hdr_with_config(
+                    stream,
+                    move |request: &tungstenite::handshake::server::Request, response| {
+                        if request.uri().path() != expected_path
+                            || request.uri().query().is_some()
+                            || request.headers().contains_key("sec-websocket-extensions")
+                        {
+                            let mut rejection = ErrorResponse::new(Some(
+                                "runner listener requires the configured path without extensions"
+                                    .to_owned(),
+                            ));
+                            *rejection.status_mut() = tungstenite::http::StatusCode::BAD_REQUEST;
+                            return Err(rejection);
+                        }
+                        Ok(response)
+                    },
+                    Some(websocket_config()),
+                )
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner ingress WebSocket upgrade failed: {error}"
+                    ))
+                })?;
+                Ok(Some(RunnerSocket::Listen(socket)))
+            }
+        }
+    }
+}
+
+fn validate_listener_path(path: &str) -> Result<(), DurableRunnerError> {
+    let run_id = path
+        .strip_prefix("/api/runner/v1/connect/")
+        .filter(|run_id| !run_id.is_empty() && !run_id.contains('/'));
+    if run_id.is_none()
+        || path.contains(['?', '#', '\\', '%'])
+        || path
+            .chars()
+            .any(|character| character.is_ascii_control() || character.is_ascii_whitespace())
+    {
+        return Err(DurableRunnerError::invalid(
+            "runner listener path is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn configure_auth_timeouts(stream: &TcpStream) -> Result<(), DurableRunnerError> {
+    stream
+        .set_read_timeout(Some(AUTH_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(AUTH_TIMEOUT)))
+        .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+}
+
+fn custom_tls_connector(path: &Path) -> Result<Connector, DurableRunnerError> {
+    let file = open_private_regular_file(path).map_err(|error| {
+        DurableRunnerError::invalid(format!("failed to open private CA bundle: {error}"))
+    })?;
+    if file
+        .metadata()
+        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
+        .len()
+        > MAX_CA_BUNDLE_BYTES
+    {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle exceeds the 4 MiB limit",
+        ));
+    }
+    let native = rustls_native_certs::load_native_certs();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(native.certs);
+    let mut reader = BufReader::new(file);
+    let certificates = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| DurableRunnerError::invalid(format!("invalid CA bundle: {error}")))?;
+    if certificates.is_empty() {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle contains no certificates",
+        ));
+    }
+    let (added, _) = roots.add_parsable_certificates(certificates);
+    if added == 0 {
+        return Err(DurableRunnerError::invalid(
+            "private CA bundle contains no usable certificates",
+        ));
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
+enum RunnerSocket {
+    Dial(WebSocket<MaybeTlsStream<TcpStream>>),
+    Listen(WebSocket<TcpStream>),
+}
+
+trait WebSocketMessages {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error>;
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error>;
+}
+
+impl<S: Read + Write> WebSocketMessages for WebSocket<S> {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
+        self.send(message)
+    }
+
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+        self.read()
+    }
+}
+
+impl WebSocketMessages for RunnerSocket {
+    fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error> {
+        match self {
+            Self::Dial(socket) => socket.send(message),
+            Self::Listen(socket) => socket.send(message),
+        }
+    }
+
+    fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+        match self {
+            Self::Dial(socket) => socket.read(),
+            Self::Listen(socket) => socket.read(),
+        }
+    }
+}
+
+impl RunnerSocket {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Dial(socket) => match socket.get_mut() {
+                MaybeTlsStream::Plain(stream) => stream.set_read_timeout(timeout),
+                MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(timeout),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported TLS stream",
+                )),
+            },
+            Self::Listen(socket) => socket.get_mut().set_read_timeout(timeout),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -368,7 +636,7 @@ impl SecureChannel {
 }
 
 pub(crate) struct AuthenticatedTransport {
-    socket: WebSocket<TcpStream>,
+    socket: RunnerSocket,
     secure_channel: SecureChannel,
     max_frame_bytes: usize,
 }
@@ -403,12 +671,12 @@ impl ConnectFailure {
 
 impl AuthenticatedTransport {
     pub(crate) fn connect(
-        target: &ResolvedWsTarget,
+        endpoint: &RunnerTransportEndpoint,
         config: &DurableRunnerConfig,
         state: &DurableState,
         bootstrap: Option<&BootstrapTicket>,
         lease: Option<&LeaseCredential>,
-    ) -> Result<(Self, Welcome), ConnectFailure> {
+    ) -> Result<Option<(Self, Welcome)>, ConnectFailure> {
         let (credential_token, credential_kind, expected_lease) = match (lease, bootstrap) {
             (Some(lease), _) => (
                 lease.expose().map_err(ConnectFailure::retryable)?,
@@ -427,31 +695,12 @@ impl AuthenticatedTransport {
             }
         };
         let credential = CredentialMaterial::from_token(credential_token);
-        let stream = TcpStream::connect(target.addresses.as_slice())
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("WebSocket connect failed: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
-        stream
-            .set_read_timeout(Some(AUTH_TIMEOUT))
-            .and_then(|()| stream.set_write_timeout(Some(AUTH_TIMEOUT)))
-            .map_err(|error| DurableRunnerError::invalid(error.to_string()))
-            .map_err(ConnectFailure::retryable)?;
-        let request = target
-            .request_url()
-            .into_client_request()
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("invalid WebSocket request: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
-        let websocket_config = WebSocketConfig::default()
-            .max_message_size(Some(config.max_frame_bytes))
-            .max_frame_size(Some(config.max_frame_bytes));
-        let (mut socket, _) = client_with_config(request, stream, Some(websocket_config))
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!("WebSocket upgrade failed: {error}"))
-            })
-            .map_err(ConnectFailure::retryable)?;
+        let Some(mut socket) = endpoint
+            .open(config.max_frame_bytes, config.ca_bundle_path.as_deref())
+            .map_err(ConnectFailure::retryable)?
+        else {
+            return Ok(None);
+        };
 
         let authenticate =
             || -> Result<(Self, Welcome), DurableRunnerError> {
@@ -544,7 +793,6 @@ impl AuthenticatedTransport {
                 };
                 transport
                     .socket
-                    .get_mut()
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
                 let mut welcome_value = transport.receive_json()?.ok_or_else(|| {
@@ -554,7 +802,9 @@ impl AuthenticatedTransport {
                     validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
                 Ok((transport, welcome))
             };
-        authenticate().map_err(|error| ConnectFailure::after_auth_started(error, credential_kind))
+        authenticate()
+            .map(Some)
+            .map_err(|error| ConnectFailure::after_auth_started(error, credential_kind))
     }
 
     pub(crate) fn send_json(&mut self, value: &Value) -> Result<(), DurableRunnerError> {
@@ -885,7 +1135,7 @@ fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, Durable
 }
 
 fn send_plain(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut (impl WebSocketMessages + ?Sized),
     value: &Value,
     max_frame_bytes: usize,
 ) -> Result<(), DurableRunnerError> {
@@ -899,12 +1149,12 @@ fn send_plain(
     let text =
         String::from_utf8(bytes).map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
     socket
-        .send(Message::Text(text.into()))
+        .send_message(Message::Text(text.into()))
         .map_err(map_websocket_error)
 }
 
 fn receive_plain(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Value, DurableRunnerError> {
     receive_plain_optional(socket, max_frame_bytes)?
@@ -912,11 +1162,11 @@ fn receive_plain(
 }
 
 fn receive_plain_optional(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut (impl WebSocketMessages + ?Sized),
     max_frame_bytes: usize,
 ) -> Result<Option<Value>, DurableRunnerError> {
     loop {
-        match socket.read() {
+        match socket.read_message() {
             Ok(Message::Text(text)) => {
                 if text.len() > max_frame_bytes {
                     return Err(DurableRunnerError::invalid(
@@ -930,7 +1180,7 @@ fn receive_plain_optional(
                     });
             }
             Ok(Message::Ping(payload)) => socket
-                .send(Message::Pong(payload))
+                .send_message(Message::Pong(payload))
                 .map_err(map_websocket_error)?,
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => {
@@ -1063,6 +1313,7 @@ mod tests {
     fn config(port: u16) -> DurableRunnerConfig {
         DurableRunnerConfig {
             connect_url: format!("ws://127.0.0.1:{port}/api/runner/v1/connect/run_1"),
+            ca_bundle_path: None,
             state_dir: PathBuf::from("unused"),
             runner_instance_id: "runner_1".to_owned(),
             environment_lease_id: "environment_1".to_owned(),
@@ -1076,6 +1327,7 @@ mod tests {
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
         }
     }
@@ -1256,16 +1508,36 @@ mod tests {
         assert!(
             resolve_ws_target_with("ws://example.test:80/path", |_, _| Ok(vec![public])).is_err()
         );
+        let secure = resolve_ws_target_with("wss://example.test/path", |host, port| {
+            assert_eq!(host, "example.test");
+            assert_eq!(port, 443);
+            Ok(vec![public])
+        })
+        .unwrap();
+        assert!(secure.secure);
+        assert_eq!(secure.request_url(), "wss://example.test/path");
         for input in [
-            "wss://127.0.0.1:80/path",
             "ws://user@127.0.0.1:80/path",
-            "ws://127.0.0.1/path",
             "ws://127.0.0.1:80/path?ticket=secret",
+            "https://127.0.0.1/path",
         ] {
             assert!(
                 resolve_ws_target_with(input, |_, _| Ok(vec![])).is_err(),
                 "{input}"
             );
+        }
+    }
+
+    #[test]
+    fn listener_path_is_exact_and_unambiguous() {
+        validate_listener_path("/api/runner/v1/connect/run_1").unwrap();
+        for path in [
+            "/api/runner/v1/connect/",
+            "/api/runner/v1/connect/run_1/extra",
+            "/api/runner/v1/connect/run_1?ticket=secret",
+            "/api/runner/v1/connect/run%5f1",
+        ] {
+            assert!(validate_listener_path(path).is_err(), "{path}");
         }
     }
 
@@ -1419,10 +1691,12 @@ mod tests {
             send_plain(&mut socket, &encrypted, server_config.max_frame_bytes).unwrap();
         });
 
-        let target = ResolvedWsTarget::resolve(&config.connect_url).unwrap();
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
         let (_, welcome) =
-            AuthenticatedTransport::connect(&target, &config, &state, Some(&ticket), None).unwrap();
+            AuthenticatedTransport::connect(&endpoint, &config, &state, Some(&ticket), None)
+                .unwrap()
+                .unwrap();
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();

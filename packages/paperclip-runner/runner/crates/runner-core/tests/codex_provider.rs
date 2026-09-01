@@ -80,6 +80,7 @@ fn task_context_tool_set() -> AuthorizedToolSet {
 fn durable_config(directory: &Path) -> DurableRunnerConfig {
     DurableRunnerConfig {
         connect_url: "ws://127.0.0.1:3000/runner".to_owned(),
+        ca_bundle_path: None,
         state_dir: directory.to_path_buf(),
         runner_instance_id: "runner-1".to_owned(),
         environment_lease_id: "lease-1".to_owned(),
@@ -93,6 +94,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         p0_reserve_bytes: 1024 * 1024,
         max_frame_bytes: 1024 * 1024,
         reconnect_delay: std::time::Duration::from_millis(1),
+        reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
     }
 }
