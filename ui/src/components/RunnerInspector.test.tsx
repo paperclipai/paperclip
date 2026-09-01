@@ -378,6 +378,10 @@ describe("RunnerInspector", () => {
     }>();
     const pendingDownload = deferred<Blob>();
     const pendingDelete = deferred<void>();
+    const pendingPostDeleteAccess = deferred<{
+      source: "local_implicit";
+      isInstanceAdmin: false;
+    }>();
     revealMock.mockReturnValue(pendingReveal.promise);
     downloadMock.mockReturnValue(pendingDownload.promise);
     deleteMock.mockReturnValue(pendingDelete.promise);
@@ -438,11 +442,20 @@ describe("RunnerInspector", () => {
     expect(container.textContent).not.toContain("late-secret");
     expect(anchorClick).not.toHaveBeenCalled();
 
-    accessMock.mockResolvedValue({
-      source: "session",
+    accessMock
+      .mockReturnValueOnce(pendingPostDeleteAccess.promise)
+      .mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    pendingDelete.resolve();
+    await Promise.resolve();
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(container.textContent).toContain(
+      "Raw provider traces require an instance administrator.",
+    );
+    pendingPostDeleteAccess.resolve({
+      source: "local_implicit",
       isInstanceAdmin: false,
     });
-    pendingDelete.resolve();
     await flush();
     expect(container.textContent).toContain(
       "Raw provider traces require an instance administrator.",

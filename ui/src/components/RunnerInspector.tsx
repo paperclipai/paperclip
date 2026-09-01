@@ -64,6 +64,7 @@ type RawTraceAccess = {
   runId: string;
   allowed: boolean;
   epoch: number;
+  phase: "granted" | "denied" | "deleting";
 };
 
 type TraceOperation = {
@@ -688,15 +689,16 @@ export function RunnerInspector({
     const currentAccess = rawTraceAccessRef.current;
     if (
       currentAccess?.runId === runId &&
-      currentAccess.allowed === false
+      currentAccess.phase === "denied"
     ) {
       return;
     }
     rawTraceAccessEpochRef.current += 1;
-    const deniedAccess = {
+    const deniedAccess: RawTraceAccess = {
       runId,
       allowed: false,
       epoch: rawTraceAccessEpochRef.current,
+      phase: "denied",
     };
     rawTraceAccessRef.current = deniedAccess;
     setRawTraceAccess(deniedAccess);
@@ -727,10 +729,11 @@ export function RunnerInspector({
       .then(async ([boardAccess, nextEvents]) => {
         if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
         const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
-        const access = {
+        const access: RawTraceAccess = {
           runId,
           allowed: canRaw,
           epoch: rawTraceAccessEpochRef.current,
+          phase: canRaw ? "granted" : "denied",
         };
         rawTraceAccessRef.current = access;
         setRawTraceAccess(access);
@@ -938,10 +941,11 @@ export function RunnerInspector({
     }
     if (!window.confirm("Delete this raw trace immediately? This cannot be undone.")) return;
     rawTraceAccessEpochRef.current += 1;
-    const deletionAccess = {
+    const deletionAccess: RawTraceAccess = {
       ...currentAccess,
       allowed: false,
       epoch: rawTraceAccessEpochRef.current,
+      phase: "deleting",
     };
     rawTraceAccessRef.current = deletionAccess;
     setRawTraceAccess(deletionAccess);
@@ -974,10 +978,11 @@ export function RunnerInspector({
       return;
     }
     rawTraceAccessEpochRef.current += 1;
-    const restoredAccess = {
+    const restoredAccess: RawTraceAccess = {
       runId,
       allowed: true,
       epoch: rawTraceAccessEpochRef.current,
+      phase: "granted",
     };
     rawTraceAccessRef.current = restoredAccess;
     setRawTraceAccess(restoredAccess);
