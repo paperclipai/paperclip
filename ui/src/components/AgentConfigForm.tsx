@@ -107,6 +107,8 @@ type AgentConfigFormProps = {
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
+  /** Allow instance administrators to configure short-lived raw provider capture. */
+  canConfigureProviderTrace?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
@@ -243,6 +245,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
+  const canConfigureProviderTrace = props.canConfigureProviderTrace === true;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
@@ -2023,7 +2026,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Debugging ---- */}
-      {!isCreate ? (
+      {!isCreate && canConfigureProviderTrace ? (
         <div className={cn(!cards && "border-b border-border")}>
           {cards ? (
             <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">

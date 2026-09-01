@@ -232,8 +232,15 @@ function frameCorrelationTokens(frame: TraceEntry, interpretations: TraceEntry[]
   const item = frameItem(frame);
   const tokens = interpretations.flatMap(interpretationEventIds).map((id) => `event:${id}`);
   const rpcId = scalar(parsed.id);
-  if (rpcId) tokens.push(`rpc:${rpcId}`);
-  for (const id of [item.id, params.itemId, parsed.itemId]) {
+  if (rpcId) {
+    const direction = text(frame.direction);
+    const isRequest = Boolean(frameMethod(frame));
+    const requestOrigin = isRequest
+      ? direction === "client_to_provider" ? "client" : "provider"
+      : direction === "client_to_provider" ? "provider" : "client";
+    tokens.push(`rpc:${requestOrigin}:${rpcId}`);
+  }
+  for (const id of [item.id, params.itemId, params.callId, parsed.itemId]) {
     const value = scalar(id);
     if (value) tokens.push(`item:${value}`);
   }
@@ -740,7 +747,14 @@ export function RunnerInspector({
     ? selectedOperation?.interpretations.filter((entry) => Number(entry.frameId) === Number(selectedFrame.frameId)) ?? []
     : selectedOperation?.interpretations ?? [];
   const selectedEvents = selectedOperation?.events ?? [];
-  const presentationDecision = record(record(run?.resultJson).presentationDecision);
+  const runResultJson = record(run?.resultJson);
+  const presentationDecision = record(runResultJson.presentationDecision);
+  const verificationCaveats = Array.isArray(runResultJson.verificationCaveats)
+    ? runResultJson.verificationCaveats
+    : [];
+  const ignoredAttentionRequests = Array.isArray(runResultJson.ignoredAttentionRequests)
+    ? runResultJson.ignoredAttentionRequests
+    : [];
   const visibleEventCount = events.filter((event) => visibilityDecision(event).visible).length;
   const ignoredCount = interpretations.filter((entry) => entry.disposition === "ignored").length;
   const dispositionCounts = interpretations.reduce<Record<string, number>>((counts, entry) => {
@@ -951,6 +965,24 @@ export function RunnerInspector({
                           return <div key={event.id} className="mb-4 grid gap-3 xl:grid-cols-(--gtc-runner-inspector-presentation)"><dl className="grid grid-cols-(--gtc-runner-inspector-fields) gap-x-3 gap-y-1 rounded-lg border border-border p-3 text-sm"><dt className="text-muted-foreground">Visible</dt><dd className="flex items-center gap-1.5">{decision.visible ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />}{decision.visible ? "yes" : "no"}</dd><dt className="text-muted-foreground">Surface</dt><dd>{decision.surface}</dd><dt className="text-muted-foreground">Container</dt><dd>{decision.container}</dd><dt className="text-muted-foreground">State</dt><dd>{decision.state}</dd><dt className="text-muted-foreground">Action</dt><dd>{decision.action}</dd><dt className="text-muted-foreground">Reason</dt><dd>{decision.reason}</dd><dt className="text-muted-foreground">Reason code</dt><dd><code className="text-xs">{decision.reasonCode}</code></dd></dl><div><p className="mb-2 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">Production surface preview</p><ProductionSurfacePreview event={event} runId={runId} /></div></div>;
                         }) : <p className="text-sm text-muted-foreground">No presentation surface was emitted for this operation.</p>}
                         {Object.keys(presentationDecision).length > 0 ? <details className="rounded-lg border border-border"><summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground">Resolved final response decision</summary><div className="p-3 pt-0"><JsonExplorer value={presentationDecision} /></div></details> : null}
+                        {verificationCaveats.length > 0 || ignoredAttentionRequests.length > 0 ? (
+                          <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
+                            <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">Semantic finalization lineage</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Provider-native transport and model-authored tool arguments are separate layers. PRP normalized the model payload, then server policy chose the issue disposition.
+                            </p>
+                            {ignoredAttentionRequests.some((candidate) => record(candidate).sourceKind === "environment_constraint") ? (
+                              <p className="mt-2 text-xs">
+                                <code>environment_constraint</code> was model-authored tool payload data, not a Codex app-server event. It was normalized into a non-blocking verification caveat.
+                              </p>
+                            ) : null}
+                            <dl className="mt-2 grid grid-cols-(--gtc-runner-inspector-fields) gap-x-3 gap-y-1 text-xs">
+                              <dt className="text-muted-foreground">Policy</dt><dd><code>{text(runResultJson.finalizationPolicyVersion) || "unknown"}</code></dd>
+                              <dt className="text-muted-foreground">Decision reason</dt><dd><code>{text(runResultJson.finalizationReasonCode) || "unknown"}</code></dd>
+                            </dl>
+                            <details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-muted-foreground">Normalized caveats and ignored requests</summary><div className="mt-2"><JsonExplorer value={{ verificationCaveats, ignoredAttentionRequests }} /></div></details>
+                          </div>
+                        ) : null}
                       </section>
                     </div>
                   ) : <div className="p-5 text-sm text-muted-foreground">Select a correlated operation to inspect its pipeline.</div>}

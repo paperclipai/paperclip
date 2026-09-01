@@ -188,6 +188,49 @@ describe("RunnerInspector", () => {
     expect(revealMock).toHaveBeenCalledWith("run-1", 1);
   });
 
+  it("keeps client and provider JSON-RPC id spaces separate when grouping operations", async () => {
+    eventsMock.mockResolvedValue([{
+      id: 41,
+      companyId: "company-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      seq: 9,
+      eventType: "run.result.proposed",
+      stream: "stdout",
+      level: "info",
+      color: null,
+      message: null,
+      payload: { prpEvent: { sourceEventId: "runner:run-1:9", payload: {} } },
+      createdAt: "2026-08-22T12:00:03.000Z",
+    }]);
+    traceMock.mockResolvedValue({
+      trace: null,
+      entries: [
+        { kind: "frame", frameId: 1, timestamp: "1", direction: "client_to_provider", parsed: { id: 1, method: "initialize" } },
+        { kind: "frame", frameId: 2, timestamp: "2", direction: "provider_to_client", parsed: { id: 1, result: {} } },
+        { kind: "frame", frameId: 3, timestamp: "3", direction: "provider_to_client", parsed: { id: 1, method: "item/tool/call", params: { callId: "finish-1", tool: "paperclip_finish" } } },
+        { kind: "frame", frameId: 4, timestamp: "4", direction: "client_to_provider", parsed: { id: 1, result: { success: true } } },
+        { kind: "interpretation", frameId: 3, stage: "typescript_codex_driver_normalization", disposition: "mapped", emittedEventIds: ["runner:run-1:9"], ruleId: "codex_driver.normalize.item/tool/call" },
+      ],
+    });
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    await flush();
+
+    expect(container.textContent).toContain("frames 1–2 · 0 PRP events");
+    expect(container.textContent).toContain("frames 3–4 · 1 PRP event");
+    expect(container.textContent).not.toContain("frames 1–4");
+  });
+
   it("correlates a Codex web search through every stage to canonical PRP and presentation", async () => {
     eventsMock.mockResolvedValue([
       {

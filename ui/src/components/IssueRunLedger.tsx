@@ -618,7 +618,11 @@ export function IssueRunLedger({
       )}
       watchdogDecisionError={watchdogDecisionError}
       onWatchdogDecision={(input) => watchdogDecision.mutate(input)}
-      onRerunWithTrace={(run) => rerunWithTrace.mutate(run)}
+      onRerunWithTrace={
+        canInspectProviderTrace
+          ? (run) => rerunWithTrace.mutate(run)
+          : undefined
+      }
       providerTraceMetadata={providerTraceMetadata}
     />
   );
