@@ -165,12 +165,15 @@ content tags are never rebuilt or overwritten by the workflow.
 
 ## Evidence and cleanup
 
-Safe evidence is written beneath `tests/runner-e2e/results/<campaign>/...`.
-Passing attempts include `final-state.png`, Plan draft/revision screenshots when
-applicable, matcher outcomes, sanitized fixture/API metadata, a result record,
-JUnit, HTML, and a blob report. Failures additionally retain the
-Playwright trace/video, browser diagnostics, failure screenshot, and sanitized
-Paperclip/run logs when produced.
+Packaged, access-controlled evidence is written beneath
+`tests/runner-e2e/results/<campaign>/...`. Passing attempts include
+`final-state.png`, Plan draft/revision screenshots when applicable, matcher
+outcomes, sanitized fixture/API metadata, a result record, JUnit, HTML, and a
+blob report. Failures additionally retain the Playwright trace/video, browser
+diagnostics, failure screenshot, and sanitized Paperclip/run logs when
+produced. PNG and WebM files are not pixel-inspected, so they are suitable only
+for the local results directory and access-controlled GitHub Actions artifacts.
+SVG is active content and is rejected from the packaged evidence entirely.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -180,8 +183,16 @@ timings, token and cost accounting, and evidence links. The campaign header
 aggregates input, output, and cached tokens, provider-reported LLM spend,
 Daytona list-price runtime estimates, and pricing coverage. Missing provider
 usage is labeled `unavailable` or `unpriced`; it is never presented as zero
-cost. The CI report job stages the same portable
-site at `normalized/index.html` inside the merged report artifact.
+cost. The CI report job stages the same portable site at
+`normalized/index.html` inside the access-controlled merged report artifact.
+
+Permanent public history has a narrower boundary. Before uploading to S3 or
+packaging the optional GitHub Pages artifact, the publisher removes raster and
+video evidence, archives, and the generated Playwright/blob/HTML report trees.
+It then regenerates the dashboard against only the remaining allowlisted,
+inert structured per-attempt evidence (`.json`, `.log`, `.md`, `.txt`, and
+`.xml`). Public dashboards therefore contain results and accounting but no
+attempt screenshots, videos, traces, or generated Playwright reports.
 
 ### Billing interpretation
 
@@ -210,7 +221,8 @@ complete campaigns by default; partial/manual selections remain browsable.
 
 Download and extract the `github-pages` artifact from an existing workflow run,
 then regenerate only its HTML from the retained `normalized-results.json` and
-evidence files:
+public structured evidence files. The Pages artifact has already had private
+visual and generated report evidence removed:
 
 ```bash
 gh run download <run-id> --repo paperclipai/paperclip --name github-pages --dir /tmp/runner-e2e-pages
@@ -224,14 +236,15 @@ pnpm test:e2e:runner:dashboard -- /tmp/runner-e2e-site --history /tmp/history.js
 Serve that directory with any static file server. This path does not start
 Paperclip, invoke an agent, create a Daytona lease, or consume provider tokens.
 
-Before publication, the launcher:
+Before an access-controlled evidence artifact is uploaded, the launcher:
 
 1. copies only allowlisted file types;
 2. scans raw API snapshots before sanitizing them;
 3. scans the closed Paperclip home/database and workspace as streams;
 4. redacts loaded exact values and known provider-key shapes from text;
 5. expands ZIP reports for secret scanning;
-6. rejects unsafe files and fails the cell if a leak is detected; and
+6. rejects SVG and other unsafe files and fails the cell if a leak is detected;
+   and
 7. verifies that a passing attempt has its final-state screenshot.
 
 The temporary Paperclip home, embedded database, raw workspace, master key,
@@ -274,10 +287,11 @@ runners so one paid cell cannot leave state for the next. These runner-group
 controls are external GitHub settings and are as important as the workflow
 checks in a public repository.
 
-GitHub Actions artifacts are 30-day operational copies, not the permanent
-history. Create a second protected `runner-e2e-history` environment, restricted
-to the default branch and trusted environment administrators, then configure these repository
-variables:
+GitHub Actions artifacts are access-controlled 30-day operational copies, not
+the permanent public history. They retain packaged PNG/WebM and generated
+reports for debugging. Create a second protected `runner-e2e-history`
+environment, restricted to the default branch and trusted environment
+administrators, then configure these repository variables:
 
 - `RUNNER_E2E_HISTORY_AWS_ROLE_ARN`
 - `RUNNER_E2E_HISTORY_AWS_REGION`
@@ -297,10 +311,11 @@ bundle digest fails closed.
 
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
-Historical screenshots and model output are publicly readable through
-CloudFront by design, so publication still uses a narrow file allowlist and
-secret scan; databases, Paperclip homes, workspaces, raw logs, and credentials
-are never published.
+The publisher prunes screenshots, video, archives, and generated report trees,
+then regenerates the public dashboard before either the CloudFront-backed S3
+history or optional Pages artifact is created. Public per-attempt evidence is
+limited to allowlisted inert structured text. Databases, Paperclip homes,
+workspaces, raw logs, credentials, and visual evidence are never published.
 
 See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.

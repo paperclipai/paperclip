@@ -353,7 +353,7 @@ jobs:
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
         run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
 
-      - name: Upload sanitized cell evidence
+      - name: Upload access-controlled packaged cell evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -367,7 +367,7 @@ jobs:
     if: always() && needs.catalog.result == 'success'
     needs: [catalog, daytona_image, test]
     outputs:
-      dashboard_ready: ${{ steps.dashboard_ready.outputs.ready }}
+      history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -436,7 +436,7 @@ jobs:
           cat runner-e2e-merged-report/normalized/summary.md >> "$GITHUB_STEP_SUMMARY"
           exit "$report_status"
 
-      - name: Upload merged report
+      - name: Upload access-controlled merged report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -445,23 +445,23 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Detect screenshot dashboard
-        id: dashboard_ready
+      - name: Verify history source report and private screenshot evidence
+        id: history_source_ready
         if: always()
         run: |
           set -euo pipefail
           dashboard_root="runner-e2e-merged-report/normalized"
-          screenshot="$(find "$dashboard_root" -type f -name '*.png' -print -quit 2>/dev/null || true)"
-          if [ -f "$dashboard_root/index.html" ] && [ -n "$screenshot" ]; then
+          private_screenshot="$(find "$dashboard_root" -type f -name '*.png' -print -quit 2>/dev/null || true)"
+          if [ -f "$dashboard_root/index.html" ] && [ -n "$private_screenshot" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish_history:
-    name: Publish immutable history and landing site
+    name: Publish pruned immutable history and landing site
     needs: [catalog, report]
-    if: always() && needs.catalog.result == 'success' && needs.report.outputs.dashboard_ready == 'true'
+    if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -486,7 +486,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Download normalized campaign
+      - name: Download access-controlled normalized campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -498,7 +498,7 @@ jobs:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
-      - name: Publish immutable campaign, history index, and pointers
+      - name: Prune private evidence and publish immutable campaign history
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
@@ -506,16 +506,16 @@ jobs:
           RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
         run: pnpm test:e2e:runner:history:publish
 
-      - name: Package current history dashboard for GitHub Pages
+      - name: Package pruned structured dashboard for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: runner-e2e-merged-report/normalized
 
   pages:
-    name: Publish latest screenshot dashboard
+    name: Publish latest structured dashboard
     needs: [report, publish_history]
-    if: always() && needs.report.outputs.dashboard_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
+    if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write

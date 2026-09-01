@@ -1,9 +1,10 @@
 # Runner E2E security for a public repository
 
 This suite can spend provider money, expose four API credentials to isolated
-test processes, publish a container, and write public evidence. Treat changes
-to the workflow, harness, fixture prompts, evidence packager, and publisher as
-security-sensitive production changes.
+test processes, publish a container, retain private visual evidence, and write
+public structured evidence. Treat changes to the workflow, harness, fixture
+prompts, evidence packager, and publisher as security-sensitive production
+changes.
 
 ## GitHub authorization
 
@@ -116,15 +117,28 @@ latest pointers are mutable, and S3 versioning makes those updates recoverable.
 
 ## Public evidence boundary
 
-CloudFront and GitHub Pages are public. Prompts, model responses, screenshots,
-fixture identifiers, timing, token usage, and costs are expected public data.
-Credentials, Paperclip homes, databases, workspaces, master keys, raw logs, and
-unallowlisted files are not. Each cell exact-value scans loaded secrets and key
-shapes; the campaign publisher accepts only the generated dashboard, normalized
-JSON/JUnit/summary, branding assets, and sanitized per-attempt evidence paths.
-A leak fails the cell and withholds the unsafe file.
+CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
+usage, costs, normalized results, and allowlisted inert structured per-attempt
+evidence are expected public data. Screenshots, video, archives, generated
+Playwright/blob/HTML report trees, credentials, Paperclip homes, databases,
+workspaces, master keys, raw logs, and unallowlisted files are not.
+
+The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
+different, access-controlled boundary. Text is exact-value and key-shape
+scanned and redacted. PNG and WebM are raw-byte scanned but cannot be inspected
+for credentials rendered as pixels, so they remain only in local evidence and
+the access-controlled artifact. SVG is rejected during packaging because it is
+active content.
+
+Before permanent publication, the campaign publisher prunes raster/video
+files, archives, and generated report trees. It then regenerates the dashboard
+from the remaining allowlisted `.json`, `.log`, `.md`, `.txt`, and `.xml`
+evidence and accepts only that dashboard, normalized JSON/JUnit/summary, fixed
+branding assets, and the inert structured evidence paths. The same pruned tree
+feeds both S3/CloudFront history and the optional GitHub Pages artifact. A leak
+fails the cell and withholds the unsafe file.
 
 Rotate the affected credential immediately if a secret-scanning failure or
-unexpected public object is observed. Preserve the private Actions artifact and
-S3 object versions for incident analysis; do not weaken scanning to make a
-campaign publish.
+unexpected public object is observed. Preserve the access-controlled Actions
+artifact and S3 object versions for incident analysis; do not weaken scanning
+to make a campaign publish.
