@@ -398,4 +398,48 @@ describe("observation mappers", () => {
     expect(obs.observedCalls).toEqual([]);
     expect(obs.authorization).toEqual({ expected: "denied", observed: "denied" });
   });
+
+  it("records an allowed read-only call without requiring state mutation", () => {
+    const obs = observationFromCaseResult(
+      {
+        caseId: "se-read-1",
+        title: "search allowed",
+        group: "se",
+        assertionClasses: ["agent_tool_contract"],
+        semanticOperation: "search_tasks",
+        expectedSemantics: ["search_tasks"],
+        forbiddenSemantics: [],
+        authorizationDecision: "allowed",
+        stateDiff: [],
+        finalState: { expected: "unchanged", observed: "unchanged" },
+        sourceAnchor: "anchor",
+      },
+      { trace: { runId: "r", sessionId: "s", turnId: "t", itemId: "i", receiptIds: ["rc"], terminalPresent: true } },
+    );
+
+    expect(obs.observedCalls).toEqual(["search_tasks"]);
+    expect(scoreEval(obs, OPTIONS).dimensions.trajectory_restraint.score).toBe(1);
+  });
+
+  it("retains an incorrectly allowed read-only call for forbidden-call scoring", () => {
+    const obs = observationFromCaseResult(
+      {
+        caseId: "se-read-forbidden-1",
+        title: "search forbidden",
+        group: "se",
+        assertionClasses: ["authorization_policy"],
+        semanticOperation: "search_tasks",
+        expectedSemantics: [],
+        forbiddenSemantics: ["search_tasks"],
+        authorizationDecision: "allowed",
+        stateDiff: [],
+        finalState: { expected: "unchanged", observed: "unchanged" },
+        sourceAnchor: "anchor",
+      },
+      { trace: { runId: "r", sessionId: "s", turnId: "t", itemId: "i", receiptIds: ["rc"], terminalPresent: true } },
+    );
+
+    expect(obs.observedCalls).toEqual(["search_tasks"]);
+    expect(scoreEval(obs, OPTIONS).dimensions.hard_invariants.passed).toBe(false);
+  });
 });

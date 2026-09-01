@@ -367,10 +367,11 @@ export interface CaseResultAugment {
 
 /**
  * Builds a scorable observation from an offline fake-agent case result. The
- * observed call list is inferred from the recorded disposition: an allowed
- * operation that mutated state counts as one observed call; a denied or absent
- * operation counts as none. This mapper scores the deterministic fake-agent
- * surface without starting a provider process.
+ * observed call list is inferred from the recorded authorization disposition:
+ * an allowed operation counts as one observed call even when it is read-only;
+ * a denied or absent operation counts as none. State mutation is scored
+ * independently as the operation's outcome. This mapper scores the
+ * deterministic fake-agent surface without starting a provider process.
  */
 export function observationFromCaseResult(
   result: CapabilityEvalCaseResult,
@@ -378,7 +379,7 @@ export function observationFromCaseResult(
 ): EvalObservation {
   const controlPlaneOwned = result.finalState.expected === "unchanged" && result.expectedSemantics.length === 0;
   const allowed = result.authorizationDecision === "allowed";
-  const observedCalls = allowed && result.finalState.observed === "mutated" ? [result.semanticOperation] : [];
+  const observedCalls = allowed ? [result.semanticOperation] : [];
   const authorization: AuthorizationState = allowed
     ? "allowed"
     : result.authorizationDecision === "denied"
