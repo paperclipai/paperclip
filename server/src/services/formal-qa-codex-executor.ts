@@ -97,7 +97,12 @@ function utf8Content(entry: SealedSourceEntry & { content: Buffer }): string {
     throw new Error("formal_qa_content_tool_digest_mismatch");
   }
   const text = entry.content.toString("utf8");
-  if (text.includes("\0")) throw new Error("formal_qa_content_tool_binary_file");
+  // Node replaces malformed UTF-8 with U+FFFD.  Returning that replacement
+  // would make the reviewer inspect different source text than the exact
+  // Git bytes whose digest was sealed.  Admit only a lossless UTF-8 round trip.
+  if (text.includes("\0") || !Buffer.from(text, "utf8").equals(entry.content)) {
+    throw new Error("formal_qa_content_tool_binary_file");
+  }
   return text;
 }
 

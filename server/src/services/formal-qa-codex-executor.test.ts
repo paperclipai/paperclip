@@ -148,4 +148,34 @@ describe("Formal-QA Codex executor", () => {
     await expect(handler({ tool: "formal_qa_read_file", arguments: { path: "README.md" } })).resolves.toMatchObject({ content: "sealed contents\n", sha256: digest });
     await expect(executor).rejects.toThrow("formal_qa_codex_timeout");
   });
+
+  it("rejects malformed UTF-8 instead of reviewing replacement characters", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "formal-qa-scratch-"));
+    const hostHome = await mkdtemp(path.join(os.tmpdir(), "formal-qa-host-home-"));
+    tempDirs.push(scratch, hostHome);
+    const content = Buffer.from([0x66, 0x6f, 0x80, 0x6f]);
+    const digest = createHash("sha256").update(content).digest("hex");
+    let options: CapturedOptions | null = null;
+    const wait = new Promise<void>(() => {});
+    const executor = executeFormalQaCodexAppServer({
+      runId: "run-invalid-utf8", reviewId: "review-invalid-utf8", scratchPath: scratch,
+      prompt: "sealed", model: null, timeoutMs: 25,
+      environment: { PATH: "/bin", HOME: hostHome, CODEX_HOME: hostHome },
+      sealedContent: {
+        list: async () => [{ path: "src/bad.ts", mode: "100644", sha256: digest, size: content.length }],
+        read: async (sourcePath) => ({ path: sourcePath, mode: "100644", sha256: digest, size: content.length, content }),
+      },
+      driverFactory: (input) => {
+        options = input;
+        return { openSession: async () => ({ startTurn: async () => ({ turnId: "turn-invalid-utf8" }), events: () => ({ [Symbol.asyncIterator]: () => ({ next: () => wait }) }), close: async () => undefined }) } as never;
+      },
+    });
+    while (!options) await new Promise((resolve) => setTimeout(resolve, 1));
+    const handler = (options as CapturedOptions).formalQa!.contentToolHandler;
+    await expect(handler({ tool: "formal_qa_read_file", arguments: { path: "src/bad.ts" } }))
+      .rejects.toThrow("formal_qa_content_tool_binary_file");
+    await expect(handler({ tool: "formal_qa_search", arguments: { query: "foo" } }))
+      .rejects.toThrow("formal_qa_content_tool_binary_file");
+    await expect(executor).rejects.toThrow("formal_qa_codex_timeout");
+  });
 });
