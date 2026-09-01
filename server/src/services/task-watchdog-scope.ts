@@ -28,6 +28,9 @@ export type TaskWatchdogMutationScope =
       watchedIssueId: string;
       watchdogIssueId: string | null;
       stopFingerprint: string | null;
+      // The heartbeat run ID of the watchdog run that holds this scope. Used by
+      // the staleness guard to exempt live paths this run itself created. (HAU-417)
+      runId: string | null;
     };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +121,7 @@ export async function resolveTaskWatchdogMutationScope(
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
     stopFingerprint: taskWatchdog.stopFingerprint,
+    runId,
   };
 }
 
