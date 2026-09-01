@@ -239,8 +239,9 @@ impl RunnerTransportEndpoint {
                     .map_err(|error| {
                         DurableRunnerError::invalid(format!("invalid WebSocket request: {error}"))
                     })?;
-                let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
                 let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
+                let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
+                ensure_connection_deadline(deadline)?;
                 stream.set_nonblocking(true).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "WebSocket stream configuration failed: {error}"

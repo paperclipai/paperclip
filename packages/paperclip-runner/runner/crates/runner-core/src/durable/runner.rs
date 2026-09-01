@@ -60,6 +60,13 @@ fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
     }
 }
 
+fn sleep_before_deadline(delay: Duration, deadline: Instant) {
+    let bounded_delay = delay.min(deadline.saturating_duration_since(Instant::now()));
+    if !bounded_delay.is_zero() {
+        thread::sleep(bounded_delay);
+    }
+}
+
 fn connection_attempt_deadline(
     config: &DurableRunnerConfig,
     started: Instant,
@@ -216,7 +223,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                thread::sleep(config.reconnect_delay);
+                sleep_before_deadline(config.reconnect_delay, connect_deadline);
                 continue;
             }
             Err(error) => {
@@ -289,9 +296,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
             return Ok(());
         }
         if disconnected {
+            disconnected_since.get_or_insert_with(Instant::now);
             state.reconnect_count = state.reconnect_count.saturating_add(1);
             store.save(&state)?;
-            thread::sleep(config.reconnect_delay);
+            let reconnect_deadline =
+                connection_attempt_deadline(&config, started, disconnected_since);
+            sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
             continue;
         }
 
@@ -302,6 +312,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
             }
             poll_executor_events(&mut state, &store, &config, &mut executor)?;
             if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
+                disconnected_since.get_or_insert_with(Instant::now);
                 state.record_diagnostic(error.to_string());
                 state.reconnect_count = state.reconnect_count.saturating_add(1);
                 store.save(&state)?;
@@ -321,6 +332,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
                 Err(error) => {
+                    disconnected_since.get_or_insert_with(Instant::now);
                     state.record_diagnostic(error.to_string());
                     state.reconnect_count = state.reconnect_count.saturating_add(1);
                     store.save(&state)?;
@@ -328,6 +340,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 }
             };
             if let Err(error) = validate_control_identity(&message, &state, Some(&connection)) {
+                disconnected_since.get_or_insert_with(Instant::now);
                 state.record_diagnostic(format!(
                     "control identity mismatch closed the connection: {error}"
                 ));
@@ -358,6 +371,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         .send_json(&command_result_envelope(&state, &result))
                         .and_then(|()| send_outbox(&mut transport, &state, &mut sent_source_seq));
                     if let Err(error) = delivery {
+                        disconnected_since.get_or_insert_with(Instant::now);
                         state.record_diagnostic(error.to_string());
                         state.reconnect_count = state.reconnect_count.saturating_add(1);
                         store.save(&state)?;
@@ -401,6 +415,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                     ))?;
                 }
                 _ => {
+                    disconnected_since.get_or_insert_with(Instant::now);
                     state.record_diagnostic(
                         "malformed or unsupported control frame closed the connection",
                     );
@@ -410,7 +425,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 }
             }
         }
-        thread::sleep(config.reconnect_delay);
+        disconnected_since.get_or_insert_with(Instant::now);
+        let reconnect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
+        sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
     }
 }
 
