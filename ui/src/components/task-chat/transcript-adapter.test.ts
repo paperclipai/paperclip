@@ -917,7 +917,7 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
         pending,
         { id: "usage", kind: "usage", usage: { used: 1, size: 10 } },
       ]).map((item) => item.id),
-    ).toEqual(["commentary", pending.id]);
+    ).toEqual(["commentary", pending.id, "usage"]);
   });
 
   it("keeps aggregate workspace changes at the turn boundary outside activity", () => {
@@ -1949,6 +1949,7 @@ describe("paperclip runner semantic channels", () => {
       "thinking",
       "tool",
       "interrupt",
+      "usage",
       "research",
     ]);
   });

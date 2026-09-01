@@ -1421,7 +1421,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryFn: () => activityApi.forIssue(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
-  const { data: liveRuns } = useQuery({
+  const { data: liveRuns, isFetched: liveRunsFetched } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     refetchInterval: 1000,
@@ -1430,10 +1430,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedLiveRuns = liveRuns ?? [];
   const liveRunCount = resolvedLiveRuns.length;
-  const { data: activeRun = null } = useQuery({
+  const activeRunQueryEnabled = !!executionRunId || issueStatus === "in_progress";
+  const { data: activeRun = null, isFetched: activeRunFetched } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
-    enabled: !!executionRunId || issueStatus === "in_progress",
+    enabled: activeRunQueryEnabled,
     refetchInterval: liveRunCount > 0 ? false : 1000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId,
@@ -1448,16 +1449,25 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     issueAssigneeAgentId &&
     agentMap.get(issueAssigneeAgentId)?.adapterType === "paperclip_runner",
   );
-  const liveRuntimeAdapterType =
-    resolvedActiveRun?.adapterType ??
+  const liveRuntimeRun =
+    resolvedActiveRun ??
     resolvedLiveRuns.find(
       (run) => run.status === "running" || run.status === "queued",
-    )?.adapterType ??
+    ) ??
     null;
+  // Do not briefly enable runner-only queue traffic from the current assignee
+  // while the authoritative active-run lookup is still loading. A task can be
+  // reassigned to a Paperclip Runner agent while an existing direct-adapter
+  // run remains active; that legacy run must never create or poll native queue
+  // state.
+  const runtimeSelectionKnown =
+    liveRunsFetched && (!activeRunQueryEnabled || activeRunFetched);
   const paperclipQueueEnabled =
     !classicTaskInterfaceEnabled &&
-    (liveRuntimeAdapterType
-      ? liveRuntimeAdapterType === "paperclip_runner"
+    runtimeSelectionKnown &&
+    (liveRuntimeRun
+      ? liveRuntimeRun.runtimeMode === "native" &&
+        liveRuntimeRun.adapterType === "paperclip_runner"
       : assigneeUsesPaperclipRunner);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),

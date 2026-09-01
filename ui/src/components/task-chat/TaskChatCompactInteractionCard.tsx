@@ -17,6 +17,7 @@ import {
   ListChecks,
   Loader2,
   MessageSquareQuote,
+  Plug,
   Search,
   X,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import type {
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
@@ -106,6 +108,11 @@ const KIND_COPY = {
     fallbackTitle: "Review items",
     label: "Review",
     icon: MessageSquareQuote,
+  },
+  connection_intent: {
+    fallbackTitle: "Connect service",
+    label: "Connection",
+    icon: Plug,
   },
 } as const;
 
@@ -498,6 +505,13 @@ function ReceiptDisclosure({
           </p>
         ) : null}
       </div>
+    );
+  } else if (interaction.kind === "connection_intent") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.requestingAgentName} requested access to{" "}
+        {interaction.payload.serviceName}.
+      </p>
     );
   } else {
     request = (
@@ -1904,6 +1918,22 @@ export function TaskChatCompactInteractionCard({
     interaction.kind === "request_confirmation" &&
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan";
+
+  if (interaction.kind === "connection_intent") {
+    return (
+      <InteractionShell
+        interaction={interaction}
+        audienceLabel={audienceLabel}
+        presentation={presentation}
+      >
+        <ConnectionIntentInteractionBody
+          interaction={interaction}
+          currentUserId={currentUserId}
+          addresseeLabel={addresseeLabel ?? "the addressed user"}
+        />
+      </InteractionShell>
+    );
+  }
 
   if (presentation === "timeline" && interaction.status !== "pending") {
     return (

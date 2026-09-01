@@ -785,6 +785,153 @@ export function transcriptToTaskChatItems(
         resetInline();
         break;
       }
+      case "provider_activity": {
+        const key = `provider:${providerActivityKey(entry)}`;
+        const item = providerActivityItem(entry, runId, i);
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          const existing = items[existingIndex];
+          items[existingIndex] =
+            existing.kind === "protocol" &&
+            existing.surface === "provider_activity"
+              ? mergeProviderActivityItem(existing, item)
+              : item;
+        }
+        resetInline();
+        break;
+      }
+      case "workspace_change": {
+        const key = `workspace:${entry.changeSetId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:workspace:${entry.changeSetId}`,
+          kind: "protocol",
+          surface: "workspace_change",
+          changeSetId: entry.changeSetId,
+          revision: entry.revision,
+          source: entry.source,
+          complete: entry.complete,
+          files: entry.files.map((file) => ({
+            ...file,
+            diff:
+              file.diff == null
+                ? null
+                : file.diff.slice(0, PROTOCOL_OUTPUT_MAX),
+          })),
+          totals: entry.totals,
+          patchArtifactRef: entry.patchArtifactRef,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "workspace_file_reference": {
+        const key = `workspace-file:${entry.referenceId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:workspace-file:${entry.referenceId}`,
+          kind: "protocol",
+          surface: "workspace_file",
+          referenceId: entry.referenceId,
+          source: entry.source,
+          path: entry.path,
+          displayName: entry.displayName,
+          mediaType: entry.mediaType,
+          presentation: entry.presentation,
+          line: entry.line,
+          preview:
+            entry.preview == null
+              ? null
+              : entry.preview.slice(0, PROTOCOL_OUTPUT_MAX),
+          previewTruncated:
+            entry.previewTruncated ||
+            Boolean(
+              entry.preview && entry.preview.length > PROTOCOL_OUTPUT_MAX,
+            ),
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "runtime_request": {
+        const key = `runtime-request:${entry.requestId}`;
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:runtime-request:${entry.requestId}`,
+          kind: "protocol",
+          surface: "runtime_request",
+          runId,
+          requestId: entry.requestId,
+          requestKind: entry.requestKind,
+          turnId: entry.turnId,
+          requestType: entry.requestType,
+          status: entry.status,
+          prompt: entry.prompt,
+          choices: entry.choices,
+          fields: entry.fields,
+          questionSet: entry.questionSet,
+          resolvedAction: entry.resolvedAction,
+          response: entry.response,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = { ...item, id: items[existingIndex].id };
+        }
+        resetInline();
+        break;
+      }
+      case "run_result": {
+        items.push({
+          id: `${runId}:result:${i}`,
+          kind: "protocol",
+          surface: "run_result",
+          disposition: entry.disposition,
+          summary: entry.summary,
+          objectiveSatisfied: entry.objectiveSatisfied,
+          verification: entry.verification,
+          remainingWork: entry.remainingWork,
+          blocker: entry.blocker,
+          artifacts: entry.artifacts,
+        });
+        resetInline();
+        break;
+      }
+      case "run_terminal": {
+        const key = "run-terminal";
+        const item: TaskChatProtocolItem = {
+          id: `${runId}:terminal`,
+          kind: "protocol",
+          surface: "run_terminal",
+          turnState: entry.turnState,
+          runState: entry.runState,
+          disposition: entry.disposition,
+          stopReason: entry.stopReason,
+        };
+        const existingIndex = protocolIndexByKey.get(key);
+        if (existingIndex == null) {
+          items.push(item);
+          protocolIndexByKey.set(key, items.length - 1);
+        } else {
+          items[existingIndex] = item;
+        }
+        resetInline();
+        break;
+      }
       case "result": {
         if (
           entry.subtype !== "paperclip_runner_usage" &&

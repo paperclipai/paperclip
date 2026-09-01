@@ -347,6 +347,8 @@ function durableInputLabel(
     return interaction.title ?? "Choose options";
   if (interaction.kind === "request_item_verdicts")
     return interaction.title ?? "Review items";
+  if (interaction.kind === "connection_intent")
+    return interaction.title ?? "Connect service";
   if (
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan"
@@ -766,7 +768,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ? settlingRun.id
         : null;
   const heldPaperclipRunnerStartedAtMs =
-    heldPaperclipRunnerRunId === liveRun?.id
+    liveRun && heldPaperclipRunnerRunId === liveRun.id
       ? ((liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
         toMs(liveRun.createdAt))
       : (settlingRun?.startedAtMs ?? null);

@@ -117,7 +117,7 @@ describe("TaskChatPlanPreviewCard", () => {
     render([{ id: "one", label: "Inspect the existing card", status: "in_progress" }]);
     const preview = container.querySelector('[data-testid="task-chat-plan-preview"]');
     expect(preview?.tagName).toBe("SECTION");
-    expect(preview?.textContent).toContain("Plan· rev 5");
+    expect(preview?.textContent).toContain("Writing plan· rev 5");
     expect(preview?.textContent).toContain("Inspect the existing card");
 
     render([

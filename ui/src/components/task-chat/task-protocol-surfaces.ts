@@ -50,7 +50,7 @@ const providerEvents = [
 
 const runnerLifecycleEvents = [
   "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected",
-  "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped",
+  "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped",
   "runtime.phase.changed", "workspace.ready",
   "harness.starting", "harness.ready", "harness.exited",
   "session.starting", "session.started", "session.resuming", "session.resumed",
@@ -90,6 +90,7 @@ export const TASK_PROTOCOL_EVENT_SURFACE_REGISTRY: Readonly<Record<string, TaskP
   "workspace.file.referenced": inline("workspace_file", "Task Page/Runner Protocol/File references", "Verified references open a bounded preview and the production file viewer."),
   "semantic_tool.input": folded("tool", "Semantic operations reuse the production tool row."),
   "semantic_tool.result": folded("tool", "Semantic operation outcomes update the matching tool row."),
+  "semantic_tool.reconciled": folded("tool", "Recovered semantic operation outcomes update the matching tool row without duplicating it."),
   "mcp_app.tool_input": folded("tool", "MCP inputs reuse the production tool row."),
   "mcp_app.tool_result": folded("tool", "MCP outcomes update the matching tool row."),
   "mcp_app.action.requested": folded("interaction", "Action requests materialize as authoritative issue-thread interactions."),

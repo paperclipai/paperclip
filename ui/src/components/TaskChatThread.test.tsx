@@ -640,7 +640,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         container.querySelector('[data-testid="task-chat-live-run-pill"]'),
       ).not.toBeNull();
       expect(
-        container.querySelector('[data-testid="task-chat-live-text"]')
+        container.querySelector('[data-testid="task-chat-phase-interstitial"]')
           ?.textContent,
       ).toContain(`Active ${adapterType} output`);
       expect(

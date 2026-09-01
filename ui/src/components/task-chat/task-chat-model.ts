@@ -130,8 +130,6 @@ export interface TaskChatMessageItem {
   onBehalfOfUserName?: string;
   /** A transient provider progress update, distinct from the durable final response. */
   interstitial?: boolean;
-  /** Normalized runner message channel. Only paperclip_runner currently emits it. */
-  channel?: "progress" | "final" | "unknown";
   /** Epoch ms of the message's first streamed chunk. */
   atMs?: number;
   /** Index of the latest transcript event folded into this logical block. */
