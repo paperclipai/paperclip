@@ -58,6 +58,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { testEnvironment } from "./test.js";
+import { runClaudeHelloProbe } from "./hello-probe.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
 
 const sandboxTarget: AdapterExecutionTarget = {
   kind: "remote",
@@ -79,6 +81,112 @@ const sandboxTarget: AdapterExecutionTarget = {
 
 const initLine =
   '{"type":"system","subtype":"init","cwd":"/home/daytona/paperclip-workspace","session_id":"abc","tools":["Bash","Read"]}';
+
+describe("shared Claude hello probe no-tool boundary", () => {
+  const sshTarget = {
+    kind: "remote",
+    transport: "ssh",
+    remoteCwd: "/home/user/paperclip-workspace",
+    spec: { host: "example.com", port: 22, username: "user" },
+  } as unknown as AdapterExecutionTarget;
+  const successStdout = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+  ].join("\n");
+
+  it.each([
+    {
+      label: "local non-root",
+      target: null,
+      permissionArgs: buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 501,
+      }),
+    },
+    {
+      label: "local root",
+      target: null,
+      permissionArgs: buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 0,
+      }),
+    },
+    {
+      label: "SSH",
+      target: sshTarget,
+      permissionArgs: buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: true,
+        localProcessUid: 501,
+      }),
+    },
+    {
+      label: "sandbox",
+      target: sandboxTarget,
+      permissionArgs: buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: true,
+        localProcessUid: 501,
+      }),
+    },
+  ])("forces zero tools for $label even when caller args are permissive", async ({ target, permissionArgs }) => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const checks = await runClaudeHelloProbe({
+      runId: "hello-probe-no-tools",
+      target,
+      command: "claude",
+      args: [
+        "--print",
+        "-",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        ...permissionArgs,
+        "--chrome",
+        "--tools",
+        "Bash,Edit,Write",
+        "--plugin-dir",
+        "/tmp/unsafe-plugin",
+      ],
+      cwd: "/tmp",
+      env: {},
+      timeoutSec: 45,
+    });
+
+    expect(checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
+    const call = runAdapterExecutionTargetProcess.mock.calls.at(-1) as unknown as unknown[];
+    const spawnedArgs = call[3] as string[];
+    const options = call[4] as {
+      timeoutSec: number;
+      graceSec: number;
+      stdin: string;
+      onLog: unknown;
+    };
+    expect(options.timeoutSec).toBe(45);
+    expect(options.graceSec).toBe(5);
+    expect(options.stdin).toBe("Respond with hello.");
+    expect(options.onLog).toEqual(expect.any(Function));
+    const toolsIndex = spawnedArgs.indexOf("--tools");
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(spawnedArgs[toolsIndex + 1]).toBe("");
+    expect(spawnedArgs).toContain("--safe-mode");
+    expect(spawnedArgs).toContain("--disable-slash-commands");
+    expect(spawnedArgs).toContain("--no-chrome");
+    expect(spawnedArgs).toContain("--no-session-persistence");
+    expect(spawnedArgs).toContain("--strict-mcp-config");
+    expect(spawnedArgs).not.toContain("--dangerously-skip-permissions");
+    expect(spawnedArgs).not.toContain("--allowedTools");
+    expect(spawnedArgs).not.toContain("--allowed-tools");
+    expect(spawnedArgs).not.toContain("--chrome");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Bash");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Edit");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Write");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("unsafe-plugin");
+  });
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -382,12 +490,40 @@ describe("claude sandbox hello probe diagnostics", () => {
     warnSpy.mockRestore();
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+    "normalizes a non-finite transport exit code (%s) before checks and logs",
+    async (invalidExitCode) => {
+      probeResult.value = {
+        exitCode: invalidExitCode,
+        stdout: initLine,
+        stderr: "",
+      };
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: { engine: "cli", command: "claude" },
+        executionTarget: sandboxTarget,
+        environmentName: "Daytona",
+      });
+
+      const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+      expect(failed?.hint).toContain("Exit code unknown.");
+      expect(failed?.hint).not.toContain(String(invalidExitCode));
+      const diagnostic = warnSpy.mock.calls.find(
+        (call) => (call[1] as { classification?: string } | undefined)?.classification === "nonzero_exit",
+      );
+      expect(diagnostic?.[1]).toEqual({ classification: "nonzero_exit" });
+      warnSpy.mockRestore();
+    },
+  );
+
   it("never copies a thrown CLI probe error into a check or the log", async () => {
     // A spawn or transport failure can throw an error whose text carries a
     // credential. Inject an opaque credential marker and a proxy marker through
-    // the thrown error. The CLI lane has no catch around the hello probe call,
-    // so the thrown error propagates to the caller, which owns it. No check and
-    // no console.warn call inside this lane repeats either marker.
+    // the thrown error. The shared probe function maps that to an allowlisted
+    // warn check and never repeats raw text in the result or log.
     const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
     const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
     probeResult.throwError = new Error(
@@ -395,17 +531,18 @@ describe("claude sandbox hello probe diagnostics", () => {
     );
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // The current contract propagates the thrown error. The lane builds no
-    // Test-result check from the error, so the raw text cannot reach a check.
-    await expect(
-      testEnvironment({
-        companyId: "company-1",
-        adapterType: "claude_local",
-        config: { engine: "cli", command: "claude" },
-        executionTarget: sandboxTarget,
-        environmentName: "Daytona",
-      }),
-    ).rejects.toThrow(opaqueCredMarker);
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(true);
+    const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+    expect(failed?.level).toBe("warn");
 
     // The lane never routes the raw error text to the server log. No
     // console.warn call repeats either marker.
@@ -479,6 +616,28 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
     expect(JSON.stringify(result.checks)).not.toContain('"subtype":"init"');
+  });
+});
+
+describe("claude CLI hello probe skip disposition", () => {
+  it("reports a warning when a custom command prevents the provider probe", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "custom-claude-wrapper" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const skipped = result.checks.find(
+      (check) => check.code === "claude_hello_probe_skipped_custom_command",
+    );
+    expect(skipped).toMatchObject({
+      level: "warn",
+      message: "Skipped hello probe because command is not `claude`.",
+    });
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(false);
   });
 });
 

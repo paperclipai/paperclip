@@ -6,8 +6,16 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 
 // A shared handle so the managed-config test can force the runtime preparation
 // step to throw an error that carries untrusted markers.
-const { prepareAdapterExecutionTargetRuntime } = vi.hoisted(() => ({
+const { prepareAdapterExecutionTargetRuntime, installCheck } = vi.hoisted(() => ({
   prepareAdapterExecutionTargetRuntime: vi.fn(),
+  installCheck: {
+    value: null as {
+      code: string;
+      level: "info" | "warn" | "error";
+      message: string;
+      detail?: string;
+    } | null,
+  },
 }));
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
@@ -17,7 +25,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   return {
     ...actual,
     adapterExecutionTargetUsesManagedHome: () => true,
-    maybeRunSandboxInstallCommand: async () => null,
+    maybeRunSandboxInstallCommand: async () => installCheck.value,
     prepareAdapterExecutionTargetRuntime,
   };
 });
@@ -29,6 +37,7 @@ describe("prepareClaudeConfigSeed", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    installCheck.value = null;
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -155,6 +164,7 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    installCheck.value = null;
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -164,6 +174,36 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
       if (!dir) continue;
       await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("does not surface the generic install helper's raw output tail", async () => {
+    const marker = "OPAQUEINSTALLOUTPUTmarker";
+    installCheck.value = {
+      code: "claude_install_command_run",
+      level: "warn",
+      message: "Install command exited 1: npm install -g @anthropic-ai/claude-code",
+      detail: `remote stderr ${marker}`,
+    };
+
+    const checks = await prepareSandboxClaudeProbeRuntime({
+      runId: "install-redaction-run",
+      target: sandboxTarget,
+      cwd: "/home/daytona/paperclip-workspace",
+      env: { CLAUDE_CONFIG_DIR: "/remote/config" },
+      installCommand: "npm install -g @anthropic-ai/claude-code",
+      detectCommand: "claude",
+      targetIsRemote: true,
+      targetIsSandbox: true,
+      helloProbeTimeoutSec: 30,
+    });
+
+    const install = checks.find((check) => check.code === "claude_install_command_run");
+    expect(install).toMatchObject({
+      level: "warn",
+      message: "Install command exited 1: npm install -g @anthropic-ai/claude-code",
+    });
+    expect(install?.detail).toBeUndefined();
+    expect(JSON.stringify(checks)).not.toContain(marker);
   });
 
   it("keeps a thrown config-materialization error out of every check and the log", async () => {
