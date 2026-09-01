@@ -490,4 +490,85 @@ describe("approval routes idempotent retries", () => {
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
+
+  it("wakes non-requester task assignees when a card is approved (INUA-6044)", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-9",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    // CEO's task is linked: assignee is different from the requester
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "ceo-task", assigneeAgentId: "ceo-agent" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    // Engineer (requester) is woken
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "engineer-agent",
+      expect.objectContaining({ reason: "approval_approved" }),
+    );
+    // CEO (non-requester assignee) is also woken
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "ceo-agent",
+      expect.objectContaining({
+        reason: "approval_approved",
+        idempotencyKey: "approval-task-assignee:approval-9:ceo-task:approved",
+      }),
+    );
+  });
+
+  it("does not double-wake requester when requester is also the task assignee (INUA-6044)", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-10",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    // Same agent is both the requester and the task assignee
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "engineer-task", assigneeAgentId: "engineer-agent" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-10/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    // Only one wakeup: the requester wake (not a duplicate from queueNonRequesterAssigneeWakes)
+    const engineerWakes = (mockHeartbeatService.wakeup as ReturnType<typeof vi.fn>).mock.calls
+      .filter((call) => call[0] === "engineer-agent");
+    expect(engineerWakes).toHaveLength(1);
+  });
 });

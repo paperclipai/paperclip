@@ -153,6 +153,85 @@ export function approvalRoutes(
     }
   }
 
+  // Wakes assignees of linked tasks whose assignee differs from the card requester.
+  // The requester is already woken separately; the review-path mechanism handles lost-path issues.
+  // This fills the gap: a non-requester assignee (e.g. CEO) on a linked task is never notified
+  // when the work completes unless this runs. See INUA-6044.
+  async function queueNonRequesterAssigneeWakes(input: {
+    approvalId: string;
+    approvalStatus: string;
+    companyId: string;
+    linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
+    requestedByAgentId: string | null;
+    alreadyWokenIssueIds: Set<string>;
+    requestedByUserId: string;
+  }) {
+    for (const issue of input.linkedIssues) {
+      if (!issue.assigneeAgentId) continue;
+      if (issue.assigneeAgentId === input.requestedByAgentId) continue;
+      if (input.alreadyWokenIssueIds.has(issue.id)) continue;
+
+      const wakeReason = `approval_${input.approvalStatus}`;
+      try {
+        const wakeRun = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: wakeReason,
+          idempotencyKey: `approval-task-assignee:${input.approvalId}:${issue.id}:${input.approvalStatus}`,
+          payload: {
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+          },
+          requestedByActorType: "user",
+          requestedByActorId: input.requestedByUserId,
+          contextSnapshot: {
+            source: `approval.${input.approvalStatus}`,
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason,
+          },
+        });
+
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.task_assignee_wakeup_queued",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            wakeRunId: wakeRun?.id ?? null,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, approvalId: input.approvalId, issueId: issue.id, agentId: issue.assigneeAgentId },
+          "failed to queue task-assignee wake after approval resolution",
+        );
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.task_assignee_wakeup_failed",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+    }
+  }
+
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
     if (!approval || !hasCompanyAccess(req, approval.companyId)) {
@@ -398,6 +477,16 @@ export function approvalRoutes(
           : null,
         requestedByUserId: req.actor.userId ?? "board",
       });
+
+      await queueNonRequesterAssigneeWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        requestedByAgentId: approval.requestedByAgentId,
+        alreadyWokenIssueIds: lostReviewIssueIds,
+        requestedByUserId: req.actor.userId ?? "board",
+      });
     }
 
     res.json(redactApprovalPayload(approval));
@@ -431,6 +520,16 @@ export function approvalRoutes(
         companyId: approval.companyId,
         linkedIssues,
         lostIssueIds: lostReviewIssueIds,
+        requestedByUserId: req.actor.userId ?? "board",
+      });
+
+      await queueNonRequesterAssigneeWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        requestedByAgentId: approval.requestedByAgentId ?? null,
+        alreadyWokenIssueIds: lostReviewIssueIds,
         requestedByUserId: req.actor.userId ?? "board",
       });
     }
