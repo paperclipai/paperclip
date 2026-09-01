@@ -44,7 +44,10 @@ import { createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../contracts/native-execution.js";
 import { nativeMcpLaunchBinding } from "../drivers/native-mcp.js";
-import { prepareIsolatedCodexHome } from "../drivers/runtime-context-materializer.js";
+import {
+  prepareIsolatedCodexHome,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../drivers/runtime-context-materializer.js";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
@@ -75,7 +78,7 @@ function recoveredControlPlaneIdentity(
 ): DurableRecoveryIdentity {
   const stored = record(
     JSON.parse(
-      readFileSync(resolve(directory, "mock-core-state.json"), "utf8"),
+      readFileSync(resolve(directory, "control-plane-state.json"), "utf8"),
     ),
   );
   const identity = record(
@@ -1120,6 +1123,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }): Promise<void> {
     const pending = this.#bridgedRuntimeInputs.get(input.requestId);
     if (!pending) throw new Error(`PRP runtime request ${input.requestId} is no longer pending`);
+    if (!("response" in input.resolution)) {
+      throw new Error(
+        "runnerd-native runtime requests require a canonical question response",
+      );
+    }
     const commandId = `command_runtime_input_${createHash("sha256")
       .update(`${input.requestId}:${pending.durableTurnId}`)
       .digest("hex")
@@ -1129,7 +1137,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       {
         requestId: input.requestId,
         turnId: pending.durableTurnId,
-        resolution: input.resolution,
+        response: input.resolution.response,
       },
       commandId,
     );
@@ -1657,6 +1665,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? resolve(this.options.runnerFilesystemRoot, "codex-home")
       : localCodexHome;
     if (provider === "codex") {
+      // The prior process consumed a sealed, immutable copy. Rebuild that
+      // copy from the authoritative runtime snapshot before a new provider is
+      // launched; normal materialization still rejects arbitrary replacement.
+      await releaseMaterializedNativeRuntimeSkills(
+        resolve(localCodexHome, "skills"),
+      );
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
@@ -2111,12 +2125,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ) {
           params.turnId = event.envelope.turnId;
         }
-        const providerTurnId =
-          method === "turn/started" || method === "turn/completed"
-            ? (record(params.turn).id ?? params.turnId)
-            : (params.turnId ?? record(params.turn).id);
-        if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
-          this.#turnId = providerTurnId;
+        // Only the canonical start establishes provider turn identity. Other
+        // normalized events inherit the durable controller turn from the PRP
+        // envelope; allowing one of them to update this binding would replace
+        // the provider-native id before its terminal is rehydrated.
+        if (method === "turn/started") {
+          const providerTurnId = record(params.turn).id ?? params.turnId;
+          if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
+            this.#turnId = providerTurnId;
+          }
         }
         this.#queue.push({
           method,

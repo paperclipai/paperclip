@@ -13,7 +13,7 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
-import { materializeNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
+import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
 
 import {
   createCapabilityRunnerdCodexTransport,
@@ -1115,7 +1115,7 @@ it("cold-restores a suspended provider session under a new run binding", async (
     });
   } finally {
     await restored.transport.close();
-    await materializeNativeRuntimeSkills(null, join(stateDirectory, "codex-home", "skills"));
+    await releaseMaterializedNativeRuntimeSkills(join(stateDirectory, "codex-home", "skills"));
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);

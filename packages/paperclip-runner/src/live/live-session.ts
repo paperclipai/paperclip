@@ -1709,6 +1709,15 @@ export class CapabilityLiveSession {
       // transient store error. Its serialization queue is repaired, so a
       // suspend/shutdown boundary must retry the latest snapshot without
       // changing the authoritative failed status.
+      try {
+        await this.#persist();
+      } finally {
+        // A failed session is still holding the live provider transport until
+        // this boundary closes it. Always stop the notification pump and the
+        // transport-owned runner/control-plane resources, even when the final
+        // durability retry also fails.
+        await this.#disconnect(reason);
+      }
       await this.#persist();
       return;
     }

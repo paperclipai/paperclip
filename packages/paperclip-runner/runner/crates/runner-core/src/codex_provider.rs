@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +17,7 @@ use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
@@ -24,6 +29,206 @@ const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
+
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+struct ProviderTraceSink {
+    sender: Option<mpsc::SyncSender<String>>,
+    writer: Option<thread::JoinHandle<()>>,
+    writer_error: Arc<Mutex<Option<String>>>,
+    next_frame_id: u64,
+    next_debug_sequence: u64,
+    captured_bytes: usize,
+    max_bytes: usize,
+    truncated: bool,
+    incomplete_reason: Option<String>,
+}
+
+impl ProviderTraceSink {
+    fn from_environment() -> Option<Self> {
+        let trace_path = std::env::var_os("PAPERCLIP_PROVIDER_TRACE_PATH")?;
+        let max_bytes = std::env::var("PAPERCLIP_PROVIDER_TRACE_MAX_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROVIDER_TRACE_MAX_BYTES);
+        Some(Self::at_path(trace_path.into(), max_bytes))
+    }
+
+    fn at_path(trace_path: PathBuf, max_bytes: usize) -> Self {
+        // Trace delivery is deliberately bounded and lossy. A full spool or a
+        // failed debug writer can mark evidence incomplete, but can never
+        // backpressure provider execution or the durable PRP channel.
+        let (sender, receiver) = mpsc::sync_channel::<String>(1_024);
+        let writer_error = Arc::new(Mutex::new(None));
+        let thread_error = Arc::clone(&writer_error);
+        let writer = thread::spawn(move || {
+            let result = (|| -> std::io::Result<()> {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&trace_path)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut permissions = file.metadata()?.permissions();
+                    permissions.set_mode(0o600);
+                    fs::set_permissions(&trace_path, permissions)?;
+                }
+                for line in receiver {
+                    file.write_all(line.as_bytes())?;
+                    file.write_all(b"\n")?;
+                }
+                file.flush()
+            })();
+            if let Err(error) = result {
+                if let Ok(mut slot) = thread_error.lock() {
+                    *slot = Some(format!("trace_sidecar_write_failed:{error}"));
+                }
+            }
+        });
+        Self {
+            sender: Some(sender),
+            writer: Some(writer),
+            writer_error,
+            next_frame_id: 1,
+            next_debug_sequence: 1,
+            captured_bytes: 0,
+            max_bytes,
+            truncated: false,
+            incomplete_reason: None,
+        }
+    }
+
+    fn send_record(&mut self, mut value: Value) {
+        let Some(sender) = self.sender.as_ref().cloned() else {
+            return;
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.insert("debugChannel".to_owned(), json!("rust_native"));
+            object.insert("debugSequence".to_owned(), json!(self.next_debug_sequence));
+            self.next_debug_sequence += 1;
+        }
+        match sender.try_send(value.to_string()) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.incomplete_reason = Some("trace_sidecar_spool_full".to_owned());
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.incomplete_reason = Some("trace_sidecar_channel_closed".to_owned());
+                self.sender = None;
+            }
+        }
+    }
+
+    fn frame(&mut self, direction: &str, raw: &[u8]) -> Option<u64> {
+        if self.captured_bytes.saturating_add(raw.len()) > self.max_bytes {
+            self.truncated = true;
+            return None;
+        }
+        let frame_id = self.next_frame_id;
+        self.next_frame_id += 1;
+        self.captured_bytes += raw.len();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
+        self.send_record(json!({
+            "kind": "frame",
+            "schema": "paperclip.provider_trace_frame.v1",
+            "frameId": frame_id,
+            "timestamp": timestamp,
+            "direction": direction,
+            "transport": "stdio_jsonl",
+            "provider": "codex",
+            "byteLength": raw.len(),
+            "digest": format!("sha256:{:x}", Sha256::digest(raw)),
+            "rawBase64": base64_encode(raw),
+        }));
+        Some(frame_id)
+    }
+
+    fn interpretation(
+        &mut self,
+        frame_id: u64,
+        stage: &str,
+        rule_id: &str,
+        disposition: &str,
+        emitted_event_ids: Vec<String>,
+        reason: &str,
+    ) {
+        self.send_record(json!({
+            "kind": "interpretation",
+            "schema": "paperclip.provider_trace_interpretation.v1",
+            "frameId": frame_id,
+            "stage": stage,
+            "ruleId": rule_id,
+            "disposition": disposition,
+            "emittedEventIds": emitted_event_ids,
+            "droppedFields": [],
+            "fieldMappings": [],
+            "reason": reason,
+        }));
+    }
+
+    fn finish(&mut self) {
+        if self.sender.is_none() && self.writer.is_none() {
+            return;
+        }
+        let writer_reason = self
+            .writer_error
+            .lock()
+            .ok()
+            .and_then(|value| value.clone());
+        let reason = self.incomplete_reason.clone().or(writer_reason);
+        let status = if reason.is_some() {
+            "incomplete"
+        } else if self.truncated {
+            "truncated"
+        } else {
+            "complete"
+        };
+        let acknowledged_debug_sequence = self.next_debug_sequence.saturating_sub(1);
+        self.send_record(json!({
+            "kind": "trace_status",
+            "status": status,
+            "acknowledgedDebugSequence": acknowledged_debug_sequence,
+            "reason": reason.or_else(|| self.truncated.then(|| "provider_trace_max_bytes_exceeded".to_owned())),
+        }));
+        self.sender.take();
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+impl Drop for ProviderTraceSink {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
 
 fn default_approval_policy() -> String {
     "never".to_owned()
@@ -235,6 +440,7 @@ struct PendingRuntimeRequest {
 
 struct BufferedProviderMessage {
     value: Value,
+    trace_frame_id: Option<u64>,
 }
 
 enum AmbiguousTurnMessage {
@@ -272,6 +478,8 @@ pub struct CodexProvider {
     settled_provider_turn_ids: SettledProviderTurnIds,
     rejected_accepted_turn: Option<RejectedAcceptedTurn>,
     quarantined: bool,
+    trace: Option<ProviderTraceSink>,
+    last_trace_frame_id: Option<u64>,
 }
 
 impl CodexProvider {
@@ -338,6 +546,8 @@ impl CodexProvider {
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
             rejected_accepted_turn: None,
             quarantined: false,
+            trace: ProviderTraceSink::from_environment(),
+            last_trace_frame_id: None,
         };
         let initialized = provider.request(
             "initialize",
@@ -353,7 +563,7 @@ impl CodexProvider {
                 },
             }),
         )?;
-        provider.process.send(&json!({"method": "initialized"}))?;
+        provider.send_frame(&json!({"method": "initialized"}))?;
 
         let mut params = json!({
             "cwd": config.cwd,
@@ -417,6 +627,30 @@ impl CodexProvider {
 
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
+    }
+
+    pub(crate) fn take_provider_trace_frame_id(&mut self) -> Option<u64> {
+        self.last_trace_frame_id.take()
+    }
+
+    pub(crate) fn record_provider_trace_interpretation(
+        &mut self,
+        frame_id: u64,
+        rule_id: &str,
+        disposition: &str,
+        emitted_event_ids: Vec<String>,
+        reason: &str,
+    ) {
+        if let Some(trace) = self.trace.as_mut() {
+            trace.interpretation(
+                frame_id,
+                "rust_durable_normalization",
+                rule_id,
+                disposition,
+                emitted_event_ids,
+                reason,
+            );
+        }
     }
 
     pub fn active_provider_turn_id(&self) -> Option<&str> {
@@ -814,7 +1048,7 @@ impl CodexProvider {
         // The terminal notification is already authoritative and may be
         // waiting in the durable outbox. A courtesy rejection must not turn a
         // provider that has closed stdin into a fatal polling error.
-        let _ = self.process.send(&response);
+        let _ = self.send_frame(&response);
         Ok(Some(CodexProviderEvent::Notification {
             method: "warning".to_owned(),
             params: json!({"message": message, "providerMethod": bounded_method(method)}),
@@ -853,8 +1087,8 @@ impl CodexProvider {
                 "buffered Codex provider message",
             )?);
         }
-        let message = if let Some(buffered) = buffered {
-            buffered.value
+        let (message, trace_frame_id) = if let Some(buffered) = buffered {
+            (buffered.value, buffered.trace_frame_id)
         } else {
             let Some(line) = self.process.receive_stdout_line(Duration::from_millis(1))? else {
                 let exit = self.process.try_wait()?;
@@ -899,8 +1133,48 @@ impl CodexProvider {
                     Ok(None)
                 };
             };
-            parse_provider_message(&line)?
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line).map_err(|error| {
+                if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
+                    trace.interpretation(
+                        frame_id,
+                        "rust_jsonrpc_parse",
+                        "codex.jsonrpc.invalid",
+                        "rejected",
+                        Vec::new(),
+                        "Provider frame was not valid JSON-RPC",
+                    );
+                }
+                error
+            })?;
+            (message, trace_frame_id)
         };
+        self.last_trace_frame_id = trace_frame_id;
+        if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
+            let method = message.get("method").and_then(Value::as_str);
+            trace.interpretation(
+                frame_id,
+                "rust_jsonrpc_parse",
+                if method == Some("item/tool/call") {
+                    "codex.tool_call"
+                } else if method.is_some() {
+                    "codex.notification"
+                } else {
+                    "codex.unroutable"
+                },
+                if method.is_some() {
+                    "mapped"
+                } else {
+                    "ignored"
+                },
+                Vec::new(),
+                if method.is_some() {
+                    "JSON-RPC frame parsed and routed to provider normalization"
+                } else {
+                    "JSON-RPC frame had no routable method"
+                },
+            );
+        }
 
         if self.completed_turn_authority.is_some()
             && self.active_provider_turn_id.is_none()
@@ -934,7 +1208,10 @@ impl CodexProvider {
                             )
                         })?;
                 self.deferred_ambiguous_messages
-                    .push_back(BufferedProviderMessage { value: message });
+                    .push_back(BufferedProviderMessage {
+                        value: message,
+                        trace_frame_id,
+                    });
                 return Ok(None);
             }
             AmbiguousTurnMessage::ReconciledWithStart => {
@@ -952,7 +1229,10 @@ impl CodexProvider {
                                 "Codex buffered messages exceed the 16 MiB aggregate limit",
                             )
                         })?;
-                replay.push_back(BufferedProviderMessage { value: message });
+                replay.push_back(BufferedProviderMessage {
+                    value: message,
+                    trace_frame_id,
+                });
                 replay.append(&mut self.pending_messages);
                 self.pending_messages = replay;
                 return Ok(Some(CodexProviderEvent::Notification {
@@ -1001,7 +1281,7 @@ impl CodexProvider {
                     "Codex tool name",
                 )?;
                 if !self.authorized_tool_ids.contains(&operation_id) {
-                    self.process.send(&json!({
+                    self.send_frame(&json!({
                         "id": rpc_id,
                         "result": codex_tool_failure("Paperclip did not authorize this tool for the run"),
                     }))?;
@@ -1146,7 +1426,7 @@ impl CodexProvider {
                 if self.pending_runtime_requests.len() >= MAX_PENDING_RUNTIME_REQUESTS
                     || retained_request_bytes.is_none()
                 {
-                    self.process.send(&json!({
+                    self.send_frame(&json!({
                         "id": rpc_id,
                         "error": {
                             "code": -32000,
@@ -1183,7 +1463,7 @@ impl CodexProvider {
                     question_set,
                 }));
             }
-            self.process.send(&json!({
+            self.send_frame(&json!({
                 "id": rpc_id,
                 "error": {"code": -32601, "message": "provider request is unavailable in this runner layer"},
             }))?;
@@ -1287,7 +1567,7 @@ impl CodexProvider {
         }
         let text = String::from_utf8(result_bytes)
             .expect("serde_json always serializes JSON values as valid UTF-8");
-        self.process.send(&json!({
+        self.send_frame(&json!({
             "id": pending.rpc_id,
             "result": {
                 "success": !result.is_error,
@@ -1306,7 +1586,11 @@ impl CodexProvider {
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
         self.expected_shutdown = true;
         self.cancel_pending_requests()?;
-        self.process.terminate_group().map(|_| ())
+        let result = self.process.terminate_group().map(|_| ());
+        if let Some(trace) = self.trace.as_mut() {
+            trace.finish();
+        }
+        result
     }
 
     fn cancel_pending_requests(&mut self) -> Result<(), LocalRunnerError> {
@@ -1316,7 +1600,7 @@ impl CodexProvider {
         self.pending_tool_request_bytes = 0;
         let mut first_error = None;
         for request in pending_runtime.into_values() {
-            if let Err(error) = self.process.send(&json!({
+            if let Err(error) = self.send_frame(&json!({
                 "id": request.rpc_id,
                 "result": {"answers": {}},
             })) {
@@ -1324,7 +1608,7 @@ impl CodexProvider {
             }
         }
         for request in pending.into_values() {
-            if let Err(error) = self.process.send(&json!({
+            if let Err(error) = self.send_frame(&json!({
                 "id": request.rpc_id,
                 "result": codex_tool_failure("Paperclip stopped the active provider turn"),
             })) {
@@ -1342,6 +1626,37 @@ impl CodexProvider {
             .map_err(ProviderRequestError::into_inner)
     }
 
+    fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
+        if let Some(trace) = self.trace.as_mut() {
+            let raw = serde_json::to_vec(value).unwrap_or_default();
+            if let Some(frame_id) = trace.frame("client_to_provider", &raw) {
+                trace.interpretation(
+                    frame_id,
+                    "rust_native_transport",
+                    "codex.jsonrpc.outbound",
+                    "operator_only",
+                    Vec::new(),
+                    "Outbound provider command does not enter the canonical PRP outbox",
+                );
+            }
+        }
+        self.process.send(value)
+    }
+
+    fn trace_inbound(&mut self, line: &str) -> Option<u64> {
+        let trace = self.trace.as_mut()?;
+        let frame_id = trace.frame("provider_to_client", line.as_bytes())?;
+        trace.interpretation(
+            frame_id,
+            "rust_native_transport",
+            "codex.jsonrpc.inbound",
+            "mapped",
+            Vec::new(),
+            "Inbound provider frame entered the bounded JSON-RPC parser",
+        );
+        Some(frame_id)
+    }
+
     fn request_classified(
         &mut self,
         method: &str,
@@ -1351,8 +1666,7 @@ impl CodexProvider {
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
         })?;
-        self.process
-            .send(&json!({"id": request_id, "method": method, "params": params}))
+        self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
             let line = self
@@ -1364,10 +1678,33 @@ impl CodexProvider {
                         "Codex {method} response timed out"
                     )))
                 })?;
-            let message = parse_provider_message(&line).map_err(ProviderRequestError::Ambiguous)?;
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line).map_err(|error| {
+                if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
+                    trace.interpretation(
+                        frame_id,
+                        "rust_jsonrpc_parse",
+                        "codex.jsonrpc.invalid",
+                        "rejected",
+                        Vec::new(),
+                        "Provider frame was not valid JSON-RPC",
+                    );
+                }
+                ProviderRequestError::Ambiguous(error)
+            })?;
             if message.get("id").and_then(Value::as_u64) == Some(request_id)
                 && message.get("method").is_none()
             {
+                if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
+                    trace.interpretation(
+                        frame_id,
+                        "rust_jsonrpc_parse",
+                        "codex.jsonrpc.response",
+                        "operator_only",
+                        Vec::new(),
+                        "Matched synchronous app-server response",
+                    );
+                }
                 if let Some(error) = message.get("error") {
                     let well_formed_rejection = error.get("code").and_then(Value::as_i64).is_some()
                         && error.get("message").and_then(Value::as_str).is_some();
@@ -1401,8 +1738,10 @@ impl CodexProvider {
                             "Codex buffered messages exceed the 16 MiB aggregate limit",
                         ))
                     })?;
-            self.pending_messages
-                .push_back(BufferedProviderMessage { value: message });
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
             self.pending_message_bytes = next_retained_bytes;
         }
     }

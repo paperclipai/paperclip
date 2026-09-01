@@ -444,6 +444,7 @@ describe("Capability live runnerd and Codex session", () => {
         expect.objectContaining({ turnId: "turn-1", status: "completed" }),
       ],
     });
+    expect(state.transports[0]?.processInfo().exited).toBe(true);
   });
 
   it("turns an assistant local-file link into a verified dynamic-chat file card record", async () => {

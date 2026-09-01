@@ -54,6 +54,7 @@ const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
 const commandTypes = new Set([
   "run.prepare",
+  "run.attach",
   "session.open",
   "turn.start",
   "turn.steer",
