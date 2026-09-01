@@ -29,6 +29,7 @@ export { projectMemberships } from "./project_memberships.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { formalQaPreparations } from "./formal_qa_preparations.js";
+export { formalQaCheckouts } from "./formal_qa_checkouts.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";

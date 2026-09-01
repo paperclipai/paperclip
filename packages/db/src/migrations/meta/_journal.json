@@ -1653,6 +1653,13 @@
       "when": 1788294625498,
       "tag": "0237_nervous_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 238,
+      "version": "7",
+      "when": 1788295238179,
+      "tag": "0238_massive_red_hulk",
+      "breakpoints": true
     }
   ]
 }
