@@ -192,6 +192,22 @@ load_local_env() {
   export PAPERCLIP_AWS_AGENTCORE_STACK_NAME="$STACK_NAME"
 }
 
+write_teardown_metadata() {
+  mkdir -p "$LOCAL_DIR"
+  umask 077
+  local tmp="$ENV_FILE.tmp.$$"
+  printf '%q\n' \
+    "AWS_PROFILE=$AWS_PROFILE_NAME" \
+    "AWS_REGION=$AWS_REGION_NAME" \
+    "AWS_DEFAULT_REGION=$AWS_REGION_NAME" \
+    "PAPERCLIP_AWS_AGENTCORE_STACK_NAME=$STACK_NAME" >"$tmp"
+  if [[ -n "${AWS_CONFIG_FILE:-}" ]]; then
+    printf 'AWS_CONFIG_FILE=%q\n' "$AWS_CONFIG_FILE" >>"$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
 assume_runner_role() {
   local role_arn="$1"
   local response access secret token
@@ -293,6 +309,11 @@ provision() {
       "BedrockFoundationModelResourceArn=$foundation_model_resource_arn" \
       "BedrockMarketplaceProductId=$MARKETPLACE_PRODUCT_ID" \
     --tags paperclip:owned=true paperclip:environment=development paperclip:cost-center=runner-lab
+  # CloudFormation has created the billable resources at this point. Persist
+  # the nonsecret coordinates needed by `destroy` before any qualification
+  # API call can fail, then replace this checkpoint with the full qualified
+  # profile only after every resource is ready.
+  write_teardown_metadata
   local harness_id harness_arn harness_version runtime_arn memory_id memory_arn role_arn context_bucket context_prefix context_kms_key_arn qualification_revision
   harness_id="$(stack_output HarnessId)"
   harness_arn="$(stack_output HarnessArn)"

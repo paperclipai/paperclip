@@ -60,9 +60,14 @@ test("AgentCore template has closed development/private resources and explicit c
 test("AgentCore wrapper is valid shell and writes only nonsecret profile metadata", async () => {
   execFileSync("bash", ["-n", wrapperUrl.pathname]);
   const source = await readFile(wrapperUrl, "utf8");
-  const generatedBlock = source.slice(source.indexOf('"AWS_PROFILE=$AWS_PROFILE_NAME"'), source.indexOf('>"$tmp"'));
+  const generatedBlock = source.slice(source.lastIndexOf('"AWS_PROFILE=$AWS_PROFILE_NAME"'), source.lastIndexOf('>"$tmp"'));
+  const teardownBlock = source.slice(source.indexOf("write_teardown_metadata()"), source.indexOf("assume_runner_role()"));
   assert.ok(generatedBlock.length > 0);
+  assert.ok(teardownBlock.length > 0);
   assert.doesNotMatch(generatedBlock, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|Authorization|X-Amz-Signature/);
+  assert.doesNotMatch(teardownBlock, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|Authorization|X-Amz-Signature/);
+  assert.match(teardownBlock, /PAPERCLIP_AWS_AGENTCORE_STACK_NAME=\$STACK_NAME/);
+  assert.match(teardownBlock, /chmod 600 "\$tmp"/);
   assert.match(source, /chmod 600 "\$tmp"/);
   assert.match(source, /printf '%q\\n'/);
   assert.match(source, /printf 'AWS_CONFIG_FILE=%q\\n'/);
@@ -75,6 +80,10 @@ test("AgentCore wrapper is valid shell and writes only nonsecret profile metadat
   const destroyBlock = source.slice(source.indexOf("destroy()"), source.indexOf('case "$ACTION"'));
   assert.ok(destroyBlock.indexOf("load_local_env") < destroyBlock.indexOf("stack_output HarnessId"));
   assert.match(source, /cloudformation deploy/);
+  const provisionBlock = source.slice(source.indexOf("provision()"), source.indexOf("lab()"));
+  assert.ok(provisionBlock.indexOf("cloudformation deploy") < provisionBlock.indexOf("write_teardown_metadata"));
+  assert.ok(provisionBlock.indexOf("write_teardown_metadata") < provisionBlock.indexOf("stack_output HarnessId"));
+  assert.ok(provisionBlock.indexOf("write_teardown_metadata") < provisionBlock.indexOf("wait_for_harness_status"));
   assert.match(source, /CAPABILITY_NAMED_IAM/);
   assert.match(source, /--\) shift ;;/);
   assert.match(source, /iam get-role --role-name "\$role_name"/);

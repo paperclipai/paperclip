@@ -22,6 +22,7 @@ import {
 } from "./workflow-contracts.js";
 import {
   RunnerWorkflowInfrastructureError,
+  RUNNER_LIVE_CANDIDATE_SLOTS,
   type RunnerLiveEvalCandidate,
   type RunnerLiveScheduleEntry,
 } from "./live-workflow-matrix.js";
@@ -262,6 +263,75 @@ function safeFailureMessage(error: unknown): string {
     .slice(0, 1_000);
 }
 
+const LIVE_PROVIDER_CREDENTIAL_ENVIRONMENT = new Set(
+  RUNNER_LIVE_CANDIDATE_SLOTS.flatMap((slot) =>
+    slot.candidates.flatMap(
+      (candidate) => candidate.qualification.requiredEnvironment,
+    ),
+  ),
+);
+const CREDENTIAL_ENVIRONMENT_NAME =
+  /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH(?:ORIZATION)?|COOKIE|SECRET|SESSION|TOKEN|PASSWORD|CREDENTIALS?)(?:$|_)/;
+
+function candidateTransportEnvironment(
+  candidate: RunnerLiveEvalCandidate,
+  tracePath: string,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const required = new Set(candidate.qualification.requiredEnvironment);
+  return {
+    ...Object.fromEntries(
+      Object.entries(source).filter(
+        ([name, value]) =>
+          typeof value === "string" &&
+          ((!LIVE_PROVIDER_CREDENTIAL_ENVIRONMENT.has(name) &&
+            !CREDENTIAL_ENVIRONMENT_NAME.test(name)) ||
+            required.has(name)),
+      ),
+    ),
+    PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+  };
+}
+
+function usageTotals(snapshot: CapabilityLiveSessionSnapshot | undefined): {
+  totalTokens: number;
+  costUsd: number;
+} {
+  const usage = snapshot?.usageLedger ?? [];
+  return {
+    totalTokens: usage.reduce(
+      (sum, receipt) =>
+        sum +
+        receipt.inputTokens +
+        receipt.outputTokens +
+        receipt.reasoningTokens,
+      0,
+    ),
+    costUsd:
+      usage.reduce((sum, receipt) => sum + receipt.costNanodollars, 0) /
+      1_000_000_000,
+  };
+}
+
+function candidateBudgetViolations(
+  candidate: RunnerLiveEvalCandidate,
+  snapshot: CapabilityLiveSessionSnapshot | undefined,
+): string[] {
+  const usage = usageTotals(snapshot);
+  const violations: string[] = [];
+  if (usage.totalTokens > candidate.budget.maxTotalTokens) {
+    violations.push(
+      `totalTokens ${usage.totalTokens} exceeds budget ${candidate.budget.maxTotalTokens}`,
+    );
+  }
+  if (usage.costUsd > candidate.budget.maxCostUsd) {
+    violations.push(
+      `costUsd ${usage.costUsd} exceeds budget ${candidate.budget.maxCostUsd}`,
+    );
+  }
+  return violations;
+}
+
 /** Builds an unscored observation without exposing provider credentials or raw trace payloads. */
 export function unavailableLiveRunnerWorkflowObservation(input: {
   entry: RunnerLiveScheduleEntry;
@@ -336,9 +406,14 @@ async function settleInteractions(
   evalCase: RunnerWorkflowEvalCase,
   session: CapabilityLiveSession,
   turns: CapabilityLiveTurnResult[],
+  withinBudget: () => boolean,
 ): Promise<void> {
   let index = 0;
-  while (session.pendingInteractions().length > 0 && index < 6) {
+  while (
+    session.pendingInteractions().length > 0 &&
+    index < 6 &&
+    withinBudget()
+  ) {
     const pending = session.pendingInteractions()[0]!;
     const resolution = interactionResolution(evalCase, index);
     turns.push(
@@ -364,7 +439,7 @@ export async function executeLiveRunnerWorkflow(input: {
   const tracePath = join(runtimeRoot, "provider-trace.ndjson");
   const store = new InMemoryCapabilityLiveSessionStore();
   const transportOptions = {
-    environment: { ...process.env, PAPERCLIP_PROVIDER_TRACE_PATH: tracePath },
+    environment: candidateTransportEnvironment(input.candidate, tracePath),
   };
   let service = new CapabilityLiveSessionService({ store, transportOptions });
   let session: CapabilityLiveSession | null = null;
@@ -373,6 +448,9 @@ export async function executeLiveRunnerWorkflow(input: {
   const startedAt = Date.now();
   let firstVisibleAt: number | null = null;
   let infrastructureError: unknown;
+  const withinBudget = (): boolean =>
+    candidateBudgetViolations(input.candidate, session?.snapshot()).length ===
+    0;
   try {
     session = await service.create({
       workingDirectory: input.workingDirectory ?? runtimeRoot,
@@ -420,13 +498,13 @@ export async function executeLiveRunnerWorkflow(input: {
         if (settled[0]?.status === "fulfilled") turns.push(settled[0].value);
       } else {
         turns.push(await session.sendMessage(promptFor(input.evalCase)));
-        await settleInteractions(input.evalCase, session, turns);
-        if (input.evalCase.id === "steering-causality") {
+        await settleInteractions(input.evalCase, session, turns, withinBudget);
+        if (input.evalCase.id === "steering-causality" && withinBudget()) {
           turns.push(
             await session.sendMessage(continuationPrompt(input.evalCase)),
           );
         }
-        if (input.evalCase.id === "restart-recovery") {
+        if (input.evalCase.id === "restart-recovery" && withinBudget()) {
           const sessionId = session.id;
           await session.suspend("workflow eval simulated worker restart");
           service = new CapabilityLiveSessionService({
@@ -496,18 +574,8 @@ export async function executeLiveRunnerWorkflow(input: {
     rawTrace = "";
   }
   const trace = traceMetadata(rawTrace);
-  const usage = snapshot?.usageLedger ?? [];
-  const totalTokens = usage.reduce(
-    (sum, receipt) =>
-      sum +
-      receipt.inputTokens +
-      receipt.outputTokens +
-      receipt.reasoningTokens,
-    0,
-  );
-  const costUsd =
-    usage.reduce((sum, receipt) => sum + receipt.costNanodollars, 0) /
-    1_000_000_000;
+  const { totalTokens, costUsd } = usageTotals(snapshot);
+  const budgetViolations = candidateBudgetViolations(input.candidate, snapshot);
   const receiptIds =
     snapshot?.evidence
       .filter((entry) => entry.kind === "tool_result")
@@ -573,6 +641,16 @@ export async function executeLiveRunnerWorkflow(input: {
       "attempt-bound",
       (snapshot?.attempts?.length ?? 1) <= input.candidate.budget.maxAttempts,
       "attempt budget exceeded",
+    ),
+    check(
+      "token-budget",
+      totalTokens <= input.candidate.budget.maxTotalTokens,
+      `totalTokens ${totalTokens} exceeds budget ${input.candidate.budget.maxTotalTokens}`,
+    ),
+    check(
+      "cost-budget",
+      costUsd <= input.candidate.budget.maxCostUsd,
+      `costUsd ${costUsd} exceeds budget ${input.candidate.budget.maxCostUsd}`,
     ),
     check(
       "semantic-disposition",
@@ -709,6 +787,16 @@ export async function executeLiveRunnerWorkflow(input: {
       snapshot === undefined ? [] : providerEventTypes(snapshot),
     artifactDigests:
       snapshot?.workspaceDiffs?.map((entry) => digestJson(entry.diff)) ?? [],
+    ...(budgetViolations.length === 0
+      ? {}
+      : {
+          failure: {
+            code: "candidate_budget_exceeded",
+            category: "candidate" as const,
+            retryable: false,
+            message: budgetViolations.join("; "),
+          },
+        }),
   };
   await rm(runtimeRoot, { recursive: true, force: true });
   return observation;
