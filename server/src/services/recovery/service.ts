@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -114,6 +114,23 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+// BRO-2410 — Priority-scaled stall cutoff: auto-reassign an issue whose assignee
+// has not picked it up (no active run, no queued wake, no live monitor) past a
+// priority-scaled cutoff. v1 is scoped to an allowlist of assignee agents whose
+// queue is overloaded; generalizing company-wide later means broadening the
+// allowlist (or swapping it for a role/company scope).
+const STALL_CUTOFF_ASSIGNEE_AGENT_IDS = new Set<string>([
+  // Founding Engineer queue (overloaded; BRO-2410 field-tested here).
+  "b3b6dde7-d283-47b7-8556-9eafe7ca9b52",
+]);
+const STALL_CUTOFF_PRIORITY_MS: Record<string, number> = {
+  critical: 30 * 60 * 1000,
+  high: 30 * 60 * 1000,
+  medium: 2 * 60 * 60 * 1000,
+  low: 4 * 60 * 60 * 1000,
+};
+const STALL_CUTOFF_RECONCILE_SOURCE = "recovery.reconcile_stall_cutoff_reassignment";
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -4344,6 +4361,188 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  // BRO-2410 — Pick the least-loaded invokable agent in the same company+role as
+  // the current assignee (excluding the current assignee) to take over a stalled
+  // issue. Returns null when no sibling in the same role is available to take it.
+  async function pickStallCutoffReassignee(
+    issue: typeof issues.$inferSelect,
+    currentAssignee: typeof agents.$inferSelect,
+  ) {
+    const siblingRows = await db
+      .select()
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, issue.companyId),
+        eq(agents.role, currentAssignee.role),
+        ne(agents.id, currentAssignee.id),
+      ));
+
+    const invokable: Array<typeof agents.$inferSelect> = [];
+    for (const agent of siblingRows) {
+      if (await isAgentInvokable(agent)) invokable.push(agent);
+    }
+    if (invokable.length === 0) return null;
+
+    const candidateIds = invokable.map((agent) => agent.id);
+    const openLoadRows = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, openCount: count() })
+      .from(issues)
+      .where(and(
+        inArray(issues.assigneeAgentId, candidateIds),
+        inArray(issues.status, ["todo", "in_progress", "in_review"]),
+        isNull(issues.hiddenAt),
+      ))
+      .groupBy(issues.assigneeAgentId);
+
+    const openByAgent = new Map(openLoadRows.map((row) => [row.assigneeAgentId, Number(row.openCount)]));
+    invokable.sort((left, right) => {
+      const loadDiff = (openByAgent.get(left.id) ?? 0) - (openByAgent.get(right.id) ?? 0);
+      if (loadDiff !== 0) return loadDiff;
+      // Stable tie-break so the same sibling is not thrashed across sweeps.
+      return left.id.localeCompare(right.id);
+    });
+    return invokable[0] ?? null;
+  }
+
+  // BRO-2410 — Priority-scaled stall cutoff: an issue sitting `todo`/`in_progress`
+  // with no active run, no queued wake, and no live monitor gets auto-reassigned
+  // to the least-loaded invokable agent in the same role once it has been
+  // untouched past its priority cutoff. Legitimate waits (an unresolved first-class
+  // blocker, a pending wake interaction/approval) are excluded on purpose. v1 is
+  // scoped to STALL_CUTOFF_ASSIGNEE_AGENT_IDS (Founding Engineer queue).
+  async function reconcileStallCutoffReassignments(now = new Date()) {
+    const formatCutoffMs = (ms: number) =>
+      ms >= 60 * 60 * 1000 ? `${Math.round(ms / (60 * 60 * 1000))} hr` : `${Math.round(ms / (60 * 1000))} min`;
+
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(and(
+        inArray(issues.assigneeAgentId, [...STALL_CUTOFF_ASSIGNEE_AGENT_IDS]),
+        isNull(issues.assigneeUserId),
+        inArray(issues.status, ["todo", "in_progress"]),
+        isNull(issues.monitorNextCheckAt),
+        isNull(issues.hiddenAt),
+      ));
+
+    const result = {
+      evaluated: 0,
+      reassigned: 0,
+      skippedStaleWithinCutoff: 0,
+      skippedActivePath: 0,
+      skippedPendingWait: 0,
+      skippedBlocked: 0,
+      skippedNoTarget: 0,
+      skippedFailed: 0,
+      issueIds: [] as string[],
+    };
+
+    for (const issue of candidates) {
+      result.evaluated += 1;
+      const cutoffMs = STALL_CUTOFF_PRIORITY_MS[issue.priority as string] ?? STALL_CUTOFF_PRIORITY_MS["medium"];
+      const idleMs = now.getTime() - new Date(issue.updatedAt).getTime();
+      // Untouched long enough? `updatedAt` moves on status change, new comment, or
+      // run activity, so it is a faithful "last touched" clock for the cutoff.
+      if (idleMs < cutoffMs) {
+        result.skippedStaleWithinCutoff += 1;
+        continue;
+      }
+
+      // Exclude legitimate waits: an active run / queued wake (live execution path).
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skippedActivePath += 1;
+        continue;
+      }
+      // Exclude a pending wake interaction or approval (someone else is deciding).
+      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+        result.skippedPendingWait += 1;
+        continue;
+      }
+      // Exclude issues waiting on first-class blockers.
+      const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+      if (blockerIds.length > 0) {
+        result.skippedBlocked += 1;
+        continue;
+      }
+
+      const currentAssignee = await getAgent(issue.assigneeAgentId ?? "");
+      const target = currentAssignee && currentAssignee.companyId === issue.companyId
+        ? await pickStallCutoffReassignee(issue, currentAssignee)
+        : null;
+      if (!target) {
+        result.skippedNoTarget += 1;
+        continue;
+      }
+
+      const updated = await issuesSvc.update(issue.id, {
+        assigneeAgentId: target.id,
+        assigneeUserId: null,
+      });
+      if (!updated) {
+        result.skippedFailed += 1;
+        continue;
+      }
+
+      await issuesSvc.addComment(
+        issue.id,
+        [
+          "## Auto-reassigned: stalled past priority cutoff",
+          "",
+          `${issue.identifier} sat ${formatCutoffMs(cutoffMs)} with no active run, no queued wake, and no scheduled monitor. ` +
+            `Reassigning from ${currentAssignee?.name ?? issue.assigneeAgentId} to ${target.name} (${target.role}) so the work gets picked up.`,
+          "",
+          "- Next action: pick this issue up and drive it to done.",
+        ].join("\n"),
+        { agentId: target.id },
+        { authorType: "agent" },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          previousAssigneeAgentId: issue.assigneeAgentId,
+          assigneeAgentId: target.id,
+          source: STALL_CUTOFF_RECONCILE_SOURCE,
+        },
+      });
+
+      const queued = await deps.enqueueWakeup(target.id, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId: issue.id,
+          mutation: "stall_cutoff_reassignment",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "issue_assigned",
+          source: STALL_CUTOFF_RECONCILE_SOURCE,
+        },
+      });
+
+      if (queued) {
+        result.reassigned += 1;
+        result.issueIds.push(issue.id);
+      } else {
+        result.skippedFailed += 1;
+      }
+    }
+
+    return result;
+  }
+
   async function collectIssueGraphLivenessFindings() {
     const issueRowsPromise = Promise.resolve(db
       .select({
@@ -5893,6 +6092,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileStallCutoffReassignments,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,
