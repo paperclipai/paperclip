@@ -21,6 +21,10 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
+    "./evals": {
+      "types": "./dist/evals/index.d.ts",
+      "import": "./dist/evals/index.js"
+    },
     "./live": {
       "types": "./dist/live/index.d.ts",
       "import": "./dist/live/index.js"
@@ -52,8 +56,8 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run check:capability-contract && pnpm run check:capability-inventory && pnpm run check:protocol-coverage && pnpm run check:semantic-contracts && pnpm run build:binary && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check",
-    "build:typescript": "pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json",
+    "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run check:capability-contract && pnpm run check:capability-inventory && pnpm run check:protocol-coverage && pnpm run check:semantic-contracts && pnpm run check:runner-workflow-traceability && pnpm run build:binary && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check",
+    "build:typescript": "pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:binary": "cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/stage-runner-binary.mjs",
     "build:provider-pack": "pnpm run build:typescript && node scripts/build-provider-pack.mjs",
@@ -64,11 +68,11 @@
     "build:scenarios": "vite build --config vite.scenarios.config.ts && node scripts/check-capability-csp-bundle.mjs",
     "build:issue-thread": "vite build --config vite.issue-thread.config.ts",
     "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust",
-    "typecheck:typescript": "node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-acpx-sidecar-contract.mjs && node --check scripts/generate-replay-goldens.mjs && node --check scripts/generate-semantic-action-catalog.mjs && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json --noEmit",
+    "typecheck:typescript": "pnpm run ensure:eval-build-deps && node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-acpx-sidecar-contract.mjs && node --check scripts/generate-replay-goldens.mjs && node --check scripts/generate-semantic-action-catalog.mjs && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json --noEmit",
     "typecheck:rust": "cargo fmt --manifest-path runner/Cargo.toml --all -- --check && cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm run test:typescript && pnpm run test:rust",
-    "test:typescript": "pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs && vitest run",
+    "test:typescript": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs && vitest run",
     "test:rust": "cargo test --release --manifest-path runner/Cargo.toml --locked --workspace",
     "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",
     "test:durable": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core durable::",
@@ -91,7 +95,7 @@
     "check:semantic-action-catalog": "pnpm run build:typescript && node scripts/generate-semantic-action-catalog.mjs --check",
     "check:protocol": "pnpm run typecheck:typescript && pnpm run check:protocol-manifest && pnpm run test:typescript && pnpm run check:replay-goldens",
     "check:runner": "pnpm run typecheck:rust && pnpm run test:rust && pnpm run check:conformance-parity && pnpm run check:replay-parity",
-    "check:all": "pnpm run check:protocol && pnpm run check:runner",
+    "check:all": "pnpm run check:eval-kernel && pnpm run check:protocol && pnpm run check:runner",
     "generate:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs",
     "check:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs --check",
     "check:browser-tokens": "node scripts/check-browser-tokens.mjs",
@@ -100,13 +104,19 @@
     "check:numbered-milestones": "node scripts/check-numbered-milestones.mjs",
     "check:package-boundaries": "node scripts/check-package-boundaries.mjs",
     "check:clean-consumers": "node scripts/check-clean-consumers.mjs",
+    "check:eval-kernel": "pnpm --filter @paperclipai/paperclip-eval-kernel test",
+    "ensure:eval-build-deps": "pnpm --filter @paperclipai/paperclip-eval-kernel build",
     "generate:capability-inventory": "node scripts/generate-capability-inventory.mjs",
     "generate:protocol-coverage": "pnpm run build:typescript && node scripts/generate-protocol-coverage.mjs",
     "check:protocol-coverage": "node scripts/generate-protocol-coverage.mjs --check",
     "check:capability-inventory": "node scripts/check-capability-inventory.mjs",
     "test:capability-inventory": "node scripts/check-capability-inventory.test.mjs",
     "test:capability-evals": "vitest run src/conformance/capability-eval-suite.test.ts",
+    "test:eval-slice": "pnpm run ensure:eval-build-deps && vitest run src/eval",
+    "test:runner-workflow-evals": "pnpm run ensure:eval-build-deps && vitest run src/eval/workflow-evals.test.ts",
+    "check:runner-workflow-traceability": "pnpm run build:typescript && node scripts/check-runner-workflow-traceability.mjs",
     "report:capability-evals": "pnpm run build:typescript && node scripts/run-capability-eval-suite.mjs",
+    "report:runner-workflow-evals": "pnpm run build:typescript && node scripts/run-runner-workflow-evals.mjs",
     "check:conformance-parity": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core runs_the_mock_core_path_with_stable_output",
     "check:replay-parity": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core replay_fixture_parity",
     "docs:validate": "node scripts/validate-doc-links.mjs",
@@ -154,6 +164,7 @@
     }
   },
   "devDependencies": {
+    "@paperclipai/paperclip-eval-kernel": "workspace:*",
     "@playwright/test": "^1.61.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.17",

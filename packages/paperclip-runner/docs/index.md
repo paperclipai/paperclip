@@ -19,6 +19,9 @@ Paperclip's runtime selection.
 
 ## Reference
 
+- [Runner eval scoring slice](capability-eval-slice.md)
+- [Deterministic runner workflow evals](runner-workflow-evals.md)
+- [Evals integration contract](evals-integration.md)
 - [Local runner and supervision](local-runner.md)
 - [Durable transport and recovery](durable-recovery.md)
 - [Live console protocol server](live-console-protocol-server.md)
