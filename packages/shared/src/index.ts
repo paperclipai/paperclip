@@ -1793,6 +1793,8 @@ export {
   createFormalQaPreparationSchema,
   formalQaPreparationStatusSchema,
   type CreateFormalQaPreparation,
+  upsertFormalQaPolicySchema,
+  type UpsertFormalQaPolicy,
 } from "./validators/formal-qa-preparation.js";
 
 export {

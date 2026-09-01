@@ -19,6 +19,20 @@ export interface CodexAppServerDriverOptions {
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
   conversationMode?: "task" | "direct";
+  /**
+   * Closed execution mode for server-owned Formal-QA reviews. This deliberately
+   * is not a general output-schema or filesystem-policy surface: the caller
+   * can only opt into the fixed decision schema and its three fixed sealed
+   * content tools. The model never receives a source filesystem root.
+   */
+  formalQa?: {
+    contentToolHandler: (call: {
+      tool: "formal_qa_list_files" | "formal_qa_read_file" | "formal_qa_search";
+      arguments: unknown;
+    }) => Promise<unknown>;
+    /** Server-derived host credential roots which the provider sandbox denies. */
+    protectedHostRoots: readonly string[];
+  };
   requestedCollaborationMode?: "default" | "plan";
   /**
    * Include Codex's built-in collaboration instructions. Defaults to true so

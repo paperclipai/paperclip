@@ -42,6 +42,8 @@ import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { formalQaPreparationRoutes } from "./routes/formal-qa-preparations.js";
+import { formalQaPolicyRoutes } from "./routes/formal-qa-policies.js";
+import { formalQaReviewRoutes } from "./routes/formal-qa-reviews.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -516,6 +518,8 @@ export async function createApp(
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(formalQaPreparationRoutes(db));
+  api.use(formalQaPolicyRoutes(db));
+  api.use(formalQaReviewRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));

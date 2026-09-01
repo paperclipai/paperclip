@@ -1674,6 +1674,13 @@
       "when": 1788296292440,
       "tag": "0240_steady_owl",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1788299973587,
+      "tag": "0241_bumpy_callisto",
+      "breakpoints": true
     }
   ]
 }

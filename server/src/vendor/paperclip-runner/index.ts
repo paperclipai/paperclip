@@ -55,6 +55,19 @@ export type {
   StrictCompletionContractInput,
   TransportCloseReason,
 } from "@paperclipai/paperclip-runner";
+/** Source-mode augmentation for the in-repo closed Formal-QA driver. */
+export type CodexAppServerDriverOptions = Omit<
+  import("@paperclipai/paperclip-runner").CodexAppServerDriverOptions,
+  "formalQa"
+> & {
+  formalQa?: {
+    contentToolHandler: (call: {
+      tool: "formal_qa_list_files" | "formal_qa_read_file" | "formal_qa_search";
+      arguments: unknown;
+    }) => Promise<unknown>;
+    protectedHostRoots: readonly string[];
+  };
+};
 export type DurablePrpControlPlane =
   import("@paperclipai/paperclip-runner").DurablePrpControlPlane;
 export type PaperclipSemanticDispatcher =
@@ -67,6 +80,7 @@ const sourceUrl = new URL(
 const runner = await import(sourceUrl.href) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const CodexAppServerDriver = runner.CodexAppServerDriver;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
@@ -97,6 +111,17 @@ export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
 export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse = runner.parsePaperclipQuestionResponse;
+export const prepareIsolatedCodexHome = (
+  runner as unknown as {
+    prepareIsolatedCodexHome: (input: {
+      context: null;
+      codexHome: string;
+      sourceCodexHome?: string | null;
+      nativeMcp?: null;
+      apiKey?: string | null;
+    }) => Promise<void>;
+  }
+).prepareIsolatedCodexHome;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const validatePrpEvent = runner.validatePrpEvent;

@@ -76,6 +76,8 @@ export {
   createFormalQaPreparationSchema,
   formalQaPreparationStatusSchema,
   type CreateFormalQaPreparation,
+  upsertFormalQaPolicySchema,
+  type UpsertFormalQaPolicy,
 } from "./formal-qa-preparation.js";
 
 export {

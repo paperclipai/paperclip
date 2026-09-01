@@ -4,8 +4,10 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agents,
   companies,
   createDb,
+  formalQaPolicies,
   formalQaPreparations,
   heartbeatRuns,
   projectWorkspaces,
@@ -17,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { formalQaPreparationRoutes } from "../routes/formal-qa-preparations.js";
+import { formalQaReviewRoutes } from "../routes/formal-qa-reviews.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -50,6 +53,7 @@ function createApp(db: ReturnType<typeof createDb>, actor: Express.Request["acto
     next();
   });
   app.use("/api", formalQaPreparationRoutes(db));
+  app.use("/api", formalQaReviewRoutes(db));
   app.use(errorHandler);
   return app;
 }
@@ -65,7 +69,9 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(formalQaPolicies);
     await db.delete(formalQaPreparations);
+    await db.delete(agents);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(companies);
@@ -79,6 +85,7 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const workspaceId = randomUUID();
+    const reviewerAgentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -94,6 +101,26 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       repoUrl: "https://github.com/vivus-tech/music-tracker.git",
       isPrimary: true,
     });
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "formal-qa-reviewer",
+      role: "reviewer",
+      status: "idle",
+    });
+    await db.insert(formalQaPolicies).values({
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      reviewerAgentId,
+      repository: "vivus-tech/music-tracker",
+      requiredWorkflowId: "99",
+      requiredCheckName: "PR Policy",
+      requiredCheckAppId: 15368,
+      enabled: true,
+      createdByUserId: "board-user",
+      updatedByUserId: "board-user",
+    });
     return { companyId, projectId, workspaceId };
   }
 
@@ -101,33 +128,28 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     return {
       projectId,
       projectWorkspaceId: workspaceId,
-      repository: "vivus-tech/music-tracker",
       prNumber: 1902,
-      headSha: "bce3082a8265a4a7148e78c14d99e37bc087431d",
-      baseRef: "main",
-      baseSha: "1f17b1164a27cdcfafe42b83a4fb25b736b53a31",
-      treeSha: "6b3d6436bb3dbfdb4c7dc5edc2db14d4b488dcab",
-      evidenceSha256: "a".repeat(64),
-      issuerReceiptSha256: "b".repeat(64),
-      issuerOperationId: "operation-1902",
       idempotencyKey,
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     };
   }
 
-  it("creates a tenant-scoped exact-head receipt without creating a run", async () => {
+  it("creates an inert tenant-scoped request without calling GitHub or creating a run", async () => {
     const { companyId, projectId, workspaceId } = await seed();
     const response = await request(createApp(db, boardActor(companyId)))
       .post(`/api/companies/${companyId}/formal-qa-preparations`)
       .send(payload(projectId, workspaceId));
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(202);
     expect(response.body.replayed).toBe(false);
     expect(response.body.preparation.status).toBe("prepared");
     expect(response.body.preparation.projectWorkspaceId).toBe(workspaceId);
-    expect(response.body.preparation.headSha).toBe("bce3082a8265a4a7148e78c14d99e37bc087431d");
+    expect(response.body.preparation.headSha).toBe("0".repeat(40));
     expect(response.body.preparation.requestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    const reviews = await request(createApp(db, boardActor(companyId)))
+      .get(`/api/companies/${companyId}/formal-qa-reviews`);
+    expect(reviews.status).toBe(200);
+    expect(reviews.body).toEqual([]);
   });
 
   it("replays the exact receipt but rejects a changed payload under the same idempotency key", async () => {
@@ -138,9 +160,9 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
     const replayed = await request(app).post(`/api/companies/${companyId}/formal-qa-preparations`).send(first);
     const changed = await request(app)
       .post(`/api/companies/${companyId}/formal-qa-preparations`)
-      .send({ ...first, headSha: "47dd0100b97d58f46da96683b3ac3256c624b899" });
+      .send({ ...first, prNumber: 1903 });
 
-    expect(created.status).toBe(201);
+    expect(created.status).toBe(202);
     expect(replayed.status).toBe(200);
     expect(replayed.body.preparation.id).toBe(created.body.preparation.id);
     expect(changed.status).toBe(409);
@@ -166,7 +188,8 @@ describeEmbeddedPostgres("formal-QA preparation authority routes", () => {
       .post(`/api/companies/${companyId}/formal-qa-preparations`)
       .send(payload(projectId, workspaceId, "operation-agent"));
 
-    expect(wrongWorkspace.status).toBe(404);
+    expect(wrongWorkspace.status).toBe(409);
+    expect(wrongWorkspace.body.details.code).toBe("formal_qa_policy_unavailable");
     expect(agentIssue.status).toBe(403);
   });
 });

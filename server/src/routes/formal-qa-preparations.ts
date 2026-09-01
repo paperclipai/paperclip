@@ -7,9 +7,9 @@ import { formalQaPreparationService } from "../services/formal-qa-preparations.j
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 /**
- * Board-only preparation records are deliberately inert. They establish a
- * durable, tenant-scoped exact-head receipt, but never create a heartbeat,
- * execution workspace, host command, or agent credential.
+ * A Board request is intentionally inert until the server-controlled issuer
+ * re-reads its policy and GitHub. The route never accepts a caller's head,
+ * check, repository, expiry, or execution choice.
  */
 export function formalQaPreparationRoutes(db: Db) {
   const router = Router();
@@ -41,12 +41,12 @@ export function formalQaPreparationRoutes(db: Db) {
       assertBoard(req);
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
-      const result = await service.create({
+      const requested = await service.create({
         ...req.body,
         companyId,
         issuedByUserId: actor.actorId,
       });
-      if (!result.replayed) {
+      if (!requested.replayed) {
         await logActivity(db, {
           companyId,
           actorType: actor.actorType,
@@ -54,18 +54,20 @@ export function formalQaPreparationRoutes(db: Db) {
           agentId: actor.agentId,
           action: "formal_qa.preparation_created",
           entityType: "formal_qa_preparation",
-          entityId: result.preparation.id,
+          entityId: requested.preparation.id,
           details: {
-            projectId: result.preparation.projectId,
-            projectWorkspaceId: result.preparation.projectWorkspaceId,
-            repository: result.preparation.repository,
-            prNumber: result.preparation.prNumber,
-            headSha: result.preparation.headSha,
-            requestSha256: result.preparation.requestSha256,
+            projectId: requested.preparation.projectId,
+            projectWorkspaceId: requested.preparation.projectWorkspaceId,
+            prNumber: requested.preparation.prNumber,
+            requestSha256: requested.preparation.requestSha256,
           },
         });
       }
-      res.status(result.replayed ? 200 : 201).json(result);
+      // Issuance is reconciled asynchronously by the server-owned controller.
+      // Keeping this request durable-and-inert means a transient GitHub or
+      // credential outage cannot turn a Board request into a user-driven retry
+      // loop, nor can an HTTP caller choose when a reviewer process starts.
+      res.status(requested.replayed ? 200 : 202).json(requested);
     },
   );
 

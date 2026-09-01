@@ -170,9 +170,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
+import { formalQaReviewService, FORMAL_QA_REVIEW_CONTEXT_SCHEMA } from "./formal-qa-reviews.js";
+import { executeFormalQaCodexAppServer } from "./formal-qa-codex-executor.js";
 import {
   resolveDefaultAgentWorkspaceDir,
   resolveManagedProjectWorkspaceDir,
+  resolvePaperclipInstanceRoot,
 } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -7945,6 +7948,8 @@ export interface HeartbeatServiceOptions {
   nativeSessionBackendFactory?: (
     execution: NativeExecutionInput,
   ) => NativeSessionBackend;
+  /** Closed Formal-QA executor seam; production uses the native Codex bridge. */
+  formalQaExecutor?: typeof executeFormalQaCodexAppServer;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -8145,6 +8150,7 @@ export function heartbeatService(
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const formalQaReviewsSvc = formalQaReviewService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
@@ -14890,8 +14896,38 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
+    const context = parseObject(run.contextSnapshot);
+    const formalQaReviewId = readNonEmptyString(context.formalQaReviewId);
+    if (formalQaReviewId || context.schema === FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
+      if (!formalQaReviewId || context.schema !== FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
+        await cancelRunInternal(run.id, "Cancelled because the Formal-QA review context is invalid");
+        return null;
+      }
+      try {
+        await formalQaReviewsSvc.loadRunBinding({
+          reviewId: formalQaReviewId,
+          runId: run.id,
+          companyId: run.companyId,
+          agentId: run.agentId,
+        });
+      } catch {
+        await cancelRunInternal(run.id, "Cancelled because no exact Formal-QA review binding exists");
+        return null;
+      }
+    }
+    const failBoundFormalReview = async (reason: string) => {
+      if (!formalQaReviewId) return;
+      await formalQaReviewsSvc.failQueuedRun({
+        reviewId: formalQaReviewId,
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        reason,
+      }).catch(() => null);
+    };
     const agent = await getAgent(run.agentId);
     if (!agent) {
+      await failBoundFormalReview("Formal-QA reviewer agent no longer exists");
       await cancelRunInternal(
         run.id,
         "Cancelled because the agent no longer exists",
@@ -14902,6 +14938,9 @@ export function heartbeatService(
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
     if (!invokability.invokable) {
+      // A paused fleet is a temporary scheduling condition. Keep the exact
+      // bound review/run queued so it can resume without minting new authority.
+      if (formalQaReviewId) return null;
       await cancelRunInternal(
         run.id,
         `Cancelled because the agent is not invokable: ${invokability.reason}`,
@@ -14909,7 +14948,6 @@ export function heartbeatService(
       return null;
     }
 
-    const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
       run.agentId,
@@ -14919,6 +14957,7 @@ export function heartbeatService(
       },
     );
     if (budgetBlock) {
+      if (formalQaReviewId) return null;
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }
@@ -14933,6 +14972,7 @@ export function heartbeatService(
       },
     );
     if (dailyCapBlock) {
+      if (formalQaReviewId) return null;
       await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
       return null;
     }
@@ -16642,6 +16682,124 @@ export function heartbeatService(
       }
 
       const runContext = parseObject(run.contextSnapshot);
+      const formalQaReviewId = readNonEmptyString(runContext.formalQaReviewId);
+      if (formalQaReviewId && runContext.schema === FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
+        let review: Awaited<ReturnType<typeof formalQaReviewsSvc.loadRunBinding>> | null = null;
+        try {
+          review = await formalQaReviewsSvc.loadRunBinding({
+            reviewId: formalQaReviewId,
+            runId: run.id,
+            companyId: run.companyId,
+            agentId: run.agentId,
+          });
+        } catch {
+          review = null;
+        }
+        if (review) {
+          const scratchRoot = path.resolve(resolvePaperclipInstanceRoot(), "formal-qa-review-scratch", review.companyId);
+          const scratchPath = path.resolve(scratchRoot, review.id);
+          if (scratchPath.startsWith(`${scratchRoot}${path.sep}`)) {
+            await fs.rm(scratchPath, { recursive: true, force: true }).catch(() => undefined);
+          }
+        }
+        // A process-loss retry reuses the same sealed review/run authority; it
+        // is never a way to extend it. Recheck expiry, policy revocation, and
+        // the exact checkout snapshot before putting the run back in the queue.
+        let retryAuthorityLive = false;
+        if (review && (run.processLossRetryCount ?? 0) < 1) {
+          try {
+            await formalQaReviewsSvc.verifyRetryAuthority({
+              reviewId: review.id,
+              runId: run.id,
+              companyId: run.companyId,
+              agentId: run.agentId,
+            });
+            retryAuthorityLive = true;
+          } catch {
+            retryAuthorityLive = false;
+          }
+        }
+        if (retryAuthorityLive) {
+          const [requeued] = await db.update(heartbeatRuns).set({
+            status: "queued",
+            startedAt: null,
+            finishedAt: null,
+            error: null,
+            errorCode: null,
+            processPid: null,
+            processGroupId: null,
+            processStartedAt: null,
+            lastOutputAt: null,
+            lastOutputSeq: 0,
+            lastOutputStream: null,
+            lastOutputBytes: null,
+            processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+            updatedAt: now,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running"))).returning();
+          if (requeued) {
+            await db.update(agentWakeupRequests).set({
+              status: "queued",
+              claimedAt: null,
+              finishedAt: null,
+              error: null,
+              updatedAt: now,
+            }).where(and(
+              eq(agentWakeupRequests.id, run.wakeupRequestId!),
+              eq(agentWakeupRequests.runId, run.id),
+            ));
+            await appendRunEvent(requeued, {
+              eventType: "formal_qa.process_loss_requeued",
+              stream: "system",
+              level: "warn",
+              message: "Requeued the same sealed Formal-QA run after process loss",
+              payload: { formalQaReviewId, attempt: requeued.processLossRetryCount },
+            });
+            reaped.push(run.id);
+            await startNextQueuedRunForAgent(run.agentId);
+          }
+          continue;
+        }
+        if (review) {
+          const message = "Formal-QA reviewer process was lost after its bounded retry";
+          if (review.status === "queued") {
+            await formalQaReviewsSvc.failQueuedRun({
+              reviewId: review.id,
+              runId: run.id,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              reason: message,
+            });
+          } else if (review.status === "running") {
+            await formalQaReviewsSvc.finishRun({
+              reviewId: review.id,
+              runId: run.id,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              succeeded: false,
+              output: null,
+              failureReason: message,
+            });
+          }
+          const failedRun = await setRunStatus(run.id, "failed", {
+            error: message,
+            errorCode: "formal_qa_process_lost",
+            finishedAt: now,
+          });
+          await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+          if (failedRun) {
+            await appendRunEvent(failedRun, {
+              eventType: "formal_qa.process_loss_exhausted",
+              stream: "system",
+              level: "error",
+              message,
+              payload: { formalQaReviewId, attempt: run.processLossRetryCount ?? 0 },
+            });
+          }
+          await finalizeAgentStatus(run.agentId, "failed", message);
+          reaped.push(run.id);
+          continue;
+        }
+      }
       const monitorIssueId = readNonEmptyString(runContext.issueId);
       const monitorNextCheckAt = monitorIssueId
         ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
@@ -17181,6 +17339,176 @@ export function heartbeatService(
     return promise;
   }
 
+  /**
+   * Execute the dedicated Formal-QA lane before any generic issue workspace,
+   * session, secret, runtime-service, or cleanup machinery can run.
+   */
+  async function executeFormalQaReviewRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    reviewId: string;
+  }) {
+    let claimed: Awaited<ReturnType<typeof formalQaReviewsSvc.claimRun>> | null = null;
+    let result: AdapterExecutionResult | null = null;
+    try {
+      if (input.agent.adapterType !== "codex_local") {
+        throw new Error("formal_qa_reviewer_adapter_unsupported");
+      }
+      claimed = await formalQaReviewsSvc.claimRun({
+        reviewId: input.reviewId,
+        runId: input.run.id,
+        companyId: input.run.companyId,
+        agentId: input.agent.id,
+      });
+      await appendRunEvent(input.run, {
+        eventType: "formal_qa.review_started",
+        stream: "system",
+        level: "info",
+        message: "Started sealed Formal-QA review",
+        payload: {
+          formalQaReviewId: claimed.review.id,
+          headSha: claimed.review.headSha,
+          contractSha256: claimed.review.contractSha256,
+        },
+      });
+      const baseConfig = parseObject(input.agent.adapterConfig);
+      const boundedTimeout = Math.max(60, Math.min(asNumber(baseConfig.timeoutSec, 1800), 3600));
+      const formalExecution = await (options.formalQaExecutor ?? executeFormalQaCodexAppServer)({
+        runId: input.run.id,
+        reviewId: claimed.review.id,
+        scratchPath: claimed.scratchPath,
+        prompt: claimed.prompt,
+        model: typeof baseConfig.model === "string" ? baseConfig.model : null,
+        timeoutMs: boundedTimeout * 1_000,
+        sealedContent: {
+          list: () => formalQaReviewsSvc.listSourceFiles({
+            reviewId: claimed!.review.id,
+            runId: input.run.id,
+            companyId: input.run.companyId,
+            agentId: input.agent.id,
+          }),
+          read: (sourcePath) => formalQaReviewsSvc.readSourceFile({
+            reviewId: claimed!.review.id,
+            runId: input.run.id,
+            companyId: input.run.companyId,
+            agentId: input.agent.id,
+            path: sourcePath,
+          }),
+        },
+        onLog: async (stream, chunk) => {
+          await appendRunEvent(input.run, {
+            eventType: "formal_qa.provider_log",
+            stream,
+            level: stream === "stderr" ? "warn" : "info",
+            // Provider diagnostics can quote tool input/output. Formal-QA
+            // source bytes must never become durable heartbeat evidence.
+            message: "Formal-QA provider emitted redacted diagnostic output",
+          });
+        },
+        onEvent: async (event) => {
+          await appendRunEvent(input.run, {
+            eventType: `formal_qa.${event.eventType.slice(0, 100) || "provider_event"}`,
+            stream: event.stream,
+            level: event.level,
+            // Dynamic tool results include sealed file bytes and search
+            // excerpts; model events can quote them. Persist only the event
+            // envelope metadata, not provider-controlled text or payload.
+            message: "Formal-QA provider event redacted",
+            payload: { schema: "paperclip.formal-qa-event-metadata/v1" },
+          });
+        },
+        onSpawn: async (meta) => {
+          await persistRunProcessMetadata(input.run.id, meta);
+        },
+      });
+      result = {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: formalExecution.output,
+        usage: formalExecution.usage ?? undefined,
+      } as AdapterExecutionResult;
+      const executionSucceeded = !result.timedOut && (result.exitCode ?? 0) === 0 && !result.errorMessage;
+      const finishedReview = await formalQaReviewsSvc.finishRun({
+        reviewId: claimed.review.id,
+        runId: input.run.id,
+        companyId: input.run.companyId,
+        agentId: input.agent.id,
+        succeeded: executionSucceeded,
+        output: typeof result.summary === "string" ? result.summary : null,
+        failureReason: result.errorMessage ?? (result.timedOut ? "Formal-QA reviewer timed out" : null),
+      });
+      const reviewCompleted = finishedReview.status === "approved" || finishedReview.status === "rejected";
+      const outcome = reviewCompleted ? "succeeded" : "failed";
+      const error = reviewCompleted ? null : (finishedReview.terminalReason ?? "Formal-QA review failed closed");
+      const terminalRun = await setRunStatus(input.run.id, outcome, {
+        finishedAt: new Date(),
+        exitCode: result.exitCode,
+        signal: result.signal,
+        error,
+        errorCode: reviewCompleted ? null : `formal_qa_review_${finishedReview.status}`,
+        usageJson: result.usage ? { ...result.usage } : null,
+        resultJson: {
+          formalQaReviewId: finishedReview.id,
+          formalQaReviewStatus: finishedReview.status,
+          formalQaDecisionSha256: finishedReview.decisionSha256,
+        },
+      });
+      await appendRunEvent(terminalRun ?? input.run, {
+        eventType: "formal_qa.review_finished",
+        stream: "system",
+        level: reviewCompleted ? "info" : "error",
+        message: reviewCompleted ? "Formal-QA review reached a sealed decision" : "Formal-QA review failed closed",
+        payload: {
+          formalQaReviewId: finishedReview.id,
+          status: finishedReview.status,
+          decisionSha256: finishedReview.decisionSha256,
+        },
+      });
+      await setWakeupStatus(input.run.wakeupRequestId, reviewCompleted ? "completed" : "failed", {
+        finishedAt: new Date(),
+        error,
+      });
+      await finalizeAgentStatus(input.agent.id, outcome, error, { keepIdleOnFailure: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Formal-QA review failed";
+      if (claimed) {
+        await formalQaReviewsSvc.finishRun({
+          reviewId: claimed.review.id,
+          runId: input.run.id,
+          companyId: input.run.companyId,
+          agentId: input.agent.id,
+          succeeded: false,
+          output: null,
+          failureReason: message,
+        }).catch(() => null);
+      } else {
+        await formalQaReviewsSvc.failQueuedRun({
+          reviewId: input.reviewId,
+          runId: input.run.id,
+          companyId: input.run.companyId,
+          agentId: input.agent.id,
+          reason: message,
+        }).catch(() => null);
+      }
+      await setRunStatus(input.run.id, "failed", {
+        finishedAt: new Date(),
+        error: message.slice(0, 2_000),
+        errorCode: "formal_qa_review_failed",
+      });
+      await setWakeupStatus(input.run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: message.slice(0, 2_000),
+      });
+      await finalizeAgentStatus(input.agent.id, "failed", message, { keepIdleOnFailure: false });
+    } finally {
+      if (claimed) {
+        await fs.rm(claimed.scratchPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
   async function executeRun(
     runId: string,
     runOptions: { nativeLeaseOwner?: string } = {},
@@ -17321,8 +17649,16 @@ export function heartbeatService(
       return;
     }
 
-    const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    const formalQaReviewId = readNonEmptyString(context.formalQaReviewId);
+    if (formalQaReviewId || context.schema === FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
+      if (!formalQaReviewId || context.schema !== FORMAL_QA_REVIEW_CONTEXT_SCHEMA) {
+        throw new Error("formal_qa_review_context_invalid");
+      }
+      await executeFormalQaReviewRun({ run, agent, reviewId: formalQaReviewId });
+      return;
+    }
+    const runtime = await ensureRuntimeState(agent);
     const providerTraceRequested =
       parseObject(context.debug).providerTrace === "raw";
     if (providerTraceRequested) {

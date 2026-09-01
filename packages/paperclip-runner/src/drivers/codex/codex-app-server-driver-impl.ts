@@ -40,6 +40,8 @@ import {
   createIsolatedCodexAppServerArgs,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
+  FORMAL_QA_CONTENT_TOOL_SPECS,
+  FORMAL_QA_DECISION_OUTPUT_SCHEMA,
 } from "./codex-security-config.js";
 import {
   codexThreadLineage as lineageFromThread,
@@ -141,6 +143,29 @@ export class CodexAppServerDriver implements HarnessDriver {
     return this.#options.conversationMode === "direct";
   }
 
+  #formalQa(): boolean {
+    return this.#options.formalQa !== undefined;
+  }
+
+  #unwrappedInput(): boolean {
+    return this.#direct() || this.#formalQa();
+  }
+
+  #formalQaDynamicTools(): readonly Readonly<Record<string, unknown>>[] {
+    return this.#formalQa() ? FORMAL_QA_CONTENT_TOOL_SPECS : [];
+  }
+
+  #formalQaDynamicToolHandler(): CodexAppServerDriverOptions["dynamicToolHandler"] {
+    const handler = this.#options.formalQa?.contentToolHandler;
+    if (!handler) return undefined;
+    return async (call) => {
+      if (call.tool !== "formal_qa_list_files" && call.tool !== "formal_qa_read_file" && call.tool !== "formal_qa_search") {
+        throw new Error("formal_qa_tool_not_admitted");
+      }
+      return handler({ tool: call.tool, arguments: call.arguments });
+    };
+  }
+
   #baseInstructions(): string {
     return this.#options.baseInstructions ?? CODEX_SKILLLESS_BASE_INSTRUCTIONS;
   }
@@ -216,7 +241,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         ),
         approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
         ...(this.#options.model ? { model: this.#options.model } : {}),
-        ...(this.#direct()
+        ...(this.#unwrappedInput()
           ? {}
           : {
               baseInstructions: this.#baseInstructions(),
@@ -229,8 +254,10 @@ export class CodexAppServerDriver implements HarnessDriver {
                   ),
               },
             }),
-        dynamicTools: this.#direct()
-          ? []
+        dynamicTools: this.#formalQa()
+          ? this.#caps.dynamicTools ? this.#formalQaDynamicTools() : []
+          : this.#direct()
+            ? []
           : this.#caps.dynamicTools
             ? [
                 ...(this.#options.dynamicTools ?? []),
@@ -335,7 +362,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           this.#options.includeCollaborationModeInstructions ?? true,
           this.#options.includeSkillInstructions ?? false,
         ),
-        baseInstructions: this.#direct()
+        baseInstructions: this.#unwrappedInput()
           ? ""
           : this.#baseInstructions(),
         approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
@@ -389,7 +416,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       let reconcileUncheckpointedDispositionTurn = false;
       let providerTurnIds: Set<string> | null = null;
       if (
-        !this.#direct()
+        !this.#unwrappedInput()
         && snapshot.semanticResult == null
         && recoveredActiveTurnId === null
         && (snapshot.terminalTurns?.length ?? 0) > 0
@@ -525,7 +552,13 @@ export class CodexAppServerDriver implements HarnessDriver {
     return (
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
-        args: createIsolatedCodexAppServerArgs(this.#options.environment),
+        args: createIsolatedCodexAppServerArgs(
+          this.#options.environment,
+          // Formal-QA source access is capability-scoped through the three
+          // fixed dynamic tools. Never mount a mutable checkout here.
+          [],
+          this.#options.formalQa?.protectedHostRoots ?? [],
+        ),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: this.#options.onDiagnostic,
         processGroup: true,
@@ -714,8 +747,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         environmentKeys: Object.keys(
           codexCommandEnvironment(this.#options.environment),
         ).sort(),
-        dynamicToolNames: this.#direct()
-          ? []
+        dynamicToolNames: this.#formalQa()
+          ? this.#caps.dynamicTools
+            ? this.#formalQaDynamicTools().map((tool) => text(tool.name))
+            : []
+          : this.#direct()
+            ? []
           : this.#caps.dynamicTools
             ? [
                 ...(this.#options.dynamicTools ?? []).map((tool) =>
@@ -726,7 +763,7 @@ export class CodexAppServerDriver implements HarnessDriver {
             : [],
         modelInputKinds: ["text"],
         liveConsole: {
-          conversationMode: this.#direct() ? "direct" : "task",
+          conversationMode: this.#formalQa() ? "formal_qa" : this.#direct() ? "direct" : "task",
           runtimeRequestResolution: this.#caps.runtimeRequestResolution,
           goals: this.#caps.goals,
           threadLineage: this.#caps.threadLineage,
@@ -756,13 +793,13 @@ export class CodexAppServerDriver implements HarnessDriver {
     return new CodexHarnessSession({
       ...input,
       taskEnvelope: this.#options.taskEnvelope,
-      conversationMode: this.#direct() ? "direct" : "task",
+      conversationMode: this.#formalQa() ? "formal_qa" : this.#direct() ? "direct" : "task",
       now: this.#options.now ?? (() => new Date()),
       runnerInstanceId: this.#options.runnerInstanceId ?? "runner-codex",
       driverKind: this.#options.driverIdentity?.kind ?? DRIVER_KIND,
       capabilities: this.#caps,
-      dynamicTools: this.#options.dynamicTools ?? [],
-      dynamicToolHandler: this.#options.dynamicToolHandler,
+      dynamicTools: this.#formalQa() ? this.#formalQaDynamicTools() : this.#options.dynamicTools ?? [],
+      dynamicToolHandler: this.#formalQa() ? this.#formalQaDynamicToolHandler() : this.#options.dynamicToolHandler,
     });
   }
 }

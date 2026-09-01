@@ -10,7 +10,7 @@ export function captureResultFromItem(
     item: Record<string, unknown>,
     turnId: string,
   ): boolean {
-    if (state.conversationMode === "direct") return true;
+    if (state.conversationMode === "direct" || state.conversationMode === "formal_qa") return true;
     if (
       text(item.type) !== "agentMessage" ||
       !isRetainableCodexPayload(item.text)
@@ -67,7 +67,7 @@ export function admitResult(
 
 function finalize(
   state: CodexSessionState,turnStatus: string): void {
-    if (state.conversationMode === "direct") return;
+    if (state.conversationMode === "direct" || state.conversationMode === "formal_qa") return;
     if (state.terminal) return;
     if (state.result === null) {
       state.emit("harness.diagnostic", {

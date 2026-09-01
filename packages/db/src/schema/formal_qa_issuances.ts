@@ -1,5 +1,6 @@
 import {
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -8,6 +9,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { formalQaPreparations } from "./formal_qa_preparations.js";
+import { formalQaPolicies } from "./formal_qa_policies.js";
 import { projects } from "./projects.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 
@@ -23,6 +25,10 @@ export const formalQaIssuances = pgTable(
     preparationId: uuid("preparation_id")
       .notNull()
       .references(() => formalQaPreparations.id, { onDelete: "cascade" }),
+    // Nullable solely for legacy rows predating the policy boundary. The
+    // issuer and checkout reject them; new rows always provide these fields.
+    policyId: uuid("policy_id").references(() => formalQaPolicies.id),
+    policyVersion: integer("policy_version"),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
     projectWorkspaceId: uuid("project_workspace_id")
@@ -35,13 +41,20 @@ export const formalQaIssuances = pgTable(
     baseSha: text("base_sha").notNull(),
     treeSha: text("tree_sha").notNull(),
     requiredCheckName: text("required_check_name").notNull(),
-    requiredCheckAppSlug: text("required_check_app_slug").notNull(),
+    requiredCheckAppId: integer("required_check_app_id"),
     checkRunId: text("check_run_id").notNull(),
+    checkSuiteId: text("check_suite_id"),
+    workflowRunId: text("workflow_run_id"),
+    workflowId: text("workflow_id"),
+    /** Canonical, sanitized evidence bytes; snapshotSha256 is the digest of this exact string. */
+    evidenceJson: text("evidence_json"),
     snapshotSha256: text("snapshot_sha256").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     preparationUq: uniqueIndex("formal_qa_issuances_preparation_uq").on(table.preparationId),
+    semanticIssuanceUq: uniqueIndex("formal_qa_issuances_semantic_uq")
+      .on(table.companyId, table.policyId, table.repository, table.prNumber, table.headSha),
     companyProjectCreatedIdx: index("formal_qa_issuances_company_project_created_idx")
       .on(table.companyId, table.projectId, table.createdAt),
   }),

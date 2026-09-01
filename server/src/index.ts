@@ -103,6 +103,8 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import { formalQaGitHubIssuerService } from "./services/formal-qa-github-issuer.js";
+import { formalQaReviewService } from "./services/formal-qa-reviews.js";
 import {
   createEmbeddedPostgresSupervisor,
   type EmbeddedPostgresSupervisor,
@@ -785,6 +787,12 @@ export async function startServer(): Promise<StartedServer> {
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
+  // This controller owns only the inert-request → sealed-evidence transition.
+  // It is deliberately gated by the same scheduler suppression as agent work;
+  // a paused fleet cannot make GitHub reads, materialize a checkout, or begin
+  // any downstream Formal-QA work.
+  const formalQaIssuer = formalQaGitHubIssuerService(db as any);
+  const formalQaReviews = formalQaReviewService(db as any);
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
   };
@@ -1426,6 +1434,20 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+          trackHeartbeatSchedulerWork(formalQaIssuer
+            .reconcilePrepared()
+            .then(async (result) => {
+              if (result.issued > 0 || result.deferred > 0) {
+                logger.info(result, "formal-QA issuer reconciliation completed");
+              }
+              const reviews = await formalQaReviews.reconcileVerified();
+              if (reviews.queued > 0 || reviews.deferred > 0) {
+                logger.info(reviews, "formal-QA review reconciliation completed");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "formal-QA issuer reconciliation failed");
+            }));
           trackHeartbeatSchedulerWork(heartbeat
             .tickTimers(new Date())
             .then((result) => {

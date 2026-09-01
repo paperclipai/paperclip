@@ -136,6 +136,86 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("runs Formal-QA through only its fixed sealed-content tools", async () => {
+    const transport = new FakeCodexTransport();
+    const contentToolHandler = vi.fn(async ({ tool, arguments: args }) => ({ tool, args }));
+    const foreignHandler = vi.fn(async () => ({ unsafe: true }));
+    const driver = makeDriver([transport], {
+      approvalPolicy: "never",
+      dynamicTools: [{ name: "caller_controlled_tool", inputSchema: { type: "object" } }],
+      dynamicToolHandler: foreignHandler,
+      formalQa: {
+        protectedHostRoots: ["/host/auth", "/host/codex"],
+        contentToolHandler,
+      },
+    });
+    const session = await driver.openSession({
+      runId: "formal-run",
+      normalizedSessionId: "formal-review",
+      workingDirectory: WORKSPACE,
+    });
+    const contextEvent = await session.events()[Symbol.asyncIterator]().next();
+    const context = contextEvent.value?.payload.context as {
+      liveConsole?: { conversationMode?: string };
+    };
+    expect(context.liveConsole?.conversationMode).toBe("formal_qa");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "sealed formal prompt" },
+    });
+
+    const threadStart = transport.calls.find((call) => call.method === "thread/start")!;
+    expect(threadStart.params.approvalPolicy).toBe("never");
+    expect((threadStart.params.dynamicTools as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      "formal_qa_list_files",
+      "formal_qa_read_file",
+      "formal_qa_search",
+    ]);
+    const turnStart = transport.calls.find((call) => call.method === "turn/start")!;
+    expect(turnStart.params.input).toMatchObject([
+      { type: "text", text: "sealed formal prompt" },
+    ]);
+    expect(turnStart.params.outputSchema).toMatchObject({
+      properties: {
+        schema: { const: "paperclip.formal-qa-review-decision/v1" },
+        decision: { enum: ["approved", "rejected"] },
+      },
+    });
+
+    const foreign = await transport.invoke({
+      id: 1,
+      method: "item/tool/call",
+      params: {
+        tool: "caller_controlled_tool", callId: "foreign-call",
+        threadId: "thread-1", turnId, arguments: {},
+      },
+    });
+    expect(foreign).toMatchObject({ success: false });
+    expect(foreignHandler).not.toHaveBeenCalled();
+    const admitted = await transport.invoke({
+      id: 2,
+      method: "item/tool/call",
+      params: {
+        tool: "formal_qa_read_file", callId: "read-call",
+        threadId: "thread-1", turnId, arguments: { path: "README.md" },
+      },
+    });
+    expect(admitted).toMatchObject({ success: true });
+    expect(contentToolHandler).toHaveBeenCalledWith({
+      tool: "formal_qa_read_file", arguments: { path: "README.md" },
+    });
+
+    const appServerArgs = createIsolatedCodexAppServerArgs({
+      PATH: "/bin", LANG: "C.UTF-8", HOME: "/provider/home", CODEX_HOME: "/provider/codex",
+    }, [], ["/host/auth", "/host/codex"]);
+    const serialized = JSON.stringify(appServerArgs);
+    const filesystemPolicy = appServerArgs.find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-only.filesystem="))!;
+    expect(filesystemPolicy).toContain('"/host/auth"="none"');
+    expect(filesystemPolicy).toContain('"/host/codex"="none"');
+    expect(serialized).not.toContain("HOME=");
+    expect(serialized).not.toContain("CODEX_HOME=");
+    expect(serialized).not.toContain("checkout");
+  });
+
   it.each(["never", "on-request", "untrusted"] as const)(
     "pins approval policy %s for both thread start and resume",
     async (approvalPolicy) => {

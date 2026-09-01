@@ -1,17 +1,19 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agents,
   companies,
   createDb,
   executionWorkspaces,
   formalQaCheckouts,
   formalQaIssuances,
+  formalQaPolicies,
   formalQaPreparations,
   heartbeatRuns,
   projectWorkspaces,
@@ -55,7 +57,9 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     await db.delete(activityLog);
     await db.delete(formalQaCheckouts);
     await db.delete(formalQaIssuances);
+    await db.delete(formalQaPolicies);
     await db.delete(formalQaPreparations);
+    await db.delete(agents);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -70,15 +74,26 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
   async function makeRepository() {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-repo-"));
     const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-formal-qa-home-"));
+    const source = path.join(root, "source");
+    const remote = path.join(root, "origin.git");
+    const marker = path.join(root, "local-filter-ran");
+    const filterScript = path.join(root, "local-filter.sh");
     tempDirs.push(root, instanceRoot);
-    git(root, "init");
-    git(root, "remote", "add", "origin", "git@github.com:vivus-tech/music-tracker.git");
-    await writeFile(path.join(root, "README.md"), "exact source\n");
-    git(root, "add", "README.md");
-    git(root, "commit", "-m", "exact source");
-    const headSha = git(root, "rev-parse", "HEAD");
-    const treeSha = git(root, "rev-parse", "HEAD^{tree}");
-    return { root, instanceRoot, headSha, treeSha };
+    await mkdir(source, { recursive: true });
+    git(source, "init");
+    await writeFile(filterScript, `#!/bin/sh\nprintf x > ${marker}\ncat\n`);
+    await chmod(filterScript, 0o700);
+    git(source, "config", "filter.paperclip-local-test.smudge", filterScript);
+    await writeFile(path.join(source, "README.md"), "exact source\n");
+    await writeFile(path.join(source, ".gitattributes"), "README.md filter=paperclip-local-test\n");
+    git(source, "add", "README.md");
+    git(source, "commit", "-m", "exact source");
+    git(root, "init", "--bare", remote);
+    git(source, "remote", "add", "origin", remote);
+    git(source, "push", "origin", "HEAD:refs/heads/main");
+    const headSha = git(source, "rev-parse", "HEAD");
+    const treeSha = git(source, "rev-parse", "HEAD^{tree}");
+    return { root, source, remote, instanceRoot, headSha, treeSha, marker };
   }
 
   async function seed(input: { cwd: string; headSha: string; treeSha: string }) {
@@ -86,6 +101,8 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const preparationId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const policyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -93,6 +110,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(projects).values({ id: projectId, companyId, name: "Music Tracker", status: "in_progress" });
+    await db.insert(agents).values({ id: reviewerAgentId, companyId, name: "Formal QA", adapterType: "process" });
     await db.insert(projectWorkspaces).values({
       id: projectWorkspaceId,
       companyId,
@@ -102,6 +120,11 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       cwd: input.cwd,
       repoUrl: "git@github.com:vivus-tech/music-tracker.git",
       isPrimary: true,
+    });
+    await db.insert(formalQaPolicies).values({
+      id: policyId, companyId, projectId, projectWorkspaceId, reviewerAgentId,
+      repository: "vivus-tech/music-tracker", requiredWorkflowId: "99", requiredCheckName: "PR Policy",
+      requiredCheckAppId: 15368, enabled: true, createdByUserId: "admin", updatedByUserId: "admin",
     });
     await db.insert(formalQaPreparations).values({
       id: preparationId,
@@ -123,8 +146,11 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       status: "issued",
     });
+    const evidenceJson = JSON.stringify({ schema: "test", headSha: input.headSha });
     await db.insert(formalQaIssuances).values({
       preparationId,
+      policyId,
+      policyVersion: 1,
       companyId,
       projectId,
       projectWorkspaceId,
@@ -135,9 +161,13 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       baseSha: input.headSha,
       treeSha: input.treeSha,
       requiredCheckName: "PR Policy",
-      requiredCheckAppSlug: "vivus-qa-reviewer",
+      requiredCheckAppId: 15368,
       checkRunId: "1001",
-      snapshotSha256: "d".repeat(64),
+      checkSuiteId: "2001",
+      workflowRunId: "3001",
+      workflowId: "99",
+      evidenceJson,
+      snapshotSha256: createHash("sha256").update(evidenceJson).digest("hex"),
     });
     return { companyId, projectId, projectWorkspaceId, preparationId };
   }
@@ -145,7 +175,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
   it("creates one detached, registered exact checkout without an execution workspace or heartbeat run", async () => {
     const fixture = await makeRepository();
     const { companyId, preparationId } = await seed({ ...fixture, cwd: fixture.root });
-    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
 
     expect(await db.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)).toEqual([{ cwd: fixture.root }]);
 
@@ -163,6 +193,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     expect(git(result.checkout.checkoutPath, "rev-parse", "HEAD^{tree}")).toBe(fixture.treeSha);
     expect(() => git(result.checkout.checkoutPath, "symbolic-ref", "--quiet", "HEAD")).toThrow();
     expect(git(result.checkout.checkoutPath, "status", "--porcelain", "--untracked-files=all")).toBe("");
+    await expect(access(fixture.marker)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await db.select().from(executionWorkspaces)).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
@@ -170,7 +201,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
   it("replays only the same untampered exact checkout and rejects a dirty checkout", async () => {
     const fixture = await makeRepository();
     const { preparationId } = await seed({ ...fixture, cwd: fixture.root });
-    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
     const created = await service.materialize({ preparationId });
     const replayed = await service.materialize({ preparationId });
     expect(replayed.replayed).toBe(true);
@@ -183,10 +214,26 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     });
   });
 
+  it("honors live policy disablement before creating or replaying a checkout", async () => {
+    const fixture = await makeRepository();
+    const { preparationId } = await seed({ ...fixture, cwd: fixture.root });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
+    await db.update(formalQaPolicies).set({
+      enabled: false,
+      version: sql`${formalQaPolicies.version} + 1`,
+      updatedAt: new Date(Date.now() + 1_000),
+    });
+    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
+      status: 409,
+      details: { code: "formal_qa_checkout_policy_revoked" },
+    });
+    expect(await db.select().from(formalQaCheckouts)).toEqual([]);
+  });
+
   it("rejects both a board-prepared authority and an issued authority without a matching GitHub issuance", async () => {
     const fixture = await makeRepository();
     const { preparationId } = await seed({ ...fixture, cwd: fixture.root });
-    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
 
     await db.update(formalQaPreparations).set({ status: "prepared" })
       .where(eq(formalQaPreparations.id, preparationId));
@@ -219,7 +266,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       repository: "vivus-tech/music-tracker",
       headSha: fixture.headSha,
       treeSha: fixture.treeSha,
-      repoRoot: fixture.root,
+      repoRoot: path.join(fixture.instanceRoot, "formal-qa-mirrors", createHash("sha256").update("vivus-tech/music-tracker").digest("hex")),
       checkoutPath,
     })).digest("hex");
     await db.insert(formalQaCheckouts).values({
@@ -228,7 +275,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       projectId: ids.projectId,
       projectWorkspaceId: ids.projectWorkspaceId,
       repository: "vivus-tech/music-tracker",
-      repoRoot: fixture.root,
+      repoRoot: path.join(fixture.instanceRoot, "formal-qa-mirrors", createHash("sha256").update("vivus-tech/music-tracker").digest("hex")),
       checkoutPath,
       headSha: fixture.headSha,
       treeSha: fixture.treeSha,
@@ -237,9 +284,14 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     });
     // This simulates process loss after Git succeeded but before the receipt
     // could be marked verified. The retry must reconcile, not deadlock.
-    git(fixture.root, "worktree", "add", "--detach", checkoutPath, fixture.headSha);
+    const mirrorRoot = path.join(fixture.instanceRoot, "formal-qa-mirrors", createHash("sha256").update("vivus-tech/music-tracker").digest("hex"));
+    await mkdir(path.dirname(mirrorRoot), { recursive: true });
+    git(path.dirname(mirrorRoot), "init", "--bare", mirrorRoot);
+    git(mirrorRoot, "remote", "add", "origin", fixture.remote);
+    git(mirrorRoot, "-c", "protocol.file.allow=always", "fetch", "origin", fixture.headSha);
+    git(mirrorRoot, "worktree", "add", "--detach", checkoutPath, fixture.headSha);
 
-    const result = await formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot })
+    const result = await formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true })
       .materialize({ preparationId: ids.preparationId });
 
     expect(result.replayed).toBe(false);
@@ -247,10 +299,10 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     expect(git(checkoutPath, "rev-parse", "HEAD")).toBe(fixture.headSha);
   });
 
-  it("rejects a receipt whose tenant identifiers no longer match its preparation", async () => {
+  it("database-rejects a tenant mutation after checkout verification", async () => {
     const fixture = await makeRepository();
     const { companyId, preparationId } = await seed({ ...fixture, cwd: fixture.root });
-    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
     const created = await service.materialize({ preparationId });
     const otherCompanyId = randomUUID();
     await db.insert(companies).values({
@@ -260,19 +312,20 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await db.update(formalQaCheckouts).set({ companyId: otherCompanyId })
-      .where(eq(formalQaCheckouts.id, created.checkout.id));
-
-    await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
-      status: 409,
-      details: { code: "formal_qa_checkout_receipt_mismatch" },
-    });
+      .where(eq(formalQaCheckouts.id, created.checkout.id))
+      .then(
+        () => { throw new Error("checkout tenant mutation unexpectedly succeeded"); },
+        (error: { cause?: { message?: string } }) => {
+          expect(error.cause?.message).toContain("formal_qa_checkout_immutable");
+        },
+      );
     expect(companyId).not.toBe(otherCompanyId);
   });
 
-  it("fails closed for an absent object, a tree mismatch, and an origin mismatch", async () => {
+  it("fails closed for an absent object and a tree mismatch while ignoring the untrusted workspace origin", async () => {
     const fixture = await makeRepository();
     const missing = await seed({ ...fixture, cwd: fixture.root, headSha: "0".repeat(40) });
-    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: fixture.instanceRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
     await expect(service.materialize({ preparationId: missing.preparationId })).rejects.toMatchObject<HttpError>({
       status: 409,
       details: { code: "formal_qa_checkout_verification_failed" },
@@ -286,11 +339,9 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     });
 
     await db.delete(formalQaPreparations);
-    git(fixture.root, "remote", "set-url", "origin", "git@github.com:other/repository.git");
     const originMismatch = await seed({ ...fixture, cwd: fixture.root });
-    await expect(service.materialize({ preparationId: originMismatch.preparationId })).rejects.toMatchObject<HttpError>({
-      status: 409,
-      details: { code: "formal_qa_checkout_repository_mismatch" },
+    await expect(service.materialize({ preparationId: originMismatch.preparationId })).resolves.toMatchObject({
+      checkout: { headSha: fixture.headSha },
     });
   });
 
@@ -300,7 +351,7 @@ describeEmbeddedPostgres("formal-QA exact checkout boundary", () => {
     const linkedRoot = `${fixture.instanceRoot}-link`;
     tempDirs.push(linkedRoot);
     await symlink(fixture.instanceRoot, linkedRoot);
-    const service = formalQaCheckoutService(db, { instanceRoot: linkedRoot });
+    const service = formalQaCheckoutService(db, { instanceRoot: linkedRoot, testOnlyRemoteUrl: fixture.remote, testOnlyAllowFileProtocol: true });
 
     await expect(service.materialize({ preparationId })).rejects.toMatchObject<HttpError>({
       status: 409,

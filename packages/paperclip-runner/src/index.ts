@@ -45,6 +45,7 @@ export {
 } from "./drivers/acpx/codex-acpx-driver.js";
 export * from "./drivers/acpx/sidecar-protocol.js";
 export * from "./drivers/runner-tool-bridge.js";
+export { prepareIsolatedCodexHome } from "./drivers/runtime-context-materializer.js";
 export {
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,

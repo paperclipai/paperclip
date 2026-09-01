@@ -66,7 +66,7 @@ export class CodexSessionState {
   readonly normalizedSessionId: string;
   readonly opened: OpenedCodexThread;
   readonly taskEnvelope: CodexTaskEnvelope;
-  readonly conversationMode: "task" | "direct";
+  readonly conversationMode: "task" | "direct" | "formal_qa";
   readonly now: () => Date;
   readonly runnerInstanceId: string;
   readonly driverKind: string;
@@ -111,7 +111,7 @@ export class CodexSessionState {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     taskEnvelope: CodexTaskEnvelope;
-    conversationMode: "task" | "direct";
+    conversationMode: "task" | "direct" | "formal_qa";
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;

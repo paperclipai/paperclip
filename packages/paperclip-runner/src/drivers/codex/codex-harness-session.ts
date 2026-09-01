@@ -31,6 +31,7 @@ import { runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
   CODEX_PLANNING_PERMISSION_PROFILE as PLANNING_PERMISSION_PROFILE,
   CODEX_SKILLLESS_PERMISSION_PROFILE as SKILLLESS_PERMISSION_PROFILE,
+  FORMAL_QA_DECISION_OUTPUT_SCHEMA,
 } from "./codex-security-config.js";
 import {
   parseCodexThreadGoal as parseThreadGoal,
@@ -128,7 +129,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     }
     const dispositionOnlyRecovery = this.dispositionOnlyRecoveryAvailable;
     const taskText =
-      this.conversationMode === "direct"
+      this.conversationMode === "direct" || this.conversationMode === "formal_qa"
         ? input.message.text
         : dispositionOnlyRecovery
           ? input.message.text
@@ -181,7 +182,11 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         input: [userInput({ role: "user", text: taskText })],
         ...(this.conversationMode === "direct"
           ? {}
-          : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
+          : {
+              outputSchema: this.conversationMode === "formal_qa"
+                ? FORMAL_QA_DECISION_OUTPUT_SCHEMA
+                : CODEX_RESULT_OUTPUT_SCHEMA,
+            }),
       });
     } catch (error) {
       if (dispositionOnlyRecovery) {
