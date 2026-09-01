@@ -1744,6 +1744,17 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "request_confirmation_accept",
+          workMode: "standard",
+          _previous: expect.objectContaining({ workMode: "planning" }),
+        }),
+      }),
+    );
   });
 
   it("forces a fresh workspace-aware session when accepting a plan document confirmation on a standard-work issue", async () => {

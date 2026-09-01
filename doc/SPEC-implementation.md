@@ -240,7 +240,7 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `work_mode` text not null default `standard`; supported values:
   - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
   - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
-  - `planning`: plan-only execution. Agents create or revise the plan without implementation work; accepted-plan continuations remain planning-specific and create child issues from the approved plan.
+  - `planning`: plan-only execution. Agents create or revise the plan without implementation work. Accepting a fresh confirmation for the issue's current `plan` revision atomically changes this mode to `standard`, so the continuation may implement the approved plan on the source issue.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
 - `execution_policy` jsonb null
@@ -258,6 +258,7 @@ Invariants:
 - `in_progress` requires assignee
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
+- accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - terminal states: `done | cancelled`
