@@ -362,6 +362,8 @@ export function InstanceExperimentalSettings() {
     getWorktreeInstanceId(),
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
+  const enableRunnerPreviewIngress =
+    experimentalQuery.data?.enableRunnerPreviewIngress === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
@@ -387,6 +389,8 @@ export function InstanceExperimentalSettings() {
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
+  const enablePaperclipDeveloperMode =
+    experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
@@ -713,6 +717,32 @@ export function InstanceExperimentalSettings() {
         settingKey="enableManagedSandboxOnly"
         managed={managedKeys.enableManagedSandboxOnly}
         ariaLabel="Toggle managed environment only experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Paperclip Developer Mode"
+        description="Show internal Paperclip maintainer tools and observability links, including Honeycomb trace queries on run pages."
+        checked={enablePaperclipDeveloperMode}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate({ enablePaperclipDeveloperMode: checked })
+        }
+        disabled={toggleMutation.isPending}
+        settingKey="enablePaperclipDeveloperMode"
+        managed={managedKeys.enablePaperclipDeveloperMode}
+        ariaLabel="Toggle Paperclip developer mode experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Runner Preview Ingress"
+        description="Let Paperclip Runner agents connect through an authenticated sandbox-provider WebSocket preview. Legacy adapters continue using their existing transports."
+        checked={enableRunnerPreviewIngress}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate({ enableRunnerPreviewIngress: checked })
+        }
+        disabled={toggleMutation.isPending}
+        settingKey="enableRunnerPreviewIngress"
+        managed={managedKeys.enableRunnerPreviewIngress}
+        ariaLabel="Toggle runner preview ingress experimental setting"
       />
 
       {inWorktree ? (

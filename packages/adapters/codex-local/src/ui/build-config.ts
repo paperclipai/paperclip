@@ -1,4 +1,8 @@
-import { buildAdapterEnvConfig, type CreateConfigValues } from "@paperclipai/adapter-utils";
+import {
+  buildAdapterEnvConfig,
+  resolvePaperclipRunnerPermissionMode,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
@@ -61,14 +65,6 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   return ac;
 }
 
-function paperclipRunnerProvider(value: unknown): "codex" | "opencode" {
-  return value === "opencode" ? "opencode" : "codex";
-}
-
-function openCodePermissionMode(value: unknown): "allow" | "ask" | "deny" {
-  return value === "ask" || value === "deny" ? value : "allow";
-}
-
 /** Build a provider profile accepted by the experimental Rust runner. */
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
@@ -91,13 +87,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     delete config[unsupportedKey];
   }
   const schemaValues = v.adapterSchemaValues ?? {};
-  const provider = paperclipRunnerProvider(schemaValues.provider);
-  if (provider === "codex") {
-    return { ...config, provider };
-  }
-
-  const lifecycleMode = schemaValues.lifecycleMode === "warm" ? "warm" : "per_turn";
-  const configuredIdleTimeoutMs = schemaValues.idleTimeoutMs;
+  const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
+  const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
+  const configuredIdleTimeoutMs =
+    v.paperclipRunnerIdleTimeoutMs ?? schemaValues.idleTimeoutMs;
   const idleTimeoutMs = typeof configuredIdleTimeoutMs === "number"
     && Number.isSafeInteger(configuredIdleTimeoutMs)
     && configuredIdleTimeoutMs > 0
@@ -105,10 +98,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     : 300_000;
   return {
     ...config,
-    provider,
-    model: v.model || "openrouter/deepseek/deepseek-v4-flash-0731",
-    opencodePermissionMode: openCodePermissionMode(
-      schemaValues.opencodePermissionMode,
+    provider: "codex",
+    codexPermissionMode: resolvePaperclipRunnerPermissionMode(
+      "codex",
+      v.codexPermissionMode ?? schemaValues.codexPermissionMode,
     ),
     lifecycleMode,
     ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
