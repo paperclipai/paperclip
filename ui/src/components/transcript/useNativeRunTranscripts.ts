@@ -13,6 +13,11 @@ export interface NativeRunTranscriptSource {
   runtimeMode?: "legacy" | "native";
 }
 
+export interface NativeRunTranscriptError {
+  message: string;
+  failedAt: string;
+}
+
 function isLive(status: string): boolean {
   return status === "queued" || status === "running";
 }
@@ -30,6 +35,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     [nativeRunsKey],
   );
   const [eventsByRun, setEventsByRun] = useState<Map<string, HeartbeatRunEvent[]>>(new Map());
+  const [errorsByRun, setErrorsByRun] = useState<Map<string, NativeRunTranscriptError>>(new Map());
   const cursorByRunRef = useRef(new Map<string, number>());
 
   useEffect(() => {
@@ -38,6 +44,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
 
     const refresh = async () => {
       const updates = new Map<string, HeartbeatRunEvent[]>();
+      const errors = new Map<string, NativeRunTranscriptError>();
       await Promise.all(nativeRuns.map(async (run) => {
         try {
           let cursor = cursorByRunRef.current.get(run.id) ?? 0;
@@ -56,8 +63,12 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
           }
           if (incoming.length > 0) updates.set(run.id, incoming);
           cursorByRunRef.current.set(run.id, cursor);
-        } catch {
+        } catch (error) {
           // Keep the last durable cursor; the next poll retries this run only.
+          errors.set(run.id, {
+            message: error instanceof Error ? error.message : "Native run activity could not be loaded",
+            failedAt: new Date().toISOString(),
+          });
         }
       }));
 
@@ -75,8 +86,16 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         }
         return next;
       });
+      setErrorsByRun((previous) => {
+        const next = new Map<string, NativeRunTranscriptError>();
+        for (const runId of retainedIds) {
+          const error = errors.get(runId);
+          if (error) next.set(runId, previous.get(runId) ?? error);
+        }
+        return next;
+      });
 
-      if (nativeRuns.some((run) => isLive(run.status))) {
+      if (nativeRuns.some((run) => isLive(run.status)) || errors.size > 0) {
         timer = window.setTimeout(refresh, EVENT_POLL_INTERVAL_MS);
       }
     };
@@ -96,5 +115,5 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     return transcripts;
   }, [eventsByRun, nativeRuns]);
 
-  return { transcriptByRun };
+  return { transcriptByRun, errorsByRun };
 }

@@ -419,7 +419,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   listModels: listCodexModels,
   refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: false,
-  supportsInstructionsBundle: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc:

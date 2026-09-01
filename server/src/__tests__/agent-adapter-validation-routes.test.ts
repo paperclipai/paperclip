@@ -596,6 +596,11 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create).toHaveBeenCalledOnce();
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ adapterType: "paperclip_runner" }),
+      expect.any(Object),
+      expect.objectContaining({ entryFile: "AGENTS.md", replaceExisting: false }),
+    );
   });
 
   it("rejects non-Codex providers on fresh paperclip_runner agents and hires", async () => {

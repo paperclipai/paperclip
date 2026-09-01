@@ -163,7 +163,7 @@ describe("adapter routes", () => {
       .toMatchObject({
         disabled: false,
         capabilities: {
-          supportsInstructionsBundle: false,
+          supportsInstructionsBundle: true,
         },
       });
   });

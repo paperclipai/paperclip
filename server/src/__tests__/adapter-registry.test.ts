@@ -233,6 +233,8 @@ describe("server adapter registry", () => {
 
   it("rejects an unsupported persisted runner provider before probing Codex", async () => {
     const adapter = requireServerAdapter("paperclip_runner");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
     const result = await adapter.testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
