@@ -529,7 +529,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     const statusIdentity = "isError" in entry
       ? entry.isError ? "error" : "ok"
       : "";
-    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${textIdentity}:${contentIdentity}`;
+    const usageIdentity = entry.kind === "result"
+      ? `${entry.subtype}:${entry.inputTokens}:${entry.outputTokens}:${entry.cachedTokens}:${entry.costUsd}`
+      : "";
+    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}`;
   }, String(tailEntries.length));
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`

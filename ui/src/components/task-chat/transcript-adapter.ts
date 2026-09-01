@@ -424,9 +424,13 @@ export function buildActivityPhases(
   const lastVisible = [...parsed].reverse().find((item) => item.kind !== "thinking");
   for (const item of parsed) {
     if (item.kind === "message") {
-      // A settled transcript's trailing assistant text is the posted reply.
-      // Live/settle-gap tails keep it visible until that canonical reply lands.
-      if (!running && item === lastVisible) continue;
+      // Explicit final-channel replies remain canonical even when a later
+      // usage row makes them non-tail. Channel-less legacy transcripts retain
+      // the last-visible fallback until the posted reply lands.
+      const explicitFinal = item.channel === "final" || item.interstitial === false;
+      const legacyTrailingReply =
+        (item.channel == null || item.channel === "unknown") && item === lastVisible;
+      if (!running && (explicitFinal || legacyTrailingReply)) continue;
       current = {
         id: `${item.id}:phase`,
         kind: "activity_phase",

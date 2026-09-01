@@ -45,19 +45,49 @@ function normalizedItemText(payload: Record<string, unknown>): string | null {
 
 function assistantChannel(
   payload: Record<string, unknown>,
+  fallback: "progress" | "final" | "unknown" = "unknown",
 ): "progress" | "final" | "unknown" {
   const item = normalizedItem(payload);
   const value = text(payload.channel) ?? text(item.channel);
-  return value === "progress" || value === "final" ? value : "unknown";
+  if (value === "progress" || value === "final" || value === "unknown") return value;
+  return fallback;
 }
 
 function reasoningChannel(
   payload: Record<string, unknown>,
+  fallback: "summary" | "detail" | "unknown" = "unknown",
 ): "summary" | "detail" | "unknown" {
   const item = normalizedItem(payload);
   const value = text(payload.channel) ?? text(item.channel);
-  return value === "summary" || value === "detail" ? value : "unknown";
+  if (value === "summary" || value === "detail" || value === "unknown") return value;
+  return fallback;
 }
+
+interface ItemIdentity {
+  kind: string;
+  assistantChannel: "progress" | "final" | "unknown";
+  reasoningChannel: "summary" | "detail" | "unknown";
+}
+
+function resolveItemIdentity(
+  payload: Record<string, unknown>,
+  previous?: ItemIdentity,
+): ItemIdentity {
+  return {
+    kind: normalizedItemKind(payload) || previous?.kind || "",
+    assistantChannel: assistantChannel(payload, previous?.assistantChannel),
+    reasoningChannel: reasoningChannel(payload, previous?.reasoningChannel),
+  };
+}
+
+function isItemIdentityEvent(eventType: string): boolean {
+  return eventType === "item.started"
+    || eventType === "item.delta"
+    || eventType === "item.completed";
+}
+
+const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
+const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 
 const PROVIDER_ACTIVITY_PRESENTATIONS = {
   "plan.updated": {
@@ -301,8 +331,9 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const orderedEvents = [...events].sort((a, b) => a.seq - b.seq);
   const completedAgentMessageIds = new Set<string>();
   const completedReasoningIds = new Set<string>();
+  const completionItemIdentityById = new Map<string, ItemIdentity>();
   for (const event of orderedEvents) {
-    if (event.eventType !== "item.completed") continue;
+    if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
     if (
       !envelope
@@ -314,7 +345,14 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     const payload = record(envelope?.payload);
     if (!payload) continue;
     const itemId = normalizedItemId(envelope, payload);
-    const kind = normalizedItemKind(payload);
+    if (!itemId) continue;
+    const identity = resolveItemIdentity(
+      payload,
+      completionItemIdentityById.get(itemId),
+    );
+    if (identity.kind) completionItemIdentityById.set(itemId, identity);
+    if (event.eventType !== "item.completed") continue;
+    const kind = identity.kind;
     if (isAssistantItemKind(kind) && itemId && normalizedItemText(payload)) {
       completedAgentMessageIds.add(itemId);
     }
@@ -323,6 +361,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
   }
 
+  const itemIdentityById = new Map<string, ItemIdentity>();
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -335,8 +374,15 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (!payload) continue;
     const ts = timestamp(event, envelope);
 
-    const itemKind = normalizedItemKind(payload);
     const itemId = normalizedItemId(envelope, payload);
+    const itemIdentity = resolveItemIdentity(
+      payload,
+      itemId ? itemIdentityById.get(itemId) : undefined,
+    );
+    if (itemId && itemIdentity.kind && isItemIdentityEvent(event.eventType)) {
+      itemIdentityById.set(itemId, itemIdentity);
+    }
+    const itemKind = itemIdentity.kind;
 
     if (event.eventType === "item.delta" && isAssistantItemKind(itemKind)) {
       const value = normalizedItemText(payload);
@@ -344,7 +390,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // Once the loss-resistant completion is present, prefer its full text.
       // Before that point the deltas still provide the live streaming view.
       if (completedAgentMessageIds.has(itemId)) continue;
-      const channel = assistantChannel(payload);
+      const channel = itemIdentity.assistantChannel;
       if (channel === "final") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, delta: true, channel });
       continue;
@@ -353,7 +399,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
       const value = normalizedItemText(payload);
       if (!value) continue;
-      const channel = assistantChannel(payload);
+      const channel = itemIdentity.assistantChannel;
       if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, channel });
       continue;
@@ -368,7 +414,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         text: value,
         delta: true,
         lifecycle: "started",
-        channel: reasoningChannel(payload),
+        channel: itemIdentity.reasoningChannel,
       });
       continue;
     }
@@ -381,7 +427,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         ts,
         text: value,
         lifecycle: "completed",
-        channel: reasoningChannel(payload),
+        channel: itemIdentity.reasoningChannel,
       });
       continue;
     }
@@ -412,6 +458,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "tool.execution.started" || event.eventType === "tool.execution.completed") {
+      if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
       if (!executionId) continue;
       const presentation = toolPresentation(payload);
@@ -482,7 +529,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       (event.eventType === "run.result.proposed" || event.eventType === "run.result.accepted")
       && !hasFinalAssistantMessage
     ) {
-      const result = event.eventType === "run.result.accepted" ? record(payload.result) ?? payload : payload;
+      const result = event.eventType === "run.result.accepted" ? record(payload.result) : payload;
+      if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
       const summary = text(result.summary);
       if (summary) {
         hasFinalAssistantMessage = true;

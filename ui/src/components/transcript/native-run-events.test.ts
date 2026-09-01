@@ -42,27 +42,65 @@ function event(
   };
 }
 
+function itemEvent(
+  seq: number,
+  eventType: "item.started" | "item.delta" | "item.completed",
+  itemId: string,
+  payload: Record<string, unknown>,
+): HeartbeatRunEvent {
+  const value = event(seq, eventType, payload);
+  (value.payload!.prpEvent as Record<string, unknown>).itemId = itemId;
+  return value;
+}
+
+function runResult(summary: string): Record<string, unknown> {
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "done",
+    summary,
+    completionClaim: {
+      contractRevision: "test-v1",
+      objectiveSatisfied: true,
+      criteria: [],
+      remainingWork: [],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+  };
+}
+
 describe("nativeRunEventsToTranscript", () => {
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
     const transcript = nativeRunEventsToTranscript([
-      event(6, "run.result.proposed", { summary: "Done safely." }),
+      event(6, "run.result.proposed", runResult("Done safely.")),
       event(1, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "Done " }),
       event(2, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "safely." }),
       event(3, "item.completed", { itemId: "message-1", kind: "agentMessage", text: "Done safely." }),
       event(4, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1",
         executionId: "exec-1",
         transport: "process",
         operation: "execute",
         name: "pnpm test",
         status: "running",
+        output: null,
+        outputBytes: 0,
+        outputTruncated: false,
+        outputDigest: null,
       }),
       event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1",
         executionId: "exec-1",
         transport: "process",
         operation: "execute",
         name: "pnpm test",
         status: "completed",
         output: "all green",
+        outputBytes: 9,
+        outputTruncated: false,
+        outputDigest: null,
       }),
       event(7, "usage.reported", {
         runDeltaAvailable: true,
@@ -110,15 +148,40 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("streams canonical kind-less deltas using item identity from item.started", () => {
+    expect(nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "message-1", {
+        kind: "assistant_message",
+        channel: "progress",
+        text: "",
+      }),
+      itemEvent(2, "item.delta", "message-1", { text: "Still " }),
+      itemEvent(3, "item.delta", "message-1", { text: "working" }),
+    ])).toEqual([
+      expect.objectContaining({
+        kind: "assistant",
+        text: "Still ",
+        delta: true,
+        channel: "progress",
+      }),
+      expect.objectContaining({
+        kind: "assistant",
+        text: "working",
+        delta: true,
+        channel: "progress",
+      }),
+    ]);
+  });
+
   it("reads the canonical PRP v1 assistant_message kind as a channel-less final reply", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.completed", {
         kind: "assistant_message",
         text: "Canonical persisted reply.",
       }),
-      event(2, "run.result.proposed", {
-        summary: "Structured fallback must not replace the reply.",
-      }),
+      event(2, "run.result.proposed", runResult(
+        "Structured fallback must not replace the reply.",
+      )),
     ])).toEqual([
       expect.objectContaining({
         kind: "assistant",
@@ -246,7 +309,7 @@ describe("nativeRunEventsToTranscript", () => {
 
   it("uses the structured run summary when no agent message was emitted", () => {
     expect(nativeRunEventsToTranscript([
-      event(1, "run.result.proposed", { summary: "Recovered final reply." }),
+      event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
         kind: "assistant",
@@ -265,7 +328,7 @@ describe("nativeRunEventsToTranscript", () => {
         text: "Checking the implementation.",
       }),
       event(2, "run.result.accepted", {
-        result: { summary: "The implementation is ready." },
+        result: runResult("The implementation is ready."),
       }),
     ])).toEqual([
       expect.objectContaining({
@@ -349,6 +412,32 @@ describe("nativeRunEventsToTranscript", () => {
         verificationId: "verification-2",
         status: "completed",
         summary: "wrong payload schema must not render",
+      }),
+    ])).toEqual([]);
+  });
+
+  it("fails closed for mismatched tool execution and run result schemas", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.provider.native.v1",
+        executionId: "exec-1",
+        transport: "process",
+        operation: "execute",
+        status: "running",
+      }),
+      event(2, "run.result.proposed", {
+        schema: "paperclip.provider.native.v1",
+        summary: "malformed proposal must not render",
+      }),
+      event(3, "run.result.accepted", {
+        result: {
+          schema: "paperclip.provider.native.v1",
+          summary: "malformed accepted result must not render",
+        },
+      }),
+      event(4, "run.result.accepted", {
+        schema: "paperclip.run_result.v1",
+        summary: "accepted wrappers must not masquerade as results",
       }),
     ])).toEqual([]);
   });

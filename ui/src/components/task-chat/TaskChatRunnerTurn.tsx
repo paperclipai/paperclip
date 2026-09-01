@@ -81,7 +81,7 @@ export function TaskChatRunnerTurn({
     items,
     (item): item is TaskChatMessageItem =>
       item.kind === "message" &&
-      (item.channel === "progress" || item.channel === "unknown"),
+      (item.channel === "progress" || (!terminal && item.channel === "unknown")),
   );
   const final = lastOf<TaskChatMessageItem>(
     items,
@@ -110,7 +110,7 @@ export function TaskChatRunnerTurn({
       <div className="flex flex-col gap-2 py-2">
         <TaskChatLiveTail items={activityItems} />
       </div>
-      {!final ? (
+      {progress || (!final && !terminal) ? (
         <div className="flex min-w-0 flex-col py-1">
           {progress ? (
             <div
@@ -122,7 +122,7 @@ export function TaskChatRunnerTurn({
               </MarkdownBody>
             </div>
           ) : null}
-          {!terminal ? <CurrentActivity items={items} /> : null}
+          {!final && !terminal ? <CurrentActivity items={items} /> : null}
         </div>
       ) : null}
       {final ? (

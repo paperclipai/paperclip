@@ -16,13 +16,13 @@ const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
     transcriptHookRuns.legacy.push(runs);
-    return transcriptState;
+    return { transcriptByRun: new Map(transcriptState.transcriptByRun) };
   },
 }));
 vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
   useNativeRunTranscripts: (runs: unknown[]) => {
     transcriptHookRuns.native.push(runs);
-    return nativeTranscriptState;
+    return { transcriptByRun: new Map(nativeTranscriptState.transcriptByRun) };
   },
 }));
 vi.mock("@/context/SidebarContext", () => ({
@@ -218,6 +218,17 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
 
     expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...run, adapterType: "codex_local" }}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
   });
 
   it("keeps legacy channel-less native messages readable across settlement", () => {
@@ -315,6 +326,51 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-progress-update"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-final-response"]')?.textContent)
       .toContain("Same text.");
+  });
+
+  it("recomputes a runner turn when only usage totals change", () => {
+    const run = {
+      id: "native-run",
+      runtimeMode: "native" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+    };
+    const usageEntry = (inputTokens: number) => ({
+      kind: "result" as const,
+      ts: "2026-08-25T18:00:01.000Z",
+      text: "",
+      inputTokens,
+      outputTokens: 5,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    });
+    const renderRun = () => render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+      />,
+    );
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(10)]);
+    renderRun();
+    expect(container.textContent).toContain("↑10");
+
+    nativeTranscriptState.transcriptByRun.set("native-run", [usageEntry(20)]);
+    renderRun();
+    expect(container.textContent).toContain("↑20");
+    expect(container.textContent).not.toContain("↑10");
   });
 });
 
