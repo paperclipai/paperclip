@@ -7958,6 +7958,8 @@ export interface HeartbeatServiceOptions {
   afterFormalQaRunClaim?: (input: { runId: string; reviewId: string }) => Promise<void>;
   /** Test seam for a Formal-QA decision racing the control-plane cancellation lock. */
   beforeFormalQaRunCancellation?: (input: { runId: string; reviewId: string }) => Promise<void>;
+  /** Test seam for failure after an immutable Formal-QA decision commits. */
+  afterFormalQaReviewFinish?: (input: { runId: string; reviewId: string }) => Promise<void>;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -17512,6 +17514,10 @@ export function heartbeatService(
         output: typeof result.summary === "string" ? result.summary : null,
         failureReason: result.errorMessage ?? (result.timedOut ? "Formal-QA reviewer timed out" : null),
       });
+      await options.afterFormalQaReviewFinish?.({
+        runId: input.run.id,
+        reviewId: finishedReview.id,
+      });
       const reviewCompleted = finishedReview.status === "approved" || finishedReview.status === "rejected";
       const reviewCancelled = finishedReview.status === "cancelled";
       const outcome = reviewCompleted ? "succeeded" : reviewCancelled ? "cancelled" : "failed";
@@ -17572,18 +17578,46 @@ export function heartbeatService(
         companyId: input.run.companyId,
         agentId: input.agent.id,
       }).catch(() => null);
+      const reviewCompleted = latestReview?.status === "approved" || latestReview?.status === "rejected";
       const cancelled = latestReview?.status === "cancelled";
       const terminal = latestReview && ["approved", "rejected", "failed", "cancelled", "expired", "tainted"].includes(latestReview.status);
-      await setRunStatusFromLive(input.run.id, cancelled ? "cancelled" : "failed", ["queued", "running"], {
-        finishedAt: new Date(),
-        error: cancelled ? (latestReview?.terminalReason ?? message).slice(0, 2_000) : message.slice(0, 2_000),
-        errorCode: cancelled ? "cancelled" : "formal_qa_review_failed",
-      });
-      if (!terminal || cancelled) await setWakeupStatus(input.run.wakeupRequestId, cancelled ? "cancelled" : "failed", {
-        finishedAt: new Date(),
-        error: message.slice(0, 2_000),
-      });
-      await finalizeAgentStatus(input.agent.id, cancelled ? "cancelled" : "failed", message, { keepIdleOnFailure: false });
+      const terminalReason = latestReview?.terminalReason ?? message;
+      if (terminal) {
+        await formalQaReviewsSvc.convergeTerminalRun({
+          reviewId: latestReview.id,
+          runId: input.run.id,
+          companyId: input.run.companyId,
+          agentId: input.agent.id,
+        });
+        await setWakeupStatusFromLive(
+          input.run.wakeupRequestId,
+          reviewCompleted ? "completed" : cancelled ? "cancelled" : "failed",
+          ["queued", "claimed", "running", "deferred_issue_execution"],
+          {
+            finishedAt: latestReview.finishedAt ?? new Date(),
+            error: reviewCompleted ? null : terminalReason,
+          },
+        );
+      } else {
+        await setRunStatusFromLive(input.run.id, "failed", ["queued", "running"], {
+          finishedAt: new Date(),
+          error: message.slice(0, 2_000),
+          errorCode: "formal_qa_review_failed",
+        });
+        await setWakeupStatusFromLive(
+          input.run.wakeupRequestId,
+          "failed",
+          ["queued", "claimed", "running", "deferred_issue_execution"],
+          { finishedAt: new Date(), error: message.slice(0, 2_000) },
+        );
+      }
+      const catchOutcome = reviewCompleted ? "succeeded" : cancelled ? "cancelled" : "failed";
+      await finalizeAgentStatus(
+        input.agent.id,
+        catchOutcome,
+        reviewCompleted ? null : terminalReason,
+        { keepIdleOnFailure: false },
+      );
     } finally {
       if (formalQaRunAbortControllers.get(input.run.id) === executionController) {
         formalQaRunAbortControllers.delete(input.run.id);

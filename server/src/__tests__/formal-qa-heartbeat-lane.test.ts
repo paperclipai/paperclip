@@ -364,6 +364,49 @@ describeEmbeddedPostgres("Formal-QA heartbeat execution lane", () => {
     expect(await formalQaReviewService(db).getById(f.review.id)).toMatchObject({ status: "approved" });
   });
 
+  it("keeps an approved review and idle reviewer when post-finish bookkeeping throws", async () => {
+    const f = await fixture();
+    formalQaExecutor.mockResolvedValue({
+      output: JSON.stringify({
+        schema: "paperclip.formal-qa-review-decision/v1",
+        reviewId: f.review.id,
+        runId: f.review.heartbeatRunId,
+        headSha: f.review.headSha,
+        treeSha: f.review.treeSha,
+        contractSha256: f.review.contractSha256,
+        decision: "approved",
+        summary: "Immutable approval survives later bookkeeping failure.",
+        findings: [],
+      }),
+      usage: null,
+    });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      formalQaExecutor,
+      afterFormalQaReviewFinish: async () => {
+        throw new Error("post_finish_bookkeeping_failure");
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await f.reviews.getById(f.review.id)).toMatchObject({
+      status: "approved",
+      decision: "approved",
+      terminalReason: null,
+    });
+    expect(await heartbeat.getRun(f.review.heartbeatRunId)).toMatchObject({
+      status: "succeeded",
+      error: null,
+      errorCode: null,
+    });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.review.wakeupRequestId)))
+      .toEqual([expect.objectContaining({ status: "completed", error: null })]);
+    expect(await db.select().from(agents).where(eq(agents.id, f.reviewerAgentId)))
+      .toEqual([expect.objectContaining({ status: "idle" })]);
+  });
+
   it("requeues the same sealed run once after a crash and removes stale scratch state", async () => {
     const f = await fixture();
     const claimed = await f.reviews.claimRun({
