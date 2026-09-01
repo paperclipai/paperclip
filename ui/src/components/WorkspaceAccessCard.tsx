@@ -19,7 +19,9 @@ import type { WorkspaceAccessState } from "../lib/workspace-access-state";
  * and `degraded` the "todo" (amber) tone; the icon variants are the contrast-
  * corrected pair the token layer already tunes per mode.
  */
-const STATE_BADGE_CLASSES: Record<WorkspaceAccessState["state"], string> = {
+type ActiveWorkspaceAccessState = Exclude<WorkspaceAccessState["state"], "stopped">;
+
+const STATE_BADGE_CLASSES: Record<ActiveWorkspaceAccessState, string> = {
   provisioning: "border-border text-muted-foreground",
   validating: "border-border text-muted-foreground",
   ready: "border-(--status-task-done) text-(--status-task-icon-done)",
@@ -28,7 +30,7 @@ const STATE_BADGE_CLASSES: Record<WorkspaceAccessState["state"], string> = {
   failed: "border-destructive/50 text-destructive",
 };
 
-const STATE_LABELS: Record<WorkspaceAccessState["state"], string> = {
+const STATE_LABELS: Record<ActiveWorkspaceAccessState, string> = {
   provisioning: "Provisioning",
   validating: "Validating clone",
   ready: "Ready",
@@ -80,18 +82,20 @@ export function WorkspaceAccessCard({
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle>{access.title}</CardTitle>
-          <span
-            data-testid="workspace-access-badge"
-            className={cn(
-              "inline-flex items-center rounded-full border bg-background px-2.5 py-1 text-xs",
-              STATE_BADGE_CLASSES[access.state],
-            )}
-          >
-            {(access.state === "repairing" || access.state === "provisioning") && (
-              <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-            )}
-            {STATE_LABELS[access.state]}
-          </span>
+          {access.state !== "stopped" ? (
+            <span
+              data-testid="workspace-access-badge"
+              className={cn(
+                "inline-flex items-center rounded-full border bg-background px-2.5 py-1 text-xs",
+                STATE_BADGE_CLASSES[access.state],
+              )}
+            >
+              {(access.state === "repairing" || access.state === "provisioning") && (
+                <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+              )}
+              {STATE_LABELS[access.state]}
+            </span>
+          ) : null}
         </div>
         <CardDescription>{access.description}</CardDescription>
       </CardHeader>
