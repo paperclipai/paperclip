@@ -1118,6 +1118,6 @@ describe("Capability live runnerd and Codex session", () => {
       ]));
       await resumedService.shutdown(resumed.id, "test complete");
     },
-    30_000,
+    15_000,
   );
 });

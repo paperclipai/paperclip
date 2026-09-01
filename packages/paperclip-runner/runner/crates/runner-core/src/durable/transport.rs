@@ -26,6 +26,7 @@ use super::{
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(2);
+const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
@@ -582,6 +583,21 @@ impl RunnerSocket {
         }
     }
 
+    #[cfg(test)]
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Dial(socket) => match socket.get_ref() {
+                MaybeTlsStream::Plain(stream) => stream.read_timeout(),
+                MaybeTlsStream::Rustls(stream) => stream.sock.read_timeout(),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported TLS stream",
+                )),
+            },
+            Self::Listen(socket) => socket.get_ref().read_timeout(),
+        }
+    }
+
     fn configure_auth_timeouts(
         &mut self,
         lifecycle_deadline: Instant,
@@ -1043,6 +1059,13 @@ impl AuthenticatedTransport {
                 .ok_or_else(|| DurableRunnerError::invalid("authenticated welcome timed out"))?;
             let welcome =
                 validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
+            // Authentication can wait longer for control-plane validation, but
+            // the steady-state runner loop must return to provider polling
+            // promptly when no control message is available.
+            transport
+                .socket
+                .set_read_timeout(Some(RUNTIME_READ_TIMEOUT))
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
             ensure_connection_deadline(connect_deadline)?;
             Ok((transport, welcome))
         };
@@ -2265,7 +2288,7 @@ mod tests {
 
         let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
         let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
-        let (_, welcome) = AuthenticatedTransport::connect(
+        let (transport, welcome) = AuthenticatedTransport::connect(
             &endpoint,
             &config,
             &state,
@@ -2275,6 +2298,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        assert_eq!(
+            transport.socket.read_timeout().unwrap(),
+            Some(RUNTIME_READ_TIMEOUT)
+        );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();
