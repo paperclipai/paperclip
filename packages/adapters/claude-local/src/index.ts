@@ -7,13 +7,20 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code
 
 export const models = [
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+  { id: "claude-opus-4-8[1m]", label: "Claude Opus 4.8 (1M context)" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-sonnet-5[1m]", label: "Claude Sonnet 5 (1M context)" },
   { id: "claude-fable-5", label: "Claude Fable 5" },
+  { id: "claude-fable-5[1m]", label: "Claude Fable 5 (1M context)" },
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-5", label: "Claude Opus 5" },
+  { id: "claude-opus-5[1m]", label: "Claude Opus 5 (1M context)" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+  { id: "claude-opus-4-7[1m]", label: "Claude Opus 4.7 (1M context)" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  { id: "claude-opus-4-6[1m]", label: "Claude Opus 4.6 (1M context)" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4-6[1m]", label: "Claude Sonnet 4.6 (1M context)" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
 ];
@@ -39,7 +46,7 @@ Core fields:
 - engine (string, optional): execution engine. Leave unset/auto to use ACP when prerequisites pass and fall back to the Claude Code CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
-- model (string, optional): Claude model id
+- model (string, optional): Claude model id. Paperclip lists Claude Code's supported \`[1m]\` variants for models with an extended 1M context window (for example, \`claude-opus-4-8[1m]\`).
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template

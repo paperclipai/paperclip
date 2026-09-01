@@ -17,13 +17,24 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6` or `claude-opus-4-6[1m]`) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+### Extended context models
+
+Paperclip lists Claude Code's supported `[1m]` model variants in the model
+picker. Select one of these variants when the execution target or LLM gateway
+requires an explicit 1 million token context window. Paperclip passes the model
+ID to Claude Code without changing the suffix.
+
+Availability depends on the model, account plan, and provider. Claude Code or
+the configured gateway can reject the request when extended context is not
+available. Use the environment test after you select a `[1m]` model.
 
 ## Prompt Templates
 
