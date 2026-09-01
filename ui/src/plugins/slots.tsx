@@ -40,6 +40,7 @@ import type {
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { registerPluginRouteRoots, resetPluginRouteRoots } from "@/lib/company-routes";
 import { cn } from "@/lib/utils";
 import {
   PluginBridgeContext,
@@ -655,6 +656,26 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
 
   // Kick off dynamic imports for any new plugin contributions.
   usePluginModuleLoader(data);
+
+  // Teach the company-route classifier about plugin page route roots so that
+  // /{PREFIX}/{routePath} navigations get the active company prefix instead of the
+  // first path segment being misread as a company prefix (see lib/company-routes.ts).
+  // Derived from the full contribution set and refreshed whenever the query data
+  // changes (plugin enable/disable/upgrade). Reset-then-register keeps the set in
+  // sync when a plugin is removed; every consumer shares one query cache entry, so
+  // each computes the identical set and the reset+register stays idempotent.
+  useEffect(() => {
+    if (!data) return;
+    const roots: string[] = [];
+    for (const contribution of data) {
+      for (const slot of contribution.slots) {
+        if (slot.type !== "page" && slot.type !== "routeSidebar") continue;
+        if (slot.routePath) roots.push(slot.routePath);
+      }
+    }
+    resetPluginRouteRoots();
+    registerPluginRouteRoots(roots);
+  }, [data]);
 
   const slotTypesKey = useMemo(() => [...filters.slotTypes].sort().join("|"), [filters.slotTypes]);
 
