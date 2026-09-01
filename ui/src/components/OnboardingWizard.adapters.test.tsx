@@ -174,10 +174,6 @@ describe("OnboardingWizard adapter selection", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("codex_local");
-    expect(saved.model).toBe("");
-    expect(saved.command).toBe("");
-    expect(saved.args).toBe("");
-    expect(saved.url).toBe("");
 
     await act(async () => {
       root.unmount();
@@ -229,6 +225,10 @@ describe("OnboardingWizard adapter selection", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("codex_local");
+    expect(saved.model).toBe("");
+    expect(saved.command).toBe("");
+    expect(saved.args).toBe("");
+    expect(saved.url).toBe("");
 
     await act(async () => {
       root.unmount();
@@ -240,7 +240,14 @@ describe("OnboardingWizard adapter selection", () => {
     mockAdapterRegistry.list = [{ type: "codex_local" }];
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
-      JSON.stringify({ step: 0, adapterType: "paperclip_runner" }),
+      JSON.stringify({
+        step: 0,
+        adapterType: "paperclip_runner",
+        model: "gpt-runner-only",
+        command: "runnerd",
+        args: "--native",
+        url: "ws://runner",
+      }),
     );
 
     const { root } = await mount();
