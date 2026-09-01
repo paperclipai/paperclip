@@ -10,6 +10,8 @@ const accessMock = vi.hoisted(() => vi.fn());
 const eventsMock = vi.hoisted(() => vi.fn());
 const traceMock = vi.hoisted(() => vi.fn());
 const revealMock = vi.hoisted(() => vi.fn());
+const downloadMock = vi.hoisted(() => vi.fn());
+const deleteMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/access", () => ({
   accessApi: { getCurrentBoardAccess: accessMock },
@@ -20,8 +22,8 @@ vi.mock("@/api/heartbeats", () => ({
     events: eventsMock,
     providerTrace: traceMock,
     revealProviderTraceFrame: revealMock,
-    downloadProviderTrace: vi.fn(),
-    deleteProviderTrace: vi.fn(),
+    downloadProviderTrace: downloadMock,
+    deleteProviderTrace: deleteMock,
   },
 }));
 
@@ -97,6 +99,14 @@ function traceInspection(runId: string, marker: string) {
       },
     ],
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 describe("RunnerInspector", () => {
@@ -270,7 +280,7 @@ describe("RunnerInspector", () => {
     expect(container.textContent).not.toContain("run-one-secret");
   });
 
-  it("clears exact frames before reopening after raw-trace access is revoked", async () => {
+  it("clears exact frames when raw-trace access is revoked while open", async () => {
     traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
     revealMock.mockResolvedValue({
       schema: "paperclip.provider_trace_frame.v1",
@@ -307,16 +317,26 @@ describe("RunnerInspector", () => {
       source: "session",
       isInstanceAdmin: false,
     });
-    flushSync(() =>
-      root.render(
-        <RunnerInspector
-          runId="run-1"
-          run={{ status: "succeeded", resultJson: null }}
-          open={false}
-          onOpenChange={vi.fn()}
-        />,
-      ),
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(accessMock.mock.calls.length).toBeGreaterThan(1);
+    expect(container.textContent).toContain(
+      "Raw provider traces require an instance administrator.",
     );
+    expect(container.textContent).not.toContain("Reveal exact frame");
+    expect(container.textContent).not.toContain("revoked-secret");
+  });
+
+  it("does not let a stale initial access check override a newer denial", async () => {
+    const pendingInitialAccess = deferred<{
+      source: "local_implicit";
+      isInstanceAdmin: false;
+    }>();
+    accessMock
+      .mockReturnValueOnce(pendingInitialAccess.promise)
+      .mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    traceMock.mockResolvedValue(traceInspection("run-1", "stale-secret"));
+
     flushSync(() =>
       root.render(
         <RunnerInspector
@@ -327,13 +347,108 @@ describe("RunnerInspector", () => {
         />,
       ),
     );
-    expect(container.textContent).not.toContain("revoked-secret");
+    window.dispatchEvent(new Event("focus"));
     await flush();
     expect(container.textContent).toContain(
       "Raw provider traces require an instance administrator.",
     );
+
+    pendingInitialAccess.resolve({
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+    await flush();
+    expect(traceMock).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Reveal exact frame");
-    expect(container.textContent).not.toContain("revoked-secret");
+    expect(container.textContent).not.toContain("stale-secret");
+  });
+
+  it("discards in-flight exact reads and disables privileged controls during deletion", async () => {
+    traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
+    const pendingReveal = deferred<{
+      schema: string;
+      frameId: number;
+      timestamp: string;
+      direction: string;
+      transport: string;
+      provider: string;
+      byteLength: number;
+      digest: string;
+      rawBase64: string;
+    }>();
+    const pendingDownload = deferred<Blob>();
+    const pendingDelete = deferred<void>();
+    revealMock.mockReturnValue(pendingReveal.promise);
+    downloadMock.mockReturnValue(pendingDownload.promise);
+    deleteMock.mockReturnValue(pendingDelete.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    await flush();
+    const buttons = () => Array.from(container.querySelectorAll("button"));
+    flushSync(() =>
+      buttons()
+        .find((button) => button.textContent?.includes("Reveal exact frame"))
+        ?.click(),
+    );
+    flushSync(() =>
+      buttons()
+        .find((button) => button.textContent?.includes("Download exact trace"))
+        ?.click(),
+    );
+    await Promise.resolve();
+    expect(revealMock).toHaveBeenCalledWith("run-1", 1);
+    expect(downloadMock).toHaveBeenCalledWith("run-1");
+
+    flushSync(() =>
+      buttons()
+        .find((button) => button.textContent?.includes("Delete trace"))
+        ?.click(),
+    );
+    expect(deleteMock).toHaveBeenCalledWith("run-1");
+    expect(container.textContent).not.toContain("Reveal exact frame");
+    expect(container.textContent).not.toContain("Download exact trace");
+    expect(container.textContent).not.toContain("Delete trace");
+
+    pendingReveal.resolve({
+      schema: "paperclip.provider_trace_frame.v1",
+      frameId: 1,
+      timestamp: "1",
+      direction: "provider_to_client",
+      transport: "stdio_jsonl",
+      provider: "codex",
+      byteLength: 31,
+      digest: `sha256:${"b".repeat(64)}`,
+      rawBase64: btoa(JSON.stringify({ secret: "late-secret" })),
+    });
+    pendingDownload.resolve(new Blob(["late raw trace"]));
+    await flush();
+    expect(container.textContent).not.toContain("late-secret");
+    expect(anchorClick).not.toHaveBeenCalled();
+
+    accessMock.mockResolvedValue({
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    pendingDelete.resolve();
+    await flush();
+    expect(container.textContent).toContain(
+      "Raw provider traces require an instance administrator.",
+    );
+    expect(container.textContent).not.toContain("late-secret");
+    expect(anchorClick).not.toHaveBeenCalled();
   });
 
   it("keeps client and provider JSON-RPC id spaces separate when grouping operations", async () => {

@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   HeartbeatRunEvent,
   ProviderTraceFieldMapping,
@@ -84,6 +91,8 @@ const VIEW_OPTIONS: Array<{
   { value: "pipeline", label: "Pipeline", icon: ArrowRight },
   { value: "trace", label: "Exact trace", icon: FileJson2 },
 ];
+
+const RAW_TRACE_ACCESS_REVALIDATION_MS = 1_000;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -675,6 +684,30 @@ export function RunnerInspector({
     setRevealed({});
   }, [open, runId]);
 
+  const denyRawTraceAccess = useCallback(() => {
+    const currentAccess = rawTraceAccessRef.current;
+    if (
+      currentAccess?.runId === runId &&
+      currentAccess.allowed === false
+    ) {
+      return;
+    }
+    rawTraceAccessEpochRef.current += 1;
+    const deniedAccess = {
+      runId,
+      allowed: false,
+      epoch: rawTraceAccessEpochRef.current,
+    };
+    rawTraceAccessRef.current = deniedAccess;
+    setRawTraceAccess(deniedAccess);
+    setInspection({ trace: null, entries: [] });
+    setLoading(false);
+    setError(null);
+    setSelectedKey(null);
+    setSelectedFrameId(null);
+    setRevealed({});
+  }, [runId]);
+
   useEffect(() => {
     if (!open) return;
     const params = new URLSearchParams(window.location.search);
@@ -687,11 +720,12 @@ export function RunnerInspector({
   useEffect(() => {
     if (!open) return;
     let active = true;
+    const loadEpoch = rawTraceAccessEpochRef.current;
     setLoading(true);
     setError(null);
     Promise.all([accessApi.getCurrentBoardAccess(), loadAllRunEvents(runId)])
       .then(async ([boardAccess, nextEvents]) => {
-        if (!active) return;
+        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
         const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
         const access = {
           runId,
@@ -704,21 +738,64 @@ export function RunnerInspector({
         const trace = canRaw
           ? await heartbeatsApi.providerTrace(runId)
           : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
-        if (!active) return;
+        const currentAccess = rawTraceAccessRef.current;
+        if (
+          !active ||
+          currentAccess?.runId !== runId ||
+          currentAccess.epoch !== loadEpoch ||
+          currentAccess.allowed !== canRaw
+        ) {
+          return;
+        }
         setInspection(trace);
         setEvents(nextEvents);
       })
       .catch((cause) => {
-        if (!active) return;
+        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
         setError(cause instanceof Error ? cause.message : "Runner inspection failed");
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active && rawTraceAccessEpochRef.current === loadEpoch) {
+          setLoading(false);
+        }
       });
     return () => {
       active = false;
     };
   }, [open, runId]);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const revalidate = async () => {
+      try {
+        const boardAccess = await accessApi.getCurrentBoardAccess();
+        if (!active) return;
+        const canRaw =
+          boardAccess.source === "local_implicit" ||
+          boardAccess.isInstanceAdmin;
+        if (!canRaw) denyRawTraceAccess();
+      } catch {
+        if (active) denyRawTraceAccess();
+      }
+    };
+    const onFocus = () => void revalidate();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void revalidate();
+    };
+    const interval = window.setInterval(
+      () => void revalidate(),
+      RAW_TRACE_ACCESS_REVALIDATION_MS,
+    );
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [denyRawTraceAccess, open]);
 
   const entries = inspection?.entries ?? [];
   const frames = useMemo(() => entries.filter((entry) => entry.kind === "frame"), [entries]);
@@ -863,13 +940,47 @@ export function RunnerInspector({
     rawTraceAccessEpochRef.current += 1;
     const deletionAccess = {
       ...currentAccess,
+      allowed: false,
       epoch: rawTraceAccessEpochRef.current,
     };
     rawTraceAccessRef.current = deletionAccess;
     setRawTraceAccess(deletionAccess);
     setRevealed({});
-    await heartbeatsApi.deleteProviderTrace(runId);
+    try {
+      await heartbeatsApi.deleteProviderTrace(runId);
+    } catch (cause) {
+      if (rawTraceAccessRef.current?.epoch === deletionAccess.epoch) {
+        setError(
+          cause instanceof Error ? cause.message : "Raw trace deletion failed",
+        );
+      }
+      return;
+    }
     if (rawTraceAccessRef.current?.epoch !== deletionAccess.epoch) return;
+    let boardAccess;
+    try {
+      boardAccess = await accessApi.getCurrentBoardAccess();
+    } catch {
+      if (rawTraceAccessRef.current?.epoch === deletionAccess.epoch) {
+        denyRawTraceAccess();
+      }
+      return;
+    }
+    if (rawTraceAccessRef.current?.epoch !== deletionAccess.epoch) return;
+    const canRaw =
+      boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
+    if (!canRaw) {
+      denyRawTraceAccess();
+      return;
+    }
+    rawTraceAccessEpochRef.current += 1;
+    const restoredAccess = {
+      runId,
+      allowed: true,
+      epoch: rawTraceAccessEpochRef.current,
+    };
+    rawTraceAccessRef.current = restoredAccess;
+    setRawTraceAccess(restoredAccess);
     setInspection({ trace: null, entries: [] });
     setSelectedKey(null);
     setSelectedFrameId(null);
