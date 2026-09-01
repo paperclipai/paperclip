@@ -635,6 +635,53 @@ describe("openapi routes", () => {
     });
   });
 
+  // The route-level test above can only fail when a real handler drifts. These
+  // pin the scan's own rules, so a regression in the detector shows up as this
+  // test failing rather than as the guard quietly reporting nothing.
+  it("resolves board assertions transitively and scopes them to the right handler", () => {
+    const closure = (source: string) =>
+      resolveBoardAssertNames(maskLiterals(source), new Set([BOARD_ASSERT_ROOT]));
+
+    // Two hops, declared in the order that needs a second pass: `outer` calls
+    // `inner` before `inner` is known to assert.
+    const chained = closure(`
+      function outer(req: Request, companyId: string) { inner(req, companyId); }
+      function inner(req: Request, companyId: string) { assertBoard(req); other(req); }
+    `);
+    expect([...chained].sort()).toEqual(["assertBoard", "inner", "outer"]);
+
+    // A return-type annotation between the parameter list and the body.
+    expect([...closure("function gate(req: Request, res: Response): string | null { assertBoard(req); }")])
+      .toContain("gate");
+
+    // Conditional assertions do not make a wrapper an assertion.
+    expect([...closure("function maybe(req: Request) { if (req.actor.type === 'board') assertBoard(req); }")])
+      .not.toContain("maybe");
+    expect([...closure("function branch(req: Request) { if (x) { assertBoard(req); } }")])
+      .not.toContain("branch");
+
+    const names = new Set([BOARD_ASSERT_ROOT]);
+
+    // A wrapper call must pass `req` first; a same-named call on something else
+    // is not an assertion.
+    expect(assertsBoardUnconditionally("(req, res) => { assertBoard(req, extra); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { assertBoard(other); }", names)).toBe(false);
+    expect(assertsBoardUnconditionally("(req, res) => { svc.assertBoard(req); }", names)).toBe(false);
+
+    // The neighbouring-helper mis-attribution: bounding the scan to the
+    // registration's own arguments is what keeps `helper`'s assertion out of a
+    // route that only calls `namedHandler`.
+    const source = maskLiterals(`
+      router.get("/thing", namedHandler);
+      function helper(req: Request) { assertBoard(req); }
+      function namedHandler(req: Request, res: Response) { res.json({}); }
+    `);
+    const registration = source.indexOf("router.get");
+    expect(registrationArguments(source, registration)?.trim().endsWith("namedHandler")).toBe(true);
+    expect(assertsBoardUnconditionally(registrationArguments(source, registration) ?? "", names)).toBe(false);
+    expect(namedHandlerAssertsBoard(source, registration, names)).toBe(false);
+  });
+
   it("annotates every unconditionally board-guarded route as board-only", () => {
     const { boardGuardedRoutes, unbalancedRouteFiles } = loadActualRoutes();
     const { spec } = loadSpecRoutes();
@@ -647,6 +694,18 @@ describe("openapi routes", () => {
     // still matched.
     expect([...boardGuardedRoutes]).toContain("PATCH /api/adapters/{type}");
     expect([...boardGuardedRoutes]).toContain("GET /api/heartbeat-runs/{runId}/provider-trace/download");
+    // Wrapper-guarded routes: none of these names the assertion directly, and each
+    // is a shape an earlier version of this scan walked straight past.
+    // `assertCompanySecretWrite(req, companyId)` — a wrapper taking further arguments.
+    expect([...boardGuardedRoutes]).toContain("POST /api/companies/{companyId}/secrets");
+    // `requireBoardUserId(req, res): string | null` — a return-type annotation between
+    // the parameter list and the body.
+    expect([...boardGuardedRoutes]).toContain("GET /api/sidebar-preferences/me");
+    // `assertBoardPermission(...)` reached inside the handler's `try`.
+    expect([...boardGuardedRoutes]).toContain("POST /api/tool-gateway/runtime-slots/{slotId}/stop");
+    // `activeToolMembership` -> `assertToolConnectionConfigureAccess`: two hops from
+    // `assertBoard`, so a one-level lookup is not enough.
+    expect([...boardGuardedRoutes]).toContain("GET /api/tool-connections/{connectionId}/services");
     // Negative controls: a board assertion buried in a branch does not count.
     // `POST /api/invites/{inviteId}/revoke` asserts instance admin only for
     // bootstrap-CEO invites, and `POST /api/agents/{id}/heartbeat/invoke`
