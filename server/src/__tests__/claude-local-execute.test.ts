@@ -315,6 +315,48 @@ async function setupExecuteEnv(
   };
 }
 
+/**
+ * Build the session parameters that a real saved session carries.
+ *
+ * The adapter refuses to resume a session whose `promptBundleKey` does not match the bundle it
+ * built for this run. A session with no key at all is also refused when the bundle supplies agent
+ * instructions, because such a session gives no evidence that it ever received them. The prompt
+ * bundle key is a content hash, so a test cannot write it down. This helper runs one throwaway
+ * fresh execution against the same instructions file and reads the key off the result.
+ */
+async function savedSessionParamsFor(input: {
+  root: string;
+  workspace: string;
+  instructionsFile: string;
+  sessionId: string;
+}): Promise<Record<string, unknown>> {
+  const primeCommandPath = path.join(input.root, "bin-prime", "claude");
+  await fs.mkdir(path.dirname(primeCommandPath), { recursive: true });
+  await writeFakeClaudeCommand(primeCommandPath);
+  const primed = await execute({
+    runId: "run-prime-session",
+    agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+    config: {
+      engine: "cli",
+      command: primeCommandPath,
+      cwd: input.workspace,
+      env: {},
+      promptTemplate: "Do work.",
+      instructionsFilePath: input.instructionsFile,
+    },
+    context: {},
+    authToken: "tok",
+    onLog: async () => {},
+    onMeta: async () => {},
+  });
+  const params = (primed.sessionParams ?? {}) as Record<string, unknown>;
+  if (typeof params.promptBundleKey !== "string" || params.promptBundleKey.length === 0) {
+    throw new Error("priming run did not persist a promptBundleKey");
+  }
+  return { ...params, sessionId: input.sessionId };
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -453,7 +495,18 @@ describe("claude execute", () => {
       await execute({
         runId: "run-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: {
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          // A saved session must carry the prompt bundle key, otherwise the adapter starts fresh.
+          sessionParams: await savedSessionParamsFor({
+            root,
+            workspace,
+            instructionsFile,
+            sessionId: "11111111-1111-4111-8111-111111111111",
+          }),
+          sessionDisplayId: null,
+          taskKey: null,
+        },
         config: {
           engine: "cli",
           command: commandPath,
@@ -523,7 +576,18 @@ describe("claude execute", () => {
       await execute({
         runId: "run-notes-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: {
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          // A saved session must carry the prompt bundle key, otherwise the adapter starts fresh.
+          sessionParams: await savedSessionParamsFor({
+            root,
+            workspace,
+            instructionsFile,
+            sessionId: "11111111-1111-4111-8111-111111111111",
+          }),
+          sessionDisplayId: null,
+          taskKey: null,
+        },
         config: {
           engine: "cli",
           command: commandPath,
@@ -556,7 +620,18 @@ describe("claude execute", () => {
       const result = await execute({
         runId: "run-resume-fallback",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: {
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          // A saved session must carry the prompt bundle key, otherwise the adapter starts fresh.
+          sessionParams: await savedSessionParamsFor({
+            root,
+            workspace,
+            instructionsFile,
+            sessionId: "11111111-1111-4111-8111-111111111111",
+          }),
+          sessionDisplayId: null,
+          taskKey: null,
+        },
         config: {
           engine: "cli",
           command: commandPath,

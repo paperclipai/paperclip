@@ -403,4 +403,71 @@ describe("claude remote execution", () => {
     expect(result.errorCode).toBe("duplex_channel_lost");
   });
 
+  it("does not resume a keyless saved session when the prompt bundle now carries agent instructions", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-keyless-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace =
+      "/remote/workspace/.paperclip-runtime/runs/run-ssh-keyless/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+    const instructionsFilePath = path.join(rootDir, "AGENTS.md");
+    await writeFile(instructionsFilePath, "# Role\nYou are the fixture agent.\n", "utf8");
+
+    await execute({
+      runId: "run-ssh-keyless",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: { instructionsFilePath },
+      },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        // Saved before promptBundleKey was persisted: every other resume precondition matches.
+        sessionParams: {
+          sessionId: "12345678-1234-4abc-9def-123456789012",
+          cwd: managedRemoteWorkspace,
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        instructionsFilePath,
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
+    expect(call?.[2]).toContain("--append-system-prompt-file");
+  });
+
 });
