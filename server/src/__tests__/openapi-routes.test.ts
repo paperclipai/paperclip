@@ -273,26 +273,104 @@ function maskLiterals(source: string) {
   return out.join("");
 }
 
-// Every one of these begins with `assertBoard(req)` (see `routes/authz.ts`), so
-// each is at least as strict as board-only and none of them can admit an agent
-// actor. `assertInstanceAdmin` and `assertBoardOrgAccess` are strictly stricter;
-// the spec renders both as `actor: "board"`, which is what this guard checks, so
-// it deliberately does not try to tell the three apart.
-const BOARD_ASSERT_PATTERN = /^(assertBoard|assertBoardOrgAccess|assertInstanceAdmin)\(req\)\s*;/;
+// `assertBoard(req)` is the one primitive that rejects a non-board actor. Every
+// other board gate in the tree reaches it by calling something that calls it —
+// `assertBoardOrgAccess` and `assertInstanceAdmin` open with it in `routes/authz.ts`,
+// and route files declare their own wrappers on top (`assertCompanySecretWrite` in
+// `secrets.ts`, for one). Enumerating those names by hand is what let the drift in:
+// three separate passes over this table each missed a different wrapper. So the set
+// is computed transitively instead — see `resolveBoardAssertNames`.
+const BOARD_ASSERT_ROOT = "assertBoard";
+const AUTHZ_FILE = "authz.ts";
+
+// `function name(` and `const name = (` declarations, used both to find wrappers and
+// to resolve a route registered with a named handler.
+const FUNCTION_DECLARATION_PATTERN = /(?:^|[\s;})])(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+const ARROW_DECLARATION_PATTERN = /(?:^|[\s;})])(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/g;
+
+function declarationsIn(masked: string) {
+  const declarations: Array<{ name: string; index: number; isNamedFunction: boolean }> = [];
+  for (const [pattern, isNamedFunction] of [
+    [FUNCTION_DECLARATION_PATTERN, true],
+    [ARROW_DECLARATION_PATTERN, false],
+  ] as const) {
+    pattern.lastIndex = 0;
+    for (const match of masked.matchAll(pattern)) {
+      declarations.push({ name: match[1], index: match.index, isNamedFunction });
+    }
+  }
+  return declarations;
+}
+
+// Matches a call to any known board assertion with `req` as its first argument.
+// The trailing `[,)]` lets a wrapper take further arguments —
+// `assertCompanySecretWrite(req, companyId)` asserts just as unconditionally as
+// `assertBoard(req)`, and requiring a bare `(req);` is precisely what hid it.
+function boardAssertCallPattern(names: ReadonlySet<string>) {
+  const alternation = [...names].map((name) => name.replace(/[$]/g, "\\$")).join("|");
+  return new RegExp(`^(?:${alternation})\\(\\s*req\\s*[,)]`);
+}
 
 /**
- * True when every request that reaches this handler runs a board assertion —
- * the assertion is a statement of the handler body itself, not of a branch.
- * `try { ... }` is transparent because it does not make a statement
- * conditional; `catch`, `if`/`else` and every other block are not.
- *
- * One-directional by design: a handler that gates on board access some other
- * way (a middleware, a bespoke helper) simply is not reported, so the guard
- * never demands that an operation be annotated `board` on a guess.
+ * Offset of the opening brace of a `function name(...) { ... }` body. Found by
+ * matching the parameter list's parentheses rather than by searching for `)\s*{`,
+ * because a return-type annotation sits between the two — `function
+ * requireBoardUserId(req, res): string | null {` in `sidebar-preferences.ts` is
+ * exactly the shape that a `)\s*{` search misses, which hid four board-only routes.
+ * Returns -1 when the return type itself is an object literal, so an unreadable
+ * declaration is skipped rather than analyzed from the wrong brace.
  */
-function assertsBoardUnconditionally(handlerSource: string, isNamedFunction = false) {
-  const bodyStart = handlerSource.search(isNamedFunction ? /\)\s*\{/ : /=>\s*\{/);
+function namedFunctionBodyStart(source: string) {
+  const open = source.indexOf("(");
+  if (open < 0) return -1;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")" && --depth === 0) {
+      const afterParams = source.slice(i + 1);
+      const body = afterParams.match(/^\s*(?::[^{;=]*)?\{/);
+      return body ? i + 1 + body[0].length - 1 : -1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * True when a board assertion runs on every path through this function body that can
+ * reach a success response — the assertion is a statement of the body itself, not of
+ * a branch. `try { ... }` is transparent because it does not make a statement
+ * conditional; `catch`, `if`/`else` and every other block are not, and a braceless
+ * `if (...) assertBoard(req);` does not count either.
+ *
+ * Two limits are deliberate rather than overlooked, because both were considered and
+ * tightening either one costs more than it buys:
+ *
+ * - **An early `return` before the assertion does not disqualify it.** Several
+ *   handlers open with `const x = await getAccessibleResource(...); if (!x) return;`
+ *   and assert straight after. That branch has already written a 404, so it reaches
+ *   no success response without a board check. Treating it as disqualifying would
+ *   drop genuinely board-only routes — `GET /api/environments/{id}` and the
+ *   `tool-connections` services routes among them — back out of this guard's reach,
+ *   which is the drift it exists to catch. The scan cannot tell a 404 return from a
+ *   200 return, so this is the one direction in which it could over-report; every
+ *   entry it reports is confirmed against its handler before being added.
+ * - **`try` stays transparent.** A `catch` that swallowed the assertion's `HttpError`
+ *   and answered anyway would defeat it. None does — the error handlers here
+ *   propagate `HttpError.status` — and eleven guarded routes assert inside a `try`,
+ *   so treating `try` as opaque would blind the guard to all of them.
+ *
+ * Otherwise one-directional: a handler that gates on board access some other way (a
+ * middleware, a runtime-dispatched helper) is simply not reported.
+ */
+function assertsBoardUnconditionally(
+  handlerSource: string,
+  assertNames: ReadonlySet<string>,
+  isNamedFunction = false,
+) {
+  const bodyStart = isNamedFunction ? namedFunctionBodyStart(handlerSource) : handlerSource.search(/=>\s*\{/);
   if (bodyStart < 0) return false;
+  const callPattern = boardAssertCallPattern(assertNames);
+  const window = Math.max(...[...assertNames].map((name) => name.length)) + 16;
   const blocks: string[] = [];
   for (let i = handlerSource.indexOf("{", bodyStart); i < handlerSource.length; i++) {
     const char = handlerSource[i];
@@ -305,9 +383,10 @@ function assertsBoardUnconditionally(handlerSource: string, isNamedFunction = fa
       if (blocks.length === 0) return false;
       continue;
     }
-    if (char !== "a") continue;
     if (blocks.slice(1).some((kind) => kind !== "try")) continue;
-    if (!BOARD_ASSERT_PATTERN.test(handlerSource.slice(i, i + 40))) continue;
+    if (!/[A-Za-z_$]/.test(char)) continue;
+    if (/[\w$.]/.test(handlerSource[i - 1] ?? " ")) continue; // mid-identifier, or a `.method(` call
+    if (!callPattern.test(handlerSource.slice(i, i + window))) continue;
     // Reject a braceless `if (...) assertBoard(req);` / `else assertBoard(req);`.
     if (/\b(if|else)\s*(\([^()]*\))?\s*$/.test(handlerSource.slice(0, i).trimEnd())) continue;
     return true;
@@ -315,24 +394,51 @@ function assertsBoardUnconditionally(handlerSource: string, isNamedFunction = fa
   return false;
 }
 
+/**
+ * The names that, called with `req`, guarantee a board actor — closed transitively
+ * over `seed`. A declaration whose body unconditionally calls a known assertion is
+ * itself an assertion, so the pass repeats until nothing new is found (a wrapper may
+ * be declared above the wrapper it calls).
+ */
+function resolveBoardAssertNames(masked: string, seed: ReadonlySet<string>) {
+  const names = new Set(seed);
+  const declarations = declarationsIn(masked);
+  for (;;) {
+    const found = declarations.filter(
+      (declaration) =>
+        !names.has(declaration.name) &&
+        assertsBoardUnconditionally(masked.slice(declaration.index), names, declaration.isNamedFunction),
+    );
+    if (found.length === 0) return names;
+    for (const declaration of found) names.add(declaration.name);
+  }
+}
+
 // A few routes pass a named handler rather than an inline arrow. Resolve the
 // identifier against the same file and analyze the function it names.
-function namedHandlerAssertsBoard(masked: string, registrationIndex: number) {
-  const open = masked.indexOf("(", registrationIndex);
-  let depth = 0;
-  let close = open;
-  for (; close < masked.length; close++) {
-    if (masked[close] === "(") depth++;
-    else if (masked[close] === ")" && --depth === 0) break;
-  }
-  const args = masked.slice(open + 1, close);
-  if (args.includes("=>")) return false;
+function namedHandlerAssertsBoard(masked: string, registrationIndex: number, assertNames: ReadonlySet<string>) {
+  const args = registrationArguments(masked, registrationIndex);
+  if (args === null || args.includes("=>")) return false;
   const handlerName = args.split(",").pop()?.trim() ?? "";
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(handlerName)) return false;
-  const declared = masked.search(new RegExp(`(?:async\\s+)?function\\s+${handlerName}\\s*\\(`));
-  if (declared >= 0) return assertsBoardUnconditionally(masked.slice(declared), true);
-  const assigned = masked.search(new RegExp(`const\\s+${handlerName}\\s*=\\s*(?:async\\s*)?\\(`));
-  return assigned >= 0 && assertsBoardUnconditionally(masked.slice(assigned));
+  const declaration = declarationsIn(masked).find((entry) => entry.name === handlerName);
+  if (!declaration) return false;
+  return assertsBoardUnconditionally(masked.slice(declaration.index), assertNames, declaration.isNamedFunction);
+}
+
+// The text between the parentheses of the `router.<method>(...)` call itself.
+// Bounding the handler scan to this span rather than to the start of the *next*
+// registration is what stops a neighbouring helper's `assertBoard(req)` from being
+// attributed to a route that never runs it.
+function registrationArguments(masked: string, registrationIndex: number) {
+  const open = masked.indexOf("(", registrationIndex);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let close = open; close < masked.length; close++) {
+    if (masked[close] === "(") depth++;
+    else if (masked[close] === ")" && --depth === 0) return masked.slice(open + 1, close);
+  }
+  return null;
 }
 
 function loadActualRoutes() {
@@ -340,6 +446,13 @@ function loadActualRoutes() {
   const boardGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
   const unbalancedRouteFiles: string[] = [];
+
+  // The shared assertions first: everything in `authz.ts` that bottoms out in
+  // `assertBoard`. Route files then extend this with their own local wrappers.
+  const sharedAssertNames = resolveBoardAssertNames(
+    maskLiterals(fs.readFileSync(path.join(ROUTES_DIR, AUTHZ_FILE), "utf8")),
+    new Set([BOARD_ASSERT_ROOT]),
+  );
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
@@ -363,16 +476,20 @@ function loadActualRoutes() {
     }
     if (braceBalance !== 0) unbalancedRouteFiles.push(file);
 
+    const assertNames = resolveBoardAssertNames(masked, sharedAssertNames);
+
     const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
-    registrations.forEach((match, index) => {
+    registrations.forEach((match) => {
       const method = match[1].toUpperCase();
       const routePath = match[2];
       const route = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
       routes.add(route);
 
-      const next = registrations[index + 1];
-      const handlerSource = masked.slice(match.index, next ? next.index : masked.length);
-      if (assertsBoardUnconditionally(handlerSource) || namedHandlerAssertsBoard(masked, match.index)) {
+      const handlerSource = registrationArguments(masked, match.index) ?? "";
+      if (
+        assertsBoardUnconditionally(handlerSource, assertNames) ||
+        namedHandlerAssertsBoard(masked, match.index, assertNames)
+      ) {
         boardGuardedRoutes.add(route);
       }
     });
@@ -382,7 +499,8 @@ function loadActualRoutes() {
       const at = source.indexOf(marker);
       if (at < 0) continue;
       routes.add(route);
-      if (assertsBoardUnconditionally(masked.slice(at))) boardGuardedRoutes.add(route);
+      const handlerSource = registrationArguments(masked, at) ?? "";
+      if (assertsBoardUnconditionally(handlerSource, assertNames)) boardGuardedRoutes.add(route);
     }
   }
 
