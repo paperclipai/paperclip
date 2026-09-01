@@ -1209,8 +1209,6 @@ describeEmbeddedPostgres("built-in agents", () => {
       featureKeys: ["summarizer"],
     });
 
-    expect(state.agent?.runtimeConfig).not.toHaveProperty("modelProfiles.cheap");
-
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
@@ -1263,24 +1261,6 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(paused.status).toBe("paused");
     await expect(builtInAgentService(db).requireBuiltInAgent(companyId, "summarizer")).resolves.toMatchObject({
       warning: { code: "built_in_agent_paused", key: "summarizer" },
-    });
-  });
-
-  it("preserves an operator-overridden cheap summariser model across reconcile", async () => {
-    const companyId = await seedCompany();
-    const builtIns = builtInAgentService(db);
-    const created = await builtIns.ensure(companyId, "summarizer");
-
-    // Operator overrides the cheap lane with a provider-specific low-cost model.
-    await agentService(db).update(created.agentId!, {
-      runtimeConfig: {
-        modelProfiles: { cheap: { enabled: true, label: "Cheap", adapterConfig: { model: "haiku-cheap" } } },
-      },
-    }, { allowBuiltInAgentMetadata: true });
-
-    const reconciled = await builtIns.ensure(companyId, "summarizer");
-    expect(reconciled.agent?.runtimeConfig).toMatchObject({
-      modelProfiles: { cheap: { adapterConfig: { model: "haiku-cheap" } } },
     });
   });
 

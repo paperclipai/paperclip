@@ -1140,17 +1140,17 @@ describe("agent issue mutation checkout ownership", () => {
           provider: "test",
           title: "Artifact",
         }),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "work product update",
       (app: express.Express) => request(app).patch("/api/work-products/product-1").send({ title: "Blocked" }),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "work product delete",
       (app: express.Express) => request(app).delete("/api/work-products/product-1"),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "low-trust promotion",
@@ -1161,7 +1161,7 @@ describe("agent issue mutation checkout ownership", () => {
           title: "Promoted artifact",
           summary: "Sanitized output",
         }),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "attachment upload",
@@ -1169,12 +1169,12 @@ describe("agent issue mutation checkout ownership", () => {
         request(app)
           .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "attachment delete",
       (app: express.Express) => request(app).delete("/api/attachments/attachment-1"),
-      "Cheap status-only recovery runs cannot update issue documents",
+      "Status-only recovery runs cannot update issue documents",
     ],
     [
       "issue approval link",
@@ -1182,19 +1182,18 @@ describe("agent issue mutation checkout ownership", () => {
         request(app).post(`/api/issues/${issueId}/approvals`).send({
           approvalId: "88888888-8888-4888-8888-888888888888",
         }),
-      "Cheap status-only recovery runs cannot create or modify approvals",
+      "Status-only recovery runs cannot create or modify approvals",
     ],
     [
       "issue approval unlink",
       (app: express.Express) =>
         request(app).delete(`/api/issues/${issueId}/approvals/88888888-8888-4888-8888-888888888888`),
-      "Cheap status-only recovery runs cannot create or modify approvals",
+      "Status-only recovery runs cannot create or modify approvals",
     ],
-  ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest, expectedError) => {
+  ])("blocks status-only recovery runs from %s", async (_name, sendRequest, expectedError) => {
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -1215,51 +1214,6 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.removeAttachment).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.link).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      "issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/companies/${companyId}/issues`).send({
-          title: "Downstream source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
-      "child issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/issues/${issueId}/children`).send({
-          title: "Downstream child source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
-      "issue update",
-      (app: express.Express) =>
-        request(app).patch(`/api/issues/${issueId}`).send({
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-  ])("blocks cheap status-only recovery runs from propagating cheap profile through %s", async (_name, sendRequest) => {
-    const app = await createApp(
-      ownerActor(),
-      createRunContextDb({
-        modelProfile: "cheap",
-        recoveryIntent: "status_only",
-        allowDeliverableWork: false,
-        allowDocumentUpdates: false,
-        resumeRequiresNormalModel: true,
-      }),
-    );
-
-    const res = await sendRequest(app);
-
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("cannot assign downstream issue work to the cheap model profile");
-    expect(mockIssueService.create).not.toHaveBeenCalled();
-    expect(mockIssueService.createChild).not.toHaveBeenCalled();
-    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
@@ -1494,20 +1448,15 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
-  it("allows board users to set explicit cheap issue assignee profile overrides", async () => {
+  it("rejects retired issue assignee profile overrides", async () => {
     const app = await createApp(boardActor());
 
     await request(app)
       .patch(`/api/issues/${issueId}`)
       .send({ assigneeAdapterOverrides: { modelProfile: "cheap" } })
-      .expect(200);
+      .expect(400);
 
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      issueId,
-      expect.objectContaining({
-        assigneeAdapterOverrides: { modelProfile: "cheap" },
-      }),
-    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("preserves committed issue updates, comments, documents, and work product writes when recovery revalidation fails", async () => {

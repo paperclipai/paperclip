@@ -164,7 +164,6 @@ describe("adapter routes", () => {
         disabled: false,
         capabilities: {
           supportsInstructionsBundle: false,
-          supportsModelProfiles: true,
         },
       });
   });

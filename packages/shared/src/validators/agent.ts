@@ -57,23 +57,19 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
-const agentModelProfileConfigSchema = z.object({
-  enabled: z.boolean().optional(),
-  label: z.string().trim().min(1).optional(),
-  // Disabled profiles created before model-profile editing may not have an
-  // adapter payload yet. Keep them valid so unrelated runtime settings (such
-  // as debug capture) can be updated without fabricating model configuration.
-  adapterConfig: adapterConfigSchema.optional().default({}),
-}).strict();
-
 export const agentRuntimeConfigSchema = z.object({
-  modelProfiles: z.object({
-    cheap: agentModelProfileConfigSchema.optional(),
-  }).strict().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
-}).catchall(z.unknown());
+}).catchall(z.unknown()).superRefine((value, ctx) => {
+  if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["modelProfiles"],
+      message: "runtimeConfig.modelProfiles is no longer supported",
+    });
+  }
+});
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),

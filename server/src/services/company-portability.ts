@@ -1306,6 +1306,7 @@ function parseFiniteNumberLike(value: unknown): number | null {
 
 function sanitizeImportedAgentRuntimeConfig(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
+  delete next.modelProfiles;
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
@@ -1323,6 +1324,13 @@ function sanitizeImportedAgentRuntimeConfig(runtimeConfig: unknown) {
     else next.debug = debug;
   }
   return next;
+}
+
+function sanitizeImportedIssueAssigneeAdapterOverrides(value: unknown) {
+  const next = clonePortableRecord(value);
+  if (!next) return null;
+  delete next.modelProfile;
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -6249,7 +6257,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
             billingCode: manifestIssue.billingCode ?? null,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            assigneeAdapterOverrides: sanitizeImportedIssueAssigneeAdapterOverrides(
+              manifestIssue.assigneeAdapterOverrides,
+            ),
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
             labelIds: resolvedLabelIds,
             monitorNotes,

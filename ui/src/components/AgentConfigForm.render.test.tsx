@@ -15,7 +15,6 @@ import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
-  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -143,7 +142,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsSkills: false,
           supportsLocalAgentJwt: false,
           requiresMaterializedRuntimeSkills: false,
-          supportsModelProfiles: false,
           supportsAcp: false,
         }
       : {
@@ -151,7 +149,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsSkills: true,
           supportsLocalAgentJwt: true,
           requiresMaterializedRuntimeSkills: false,
-          supportsModelProfiles: true,
           supportsAcp: true,
           ...(login ? { login } : {}),
         };
@@ -632,7 +629,6 @@ describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -879,51 +875,6 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Hermes Gateway fields");
   });
 
-  it("tests both the primary and cheap models when a cheap profile is configured", async () => {
-    const result = await renderForm([
-      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
-    ], {
-      adapterConfig: { model: "gpt-5.4" },
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: {
-              model: "gpt-5.4-mini",
-              baseUrl: "https://cheap-models.example.test",
-              provider: "budget-provider",
-            },
-          },
-        },
-      },
-    }, {
-      showAdapterTestEnvironmentButton: true,
-    });
-    roots.push(result.root);
-
-    const testButton = Array.from(result.container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Test",
-    );
-    expect(testButton).toBeTruthy();
-
-    await act(async () => {
-      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
-    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
-      adapterConfig: expect.objectContaining({ model: "gpt-5.4" }),
-    });
-    expect(mockAgentsApi.testEnvironment.mock.calls[1]?.[2]).toMatchObject({
-      adapterConfig: expect.objectContaining({
-        model: "gpt-5.4-mini",
-        baseUrl: "https://cheap-models.example.test",
-        provider: "budget-provider",
-      }),
-    });
-  });
-
   it("tests a Codex agent after clearing the primary model to the adapter default", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
@@ -1057,14 +1008,6 @@ describe("AgentConfigForm environment selector", () => {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
     ], {
       adapterConfig: { model: "gpt-5.4" },
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "gpt-5.4-mini" },
-          },
-        },
-      },
     }, {
       showAdapterTestEnvironmentButton: true,
     });
@@ -2465,7 +2408,6 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -2664,7 +2606,6 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -2789,7 +2730,6 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
   }
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);

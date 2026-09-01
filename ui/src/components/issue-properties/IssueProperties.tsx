@@ -564,12 +564,6 @@ export function IssueProperties({
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
-  const assigneeSupportsCheapLane = Boolean(
-    supportsAssigneeOverrides
-      && (assigneeAdapterType === "claude_local"
-        || assigneeAdapterType === "codex_local"
-        || assigneeAdapterType === "opencode_local"),
-  );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
@@ -588,17 +582,6 @@ export function IssueProperties({
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
-  const { data: assigneeCheapProfiles } = useQuery({
-    queryKey: companyId && assigneeAdapterType
-      ? queryKeys.agents.adapterModelProfiles(companyId, assigneeAdapterType)
-      : ["agents", "none", "adapter-model-profiles", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModelProfiles(companyId!, assigneeAdapterType!),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && assigneeSupportsCheapLane,
-  });
-  const assigneeCheapProfile = useMemo(
-    () => (assigneeCheapProfiles ?? []).find((profile) => profile.key === "cheap") ?? null,
-    [assigneeCheapProfiles],
-  );
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -650,21 +633,9 @@ export function IssueProperties({
       updateAssigneeAdapterOverrides(null);
       return;
     }
-    if (lane === "cheap") {
-      updateAssigneeAdapterOverrides(
-        compactRecord({
-          useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
-          modelProfile: "cheap",
-        }),
-      );
-      return;
-    }
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(assigneeOverrideAdapterConfig) ?? { adapterConfig: {} });
   };
   const assigneeOptionsTrigger = (() => {
-    if (assigneeOverrideLane === "cheap") {
-      return <span className="text-sm">Cheap model</span>;
-    }
     if (assigneeOverrideLane === "custom") {
       const details = [
         assigneeOverrideModel,
@@ -688,7 +659,7 @@ export function IssueProperties({
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>
         <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
-          {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+          {(["primary", "custom"] as const).map((lane) => (
             <button
               key={lane}
               type="button"
@@ -700,20 +671,10 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
+              {lane === "primary" ? "Primary" : "Override"}
             </button>
           ))}
         </div>
-        {assigneeOverrideLane === "cheap" ? (
-          <p className="text-xs text-muted-foreground">
-            Sends <code>modelProfile: "cheap"</code>{" "}
-            {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-              ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
-              : assigneeCheapProfile
-                ? <>· uses the agent&apos;s configured cheap profile</>
-                : <>· falls back to the primary model if no cheap profile is configured</>}
-          </p>
-        ) : null}
         {assigneeOverrideLane === "custom" ? (
           <p className="text-xs text-muted-foreground">
             Task-level model override — replaces the agent&apos;s primary model for this issue.

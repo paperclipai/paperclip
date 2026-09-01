@@ -6815,13 +6815,6 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
-  method: "get",
-  path: "/api/companies/{companyId}/adapters/{type}/model-profiles",
-  tags: ["adapters"],
-  summary: "List adapter model profiles for a company",
-});
-
-registerCurrentRoute({
   method: "post",
   path: "/api/health/dev-server/restart",
   tags: ["health"],

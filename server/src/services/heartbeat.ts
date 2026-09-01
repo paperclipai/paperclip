@@ -27,7 +27,6 @@ import {
   CONNECTION_RUNTIME_TOOL_NAMES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-  MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
@@ -41,7 +40,6 @@ import {
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
-  type ModelProfileKey,
   type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
@@ -151,13 +149,11 @@ import {
 } from "./provider-trace-store.js";
 import {
   getServerAdapter,
-  listAdapterModelProfiles,
   runningProcesses,
 } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
-  AdapterModelProfileDefinition,
   AdapterRuntimeEvent,
   AdapterRuntimeMcpAccess,
   AdapterRuntimeMcpServer,
@@ -337,10 +333,7 @@ import {
   buildImmediateExecutionPathRecoveryNoticeSeed,
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
-import {
-  recoveryAssigneeAdapterOverrides,
-  withRecoveryModelProfileHint,
-} from "./recovery/model-profile-hint.js";
+import { withRecoveryContext } from "./recovery/status-only-context.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   recoveryService,
@@ -3191,21 +3184,8 @@ type SessionCompactionDecision = {
 };
 
 interface ParsedIssueAssigneeAdapterOverrides {
-  modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
-}
-
-type ModelProfileRequestSource = "issue_override" | "wake_context";
-type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
-
-export interface ModelProfileApplication {
-  requested: ModelProfileKey | null;
-  requestedBy: ModelProfileRequestSource | null;
-  applied: ModelProfileKey | null;
-  configSource: AppliedModelProfileConfigSource | null;
-  fallbackReason: string | null;
-  adapterConfig: Record<string, unknown> | null;
 }
 
 /**
@@ -4482,165 +4462,6 @@ export async function createManagedMcpRunConfig(input: {
   };
 }
 
-function readModelProfileKey(value: unknown): ModelProfileKey | null {
-  return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
-    ? (value as ModelProfileKey)
-    : null;
-}
-
-function readContextModelProfile(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-): ModelProfileKey | null {
-  return readModelProfileKey(contextSnapshot?.modelProfile);
-}
-
-export function normalizeModelProfileWakeContext(input: {
-  contextSnapshot: Record<string, unknown>;
-  payload: Record<string, unknown> | null | undefined;
-}): Record<string, unknown> {
-  const modelProfileFromPayload = readModelProfileKey(
-    input.payload?.modelProfile,
-  );
-  if (
-    !readContextModelProfile(input.contextSnapshot) &&
-    modelProfileFromPayload
-  ) {
-    input.contextSnapshot.modelProfile = modelProfileFromPayload;
-  }
-  return input.contextSnapshot;
-}
-
-function readAgentRuntimeModelProfile(
-  runtimeConfig: unknown,
-  key: ModelProfileKey,
-): {
-  enabled: boolean;
-  adapterConfig: Record<string, unknown>;
-  configured: boolean;
-} {
-  const modelProfiles = parseObject(parseObject(runtimeConfig).modelProfiles);
-  const profile = parseObject(modelProfiles[key]);
-  if (Object.keys(profile).length === 0) {
-    return { enabled: true, adapterConfig: {}, configured: false };
-  }
-
-  return {
-    enabled: profile.enabled !== false,
-    adapterConfig: parseObject(profile.adapterConfig),
-    configured: true,
-  };
-}
-
-export function resolveModelProfileApplication(input: {
-  adapterModelProfiles: AdapterModelProfileDefinition[];
-  agentRuntimeConfig: unknown;
-  issueModelProfile: ModelProfileKey | null | undefined;
-  contextSnapshot: Record<string, unknown> | null | undefined;
-  profileResolutionFallbackReason?: string | null;
-}): ModelProfileApplication {
-  const issueModelProfile = input.issueModelProfile ?? null;
-  const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
-  const requestedBy: ModelProfileRequestSource | null = issueModelProfile
-    ? "issue_override"
-    : contextModelProfile
-      ? "wake_context"
-      : null;
-
-  if (!requested) {
-    return {
-      requested: null,
-      requestedBy: null,
-      applied: null,
-      configSource: null,
-      fallbackReason: null,
-      adapterConfig: null,
-    };
-  }
-
-  const adapterProfile =
-    input.adapterModelProfiles.find((profile) => profile.key === requested) ??
-    null;
-  if (!adapterProfile) {
-    return {
-      requested,
-      requestedBy,
-      applied: null,
-      configSource: null,
-      fallbackReason:
-        input.profileResolutionFallbackReason ??
-        "adapter_profile_not_supported",
-      adapterConfig: null,
-    };
-  }
-
-  const runtimeProfile = readAgentRuntimeModelProfile(
-    input.agentRuntimeConfig,
-    requested,
-  );
-  if (!runtimeProfile.enabled) {
-    return {
-      requested,
-      requestedBy,
-      applied: null,
-      configSource: null,
-      fallbackReason: "agent_runtime_profile_disabled",
-      adapterConfig: null,
-    };
-  }
-
-  return {
-    requested,
-    requestedBy,
-    applied: requested,
-    configSource: runtimeProfile.configured
-      ? "agent_runtime"
-      : "adapter_default",
-    fallbackReason: null,
-    adapterConfig: {
-      ...parseObject(adapterProfile.adapterConfig),
-      ...runtimeProfile.adapterConfig,
-    },
-  };
-}
-
-export function mergeModelProfileAdapterConfig(input: {
-  baseConfig: Record<string, unknown>;
-  modelProfile: ModelProfileApplication;
-  issueAdapterConfig: Record<string, unknown> | null | undefined;
-}): Record<string, unknown> {
-  return {
-    ...input.baseConfig,
-    ...(input.modelProfile.adapterConfig ?? {}),
-    ...(input.issueAdapterConfig ?? {}),
-  };
-}
-
-function modelProfileRunMetadata(
-  modelProfile: ModelProfileApplication,
-): Record<string, unknown> | null {
-  if (!modelProfile.requested) return null;
-  return {
-    requested: modelProfile.requested,
-    requestedBy: modelProfile.requestedBy,
-    applied: modelProfile.applied,
-    configSource: modelProfile.configSource,
-    fallbackReason: modelProfile.fallbackReason,
-  };
-}
-
-function mergeModelProfileRunMetadata(
-  resultJson: Record<string, unknown> | null,
-  modelProfile: ModelProfileApplication,
-): Record<string, unknown> | null {
-  const metadata = modelProfileRunMetadata(modelProfile);
-  if (!metadata) return resultJson;
-  return {
-    ...(resultJson ?? {}),
-    modelProfile: metadata,
-  };
-}
-
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -4654,7 +4475,6 @@ export function summarizeHeartbeatRunContextSnapshot(
     "wakeReason",
     "wakeSource",
     "wakeTriggerDetail",
-    "modelProfile",
   ] as const;
 
   for (const key of allowedKeys) {
@@ -5109,11 +4929,6 @@ function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
-  const modelProfile = MODEL_PROFILE_KEYS.includes(
-    parsed.modelProfile as ModelProfileKey,
-  )
-    ? (parsed.modelProfile as ModelProfileKey)
-    : null;
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
@@ -5121,10 +4936,9 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!modelProfile && !adapterConfig && useProjectWorkspace === null)
+  if (!adapterConfig && useProjectWorkspace === null)
     return null;
   return {
-    modelProfile,
     adapterConfig,
     useProjectWorkspace,
   };
@@ -5372,7 +5186,6 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "adapter",
   "adapterConfig",
   "agentRuntimeConfig",
-  "modelProfile",
   "instructions",
   "issueOverrides",
   "workspaceConfig",
@@ -5645,7 +5458,6 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<
   adapter: "adapter",
   adapterConfig: "adapter config",
   agentRuntimeConfig: "agent runtime config",
-  modelProfile: "model profile",
   instructions: "instructions",
   issueOverrides: "issue overrides",
   workspaceConfig: "workspace config",
@@ -6020,7 +5832,6 @@ function buildSessionConfigCategoryValues(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
   agentRuntimeConfig: unknown;
-  modelProfile: unknown;
   instructions: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
@@ -6048,7 +5859,6 @@ function buildSessionConfigCategoryValues(input: {
     },
     adapterConfig: input.effectiveAdapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
-    modelProfile: input.modelProfile,
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
     workspaceConfig,
@@ -6067,7 +5877,6 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
   agentRuntimeConfig: unknown;
-  modelProfile: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
   environment: unknown;
@@ -6086,7 +5895,6 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     adapterType: input.adapterType,
     effectiveAdapterConfig: input.effectiveAdapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
-    modelProfile: input.modelProfile,
     instructions,
     issueOverrides: input.issueOverrides,
     workspaceConfig: input.workspaceConfig,
@@ -6662,7 +6470,6 @@ function enrichWakeContextSnapshot(input: {
   ) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
-  normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
   return {
@@ -9479,8 +9286,6 @@ export function heartbeatService(
           projectId: input.claimed.projectId,
           goalId: input.claimed.goalId,
           assigneeAgentId: input.claimed.assigneeAgentId,
-          assigneeAdapterOverrides:
-            recoveryAssigneeAdapterOverrides("status_only"),
           originKind: RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
           originId: input.claimed.id,
           originFingerprint: `issue_monitor:${input.clearReason}`,
@@ -9494,13 +9299,13 @@ export function heartbeatService(
           triggerDetail: "system",
           reason: "issue_monitor_recovery_issue",
           idempotencyKey: `issue-monitor-recovery-issue:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
-          payload: withRecoveryModelProfileHint(
+          payload: withRecoveryContext(
             { issueId: recoveryIssue.id, sourceIssueId: input.claimed.id },
             "status_only",
           ),
           requestedByActorType: input.actorType,
           requestedByActorId: input.actorId,
-          contextSnapshot: withRecoveryModelProfileHint(
+          contextSnapshot: withRecoveryContext(
             {
               issueId: recoveryIssue.id,
               sourceIssueId: input.claimed.id,
@@ -9561,7 +9366,7 @@ export function heartbeatService(
       triggerDetail: "system",
       reason: "issue_monitor_recovery",
       idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
-      payload: withRecoveryModelProfileHint(
+      payload: withRecoveryContext(
         {
           issueId: input.claimed.id,
           monitorAttemptCount: input.nextAttemptCount,
@@ -9576,7 +9381,7 @@ export function heartbeatService(
       ),
       requestedByActorType: input.actorType,
       requestedByActorId: input.actorId,
-      contextSnapshot: withRecoveryModelProfileHint(
+      contextSnapshot: withRecoveryContext(
         {
           issueId: input.claimed.id,
           source: "issue.monitor.recovery",
@@ -11923,7 +11728,7 @@ export function heartbeatService(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint(
+    const retryContextSnapshot = withRecoveryContext(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
@@ -11964,7 +11769,7 @@ export function heartbeatService(
           source: "automation",
           triggerDetail: "system",
           reason: "missing_issue_comment",
-          payload: withRecoveryModelProfileHint(
+          payload: withRecoveryContext(
             {
               issueId,
               retryOfRunId: run.id,
@@ -12302,7 +12107,7 @@ export function heartbeatService(
         : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint(
+    const retryContextSnapshot = withRecoveryContext(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
@@ -12325,7 +12130,7 @@ export function heartbeatService(
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
-          payload: withRecoveryModelProfileHint(
+          payload: withRecoveryContext(
             {
               ...(issueId ? { issueId } : {}),
               retryOfRunId: run.id,
@@ -13686,7 +13491,7 @@ export function heartbeatService(
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
     const retryContextSnapshot: Record<string, unknown> =
-      withRecoveryModelProfileHint(
+      withRecoveryContext(
         {
           ...contextSnapshot,
           retryOfRunId: run.id,
@@ -13993,7 +13798,7 @@ export function heartbeatService(
             source: "automation",
             triggerDetail: "system",
             reason: wakeReason,
-            payload: withRecoveryModelProfileHint(
+            payload: withRecoveryContext(
               {
                 ...(issueId ? { issueId } : {}),
                 retryOfRunId: run.id,
@@ -18254,47 +18059,10 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
-      let profileResolutionFallbackReason: string | null = null;
-      try {
-        adapterModelProfiles = await listAdapterModelProfiles(
-          agent.adapterType,
-        );
-      } catch (error) {
-        profileResolutionFallbackReason = "adapter_profile_resolution_failed";
-        logger.warn(
-          {
-            err: error,
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
-            runId: run.id,
-          },
-          "Failed to resolve adapter model profiles; falling back to primary adapter config",
-        );
-      }
-      const modelProfileApplication = resolveModelProfileApplication({
-        adapterModelProfiles,
-        agentRuntimeConfig: agent.runtimeConfig,
-        issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
-        contextSnapshot: context,
-        profileResolutionFallbackReason,
-      });
-      const modelProfileMetadata = modelProfileRunMetadata(
-        modelProfileApplication,
-      );
-      if (modelProfileMetadata) {
-        context.paperclipModelProfile = modelProfileMetadata;
-        if (modelProfileApplication.requested)
-          context.modelProfile = modelProfileApplication.requested;
-      } else {
-        delete context.paperclipModelProfile;
-      }
-      const mergedConfig = mergeModelProfileAdapterConfig({
-        baseConfig: workspaceManagedConfig,
-        modelProfile: modelProfileApplication,
-        issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
-      });
+      const mergedConfig = {
+        ...workspaceManagedConfig,
+        ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+      };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
         selectedEnvironmentId,
@@ -18386,7 +18154,6 @@ export function heartbeatService(
           adapterType: agent.adapterType,
           effectiveAdapterConfig: runtimeConfig,
           agentRuntimeConfig: agent.runtimeConfig,
-          modelProfile: modelProfileMetadata,
           issueOverrides: issueAssigneeOverrides,
           workspaceConfig: {
             requestedMode: requestedExecutionWorkspaceMode,
@@ -19827,20 +19594,12 @@ export function heartbeatService(
               if (key in meta.env) meta.env[key] = "***REDACTED***";
             }
           }
-          const modelProfileMetadata = modelProfileRunMetadata(
-            modelProfileApplication,
-          );
           await appendRunEvent(currentRun, {
             eventType: "adapter.invoke",
             stream: "system",
             level: "info",
             message: "adapter invocation",
-            payload: {
-              ...(meta as unknown as Record<string, unknown>),
-              ...(modelProfileMetadata
-                ? { modelProfile: modelProfileMetadata }
-                : {}),
-            },
+            payload: meta as unknown as Record<string, unknown>,
           });
         };
 
@@ -21152,20 +20911,17 @@ export function heartbeatService(
 
         const persistedResultJson = mergeHeartbeatRunResultJson(
           mergeRunStopMetadataForAgent(agent, outcome, {
-            resultJson: mergeModelProfileRunMetadata(
-              mergeAdapterRecoveryMetadata({
-                resultJson: {
-                  ...(adapterResult.nativeFinalization
-                    ? parseObject(latestRun?.resultJson)
-                    : {}),
-                  ...parseObject(adapterResult.resultJson),
-                  configFreshness: configFreshnessResultMetadata,
-                },
-                errorFamily: adapterResult.errorFamily ?? null,
-                retryNotBefore: adapterResult.retryNotBefore ?? null,
-              }),
-              modelProfileApplication,
-            ),
+            resultJson: mergeAdapterRecoveryMetadata({
+              resultJson: {
+                ...(adapterResult.nativeFinalization
+                  ? parseObject(latestRun?.resultJson)
+                  : {}),
+                ...parseObject(adapterResult.resultJson),
+                configFreshness: configFreshnessResultMetadata,
+              },
+              errorFamily: adapterResult.errorFamily ?? null,
+              retryNotBefore: adapterResult.retryNotBefore ?? null,
+            }),
             errorCode: runErrorCode,
             errorMessage: runErrorMessage,
           }),
@@ -22685,7 +22441,7 @@ export function heartbeatService(
             source: "automation",
             triggerDetail: "system",
             reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
-            payload: withRecoveryModelProfileHint(
+            payload: withRecoveryContext(
               {
                 issueId: issue.id,
                 retryOfRunId: run.id,
@@ -22712,7 +22468,7 @@ export function heartbeatService(
             triggerDetail: "system",
             status: "queued",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: withRecoveryModelProfileHint(
+            contextSnapshot: withRecoveryContext(
               {
                 issueId: issue.id,
                 taskId: issue.id,
@@ -22856,7 +22612,7 @@ export function heartbeatService(
           ? "issue.assignment_recovery"
           : "issue.continuation_recovery";
       const now = new Date();
-      const recoveryContextSnapshot = withRecoveryModelProfileHint(
+      const recoveryContextSnapshot = withRecoveryContext(
         {
           issueId: issue.id,
           taskId: issue.id,
@@ -22903,7 +22659,7 @@ export function heartbeatService(
           source: "automation",
           triggerDetail: "system",
           reason: recoveryReason,
-          payload: withRecoveryModelProfileHint(
+          payload: withRecoveryContext(
             {
               issueId: issue.id,
               retryOfRunId: run.id,
