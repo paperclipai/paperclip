@@ -3375,7 +3375,8 @@ export async function executePaperclipNativeSession(input: {
               createNativeSessionBackend(input.execution, {
                 runnerInstanceId: input.runnerInstanceId,
                 onSpawn: input.onSpawn,
-                environment: input.runnerEnvironment ?? process.env,
+                opencodeEnvironment: input.runnerEnvironment ?? process.env,
+                acpxEnvironment: input.runnerEnvironment ?? process.env,
                 opencodeRuntimeDirectory: resolve(
                   resolvePaperclipInstanceRoot(),
                   "runtime",
@@ -5947,7 +5948,6 @@ export async function createRunnerdBackend(input: {
     dynamicTools,
     dynamicToolHandler: (call) => authorityRouter.execute(call),
     acpxDynamicToolHandler: (call) => authorityRouter.execute(call),
-    environment: effectiveRunnerEnvironment,
     opencodeRuntimeDirectory: resolve(
       resolvePaperclipInstanceRoot(),
       "runtime",
