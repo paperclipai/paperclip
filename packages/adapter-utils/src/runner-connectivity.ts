@@ -35,6 +35,19 @@ export type PaperclipRunnerTransport =
       readonly ingress: RunnerIngressEndpoint;
     };
 
+type RunnerIngressAuthorization =
+  | {
+      /** Per-run authorization resolved by the native runtime selection policy. */
+      readonly runnerIngressAuthorized: boolean;
+      /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
+      readonly enableRunnerPreviewIngress?: boolean;
+    }
+  | {
+      readonly runnerIngressAuthorized?: never;
+      /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
+      readonly enableRunnerPreviewIngress: boolean;
+    };
+
 export class PaperclipRunnerTransportError extends Error {
   readonly code:
     | "runner_transport_ineligible"
@@ -98,16 +111,12 @@ export async function resolvePaperclipRunnerTransport(input: {
   localConnectUrl: string;
   runnerPublicUrl?: string | null;
   runnerCaBundlePath?: string | null;
-  /** Per-run authorization resolved by the native runtime selection policy. */
-  runnerIngressAuthorized?: boolean;
-  /** @deprecated Use runnerIngressAuthorized. Retained for API compatibility. */
-  enableRunnerPreviewIngress?: boolean;
   getRunnerIngressEndpoint?: (input: {
     leaseId: string;
     port: number;
     path: string;
   }) => Promise<RunnerIngressEndpoint>;
-}): Promise<PaperclipRunnerTransport> {
+} & RunnerIngressAuthorization): Promise<PaperclipRunnerTransport> {
   if (input.target.kind === "local") {
     return { mode: "local_loopback", connectUrl: input.localConnectUrl };
   }

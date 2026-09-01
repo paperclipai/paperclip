@@ -4623,6 +4623,29 @@ function createRemoteRunnerProcessLauncher(input: {
   };
 }
 
+/**
+ * Select the remote runner transport before any artifact is staged or provider
+ * endpoint is acquired. Sandbox ingress is available only to a run already
+ * authorized by native runtime selection.
+ */
+export function resolveRemoteRunnerTransportMode(input: {
+  target: AdapterExecutionTarget;
+  runnerIngressAuthorized: boolean;
+}): "listen_ws" | "dial_wss" {
+  if (input.target.kind !== "remote") {
+    throw new Error("runner_transport_ineligible: remote target is required");
+  }
+  const requiredMode =
+    input.target.transport === "sandbox" &&
+    input.target.effectiveCapabilities?.runnerWebSocketIngress === true
+      ? "listen_ws"
+      : "dial_wss";
+  if (requiredMode === "listen_ws" && !input.runnerIngressAuthorized) {
+    throw new Error("runner_ingress_unavailable");
+  }
+  return requiredMode;
+}
+
 /** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
   db: Db;
@@ -6106,17 +6129,11 @@ export async function createRunnerdBackend(input: {
                 };
               }
 
-              const requiredMode =
-                target.transport === "sandbox" &&
-                target.effectiveCapabilities?.runnerWebSocketIngress === true
-                  ? "listen_ws"
-                  : "dial_wss";
-              if (
-                requiredMode === "listen_ws" &&
-                input.runnerIngressAuthorized !== true
-              ) {
-                throw new Error("runner_ingress_unavailable");
-              }
+              const requiredMode = resolveRemoteRunnerTransportMode({
+                target,
+                runnerIngressAuthorized:
+                  input.runnerIngressAuthorized === true,
+              });
               let transport: PaperclipRunnerTransport;
               if (requiredMode === "dial_wss") {
                 // Validate eligibility before staging any artifact.

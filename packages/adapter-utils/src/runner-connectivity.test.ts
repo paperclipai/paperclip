@@ -107,12 +107,13 @@ describe("paperclip runner transport routing", () => {
         enableRunnerPreviewIngress: true,
       }),
     ).rejects.toMatchObject({ code: "runner_ingress_unavailable" });
+    const missingAuthorization = {
+      target,
+      runId: "00000000-0000-4000-8000-000000000002",
+      localConnectUrl: "ws://127.0.0.1/unused",
+    } as Parameters<typeof resolvePaperclipRunnerTransport>[0];
     await expect(
-      resolvePaperclipRunnerTransport({
-        target,
-        runId: "00000000-0000-4000-8000-000000000002",
-        localConnectUrl: "ws://127.0.0.1/unused",
-      }),
+      resolvePaperclipRunnerTransport(missingAuthorization),
     ).rejects.toMatchObject({ code: "runner_ingress_unavailable" });
     expect(getRunnerIngressEndpoint).not.toHaveBeenCalled();
   });
