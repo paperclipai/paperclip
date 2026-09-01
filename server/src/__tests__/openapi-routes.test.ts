@@ -6,7 +6,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
-import { AUTH_TABLE_OPERATIONS, buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { SPEC_OPERATION_TABLES, buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
@@ -299,9 +299,11 @@ const AUTHZ_FILE = "authz.ts";
 // instead of calling `assertBoard`, so the transitive closure cannot reach them.
 // Each name is verified by reading its declaration: it throws for every non-board
 // actor on every path. Keyed by file so a same-named helper elsewhere is not
-// trusted by association.
+// trusted by association. Every listed name must still exist as a declaration in
+// its file — the scan collects the misses and the suite asserts none — so a
+// rename cannot quietly turn an entry into a no-op.
 const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {
-  "environments.ts": ["assertCanAccessInstanceEnvironments", "assertCustomImageCompanyAccess"],
+  "environments.ts": ["assertCanAccessInstanceEnvironments"],
 };
 
 // `function name(` and `const name = (` declarations, used both to find wrappers and
@@ -666,6 +668,7 @@ function computeActualRoutes() {
   const boardGuardedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
   const unbalancedRouteFiles: string[] = [];
+  const missingInlineAssertions: string[] = [];
 
   // The shared assertions first: everything in `authz.ts` that bottoms out in
   // `assertBoard`. Route files then extend this with their own local wrappers.
@@ -694,10 +697,14 @@ function computeActualRoutes() {
     const masked = maskLiterals(source);
     if (braceBalanceOf(masked) !== 0) unbalancedRouteFiles.push(file);
 
-    const assertNames = resolveBoardAssertNames(
-      masked,
-      new Set([...sharedAssertNames, ...(INLINE_BOARD_ASSERTIONS[file] ?? [])]),
-    );
+    const inlineAssertions = INLINE_BOARD_ASSERTIONS[file] ?? [];
+    if (inlineAssertions.length > 0) {
+      const declared = new Set(declarationsIn(masked).map((declaration) => declaration.name));
+      for (const name of inlineAssertions) {
+        if (!declared.has(name)) missingInlineAssertions.push(`${file}: ${name}`);
+      }
+    }
+    const assertNames = resolveBoardAssertNames(masked, new Set([...sharedAssertNames, ...inlineAssertions]));
 
     const registrations = [...source.matchAll(ROUTE_LITERAL_PATTERN)];
     registrations.forEach((match) => {
@@ -725,6 +732,7 @@ function computeActualRoutes() {
     boardGuardedRoutes,
     unknownRouteFiles: unknownRouteFiles.sort(),
     unbalancedRouteFiles: unbalancedRouteFiles.sort(),
+    missingInlineAssertions: missingInlineAssertions.sort(),
   };
 }
 
@@ -993,11 +1001,19 @@ describe("openapi routes", () => {
   });
 
   it("annotates every unconditionally board-guarded route as board-only", () => {
-    const { boardGuardedRoutes, unbalancedRouteFiles } = loadActualRoutes();
+    const { boardGuardedRoutes, unbalancedRouteFiles, missingInlineAssertions } = loadActualRoutes();
     const { spec } = loadSpecRoutes();
 
     // The scan only means anything while it can still read the route files.
     expect(unbalancedRouteFiles).toEqual([]);
+    // ...and while every hand-vouched inline assertion still exists — a renamed
+    // helper must fail here, not quietly turn its ledger entry into a no-op.
+    expect(missingInlineAssertions).toEqual([]);
+    // A floor on the guarded set: the mislabel check below is a subset check, so
+    // a scan regression that silently dropped dozens of routes would pass it on
+    // the smaller set. Legitimate churn can lower this deliberately; a mass drop
+    // cannot pass it accidentally.
+    expect(boardGuardedRoutes.size).toBeGreaterThanOrEqual(240);
     expect([...boardGuardedRoutes]).toContain("POST /api/execution-workspaces/{id}/reconcile-branch");
     expect([...boardGuardedRoutes]).toContain("GET /api/tools/oauth/cloud-connector/callback");
     // `assertInstanceAdmin` is recognised too, and a multi-line registration is
@@ -1049,18 +1065,35 @@ describe("openapi routes", () => {
   // The other direction of table rot: the guard above fires when a guarded
   // handler is missing from the table, but nothing else notices a table entry
   // that stops matching a served operation — `resolveOperationAuthLevel` falls
-  // through to `authenticated` for unmatched keys, so a route rename or a typo
-  // silently downgrades the published authorization.
-  it("keeps every auth-table entry matched to a served operation", () => {
+  // through to `authenticated` for unmatched auth keys, and the status
+  // overrides simply no-op — so a route rename or a typo silently changes the
+  // published contract.
+  it("keeps every operation-table entry matched to a served operation", () => {
     const { routes: specRoutes } = loadSpecRoutes();
 
-    const stale = Object.entries(AUTH_TABLE_OPERATIONS)
+    const stale = Object.entries(SPEC_OPERATION_TABLES)
       .flatMap(([table, operations]) =>
         [...operations].filter((operation) => !specRoutes.has(operation)).map((operation) => `${table}: ${operation}`),
       )
       .sort();
 
     expect(stale).toEqual([]);
+
+    // An operation in two auth tables is one entry shadowing the other by
+    // precedence order: the loser is dead, and deleting the winner during a
+    // cleanup would silently change the published level. (`created`/`accepted`
+    // are status tables and legitimately overlap the auth tables.)
+    const authTables = ["public", "runtimeTools", "board", "instanceAdmin"] as const;
+    const seen = new Map<string, string>();
+    const shadowed: string[] = [];
+    for (const table of authTables) {
+      for (const operation of SPEC_OPERATION_TABLES[table]) {
+        const holder = seen.get(operation);
+        if (holder) shadowed.push(`${operation} (${holder} + ${table})`);
+        else seen.set(operation, table);
+      }
+    }
+    expect(shadowed.sort()).toEqual([]);
   });
 
   it("documents auth and reviewed response-code invariants", () => {

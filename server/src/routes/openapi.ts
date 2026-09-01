@@ -858,7 +858,6 @@ const BOARD_ONLY_PREFIXES = [
 const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/cloud/stacks",
   "GET /api/companies",
-  "POST /api/companies",
   "GET /api/companies/stats",
   "GET /api/companies/issues",
   "GET /api/companies/import/jobs/{jobId}",
@@ -8382,14 +8381,18 @@ export const buildOpenApiSpec = buildOpenApiDocument;
 
 // Exported for the drift guard in `__tests__/openapi-routes.test.ts`: an entry
 // that stops matching a served operation is dead — `resolveOperationAuthLevel`
-// silently falls through to `authenticated` for unmatched keys, so a renamed
-// path or a typo would downgrade the published authorization without any test
-// noticing. The guard asserts every entry still keys into the spec.
-export const AUTH_TABLE_OPERATIONS = {
+// silently falls through to `authenticated` for unmatched auth keys, and the
+// status overrides simply no-op — so a renamed path or a typo would change the
+// published contract without any test noticing. The guard asserts every entry
+// still keys into the spec, and that no operation sits in two auth tables
+// (precedence would silently shadow one).
+export const SPEC_OPERATION_TABLES = {
   public: PUBLIC_OPERATIONS,
   runtimeTools: RUNTIME_TOOLS_OPERATIONS,
   board: BOARD_ONLY_OPERATIONS,
   instanceAdmin: INSTANCE_ADMIN_OPERATIONS,
+  created: CREATED_OPERATIONS,
+  accepted: ACCEPTED_OPERATIONS,
 } as const;
 
 export function openApiRoutes() {
