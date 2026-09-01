@@ -104,6 +104,7 @@ import {
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import { formalQaGitHubIssuerService } from "./services/formal-qa-github-issuer.js";
+import { formalQaGitHubDiscoveryService } from "./services/formal-qa-github-discovery.js";
 import { formalQaReviewService } from "./services/formal-qa-reviews.js";
 import {
   createEmbeddedPostgresSupervisor,
@@ -787,10 +788,11 @@ export async function startServer(): Promise<StartedServer> {
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
-  // This controller owns only the inert-request → sealed-evidence transition.
-  // It is deliberately gated by the same scheduler suppression as agent work;
-  // a paused fleet cannot make GitHub reads, materialize a checkout, or begin
-  // any downstream Formal-QA work.
+  // These controllers discover ready PRs and then own only the inert-request
+  // → sealed-evidence transition. They are deliberately gated by the same
+  // scheduler suppression as agent work; a paused fleet cannot make GitHub
+  // reads, materialize a checkout, or begin downstream Formal-QA work.
+  const formalQaDiscovery = formalQaGitHubDiscoveryService(db as any);
   const formalQaIssuer = formalQaGitHubIssuerService(db as any);
   const formalQaReviews = formalQaReviewService(db as any);
   const decisionServiceOptions = {
@@ -1434,8 +1436,14 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          trackHeartbeatSchedulerWork(formalQaIssuer
-            .reconcilePrepared()
+          trackHeartbeatSchedulerWork(formalQaDiscovery
+            .reconcileOpenPulls()
+            .then((result) => {
+              if (result.created > 0 || result.deferred > 0) {
+                logger.info(result, "formal-QA pull-request discovery completed");
+              }
+              return formalQaIssuer.reconcilePrepared();
+            })
             .then(async (result) => {
               if (result.issued > 0 || result.deferred > 0) {
                 logger.info(result, "formal-QA issuer reconciliation completed");

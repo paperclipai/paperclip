@@ -16,6 +16,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound } from "../errors.js";
 
 const execFileAsync = promisify(execFile);
+const TRUSTED_GIT_BINARY = "/usr/bin/git";
 const GIT_TIMEOUT_MS = 30_000;
 const SHA40_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
@@ -29,7 +30,7 @@ type GitResult = { stdout: string; stderr: string; code: number };
 
 function isolatedGitEnvironment(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return {
-    PATH: process.env.PATH,
+    PATH: "/usr/bin:/bin",
     HOME: "/nonexistent",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
@@ -45,7 +46,7 @@ function isolatedGitEnvironment(extra?: Record<string, string>): NodeJS.ProcessE
 
 async function runGit(args: string[], cwd: string, extraEnv?: Record<string, string>): Promise<GitResult> {
   try {
-    const result = await execFileAsync("git", [
+    const result = await execFileAsync(TRUSTED_GIT_BINARY, [
       "-c", "core.hooksPath=/dev/null",
       "-c", "core.fsmonitor=false",
       "-c", "protocol.file.allow=never",
