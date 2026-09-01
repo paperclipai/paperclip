@@ -2862,46 +2862,59 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
-  it("fails closed before launching a remote provider that runnerd does not support", async () => {
-    const remoteCwd = "/home/daytona/paperclip-workspace";
-    const remoteOpenCodeExecution = {
-      ...execution,
-      binding: { ...execution.binding, runId: "run-remote-opencode-rejected" },
-      session: {
-        ...execution.session,
-        normalizedSessionId: "remote-opencode-rejected",
-        driverKind: "opencode_server",
-      },
-      provider: { kind: "opencode", model: null },
-    } as unknown as NativeExecutionInputV1;
-    state.createBackend.mockClear();
-
-    await expect(
-      createRunnerdBackend({
-        db: leaseDb(remoteOpenCodeExecution),
-        execution: remoteOpenCodeExecution,
-        runnerInstanceId: "runner",
-        runnerExecutionTarget: {
-          kind: "remote",
-          transport: "ssh",
-          remoteCwd,
-          spec: {
-            host: "runner.internal",
-            port: 22,
-            username: "runner",
-            remoteWorkspacePath: remoteCwd,
-            remoteCwd,
-            privateKey: null,
-            knownHosts: null,
-            strictHostKeyChecking: true,
-          },
+  it.each([
+    ["opencode", { kind: "opencode", model: null }, "opencode_server"],
+    [
+      "acpx",
+      { kind: "acpx", agent: "codex", model: null },
+      "acpx_runtime",
+    ],
+  ])(
+    "fails closed before launching the remote %s provider",
+    async (providerKind, provider, driverKind) => {
+      const remoteCwd = "/home/daytona/paperclip-workspace";
+      const remoteProviderExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          runId: `run-remote-${providerKind}-rejected`,
         },
-      }),
-    ).rejects.toThrow(
-      "runner_transport_ineligible: remote native execution currently supports Codex only",
-    );
-    expect(state.createBackend).not.toHaveBeenCalled();
-  });
+        session: {
+          ...execution.session,
+          normalizedSessionId: `remote-${providerKind}-rejected`,
+          driverKind,
+        },
+        provider,
+      } as unknown as NativeExecutionInputV1;
+      state.createBackend.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(remoteProviderExecution),
+          execution: remoteProviderExecution,
+          runnerInstanceId: "runner",
+          runnerExecutionTarget: {
+            kind: "remote",
+            transport: "ssh",
+            remoteCwd,
+            spec: {
+              host: "runner.internal",
+              port: 22,
+              username: "runner",
+              remoteWorkspacePath: remoteCwd,
+              remoteCwd,
+              privateKey: null,
+              knownHosts: null,
+              strictHostKeyChecking: true,
+            },
+          },
+        }),
+      ).rejects.toThrow(
+        `runner_remote_provider_artifact_incompatible: remote ${providerKind} is unavailable until runnerd provider dispatch is qualified`,
+      );
+      expect(state.createBackend).not.toHaveBeenCalled();
+    },
+  );
 
   it("passes the isolated ACPX runtime directory to the native backend factory", async () => {
     const acpxExecution = {

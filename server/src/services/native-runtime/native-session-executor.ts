@@ -4646,6 +4646,12 @@ export async function createRunnerdBackend(input: {
     },
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend> {
+  const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  if (target.kind === "remote" && input.execution.provider.kind !== "codex") {
+    throw new Error(
+      `runner_remote_provider_artifact_incompatible: remote ${input.execution.provider.kind} is unavailable until runnerd provider dispatch is qualified`,
+    );
+  }
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
@@ -4664,13 +4670,7 @@ export async function createRunnerdBackend(input: {
   const dynamicTools = await authorityRouter.definitions();
   const root = runnerdStateRoot(input.execution);
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;
-  if (remoteTarget && input.execution.provider.kind !== "codex") {
-    throw new Error(
-      "runner_transport_ineligible: remote native execution currently supports Codex only",
-    );
-  }
   const remoteCommandRunner = remoteTarget
     ? remoteTarget.transport === "ssh"
       ? createSshCommandManagedRuntimeRunner({
