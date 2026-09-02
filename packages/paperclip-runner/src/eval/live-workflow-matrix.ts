@@ -24,6 +24,15 @@ export function parseRunnerLiveCampaignCostLimit(
   return parsed;
 }
 
+export function runnerLiveRotationWeek(generatedAt: string): number {
+  const epochMs = Date.parse(generatedAt);
+  if (!Number.isFinite(epochMs)) {
+    throw new Error("Runner live rotation requires a valid generated-at time");
+  }
+  const epochWeek = Math.floor(epochMs / (7 * 86_400_000));
+  return ((epochWeek % 7) + 7) % 7;
+}
+
 export type RunnerLiveAdapter =
   "codex_app_server" | "opencode_server" | "acpx_runtime";
 export type RunnerLiveTier = "strong" | "inexpensive";
@@ -284,7 +293,7 @@ function digestId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-/** Builds the stable 40-execution nightly pairwise schedule. */
+/** Builds the stable 40-execution pairwise schedule for one weekly rotation. */
 export function buildRunnerLiveEvalSchedule(input: {
   seed: string;
   rotationDay: number;
@@ -333,7 +342,7 @@ export interface RunnerLiveScheduleCoverage {
 }
 
 export function runnerLiveScheduleCoverage(
-  seed = "runner-live-seven-day-v1",
+  seed = "runner-live-seven-week-v1",
 ): RunnerLiveScheduleCoverage {
   const schedules = Array.from({ length: 7 }, (_, rotationDay) =>
     buildRunnerLiveEvalSchedule({

@@ -22,10 +22,10 @@ if (mode !== "nightly" && mode !== "chaos")
 const now = process.env.PAPERCLIP_EVAL_GENERATED_AT ?? new Date().toISOString();
 const rotationDay = Number(
   process.env.PAPERCLIP_EVAL_ROTATION_DAY ??
-    Math.floor(Date.parse(now) / 86_400_000) % 7,
+    evals.runnerLiveRotationWeek(now),
 );
 const seed =
-  process.env.PAPERCLIP_EVAL_SCHEDULE_SEED ?? "runner-live-seven-day-v1";
+  process.env.PAPERCLIP_EVAL_SCHEDULE_SEED ?? "runner-live-seven-week-v1";
 const outputDirectory = resolve(
   packageRoot,
   ".paperclip-local/evals/workflows",
@@ -99,7 +99,9 @@ async function retainHistory(report) {
     resolve(historyDirectory, `${stamp}-${report.bundle.id}.json`),
     `${JSON.stringify(report, null, 2)}\n`,
   );
-  const expiry = Date.now() - 30 * 24 * 60 * 60 * 1_000;
+  // Candidate sets alternate, so seven compatible weekly baselines require
+  // roughly fourteen weeks of history. Keep a little extra scheduling margin.
+  const expiry = Date.now() - 120 * 24 * 60 * 60 * 1_000;
   for (const name of await readdir(historyDirectory)) {
     if (!name.endsWith(".json")) continue;
     const metadata = await stat(resolve(historyDirectory, name));
@@ -124,7 +126,7 @@ if (mode === "nightly") {
   );
   if (!execute) {
     process.stdout.write(
-      `Runner live eval schedule ready: ${schedule.expectedExecutions} executions, rotation day ${schedule.rotationDay}. Use --execute to run providers.\n`,
+      `Runner live eval schedule ready: ${schedule.expectedExecutions} executions, rotation week ${schedule.rotationDay}. Use --execute to run providers.\n`,
     );
     process.exit(0);
   }

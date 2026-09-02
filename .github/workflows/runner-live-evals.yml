@@ -2,7 +2,7 @@ name: Runner Live Evals
 
 on:
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "17 6 * * 0"
   workflow_dispatch:
 
 concurrency:
@@ -21,9 +21,7 @@ jobs:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           ACTOR: ${{ github.actor }}
           ACTOR_ID: ${{ github.actor_id }}
@@ -31,7 +29,7 @@ jobs:
           ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
         run: |
           set -euo pipefail
-          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "Paid runner live evals may run only from the default branch." >&2
             exit 1
           fi
@@ -39,18 +37,12 @@ jobs:
             echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
             exit 1
           fi
-          if [ "$EVENT_NAME" = schedule ] && [ "$RUN_ATTEMPT" = 1 ]; then
-            exit 0
-          fi
           triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
           if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
             echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
             exit 1
           fi
-          candidates=("$triggering_actor_id")
-          if [ "$EVENT_NAME" != schedule ]; then
-            candidates+=("$ACTOR_ID")
-          fi
+          candidates=("$triggering_actor_id" "$ACTOR_ID")
           for candidate in "${candidates[@]}"; do
             if ! jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null; then
               echo "The initiating GitHub account is not authorized to run paid runner live evals." >&2
@@ -70,6 +62,22 @@ jobs:
       name: runner-e2e-paid
 
     steps:
+      - name: Reauthorize paid execution before provider access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -87,7 +95,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Restore compatible seven-day baseline
+      - name: Restore compatible weekly baseline
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: packages/paperclip-runner/.paperclip-local/evals/workflows/history
@@ -106,7 +114,7 @@ jobs:
           PAPERCLIP_EVAL_BASELINE_READY: "true"
           PAPERCLIP_EVAL_RUNNER_BUILD: ${{ github.sha }}
           PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD: "12"
-          PAPERCLIP_EVAL_SCHEDULE_SEED: runner-live-seven-day-v1
+          PAPERCLIP_EVAL_SCHEDULE_SEED: runner-live-seven-week-v1
         run: pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
 
       - name: Publish job summary

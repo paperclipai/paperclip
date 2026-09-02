@@ -2,7 +2,7 @@ name: Runner Full-Stack E2E
 
 on:
   schedule:
-    - cron: "47 8 * * *"
+    - cron: "47 8 * * 0"
   workflow_dispatch:
     inputs:
       all:
@@ -53,10 +53,8 @@ jobs:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
           REPOSITORY: ${{ github.repository }}
-          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           ACTOR: ${{ github.actor }}
           ACTOR_ID: ${{ github.actor_id }}
@@ -64,7 +62,7 @@ jobs:
           ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
         run: |
           set -euo pipefail
-          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "Paid runner E2E campaigns may run only from the default branch." >&2
             exit 1
           fi
@@ -72,18 +70,12 @@ jobs:
             echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
             exit 1
           fi
-          if [ "$EVENT_NAME" = schedule ] && [ "$RUN_ATTEMPT" = 1 ]; then
-            exit 0
-          fi
           triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
           if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
             echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
             exit 1
           fi
-          candidates=("$triggering_actor_id")
-          if [ "$EVENT_NAME" != schedule ]; then
-            candidates+=("$ACTOR_ID")
-          fi
+          candidates=("$triggering_actor_id" "$ACTOR_ID")
           for candidate in "${candidates[@]}"; do
             if ! jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null; then
               echo "The initiating GitHub account is not authorized to run paid runner E2E campaigns." >&2
@@ -306,6 +298,22 @@ jobs:
       max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
     steps:
+      - name: Reauthorize paid execution before provider access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6

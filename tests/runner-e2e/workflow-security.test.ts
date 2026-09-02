@@ -1,39 +1,118 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("public repository paid workflow security", () => {
-  it("gates checkout and secret-bearing jobs with stable actor IDs", async () => {
-    const workflow = await readFile(
-      path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
-      "utf8",
+  it("gates every provider-secret job with stable actor IDs", async () => {
+    const workflows = await Promise.all(
+      ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
+        async (name) => ({
+          name,
+          contents: await readFile(
+            path.join(repositoryRoot, ".github/workflows", name),
+            "utf8",
+          ),
+        }),
+      ),
     );
-    const authorize = workflow.indexOf("  authorize:");
-    const firstCheckout = workflow.indexOf("actions/checkout@");
-    expect(authorize).toBeGreaterThan(0);
-    expect(firstCheckout).toBeGreaterThan(authorize);
-    expect(workflow).toContain("RUNNER_E2E_ALLOWED_ACTOR_IDS");
-    expect(workflow).toContain("github.actor_id");
-    expect(workflow).toContain("github.triggering_actor");
-    expect(workflow).toContain("needs: authorize");
-    expect(workflow).toContain("name: runner-e2e-paid");
-    expect(workflow).not.toMatch(/^\s*(?:pull_request|push):/m);
-    expect(workflow.indexOf("if ! jq -e")).toBeLessThan(
-      workflow.indexOf('if [ "$EVENT_NAME" = schedule ]'),
+
+    for (const { name, contents } of workflows) {
+      const authorize = contents.indexOf("  authorize:");
+      const reauthorize = contents.indexOf("Reauthorize");
+      const paidCheckout = contents.indexOf("actions/checkout@", reauthorize);
+      const providerAccess = contents.search(
+        /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY:\s*\$\{\{\s*[^}]*secrets\./,
+      );
+      expect(authorize, `${name} must have an authorization job`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        reauthorize,
+        `${name} must reauthorize partial job reruns`,
+      ).toBeGreaterThan(authorize);
+      expect(
+        paidCheckout,
+        `${name} must authorize before checkout`,
+      ).toBeGreaterThan(reauthorize);
+      expect(
+        providerAccess,
+        `${name} must authorize before provider access`,
+      ).toBeGreaterThan(reauthorize);
+      expect(contents).toContain("RUNNER_E2E_ALLOWED_ACTOR_IDS");
+      expect(contents).toContain("github.actor_id");
+      expect(contents).toContain("github.triggering_actor");
+      expect(contents).toContain('refs/heads/$DEFAULT_BRANCH');
+      expect(contents).toContain("needs: authorize");
+      expect(contents).toContain("name: runner-e2e-paid");
+      expect(contents).not.toMatch(
+        /^\s*(?:pull_request|pull_request_target|push|workflow_call|workflow_run):/m,
+      );
+      const actionReferences = [
+        ...contents.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm),
+      ].map((match) => match[1]!);
+      expect(actionReferences.length).toBeGreaterThan(0);
+      for (const reference of actionReferences) {
+        expect(reference).toMatch(/^[^@]+@[0-9a-f]{40}$/);
+      }
+    }
+
+    const fullStack = workflows[0]!.contents;
+    for (const secret of [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "OPENROUTER_API_KEY",
+      "DAYTONA_API_KEY",
+    ]) {
+      expect(fullStack).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+  });
+
+  it("keeps provider credentials inside explicitly gated paid workflows", async () => {
+    const workflowDirectory = path.join(repositoryRoot, ".github/workflows");
+    const allowedProviderWorkflows = new Set([
+      "e2e.yml",
+      "runner-full-stack-e2e.yml",
+      "runner-live-evals.yml",
+    ]);
+    const names = (await readdir(workflowDirectory)).filter((name) =>
+      /\.ya?ml$/.test(name),
     );
-    const actionReferences = [
-      ...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm),
-    ].map((match) => match[1]!);
-    expect(actionReferences.length).toBeGreaterThan(0);
-    expect(actionReferences).toEqual(
-      expect.arrayContaining(
-        actionReferences.map((reference) =>
-          expect.stringMatching(/^[^@]+@[0-9a-f]{40}$/),
+
+    for (const name of names) {
+      const contents = await readFile(path.join(workflowDirectory, name), "utf8");
+      const providerSecretReferences = [
+        ...contents.matchAll(
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g,
+        ),
+      ];
+      if (providerSecretReferences.length > 0) {
+        expect(
+          allowedProviderWorkflows.has(name),
+          `${name} must not receive provider credentials`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("runs paid scheduled campaigns only on Sundays", async () => {
+    const workflows = await Promise.all(
+      ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
+        readFile(
+          path.join(repositoryRoot, ".github/workflows", name),
+          "utf8",
         ),
       ),
     );
+    for (const workflow of workflows) {
+      const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
+        (match) => match[1]!,
+      );
+      expect(crons).toHaveLength(1);
+      expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* 0$/);
+      expect(workflow).toContain("workflow_dispatch:");
+    }
   });
 
   it("uses environment-scoped OIDC for a no-delete history publisher", async () => {

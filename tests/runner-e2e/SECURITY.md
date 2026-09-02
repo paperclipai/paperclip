@@ -16,10 +16,18 @@ CLI and verify the login before adding it:
 gh api users/LOGIN --jq '{login,id}'
 ```
 
-The workflow rejects manual dispatches outside the default branch before
-checkout. It verifies both the original actor and triggering actor for manual
-runs, and the triggering actor for human reruns of scheduled runs. Numeric IDs
-are stable across username changes and prevent lookalike-name authorization.
+The paid workflows reject manual dispatches outside the default branch before
+checkout. They verify both the original actor and triggering actor for every
+scheduled or manual attempt, including human reruns. Every
+secret-bearing job repeats this check as its first step so GitHub's partial-job
+rerun feature cannot bypass a successful predecessor authorization job. The
+legacy manually dispatched E2E workflow uses the same gate. Numeric IDs are
+stable across username changes and prevent lookalike-name authorization.
+
+The full-stack and live campaigns have one Sunday UTC schedule each and also
+support explicit manual dispatch. Their legacy-named nightly repository
+variables remain independent kill switches. Neither paid workflow accepts
+pull-request, push, workflow-run, or reusable-workflow triggers.
 
 Protect the default branch, require review for workflow/harness paths, restrict
 workflow dispatch permission, and restrict repository variable/environment
@@ -36,10 +44,15 @@ rejects mutable tag or branch references.
 
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
 only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
-`DAYTONA_API_KEY` in it. The authorize, catalog, image, report, history, and
-Pages jobs receive none of these secrets. The Paperclip server process also
-receives none; the browser posts each value once to the encrypted company
-secret API and agents/environments retain only secret references.
+`DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or
+organization-level Actions secrets: environment scoping is the boundary that
+prevents branch or pull-request jobs from requesting them. Require approval
+from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
+disable administrator bypass. The authorize,
+catalog, image, report, history, and Pages jobs receive none of these secrets.
+The Paperclip server process also receives none; the browser posts each value
+once to the encrypted company secret API and agents/environments retain only
+secret references.
 
 Create `runner-e2e-history`, also default-branch-only, for the OIDC publishing
 job. It contains no long-lived AWS key. Required reviewers may be added when a

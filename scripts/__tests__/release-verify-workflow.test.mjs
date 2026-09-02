@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -242,16 +242,21 @@ test("release verify workflow covers the same split test surface as stable PR ve
 });
 
 test("Runner eval workflows pin actions and gate paid live execution", () => {
-  const workflows = [
+  const actionPinWorkflows = [
     readWorkflow("release-verify.yml"),
     readWorkflow("runner-live-evals.yml"),
     readWorkflow("runner-chaos-evals.yml"),
+    readWorkflow("runner-full-stack-e2e.yml"),
+    readWorkflow("e2e.yml"),
   ];
 
-  for (const workflow of workflows) {
+  for (const workflow of actionPinWorkflows) {
     const remoteUses = workflow
       .split("\n")
-      .filter((line) => /^\s*uses: /.test(line) && !line.includes("uses: ./"));
+      .filter(
+        (line) =>
+          /^\s*(?:-\s*)?uses: /.test(line) && !line.includes("uses: ./"),
+      );
     assert.ok(
       remoteUses.length > 0,
       "expected at least one remote action reference",
@@ -261,9 +266,10 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     }
   }
 
-  const liveWorkflow = workflows[1];
+  const liveWorkflow = actionPinWorkflows[1];
   assert.match(liveWorkflow, /RUNNER_LIVE_EVALS_NIGHTLY_ENABLED == 'true'/);
-  assert.match(liveWorkflow, /REF_NAME: \$\{\{ github\.ref_name \}\}/);
+  assert.match(liveWorkflow, /REF: \$\{\{ github\.ref \}\}/);
+  assert.match(liveWorkflow, /refs\/heads\/\$DEFAULT_BRANCH/);
   assert.match(
     liveWorkflow,
     /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/,
@@ -276,7 +282,70 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/,
   );
 
-  const chaosWorkflow = workflows[2];
+  const paidWorkflowNames = [
+    "e2e.yml",
+    "runner-full-stack-e2e.yml",
+    "runner-live-evals.yml",
+  ];
+  const paidWorkflowNameSet = new Set(paidWorkflowNames);
+  const providerSecretReference =
+    /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g;
+  for (const name of readdirSync(path.join(repoRoot, ".github/workflows"))) {
+    if (!/\.ya?ml$/.test(name)) continue;
+    const workflow = readWorkflow(name);
+    if ([...workflow.matchAll(providerSecretReference)].length > 0) {
+      assert.ok(
+        paidWorkflowNameSet.has(name),
+        `${name} must not receive provider credentials`,
+      );
+    }
+  }
+
+  for (const name of paidWorkflowNames) {
+    const workflow = readWorkflow(name);
+    const triggerHeader = workflow.slice(0, workflow.indexOf("\njobs:\n"));
+    assert.doesNotMatch(
+      triggerHeader,
+      /^\s{2}(?:pull_request|pull_request_target|push|workflow_call|workflow_run):/m,
+    );
+    assert.match(triggerHeader, /^\s{2}workflow_dispatch:/m);
+    assert.match(workflow, /^  authorize:/m);
+
+    const jobBlocks = workflow
+      .slice(workflow.indexOf("\njobs:\n") + "\njobs:\n".length)
+      .split(/\n(?=  [A-Za-z0-9_-]+:\n)/);
+    const providerJobs = jobBlocks.filter(
+      (block) => [...block.matchAll(providerSecretReference)].length > 0,
+    );
+    assert.ok(providerJobs.length > 0, `${name} needs a provider-secret job`);
+    for (const block of providerJobs) {
+      assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
+      assert.match(
+        block,
+        /\n    steps:\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
+        `${name} must reauthorize as the first provider-job step`,
+      );
+      const reauthorize = block.indexOf("      - name: Reauthorize");
+      assert.ok(reauthorize > 0);
+      assert.ok(block.indexOf("actions/checkout@") > reauthorize);
+      assert.ok(block.search(providerSecretReference) > reauthorize);
+      assert.match(block, /github\.actor_id/);
+      assert.match(block, /github\.triggering_actor/);
+      assert.match(block, /RUNNER_E2E_ALLOWED_ACTOR_IDS/);
+      assert.match(block, /refs\/heads\/\$DEFAULT_BRANCH/);
+    }
+  }
+
+  for (const name of ["runner-full-stack-e2e.yml", "runner-live-evals.yml"]) {
+    const workflow = readWorkflow(name);
+    const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    assert.equal(crons.length, 1, `${name} must have one schedule`);
+    assert.match(crons[0], /^\d{1,2} \d{1,2} \* \* 0$/);
+  }
+
+  const chaosWorkflow = actionPinWorkflows[2];
   const runnerBlock = chaosWorkflow.match(
     /- name: Run Runner fault and replay suites[\s\S]*?run: \|([\s\S]*?)(?=\n\s+- name: Build server test dependencies)/,
   )?.[1];

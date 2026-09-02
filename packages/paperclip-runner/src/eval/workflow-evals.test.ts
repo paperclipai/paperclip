@@ -22,6 +22,7 @@ import {
   executeRunnerLiveSchedule,
   parseRunnerLiveCampaignCostLimit,
   resolvedNightlyCandidates,
+  runnerLiveRotationWeek,
   runnerLiveScheduleCoverage,
   RunnerWorkflowInfrastructureError,
 } from "./live-workflow-matrix.js";
@@ -230,6 +231,15 @@ describe("stress-derived Runner workflow catalog", () => {
 });
 
 describe("balanced live Runner workflow matrix", () => {
+  it("advances the provider rotation once per scheduled week", () => {
+    const first = runnerLiveRotationWeek("2026-09-06T06:17:00.000Z");
+    const second = runnerLiveRotationWeek("2026-09-13T06:17:00.000Z");
+    expect(second).toBe((first + 1) % 7);
+    expect(() => runnerLiveRotationWeek("not-a-date")).toThrow(
+      "valid generated-at time",
+    );
+  });
+
   it("requires a positive finite campaign cost ceiling", () => {
     expect(parseRunnerLiveCampaignCostLimit(undefined)).toBe(12);
     expect(parseRunnerLiveCampaignCostLimit("0.25")).toBe(0.25);
@@ -284,7 +294,7 @@ describe("balanced live Runner workflow matrix", () => {
     expect(JSON.stringify(first)).not.toMatch(/\bsk-[A-Za-z0-9]{16,}\b/);
   });
 
-  it("covers every slot, alternating candidate, workflow, and model tier over seven nights", () => {
+  it("covers every slot, alternating candidate, workflow, and model tier over seven weekly runs", () => {
     expect(runnerLiveScheduleCoverage()).toEqual({
       everySlotNightly: true,
       everyConcreteCandidateInRotation: true,
