@@ -853,4 +853,26 @@ describe("agent instructions bundle routes", () => {
       expect.any(Object),
     );
   });
+
+  it("persists a literal marker at an existing path when that path is explicitly escaped", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: { command: "stored-command" },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        literalRedactedConfigPaths: [["adapterConfig", "command"]],
+        preserveRedactedConfigValues: true,
+        adapterConfig: { command: "***REDACTED***" },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ adapterConfig: expect.objectContaining({ command: "***REDACTED***" }) }),
+      expect.any(Object),
+    );
+  });
 });

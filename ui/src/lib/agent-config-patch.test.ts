@@ -154,6 +154,22 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("marks an explicitly edited existing redaction marker as literal data", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = { command: "***REDACTED***" };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({ adapterConfig: { command: "***REDACTED***" } }),
+    );
+
+    expect(patch).toMatchObject({
+      adapterConfig: { command: "***REDACTED***" },
+      literalRedactedConfigPaths: [["adapterConfig", "command"]],
+      preserveRedactedConfigValues: true,
+    });
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A

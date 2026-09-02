@@ -1076,21 +1076,32 @@ export function redactConfigurationPayload(
   return redactConfigurationValue(payload, [], surface) as Record<string, unknown>;
 }
 
-function restoreRedactedConfigurationValue(value: unknown, existing: unknown): unknown {
+function restoreRedactedConfigurationValue(
+  value: unknown,
+  existing: unknown,
+  literalPaths: ReadonlySet<string>,
+  path: string[] = [],
+): unknown {
   // A marker can only stand in for a value that actually existed in the
   // response source. At a new path it is ordinary caller-supplied data.
   if (value === REDACTED_EVENT_VALUE) {
+    if (literalPaths.has(JSON.stringify(path))) return value;
     return existing === undefined ? value : existing;
   }
   if (Array.isArray(value)) {
     const existingArray = Array.isArray(existing) ? existing : [];
-    return value.map((entry, index) => restoreRedactedConfigurationValue(entry, existingArray[index]));
+    return value.map((entry, index) => restoreRedactedConfigurationValue(
+      entry,
+      existingArray[index],
+      literalPaths,
+      [...path, String(index)],
+    ));
   }
   if (!isPlainObject(value)) return value;
   const existingRecord = isPlainObject(existing) ? existing : {};
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [
     key,
-    restoreRedactedConfigurationValue(child, existingRecord[key]),
+    restoreRedactedConfigurationValue(child, existingRecord[key], literalPaths, [...path, key]),
   ]));
 }
 
@@ -1102,8 +1113,10 @@ function restoreRedactedConfigurationValue(value: unknown, existing: unknown): u
 export function restoreRedactedConfigurationPayload(
   payload: Record<string, unknown>,
   existing: Record<string, unknown> | null | undefined,
+  literalPaths: readonly (readonly string[])[] = [],
 ): Record<string, unknown> {
-  return restoreRedactedConfigurationValue(payload, existing ?? {}) as Record<string, unknown>;
+  const encodedLiteralPaths = new Set(literalPaths.map((path) => JSON.stringify(path)));
+  return restoreRedactedConfigurationValue(payload, existing ?? {}, encodedLiteralPaths) as Record<string, unknown>;
 }
 
 export function redactSensitiveText(input: string): string {

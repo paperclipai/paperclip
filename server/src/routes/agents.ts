@@ -4667,6 +4667,10 @@ export function agentRoutes(
     // string literally without the server silently reinterpreting it.
     const preserveRedactedConfigValues = patchData.preserveRedactedConfigValues === true;
     delete patchData.preserveRedactedConfigValues;
+    const literalRedactedConfigPaths = Array.isArray(patchData.literalRedactedConfigPaths)
+      ? patchData.literalRedactedConfigPaths as string[][]
+      : [];
+    delete patchData.literalRedactedConfigPaths;
     // The apply-existing flag is not an agent column. The server binds the fixed
     // reference to the owner stored value with no login round trip. Remove it
     // from the patch so it never reaches the update values.
@@ -4679,7 +4683,13 @@ export function agentRoutes(
         return;
       }
       const restoredAdapterConfig = preserveRedactedConfigValues
-        ? restoreRedactedConfigurationPayload(adapterConfig, asRecord(existing.adapterConfig))
+        ? restoreRedactedConfigurationPayload(
+            adapterConfig,
+            asRecord(existing.adapterConfig),
+            literalRedactedConfigPaths
+              .filter(([surface]) => surface === "adapterConfig")
+              .map((path) => path.slice(1)),
+          )
         : adapterConfig;
       assertNoAgentAdapterConfigMutation(req, restoredAdapterConfig);
       const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(restoredAdapterConfig);
@@ -4707,7 +4717,13 @@ export function agentRoutes(
         return;
       }
       const restoredRuntimeConfig = preserveRedactedConfigValues
-        ? restoreRedactedConfigurationPayload(runtimeConfig, asRecord(existing.runtimeConfig))
+        ? restoreRedactedConfigurationPayload(
+            runtimeConfig,
+            asRecord(existing.runtimeConfig),
+            literalRedactedConfigPaths
+              .filter(([surface]) => surface === "runtimeConfig")
+              .map((path) => path.slice(1)),
+          )
         : runtimeConfig;
       assertProviderTraceSettingTransition(
         req,

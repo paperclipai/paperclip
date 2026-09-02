@@ -1,5 +1,7 @@
 import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
+const REDACTED_CONFIG_VALUE = "***REDACTED***";
+
 export interface AgentConfigOverlay {
   identity: Record<string, unknown>;
   adapterType?: string;
@@ -79,6 +81,27 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (patch.adapterConfig !== undefined || patch.runtimeConfig !== undefined) {
     patch.preserveRedactedConfigValues = true;
+    const literalPaths: string[][] = [];
+    const existingAdapterConfig = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(overlay.adapterConfig)) {
+      if (value === REDACTED_CONFIG_VALUE && existingAdapterConfig[key] === REDACTED_CONFIG_VALUE) {
+        literalPaths.push(["adapterConfig", key]);
+      }
+    }
+    const existingRuntimeConfig = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+    const existingHeartbeat = (existingRuntimeConfig.heartbeat ?? {}) as Record<string, unknown>;
+    const existingDebug = (existingRuntimeConfig.debug ?? {}) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(overlay.heartbeat)) {
+      if (value === REDACTED_CONFIG_VALUE && existingHeartbeat[key] === REDACTED_CONFIG_VALUE) {
+        literalPaths.push(["runtimeConfig", "heartbeat", key]);
+      }
+    }
+    for (const [key, value] of Object.entries(overlay.debug)) {
+      if (value === REDACTED_CONFIG_VALUE && existingDebug[key] === REDACTED_CONFIG_VALUE) {
+        literalPaths.push(["runtimeConfig", "debug", key]);
+      }
+    }
+    if (literalPaths.length > 0) patch.literalRedactedConfigPaths = literalPaths;
   }
 
   return patch;
