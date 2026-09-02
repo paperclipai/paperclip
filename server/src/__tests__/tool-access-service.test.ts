@@ -8835,7 +8835,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
   });
 
-  it("allows multiple same-named connections on one application", async () => {
+  it("automatically gives same-named connections distinct names", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
@@ -8861,7 +8861,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(second.connectionId).not.toBe(first.connectionId);
     const rows = await db.select().from(toolConnections).where(eq(toolConnections.applicationId, first.application.id));
     expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.name)).toEqual(["Notion", "Notion"]);
+    expect(rows.map((row) => row.name).sort()).toEqual(["Notion", "Notion (2)"]);
     expect(new Set(rows.map((row) => row.uid))).toHaveProperty("size", 2);
   });
 
