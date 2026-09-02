@@ -26,8 +26,14 @@ import { toolAccessService } from "./tool-access.js";
  * nothing else in this module or its callers is host-specific.
  *
  * GitHub additionally supports managed connection identities and SSH remotes rewritten to
- * HTTPS via process-scoped `insteadOf` config. GitLab support here is company-secret /
- * server-env tokens for gitlab.com (self-hosted custom domains land in follow-up commits).
+ * HTTPS via process-scoped `insteadOf` config.
+ *
+ * GitLab additionally supports a self-managed instance at an operator-chosen domain (there is
+ * no equivalent for GitHub — GHES stays out of scope, as it always has been here): set
+ * `PAPERCLIP_GITLAB_HOSTS` to that instance's hostname (comma-separated for more than one) and
+ * the same `GITLAB_TOKEN`/`PAPERCLIP_GITLAB_TOKEN` company secret or `GITLAB_TOKEN` server env
+ * used for gitlab.com now also authenticates that host, with the credential helper scoped
+ * strictly to it — never to gitlab.com or a different configured self-managed host.
  */
 
 export type GitProviderId = "github" | "gitlab";
@@ -36,7 +42,7 @@ type GitHostProviderConfig = {
   id: GitProviderId;
   /** Human-readable name used in auth-failure guidance, e.g. "GitHub". */
   label: string;
-  /** Hosts this provider answers for. `www.` variants included where the provider serves them. */
+  /** Well-known SaaS hosts this provider answers for. `www.` variants included where served. */
   hosts: readonly string[];
   /** The HTTPS Basic username paired with the token — provider-specific by convention. */
   tokenUsername: string;
@@ -44,6 +50,14 @@ type GitHostProviderConfig = {
   secretNames: readonly string[];
   /** Server-process env var names probed as a fallback, in priority order. */
   envNames: readonly string[];
+  /**
+   * Server env var naming this provider's self-managed instance host(s), for operators who
+   * run their own server on a custom domain (GitLab's self-hosted offering; there is no
+   * equivalent GHES support here, matching this module's prior GHES-out-of-scope stance).
+   * Comma-separated; each entry is a bare hostname or a full URL (only the hostname is used).
+   * Undefined for a provider with no self-hosted mode.
+   */
+  selfHostedEnvName?: string;
 };
 
 /** Company-secret names probed for a GitHub token, in priority order. */
@@ -71,10 +85,12 @@ const GIT_HOST_PROVIDERS: readonly GitHostProviderConfig[] = [
     label: "GitLab",
     hosts: ["gitlab.com", "www.gitlab.com"],
     // GitLab's HTTPS PAT/project-access-token convention: any non-empty username works, but
-    // `oauth2` is GitLab's own documented convention for token-based HTTPS auth.
+    // `oauth2` is GitLab's own documented convention for token-based HTTPS auth. It applies
+    // the same way to a self-managed instance as it does to gitlab.com.
     tokenUsername: "oauth2",
     secretNames: DEFAULT_GITLAB_TOKEN_SECRET_NAMES,
     envNames: ["GITLAB_TOKEN"],
+    selfHostedEnvName: "PAPERCLIP_GITLAB_HOSTS",
   },
 ];
 
@@ -85,10 +101,43 @@ function getGitHostProvider(id: GitProviderId): GitHostProviderConfig {
 }
 
 /**
- * Resolve the supported HTTPS provider for one remote URL, or null when the URL is out of
- * scope: non-HTTPS, an unsupported/self-hosted host, or already credentialed (inline
- * userinfo, which this module must never override). GitHub SSH remotes are handled
- * separately via `isSupportedGitHubRemoteUrl`.
+ * Extract a bare lowercase hostname from an operator-supplied entry in a `selfHostedEnvName`
+ * value: either a full URL (`https://gitlab.mycompany.com/`) or a bare hostname
+ * (`gitlab.mycompany.com`). Returns null for an empty or unparseable entry.
+ */
+function normalizeConfiguredHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    return url.hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** This provider's operator-configured self-managed instance hosts, deduplicated. */
+function resolveConfiguredSelfHostedHosts(provider: GitHostProviderConfig, env: NodeJS.ProcessEnv): string[] {
+  if (!provider.selfHostedEnvName) return [];
+  const raw = env[provider.selfHostedEnvName];
+  if (!raw) return [];
+  const hosts = new Set<string>();
+  for (const entry of raw.split(",")) {
+    const host = normalizeConfiguredHost(entry);
+    if (host) hosts.add(host);
+  }
+  return Array.from(hosts);
+}
+
+/**
+ * Resolve the supported provider for one remote URL, or null when the URL is out of scope:
+ * non-HTTPS, an unsupported host, or already credentialed (inline userinfo, which this module
+ * must never override). Mirrors `isGitHubHttpsRemoteUrl`'s prior scoping rules, generalized
+ * across every entry in `GIT_HOST_PROVIDERS`. Static SaaS hosts only — no `env`, so it never
+ * depends on ambient process state; self-hosted matching lives in `resolveGitHostMatch` below,
+ * which every real credential-resolution path uses instead.
+ * GitHub SSH remotes are handled separately via `isSupportedGitHubRemoteUrl` in
+ * `createGitRemoteAuthProvider`.
  */
 function resolveGitHostProvider(remoteUrl: string): GitHostProviderConfig | null {
   let parsed: URL;
@@ -104,9 +153,43 @@ function resolveGitHostProvider(remoteUrl: string): GitHostProviderConfig | null
 }
 
 /**
+ * The full match used by real credential resolution: static SaaS hosts first, then each
+ * provider's operator-configured self-hosted hosts (env-driven, see `selfHostedEnvName`).
+ * `scopedHosts` is what the credential helper gets installed for — the provider's whole SaaS
+ * host list for a SaaS match (unchanged from before self-hosted support existed), or exactly
+ * the one matched self-hosted host and no other configured self-hosted host, so one
+ * self-managed instance's token is never offered to a different self-managed instance or to
+ * the SaaS domain.
+ */
+function resolveGitHostMatch(
+  remoteUrl: string,
+  env: NodeJS.ProcessEnv,
+): { provider: GitHostProviderConfig; scopedHosts: readonly string[] } | null {
+  const staticProvider = resolveGitHostProvider(remoteUrl);
+  if (staticProvider) return { provider: staticProvider, scopedHosts: staticProvider.hosts };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(remoteUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+  const hostname = parsed.hostname.toLowerCase();
+  for (const provider of GIT_HOST_PROVIDERS) {
+    if (resolveConfiguredSelfHostedHosts(provider, env).includes(hostname)) {
+      return { provider, scopedHosts: [hostname] };
+    }
+  }
+  return null;
+}
+
+/**
  * True only for `https://github.com/...` (or `www.`) URLs without inline userinfo. GHES and
- * other hosts are out of scope for now — sending a github.com token to an arbitrary host
- * would leak it, and an operator's inline URL credential must never be overridden.
+ * other hosts are out of scope — sending a github.com token to an arbitrary host would leak
+ * it, and an operator's inline URL credential must never be overridden. Static-only: unlike
+ * real credential resolution, this helper never consults `PAPERCLIP_GITLAB_HOSTS`-style
+ * self-hosted config, so it stays a pure function of its argument.
  */
 export function isGitHubHttpsRemoteUrl(remoteUrl: string): boolean {
   let parsed: URL;
@@ -121,9 +204,10 @@ export function isGitHubHttpsRemoteUrl(remoteUrl: string): boolean {
 }
 
 /**
- * True only for `https://gitlab.com/...` (or `www.`) URLs without inline userinfo.
- * Self-managed GitLab instances are out of scope for now, for the same reason GHES is out of
- * scope for GitHub: this module never sends a gitlab.com token to an arbitrary host.
+ * True only for `https://gitlab.com/...` (or `www.`) URLs without inline userinfo. Static-only:
+ * a self-managed GitLab instance configured via `PAPERCLIP_GITLAB_HOSTS` is a supported
+ * credential target (see `createGitRemoteAuthProvider`) but does not make this function true —
+ * this helper is a pure function of its argument, not of ambient server config.
  */
 export function isGitLabHttpsRemoteUrl(remoteUrl: string): boolean {
   return resolveGitHostProvider(remoteUrl)?.id === "gitlab";
@@ -209,17 +293,28 @@ export function scrubGitCredentialText(text: string): string {
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
 }
 
-export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {
+export function buildGitAuthInvocation(
+  credential: GitCredential,
+  /**
+   * Hosts to install the credential helper for. Defaults to the provider's full SaaS host
+   * list (e.g. github.com + www.github.com). Real credential resolution
+   * (`createGitRemoteAuthProvider`) passes a narrower list — exactly the one matched
+   * self-hosted host — when the remote is a self-managed instance, so that host's token is
+   * never offered to a different host, including the provider's own SaaS domain.
+   */
+  scopedHosts?: readonly string[],
+): GitAuthInvocation {
   const provider = getGitHostProvider(credential.providerId);
-  const helperScript = buildCredentialHelperScript(provider.tokenUsername, provider.hosts);
+  const hosts = scopedHosts ?? provider.hosts;
+  const helperScript = buildCredentialHelperScript(provider.tokenUsername, hosts);
   // The leading empty helper clears ambient helpers (gh, glab, osxkeychain, credential-store)
   // so they neither outrank the resolved token nor receive store/erase callbacks for it. Each
-  // subsequent entry installs the token helper URL-scoped to one of this provider's own hosts:
-  // git consults it only for credential requests whose context matches that host over https,
-  // so an `insteadOf`-rewritten remote never reaches it (and the helper itself re-checks the
-  // request host — see above).
+  // subsequent entry installs the token helper URL-scoped to one of the resolved hosts: git
+  // consults it only for credential requests whose context matches that host over https, so an
+  // `insteadOf`-rewritten remote never reaches it (and the helper itself re-checks the request
+  // host — see above).
   const configArgs: string[] = ["-c", "credential.helper="];
-  for (const host of provider.hosts) {
+  for (const host of hosts) {
     configArgs.push("-c", `credential.https://${host}.helper=${helperScript}`);
   }
 
@@ -231,7 +326,7 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
   const configEntries: Array<[string, string]> = provider.id === "github"
     ? [
         ["credential.helper", ""],
-        ...provider.hosts.map((host): [string, string] => [`credential.https://${host}.helper`, helperScript]),
+        ...hosts.map((host): [string, string] => [`credential.https://${host}.helper`, helperScript]),
         ["url.https://github.com/.insteadOf", "git@github.com:"],
         ["url.https://github.com/.insteadOf", "ssh://git@github.com/"],
         ["url.https://github.com/.insteadOf", "git@www.github.com:"],
@@ -293,19 +388,22 @@ const GIT_AUTH_FAILURE_PATTERN =
  * blamed for it.
  *
  * `remoteUrl` lets the no-credential-used branch name the right provider's guidance even
- * though no credential was resolved; it is ignored once `used.providerId` is known.
+ * though no credential was resolved; it is ignored once `used.providerId` is known. `env`
+ * (defaulting to `process.env`) lets that branch also recognize an operator-configured
+ * self-hosted GitLab host via `PAPERCLIP_GITLAB_HOSTS`.
  */
 export function describeGitAuthFailure(input: {
   error: string;
   used: { source: GitCredential["source"]; secretName: string | null; providerId?: GitProviderId } | null;
   remoteUrl?: string | null;
+  env?: NodeJS.ProcessEnv;
 }): string | null {
   if (!GIT_AUTH_FAILURE_PATTERN.test(input.error)) {
     return null;
   }
   const provider = input.used?.providerId
     ? getGitHostProvider(input.used.providerId)
-    : (input.remoteUrl ? resolveGitHostProvider(input.remoteUrl) : null);
+    : (input.remoteUrl ? resolveGitHostMatch(input.remoteUrl, input.env ?? process.env)?.provider ?? null : null);
   if (input.used) {
     const providerLabel = provider?.label ?? "git";
     const label = input.used.secretName
@@ -405,10 +503,15 @@ export function createGitRemoteAuthProvider(
   };
 
   return async (remoteUrl: string) => {
-    const provider = isSupportedGitHubRemoteUrl(remoteUrl)
-      ? getGitHostProvider("github")
-      : resolveGitHostProvider(remoteUrl);
-    if (!provider) return null;
+    // HTTPS SaaS + self-hosted GitLab first; GitHub SSH remotes are an extra upstream path
+    // (process-scoped insteadOf rewrite) that resolveGitHostMatch does not cover.
+    let match = resolveGitHostMatch(remoteUrl, env);
+    if (!match && isSupportedGitHubRemoteUrl(remoteUrl)) {
+      const github = getGitHostProvider("github");
+      match = { provider: github, scopedHosts: github.hosts };
+    }
+    if (!match) return null;
+    const { provider, scopedHosts } = match;
     let credentialPromise = credentialPromises.get(provider.id);
     if (!credentialPromise) {
       credentialPromise = resolveCredentialFor(provider);
@@ -416,7 +519,7 @@ export function createGitRemoteAuthProvider(
     }
     const credential = await credentialPromise;
     if (!credential) return null;
-    return buildGitAuthInvocation(credential);
+    return buildGitAuthInvocation(credential, scopedHosts);
   };
 }
 

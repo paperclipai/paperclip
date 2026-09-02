@@ -259,6 +259,88 @@ describe("createGitRemoteAuthProvider", () => {
       expect(secrets.getByName.mock.calls.map((call) => call[1])).toEqual(["GITHUB_TOKEN", "GITLAB_TOKEN"]);
     });
   });
+
+  describe("self-hosted GitLab (PAPERCLIP_GITLAB_HOSTS)", () => {
+    const selfHostedUrl = "https://gitlab.mycompany.com/example/repo.git";
+
+    it("is out of scope with no PAPERCLIP_GITLAB_HOSTS configured", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: {},
+      });
+      await expect(provider(selfHostedUrl)).resolves.toBeNull();
+      expect(secrets.getByName).not.toHaveBeenCalled();
+    });
+
+    it("authenticates a configured self-hosted host with the same GITLAB_TOKEN secret", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com" },
+      });
+      const invocation = await provider(selfHostedUrl);
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("glpat-token");
+      expect(invocation?.providerId).toBe("gitlab");
+      // Scoped to exactly the self-hosted host, never gitlab.com.
+      expect(invocation?.configArgs.join(" ")).toContain("credential.https://gitlab.mycompany.com.helper=");
+      expect(invocation?.configArgs.join(" ")).not.toContain("credential.https://gitlab.com.helper=");
+    });
+
+    it("accepts a full URL entry and normalizes it to a bare hostname", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: { PAPERCLIP_GITLAB_HOSTS: "https://gitlab.mycompany.com/" },
+      });
+      await expect(provider(selfHostedUrl)).resolves.not.toBeNull();
+    });
+
+    it("supports multiple comma-separated self-hosted hosts", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.a.example, gitlab.mycompany.com ,gitlab.b.example" },
+      });
+      const invocation = await provider(selfHostedUrl);
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("glpat-token");
+      // Scoped only to the one host actually being cloned, not the other configured hosts.
+      expect(invocation?.configArgs.join(" ")).not.toContain("gitlab.a.example");
+      expect(invocation?.configArgs.join(" ")).not.toContain("gitlab.b.example");
+    });
+
+    it("stays out of scope for a host not in the configured list", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.other-company.example" },
+      });
+      await expect(provider(selfHostedUrl)).resolves.toBeNull();
+    });
+
+    it("still authenticates gitlab.com itself when self-hosted hosts are also configured", async () => {
+      const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets,
+        env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com" },
+      });
+      const invocation = await provider("https://gitlab.com/example/repo.git");
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("glpat-token");
+      expect(invocation?.configArgs.join(" ")).toContain("credential.https://gitlab.com.helper=");
+      // The default SaaS match keeps scoping to both SaaS hosts, unaffected by self-hosted config.
+      expect(invocation?.configArgs.join(" ")).toContain("credential.https://www.gitlab.com.helper=");
+    });
+
+    it("falls back to the server env GITLAB_TOKEN for a self-hosted host too", async () => {
+      const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+        secrets: buildSecretsFake({}),
+        env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com", GITLAB_TOKEN: "env-gitlab" },
+      });
+      const invocation = await provider(selfHostedUrl);
+      expect(invocation?.source).toBe("server_env");
+      expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("env-gitlab");
+    });
+  });
 });
 
 describe("buildGitAuthInvocation", () => {
@@ -317,6 +399,23 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.configArgs[5]).toContain("credential.https://www.gitlab.com.helper=");
     expect(invocation.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("super-secret-token");
     expect(invocation.providerId).toBe("gitlab");
+  });
+
+  it("scopes the helper to exactly the given hosts when scopedHosts is passed", () => {
+    const invocation = buildGitAuthInvocation(
+      {
+        token: "super-secret-token",
+        source: "company_secret",
+        secretName: "GITLAB_TOKEN",
+        providerId: "gitlab",
+      },
+      ["gitlab.mycompany.com"],
+    );
+    const joined = invocation.configArgs.join(" ");
+    expect(joined).toContain("credential.https://gitlab.mycompany.com.helper=");
+    expect(joined).toContain("oauth2");
+    expect(joined).not.toContain("credential.https://gitlab.com.helper=");
+    expect(joined).not.toContain("credential.https://www.gitlab.com.helper=");
   });
 });
 
@@ -475,6 +574,24 @@ describe("describeGitAuthFailure", () => {
       error: "fatal: could not read Username for 'https://bitbucket.org': terminal prompts disabled",
       used: null,
       remoteUrl: "https://bitbucket.org/example/repo.git",
+    })).toContain("No git credential is configured — add a GITHUB_TOKEN/GH_TOKEN or GITLAB_TOKEN company secret");
+  });
+
+  it("recognizes a configured self-hosted GitLab remote with no credential", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: could not read Username for 'https://gitlab.mycompany.com': terminal prompts disabled",
+      used: null,
+      remoteUrl: "https://gitlab.mycompany.com/example/repo.git",
+      env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com" },
+    })).toContain("No GitLab credential is configured — add a GITLAB_TOKEN company secret");
+  });
+
+  it("falls back to generic guidance for an unconfigured self-hosted-looking host", () => {
+    expect(describeGitAuthFailure({
+      error: "fatal: could not read Username for 'https://gitlab.mycompany.com': terminal prompts disabled",
+      used: null,
+      remoteUrl: "https://gitlab.mycompany.com/example/repo.git",
+      env: {},
     })).toContain("No git credential is configured — add a GITHUB_TOKEN/GH_TOKEN or GITLAB_TOKEN company secret");
   });
 
