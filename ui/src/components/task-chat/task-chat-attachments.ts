@@ -202,19 +202,29 @@ const ATTACHMENT_LINK_RE =
 /** Markdown image embeds (`![name](url)`), same escaped-label grammar. */
 const IMAGE_EMBED_RE = /!\[((?:\\.|[^\]\\])*)\]\(([^()\s]+)\)/g;
 
+function isStandaloneImageEmbedLine(line: string): boolean {
+  return (
+    line.replace(IMAGE_EMBED_RE, "").trim().length === 0 && line.trim().length > 0
+  );
+}
+
 /**
- * Every image embedded in a message body, in document order, deduped by URL.
+ * Images on standalone lines, in document order, deduped by URL. Images woven
+ * into prose stay inline so they are not also duplicated in the media strip.
  * Feeds the bubble's lightbox: the refs become the gallery items and the
  * clicked <img> src picks the initial index.
  */
 export function extractImageRefs(body: string): AttachmentRef[] {
   const refs: AttachmentRef[] = [];
   const seen = new Set<string>();
-  for (const match of body.matchAll(IMAGE_EMBED_RE)) {
-    const [, name, url] = match;
-    if (seen.has(url)) continue;
-    seen.add(url);
-    refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });
+  for (const line of body.split("\n")) {
+    if (!isStandaloneImageEmbedLine(line)) continue;
+    for (const match of line.matchAll(IMAGE_EMBED_RE)) {
+      const [, name, url] = match;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });
+    }
   }
   return refs;
 }
@@ -223,10 +233,7 @@ export function extractImageRefs(body: string): AttachmentRef[] {
 export function stripStandaloneImageEmbeds(body: string): string {
   return body
     .split("\n")
-    .filter((line) => {
-      const withoutImages = line.replace(IMAGE_EMBED_RE, "");
-      return withoutImages.trim().length > 0 || line.trim().length === 0;
-    })
+    .filter((line) => !isStandaloneImageEmbedLine(line))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

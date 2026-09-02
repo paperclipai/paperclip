@@ -174,6 +174,27 @@ describe("extractImageRefs", () => {
   it("returns nothing for bodies without images", () => {
     expect(extractImageRefs("just text and a [link](/api/attachments/x/content)")).toEqual([]);
   });
+
+  it("promotes standalone embeds but leaves prose-woven embeds inline", () => {
+    const body = [
+      "Standalone embed on its own line:",
+      "",
+      "![shot one](/api/attachments/a/content)",
+      "",
+      "And here is an image ![inline two](/api/attachments/b/content) woven into this sentence.",
+    ].join("\n");
+
+    expect(extractImageRefs(body)).toEqual([
+      { name: "shot one", url: "/api/attachments/a/content" },
+    ]);
+    expect(stripStandaloneImageEmbeds(body)).toBe(
+      [
+        "Standalone embed on its own line:",
+        "",
+        "And here is an image ![inline two](/api/attachments/b/content) woven into this sentence.",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("stripStandaloneImageEmbeds", () => {
