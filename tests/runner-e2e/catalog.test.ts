@@ -270,6 +270,15 @@ describe("runner E2E selectors", () => {
     expect(jobs).toHaveLength(57);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(21);
     expect(new Set(jobs.map((job) => job.executionId)).size).toBe(57);
+    expect(
+      jobs.every((job) =>
+        runnerMatrix.some(
+          (execution) =>
+            execution.id === job.executionId &&
+            execution.profile.credential === job.credentialName,
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("validates bounded local parallelism", () => {

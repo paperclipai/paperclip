@@ -59,13 +59,15 @@ describe("public repository paid workflow security", () => {
     }
 
     const fullStack = workflows[0]!.contents;
-    for (const secret of [
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "OPENROUTER_API_KEY",
-      "DAYTONA_API_KEY",
-    ]) {
-      expect(fullStack).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    for (const [secret, condition] of Object.entries({
+      OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
+      ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
+      OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
+      DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
+    })) {
+      expect(fullStack).toContain(
+        `${secret}: \${{ ${condition} && secrets.${secret} || '' }}`,
+      );
     }
   });
 
@@ -125,6 +127,7 @@ describe("public repository paid workflow security", () => {
     expect(publisher).toContain("name: runner-e2e-history");
     expect(publisher).toContain("aws-actions/configure-aws-credentials@");
     expect(publisher).toContain("RUNNER_E2E_HISTORY_AWS_ROLE_ARN");
+    expect(publisher).not.toContain("cache: pnpm");
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");

@@ -193,6 +193,7 @@ export function buildMatrixJobs(
       executionId: execution.id,
       suiteId: execution.suite.id,
       profileId: execution.profile.id,
+      credentialName: execution.profile.credential,
       environmentId: execution.environment.id,
       caseId: execution.task.id,
       timeoutMinutes: execution.environment.id === "daytona" ? 40 : 25,

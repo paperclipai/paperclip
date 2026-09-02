@@ -161,6 +161,7 @@ export interface MatrixJob {
   executionId: string;
   suiteId: string;
   profileId: string;
+  credentialName: Exclude<CredentialName, "DAYTONA_API_KEY">;
   environmentId: RunnerEnvironmentId;
   caseId: string;
   timeoutMinutes: number;

@@ -333,8 +333,29 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       assert.match(block, /github\.triggering_actor/);
       assert.match(block, /RUNNER_E2E_ALLOWED_ACTOR_IDS/);
       assert.match(block, /refs\/heads\/\$DEFAULT_BRANCH/);
+      assert.doesNotMatch(block, /^\s+cache: pnpm$/m);
     }
   }
+
+  const fullStackWorkflow = readWorkflow("runner-full-stack-e2e.yml");
+  for (const [secret, condition] of Object.entries({
+    OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
+    ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
+    OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
+    DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
+  })) {
+    assert.ok(
+      fullStackWorkflow.includes(
+        `${secret}: \${{ ${condition} && secrets.${secret} || '' }}`,
+      ),
+      `${secret} must be scoped to only the matrix cells that require it`,
+    );
+  }
+  const historyPublisher = fullStackWorkflow.slice(
+    fullStackWorkflow.indexOf("  publish_history:"),
+    fullStackWorkflow.indexOf("  pages:"),
+  );
+  assert.doesNotMatch(historyPublisher, /^\s+cache: pnpm$/m);
 
   for (const name of ["runner-full-stack-e2e.yml", "runner-live-evals.yml"]) {
     const workflow = readWorkflow(name);

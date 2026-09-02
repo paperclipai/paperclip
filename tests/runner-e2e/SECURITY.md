@@ -50,6 +50,9 @@ prevents branch or pull-request jobs from requesting them. Require approval
 from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
 disable administrator bypass. The authorize,
 catalog, image, report, history, and Pages jobs receive none of these secrets.
+Each full-stack matrix cell receives only its selected profile credential, plus
+Daytona only for Daytona cells. Secret-bearing and OIDC jobs use frozen installs
+without a shared dependency cache.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.
