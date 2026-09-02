@@ -156,7 +156,7 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
     });
   });
 
-  it("names the port and the wildcard address for a real 0.0.0.0 listener", async () => {
+  it.skipIf(process.platform !== "linux")("names the port and the wildcard address for a real 0.0.0.0 listener", async () => {
     await withListener(appPort, undefined, async () => {
       const diagnosis = await diagnoseRuntimeListenerBinds([appPort]);
       expect(diagnosis).toContain(`port ${appPort}`);
@@ -166,7 +166,7 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
     });
   });
 
-  it("catches the HMR companion port too, not just the app port", async () => {
+  it.skipIf(process.platform !== "linux")("catches the HMR companion port too, not just the app port", async () => {
     await withListener(appPort, "127.0.0.1", async () => {
       await withListener(hmrPort, undefined, async () => {
         const diagnosis = await diagnoseRuntimeListenerBinds([appPort, hmrPort]);

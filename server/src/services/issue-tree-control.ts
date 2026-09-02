@@ -804,6 +804,22 @@ export function issueTreeControlService(db: Db) {
     }
 
     const { hold, members } = await db.transaction(async (tx) => {
+      if (input.mode === "pause") {
+        // Successful-run and stranded-work recovery holds these same issue
+        // rows while deciding whether a durable path exists. Lock every pause
+        // member before publishing the hold so a pause that wins first is
+        // visible to recovery's in-lock revalidation.
+        const issueIds = [...new Set(holdPreview.issues.map((issue) => issue.id))].sort();
+        if (issueIds.length > 0) {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)))
+            .orderBy(asc(issues.id))
+            .for("update");
+        }
+      }
+
       const [createdHold] = await tx
         .insert(issueTreeHolds)
         .values({

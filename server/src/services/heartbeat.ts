@@ -311,6 +311,7 @@ import {
   isExecutionForcedToKubernetes,
 } from "./execution-allowlist.js";
 import {
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -322,6 +323,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isSuccessfulRunHandoffRecoveryRequiredSkip,
   isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
@@ -11034,7 +11036,11 @@ export function heartbeatService(
 
   async function handleSuccessfulRunHandoff(
     run: typeof heartbeatRuns.$inferSelect,
-    agent: typeof agents.$inferSelect,
+    _agent: typeof agents.$inferSelect,
+    options: {
+      persistRecoveryIfStillUnqueued?: boolean;
+      handoffDenialReason?: string;
+    } = {},
   ) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
@@ -11042,24 +11048,18 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
 
-    const issue = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        title: issues.title,
-        description: issues.description,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        executionState: issues.executionState,
-        monitorNextCheckAt: issues.monitorNextCheckAt,
-        projectId: issues.projectId,
-        originKind: issues.originKind,
-      })
-      .from(issues)
-      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-      .then((rows) => rows[0] ?? null);
+    const [issue, currentAgent] = await Promise.all([
+      db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null),
+    ]);
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
           issueId: issue.id,
@@ -11247,7 +11247,7 @@ export function heartbeatService(
     const decision = decideSuccessfulRunHandoff({
       run,
       issue,
-      agent,
+      agent: currentAgent,
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
       finalReport,
@@ -11278,7 +11278,29 @@ export function heartbeatService(
       });
     }
 
-    if (decision.kind !== "enqueue" || !issue) return;
+    const recoveryRequired = isSuccessfulRunHandoffRecoveryRequiredSkip(decision) ||
+      (options.persistRecoveryIfStillUnqueued && decision.kind === "enqueue");
+    if (recoveryRequired && issue) {
+      const handoffDenialReason = options.handoffDenialReason ??
+        (decision.kind === "skip" ? decision.reason : "corrective wake was not durably queued");
+      await recovery.escalateStrandedAssignedIssue({
+        issue,
+        previousStatus: "in_progress",
+        latestRun: run,
+        recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        successfulRunHandoffEvidence: {
+          sourceRunId: run.id,
+          correctiveRunId: null,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 0,
+          maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
+          handoffDenialReason,
+        },
+      });
+      return;
+    }
+
+    if (decision.kind !== "enqueue" || !issue || !currentAgent) return;
 
     if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
       await db
@@ -11293,22 +11315,46 @@ export function heartbeatService(
         .where(eq(heartbeatRuns.id, run.id));
     }
 
-    const handoffRun = await enqueueWakeup(decision.targetAgentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
-      payload: decision.payload,
-      contextSnapshot: decision.contextSnapshot,
-      idempotencyKey: decision.idempotencyKey,
-      requestedByActorType: "system",
-      requestedByActorId: "heartbeat",
-    });
-    if (!handoffRun) return;
+    let handoffRun: Awaited<ReturnType<typeof enqueueWakeup>> = null;
+    try {
+      handoffRun = await enqueueWakeup(decision.targetAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        payload: decision.payload,
+        contextSnapshot: decision.contextSnapshot,
+        idempotencyKey: decision.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat",
+      });
+    } catch (err) {
+      logger.warn(
+        { err, issueId: issue.id, runId: run.id },
+        "successful run corrective handoff enqueue was denied",
+      );
+    }
+    if (!handoffRun) {
+      // Re-run the full decision query before persisting recovery. A concurrent
+      // actor may have created a valid execution/wait path while enqueueing, and
+      // that path must win over a stale blocked transition. If the issue is still
+      // eligible to enqueue, the second pass records explicit board recovery
+      // instead of attempting the same denied wake again.
+      await handleSuccessfulRunHandoff(
+        run,
+        currentAgent,
+        {
+          persistRecoveryIfStillUnqueued: true,
+          handoffDenialReason:
+            "corrective wake was denied or skipped before durable queueing",
+        },
+      );
+      return;
+    }
 
     await addSuccessfulRunHandoffCommentOnce({
       issue,
       run,
-      agent,
+      agent: currentAgent,
       detectedProgressSummary:
         detectedProgressSummary ??
         "The run reported progress, but did not choose a next step.",
@@ -12122,6 +12168,34 @@ export function heartbeatService(
     );
 
     const queued = await db.transaction(async (tx) => {
+      if (issueId) {
+        // Serialize retry publication with recovery transitions for this issue.
+        // Recovery holds this same row lock while it scans for durable paths and
+        // decides whether to block. Taking the lock before inserting either the
+        // wake or run prevents those rows from becoming provisionally durable
+        // while their issue mutation is still waiting behind recovery.
+        const currentIssue = await tx
+          .select({ status: issues.status, executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+
+        // A recovery/terminal transition that won the lock must remain
+        // authoritative. In particular, do not attach a newly queued retry to
+        // an issue that recovery just blocked or whose execution ownership has
+        // already moved away from the lost run.
+        if (
+          !currentIssue ||
+          currentIssue.status === "blocked" ||
+          currentIssue.status === "done" ||
+          currentIssue.status === "cancelled" ||
+          currentIssue.executionRunId !== run.id
+        ) {
+          return null;
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -12193,6 +12267,19 @@ export function heartbeatService(
 
       return retryRun;
     });
+
+    if (!queued) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed because issue recovery or execution ownership changed first",
+        payload: {
+          issueId: issueId ?? null,
+        },
+      });
+      return null;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -23169,6 +23256,7 @@ export function heartbeatService(
             executionWorkspacePreference: issues.executionWorkspacePreference,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
@@ -23243,6 +23331,44 @@ export function heartbeatService(
                 reason: "worktree_execution_cutoff",
                 cutoff: worktreeExecutionCutoff.toISOString(),
                 issueId: issue.id,
+              },
+            },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          reason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON &&
+          (
+            issue.status !== "in_progress" ||
+            issue.assigneeAgentId !== agentId ||
+            issue.assigneeUserId !== null
+          )
+        ) {
+          // Successful-run recovery holds this same issue-row lock while it
+          // scans for a durable path and, when none exists, blocks the issue.
+          // Revalidate the corrective wake under that lock so recovery-first
+          // cannot leave a newly queued wake attached to the blocked source.
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "successful_run_handoff_source_changed",
+            payload: {
+              ...(payload ?? {}),
+              issueId,
+              heartbeatSkip: {
+                reason: "successful_run_handoff_source_changed",
+                requestedReason: reason,
+                currentStatus: issue.status,
+                currentAssigneeAgentId: issue.assigneeAgentId,
+                currentAssigneeUserId: issue.assigneeUserId,
               },
             },
             status: "skipped",

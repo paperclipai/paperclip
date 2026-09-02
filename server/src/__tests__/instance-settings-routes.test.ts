@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -50,30 +51,29 @@ const mockDb = {
   transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
 };
 
-async function createApp(actor: any) {
-  const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    req.actor = actor;
-    next();
-  });
-  app.use("/api", instanceSettingsRoutes(mockDb as any));
-  app.use(errorHandler);
-  return app;
-}
-
 describe("instance settings routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
+    ]);
+    return { errorHandler, instanceSettingsRoutes };
+  });
+
+  function createApp(actor: any) {
+    const { errorHandler, instanceSettingsRoutes } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/instance-settings.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();

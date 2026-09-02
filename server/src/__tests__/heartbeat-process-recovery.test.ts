@@ -114,6 +114,7 @@ import {
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
 import {
+  FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -1427,6 +1428,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("does not publish a process-loss retry after concurrent recovery wins the issue lock", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+    let releaseRecoveryLock!: () => void;
+    const recoveryMayCommit = new Promise<void>((resolve) => {
+      releaseRecoveryLock = resolve;
+    });
+    let recoveryLocked!: () => void;
+    const recoveryHasLock = new Promise<void>((resolve) => {
+      recoveryLocked = resolve;
+    });
+
+    const recoveryTransition = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .for("update");
+      recoveryLocked();
+      await recoveryMayCommit;
+      await tx
+        .update(issues)
+        .set({
+          status: "blocked",
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date("2026-03-19T00:01:00.000Z"),
+        })
+        .where(eq(issues.id, issueId));
+    });
+    await recoveryHasLock;
+
+    const reap = heartbeat.reapOrphanedRuns();
+    await waitForValue(async () => db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.status === "failed" ? true : null));
+    releaseRecoveryLock();
+
+    await recoveryTransition;
+    await expect(reap).resolves.toEqual({ reaped: 1, runIds: [runId] });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retryRuns).toHaveLength(0);
+    const retryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "process_lost_retry"),
+      ));
+    expect(retryWakeups).toHaveLength(0);
+    const currentIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(currentIssue).toMatchObject({
+      status: "blocked",
+      executionRunId: null,
+      checkoutRunId: null,
+    });
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
@@ -3801,6 +3875,234 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
+  });
+
+  it("persists board recovery when a successful-run handoff is denied after the agent pauses", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested repair, but did not choose a final issue state.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+      ));
+    expect(handoffWakeups).toHaveLength(0);
+
+    const recoveryAction = await waitForValue(() => db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null), 5_000);
+    expect(recoveryAction).toMatchObject({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      returnOwnerAgentId: agentId,
+      evidence: expect.objectContaining({
+        sourceRunId: runId,
+        correctiveRunId: null,
+        handoffDenialReason: "agent status paused is not invokable",
+      }),
+    });
+    const sourceIssue = await waitForValue(() => db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.status === "blocked" ? rows[0] : null), 5_000);
+    expect(sourceIssue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+  });
+
+  it("persists board recovery when a successful-run handoff is budget-blocked", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.insert(budgetPolicies).values({
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 1,
+        hardStopEnabled: true,
+        isActive: true,
+      });
+      await db.insert(costEvents).values({
+        companyId,
+        agentId,
+        issueId,
+        provider: "test",
+        biller: "test",
+        billingType: "tokens",
+        model: "test-model",
+        costCents: 1,
+        occurredAt: new Date(),
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested repair, but did not choose a final issue state.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+      ));
+    expect(handoffWakeups).toHaveLength(0);
+
+    const recoveryAction = await waitForValue(() => db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null), 5_000);
+    expect(recoveryAction).toMatchObject({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      returnOwnerAgentId: agentId,
+      evidence: expect.objectContaining({
+        sourceRunId: runId,
+        correctiveRunId: null,
+        handoffDenialReason: "budget hard stop blocks corrective wake",
+      }),
+    });
+    const sourceIssue = await waitForValue(() => db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.status === "blocked" ? rows[0] : null), 5_000);
+    expect(sourceIssue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+  });
+
+  it("does not publish a corrective wake after successful-run recovery blocks the source first", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const heartbeat = heartbeatService(db);
+    const recoveryActionId = randomUUID();
+    const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
+
+    await db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .for("update");
+      const now = new Date("2026-03-19T00:06:00.000Z");
+      await tx.insert(issueRecoveryActions).values({
+        id: recoveryActionId,
+        companyId,
+        sourceIssueId: issueId,
+        kind: "missing_disposition",
+        status: "active",
+        ownerType: "board",
+        ownerAgentId: null,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        fingerprint: `source_scoped_recovery:${companyId}:${issueId}:${SUCCESSFUL_RUN_MISSING_STATE_REASON}`,
+        evidence: { sourceRunId: runId },
+        nextAction: "Choose a valid issue disposition.",
+        wakePolicy: { type: "board_escalation" },
+        attemptCount: 1,
+        lastAttemptAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await tx
+        .update(issues)
+        .set({ status: "blocked", updatedAt: now })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    });
+
+    const correctiveWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      payload: {
+        issueId,
+        sourceRunId: runId,
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      },
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    });
+    expect(correctiveWake).toBeNull();
+
+    const [sourceIssue, recoveryAction, handoffRequests, correctiveRuns] = await Promise.all([
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, recoveryActionId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey)),
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${FINISH_SUCCESSFUL_RUN_HANDOFF_REASON}`,
+        )),
+    ]);
+    expect(sourceIssue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    expect(recoveryAction).toMatchObject({ status: "active", ownerType: "board" });
+    expect(handoffRequests).toEqual([
+      expect.objectContaining({
+        status: "skipped",
+        reason: "successful_run_handoff_source_changed",
+      }),
+    ]);
+    expect(correctiveRuns).toHaveLength(0);
   });
 
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {

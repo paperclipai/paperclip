@@ -16,7 +16,9 @@ import {
   issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
+  issueTreeHolds,
   issues,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -143,6 +145,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
     await db.delete(issueInboxArchives);
+    await db.delete(routines);
+    await db.delete(issueTreeHolds);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -661,6 +665,364 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(enqueueWakeup).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["terminal", "active_execution"] as const)(
+    "does not overwrite a concurrent %s path during successful-run handoff escalation",
+    async (concurrentPath) => {
+      const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const sourceRunId = randomUUID();
+
+      if (concurrentPath === "terminal") {
+        await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, sourceIssueId));
+      } else {
+        await seedHeartbeatRun({
+          companyId,
+          agentId: coderId,
+          runId: randomUUID(),
+          issueId: sourceIssueId,
+          status: "queued",
+        });
+      }
+
+      const result = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: sourceRunId,
+          agentId: coderId,
+          status: "succeeded",
+          error: null,
+          errorCode: null,
+          contextSnapshot: { issueId: sourceIssueId },
+          livenessState: "needs_followup",
+        },
+        recoveryCause: "successful_run_missing_state",
+        successfulRunHandoffEvidence: {
+          sourceRunId,
+          correctiveRunId: null,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 0,
+          maxHandoffAttempts: 1,
+          handoffDenialReason: "corrective wake was not durably queued",
+        },
+      });
+
+      expect(result).toBeNull();
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(currentIssue?.status).toBe(concurrentPath === "terminal" ? "done" : "in_progress");
+      const activeActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          eq(issueRecoveryActions.status, "active"),
+        ));
+      expect(activeActions).toHaveLength(0);
+    },
+  );
+
+  it.each(["pause_hold", "routine_continuation"] as const)(
+    "preserves a %s that commits before successful-run recovery acquires the issue lock",
+    async (durablePath) => {
+      const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const sourceRunId = randomUUID();
+      let publishPath!: () => void;
+      const pathMayPublish = new Promise<void>((resolve) => {
+        publishPath = resolve;
+      });
+      let pathLocked!: () => void;
+      const pathHasLock = new Promise<void>((resolve) => {
+        pathLocked = resolve;
+      });
+
+      const pathPublication = db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, sourceIssueId))
+          .for("update");
+        pathLocked();
+        await pathMayPublish;
+
+        if (durablePath === "pause_hold") {
+          await tx.insert(issueTreeHolds).values({
+            companyId,
+            rootIssueId: sourceIssueId,
+            mode: "pause",
+            status: "active",
+            reason: "Pause owns the next action.",
+          });
+        } else {
+          await tx.insert(routines).values({
+            companyId,
+            parentIssueId: sourceIssueId,
+            title: "Continue source issue",
+            assigneeAgentId: coderId,
+            status: "active",
+          });
+        }
+      });
+      await pathHasLock;
+
+      const escalation = recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: sourceRunId,
+          agentId: coderId,
+          status: "succeeded",
+          error: null,
+          errorCode: null,
+          contextSnapshot: { issueId: sourceIssueId },
+          livenessState: "needs_followup",
+        },
+        recoveryCause: "successful_run_missing_state",
+        successfulRunHandoffEvidence: {
+          sourceRunId,
+          correctiveRunId: null,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 0,
+          maxHandoffAttempts: 1,
+          handoffDenialReason: "corrective wake was not durably queued",
+        },
+      });
+
+      publishPath();
+      await pathPublication;
+      await expect(escalation).resolves.toBeNull();
+
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(currentIssue?.status).toBe("in_progress");
+      const activeActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          eq(issueRecoveryActions.status, "active"),
+        ));
+      expect(activeActions).toHaveLength(0);
+    },
+  );
+
+  it("keeps a concurrently published process-loss retry active and resolves provisional handoff recovery", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const sourceRunId = randomUUID();
+    const retryRunId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: sourceRunId,
+      issueId: sourceIssueId,
+      status: "succeeded",
+    });
+    let publishRetry!: () => void;
+    const retryMayPublish = new Promise<void>((resolve) => {
+      publishRetry = resolve;
+    });
+    let retryLocked!: () => void;
+    const retryHasLock = new Promise<void>((resolve) => {
+      retryLocked = resolve;
+    });
+
+    const retryPublication = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .for("update");
+      retryLocked();
+      await retryMayPublish;
+      await tx.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId: coderId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "process_lost_retry",
+        payload: { issueId: sourceIssueId, retryOfRunId: sourceRunId },
+        status: "queued",
+      });
+      await tx.insert(heartbeatRuns).values({
+        id: retryRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId,
+        retryOfRunId: sourceRunId,
+        contextSnapshot: {
+          issueId: sourceIssueId,
+          wakeReason: "process_lost_retry",
+          retryOfRunId: sourceRunId,
+        },
+      });
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: retryRunId })
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: retryRunId,
+          executionAgentNameKey: "coder",
+          executionLockedAt: new Date("2026-05-13T18:01:00.000Z"),
+          updatedAt: new Date("2026-05-13T18:01:00.000Z"),
+        })
+        .where(eq(issues.id, sourceIssueId));
+    });
+    await retryHasLock;
+
+    const escalation = recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: sourceRunId,
+        agentId: coderId,
+        status: "succeeded",
+        error: null,
+        errorCode: null,
+        contextSnapshot: { issueId: sourceIssueId },
+        livenessState: "needs_followup",
+      },
+      recoveryCause: "successful_run_missing_state",
+      successfulRunHandoffEvidence: {
+        sourceRunId,
+        correctiveRunId: null,
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 0,
+        maxHandoffAttempts: 1,
+        handoffDenialReason: "corrective wake was not durably queued",
+      },
+    });
+
+    publishRetry();
+    await retryPublication;
+    await expect(escalation).resolves.toBeNull();
+
+    const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(currentIssue).toMatchObject({
+      status: "in_progress",
+      executionRunId: retryRunId,
+    });
+    const activeActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+    expect(activeActions).toHaveLength(0);
+  });
+
+  it("keeps a process-loss retry that commits before non-successful recovery acquires the issue lock", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const sourceRunId = randomUUID();
+    const retryRunId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: sourceRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    let publishRetry!: () => void;
+    const retryMayPublish = new Promise<void>((resolve) => {
+      publishRetry = resolve;
+    });
+    let retryLocked!: () => void;
+    const retryHasLock = new Promise<void>((resolve) => {
+      retryLocked = resolve;
+    });
+
+    const retryPublication = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .for("update");
+      retryLocked();
+      await retryMayPublish;
+      await tx.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId: coderId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "process_lost_retry",
+        payload: { issueId: sourceIssueId, retryOfRunId: sourceRunId },
+        status: "queued",
+      });
+      await tx.insert(heartbeatRuns).values({
+        id: retryRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId,
+        retryOfRunId: sourceRunId,
+        contextSnapshot: {
+          issueId: sourceIssueId,
+          wakeReason: "process_lost_retry",
+          retryOfRunId: sourceRunId,
+        },
+      });
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: retryRunId })
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: retryRunId,
+          executionAgentNameKey: "coder",
+          executionLockedAt: new Date("2026-05-13T18:01:00.000Z"),
+          updatedAt: new Date("2026-05-13T18:01:00.000Z"),
+        })
+        .where(eq(issues.id, sourceIssueId));
+    });
+    await retryHasLock;
+
+    const escalation = recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: sourceRunId,
+        agentId: coderId,
+        status: "failed",
+        error: "agent process exited unexpectedly",
+        errorCode: "process_lost",
+        contextSnapshot: { issueId: sourceIssueId },
+        livenessState: "failed",
+      },
+      recoveryCause: "process_lost",
+    });
+
+    publishRetry();
+    await retryPublication;
+    await expect(escalation).resolves.toBeNull();
+
+    const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(currentIssue).toMatchObject({
+      status: "in_progress",
+      executionRunId: retryRunId,
+    });
+    const activeActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+    expect(activeActions).toHaveLength(0);
+  });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();

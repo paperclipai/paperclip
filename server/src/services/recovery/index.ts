@@ -56,6 +56,7 @@ export {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
+  isSuccessfulRunHandoffRecoveryRequiredSkip,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,

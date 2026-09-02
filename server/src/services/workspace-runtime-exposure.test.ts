@@ -48,7 +48,7 @@ afterEach(async () => {
 function serviceCommand() {
   // Answers `/api/health` the way a real Paperclip dev runtime does: managed
   // publication requires semantic health, not just a 200 (PAP-17572).
-  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
+  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000].filter(q=>q<=65535))http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
 }
 
 /**
@@ -86,7 +86,7 @@ const p = Number(process.env.PORT);
 // Even a pre-exposure checkout answered /api/health semantically; these guests
 // model bind behaviour, not health behaviour.
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of [p, p + 10000].filter((candidate) => candidate <= 65535)) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, host);
 }
 setInterval(() => {}, 1000);
@@ -612,7 +612,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     expect(calls).toEqual(["reserve", "expose", "remove"]);
   }, 20_000);
 
-  it("reaches a terminal failure naming the port and address when a guest still binds the wildcard", async () => {
+  it.skipIf(process.platform !== "linux")("reaches a terminal failure naming the port and address when a guest still binds the wildcard", async () => {
     const { broker, calls } = createBroker();
     installDeps({ broker });
 
@@ -630,7 +630,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     expect(calls).toEqual(["reserve", "remove"]);
   }, 20_000);
 
-  it("explains rather than only coding the failure, so the next operator can act", async () => {
+  it.skipIf(process.platform !== "linux")("explains rather than only coding the failure, so the next operator can act", async () => {
     const { broker } = createBroker();
     installDeps({ broker });
 
@@ -726,7 +726,7 @@ describe("readiness probes loopback for an exposed runtime (PAP-17256)", () => {
 });
 
 describe("the deployed failure shape: loopback app port, wildcard HMR (PAP-17256)", () => {
-  it("fails terminally naming the HMR port, because forcing the bind cannot reach Vite's own listener", async () => {
+  it.skipIf(process.platform !== "linux")("fails terminally naming the HMR port, because forcing the bind cannot reach Vite's own listener", async () => {
     // Plain master's app.ts passes Vite `hmr.port` without `hmr.server` or
     // `server.host`, so the HMR websocket binds `::` no matter what the bind mode
     // is. The argv rewrite fixes the app port; only the preflight catches this.

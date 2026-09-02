@@ -630,7 +630,13 @@ export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().guid(),
-  expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
+  expectedStatuses: z.array(z.enum([
+    "backlog",
+    "todo",
+    "in_progress",
+    "in_review",
+    "blocked",
+  ])).nonempty(),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;

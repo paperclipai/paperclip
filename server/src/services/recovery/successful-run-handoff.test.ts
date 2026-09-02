@@ -10,6 +10,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isSuccessfulRunHandoffRecoveryRequiredSkip,
   isSuccessfulRunHandoffValidPathSkip,
   isPluginManagedIssueLifecycle,
   isSuccessfulRunHandoffRequiredNoticeBody,
@@ -317,6 +318,12 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
   });
 
+  it("identifies denial-path skips that require explicit recovery", () => {
+    expect(isSuccessfulRunHandoffRecoveryRequiredSkip(decide({ budgetBlocked: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffRecoveryRequiredSkip(decide({ agent: { ...agent, status: "paused" } }))).toBe(true);
+    expect(isSuccessfulRunHandoffRecoveryRequiredSkip(decide({ hasQueuedWake: true }))).toBe(false);
+  });
+
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {
     expect(decide({
       detectedProgressSummary: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
@@ -534,6 +541,7 @@ describe("successful run handoff decision", () => {
       latestIssueStatus: "in_progress",
       latestHandoffRunStatus: "failed",
       missingDisposition: "clear_next_step",
+      handoffDenialReason: "agent status paused is not invokable",
     });
 
     expect(notice.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
@@ -566,6 +574,11 @@ describe("successful run handoff decision", () => {
           }),
           expect.objectContaining({ type: "run_link", label: "Corrective handoff run" }),
           expect.objectContaining({ type: "key_value", label: "Missing disposition", value: "clear_next_step" }),
+          expect.objectContaining({
+            type: "key_value",
+            label: "Corrective handoff outcome",
+            value: "agent status paused is not invokable",
+          }),
         ]),
       }),
     ]));

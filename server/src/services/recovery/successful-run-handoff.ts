@@ -141,6 +141,15 @@ export function isSuccessfulRunHandoffValidPathSkip(
   return decision.kind === "skip" && SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS.has(decision.reason);
 }
 
+export function isSuccessfulRunHandoffRecoveryRequiredSkip(
+  decision: SuccessfulRunHandoffDecision,
+): decision is Extract<SuccessfulRunHandoffDecision, { kind: "skip" }> {
+  return decision.kind === "skip" && (
+    decision.reason === "budget hard stop blocks corrective wake" ||
+    decision.reason.endsWith(" is not invokable")
+  );
+}
+
 export function isSuccessfulRunHandoffRequiredNoticeBody(body: string) {
   const trimmed = body.trim();
   return trimmed === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY ||
@@ -201,6 +210,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
   latestIssueStatus: string;
   latestHandoffRunStatus: string;
   missingDisposition: string;
+  handoffDenialReason?: string | null;
 }): SuccessfulRunHandoffNotice {
   return {
     body: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -235,6 +245,9 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
             keyValueRow("Latest handoff run status", input.latestHandoffRunStatus),
             keyValueRow("Normalized cause", SUCCESSFUL_RUN_MISSING_STATE_REASON),
             keyValueRow("Missing disposition", input.missingDisposition),
+            ...(input.handoffDenialReason
+              ? [keyValueRow("Corrective handoff outcome", input.handoffDenialReason)]
+              : []),
           ],
         },
       ],

@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const logActivityMock = vi.fn();
 
@@ -75,49 +76,48 @@ function createDbStub() {
   };
 }
 
-async function createApp() {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      source: "local_implicit",
-      userId: null,
-      companyIds: ["company-1"],
-    };
-    next();
-  });
-  app.use(
-    "/api",
-    accessRoutes(createDbStub() as any, {
-      deploymentMode: "local_trusted",
-      deploymentExposure: "private",
-      bindHost: "127.0.0.1",
-      allowedHostnames: [],
-    }),
-  );
-  app.use(errorHandler);
-  return app;
-}
-
 describe("POST /companies/:companyId/invites", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    return { accessRoutes, errorHandler };
+  });
+
+  function createApp() {
+    const { accessRoutes, errorHandler } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId: null,
+        companyIds: ["company-1"],
+      };
+      next();
+    });
+    app.use(
+      "/api",
+      accessRoutes(createDbStub() as any, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        bindHost: "127.0.0.1",
+        allowedHostnames: [],
+      }),
+    );
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/access.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     logActivityMock.mockReset();
   });
 
   it("returns an absolute invite URL using the request base URL", async () => {
-    const app = await createApp();
+    const app = createApp();
 
     const res = await request(app)
       .post("/api/companies/company-1/invites")

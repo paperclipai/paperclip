@@ -472,18 +472,17 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     resolveRetryClose();
-    await vi.waitFor(async () => {
-      await expect(readFile(authPath)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-    });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await vi.waitFor(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
+    await expect(readFile(authPath, "utf8")).resolves.toContain("contender");
     await contender.close();
+    await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {

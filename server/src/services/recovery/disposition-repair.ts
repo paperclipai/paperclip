@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -8,8 +8,11 @@ import {
   issueApprovals,
   issueRelations,
   issueThreadInteractions,
+  issueTreeHoldMembers,
+  issueTreeHolds,
   issueWorkProducts,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
@@ -84,7 +87,17 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
+  const [
+    blockers,
+    children,
+    interactions,
+    linkedApprovals,
+    workProducts,
+    activeRuns,
+    queuedWakes,
+    activePauseHolds,
+    activeRoutineContinuations,
+  ] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -179,11 +192,48 @@ export async function collectDispositionRepairSourceState(
         .where(
           and(
             eq(agentWakeupRequests.companyId, issue.companyId),
-            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
             input.excludeWakeupRequestId
               ? ne(agentWakeupRequests.id, input.excludeWakeupRequestId)
               : sql`true`,
+            input.excludeRunId
+              ? or(
+                  isNull(agentWakeupRequests.runId),
+                  ne(agentWakeupRequests.runId, input.excludeRunId),
+                )
+              : sql`true`,
+          ),
+        ),
+      db
+        .select({ id: issueTreeHolds.id, rootIssueId: issueTreeHolds.rootIssueId })
+        .from(issueTreeHolds)
+        .leftJoin(
+          issueTreeHoldMembers,
+          and(
+            eq(issueTreeHoldMembers.companyId, issueTreeHolds.companyId),
+            eq(issueTreeHoldMembers.holdId, issueTreeHolds.id),
+          ),
+        )
+        .where(
+          and(
+            eq(issueTreeHolds.companyId, issue.companyId),
+            eq(issueTreeHolds.status, "active"),
+            eq(issueTreeHolds.mode, "pause"),
+            or(
+              eq(issueTreeHolds.rootIssueId, issue.id),
+              eq(issueTreeHoldMembers.issueId, issue.id),
+            ),
+          ),
+        ),
+      db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(
+          and(
+            eq(routines.companyId, issue.companyId),
+            eq(routines.parentIssueId, issue.id),
+            eq(routines.status, "active"),
           ),
         ),
     ]);
@@ -195,17 +245,21 @@ export async function collectDispositionRepairSourceState(
   );
   const durablePathReason = issue.assigneeUserId
     ? "user_owner"
-    : blockers.length > 0
-      ? "blocker"
-      : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
-        ? "monitor"
-        : pendingExecutionState?.status === "pending"
-          ? "execution_stage"
-          : pendingInteraction
-            ? "interaction"
-            : pendingApproval
-              ? "approval"
-              : null;
+    : activePauseHolds.length > 0
+      ? "pause_hold"
+      : activeRoutineContinuations.length > 0
+        ? "routine_continuation"
+        : blockers.length > 0
+          ? "blocker"
+          : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
+            ? "monitor"
+            : pendingExecutionState?.status === "pending"
+              ? "execution_stage"
+              : pendingInteraction
+                ? "interaction"
+                : pendingApproval
+                  ? "approval"
+                  : null;
 
   const durableState = {
     source: {
@@ -227,6 +281,8 @@ export async function collectDispositionRepairSourceState(
     workProducts: workProducts
       .map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }))
       .sort((a, b) => a.id.localeCompare(b.id)),
+    activePauseHolds: activePauseHolds.sort((a, b) => a.id.localeCompare(b.id)),
+    activeRoutineContinuations: activeRoutineContinuations.sort((a, b) => a.id.localeCompare(b.id)),
   };
   const digest = createHash("sha256").update(stableJson(durableState)).digest("hex");
 

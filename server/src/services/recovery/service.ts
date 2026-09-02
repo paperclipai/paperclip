@@ -187,10 +187,11 @@ type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
-  correctiveRunId: string;
+  correctiveRunId: string | null;
   missingDisposition: string;
   handoffAttempt: number;
   maxHandoffAttempts: number;
+  handoffDenialReason?: string | null;
 };
 
 function compactRecoveryPresentation(title: string): IssueCommentPresentation {
@@ -2010,6 +2011,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       missingDisposition: input.successfulRunHandoffEvidence?.missingDisposition ?? null,
       handoffAttempt: input.successfulRunHandoffEvidence?.handoffAttempt ?? null,
       maxHandoffAttempts: input.successfulRunHandoffEvidence?.maxHandoffAttempts ?? null,
+      handoffDenialReason: input.successfulRunHandoffEvidence?.handoffDenialReason ?? null,
       ...(workspaceValidation ? { workspaceValidation } : {}),
     };
   }
@@ -2315,8 +2317,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function existingUnresolvedBlockerIssues(companyId: string, issueId: string) {
-    return db
+  async function existingUnresolvedBlockerIssues(
+    companyId: string,
+    issueId: string,
+    dbOrTx: Db = db,
+  ) {
+    return dbOrTx
       .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
@@ -2336,8 +2342,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
   }
 
-  async function existingUnresolvedBlockerIssueIds(companyId: string, issueId: string) {
-    return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
+  async function existingUnresolvedBlockerIssueIds(
+    companyId: string,
+    issueId: string,
+    dbOrTx: Db = db,
+  ) {
+    return existingUnresolvedBlockerIssues(companyId, issueId, dbOrTx)
+      .then((rows) => rows.map((row) => row.id));
   }
 
   async function openChildIssues(issue: typeof issues.$inferSelect) {
@@ -3142,12 +3153,80 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
+    const transition = await db.transaction(async (tx) => {
+      const current = await tx
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.id, input.issue.id),
+          visibleIssueCondition(),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+      if (isTerminalIssueStatus(current.status)) return null;
+
+      if (recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) {
+        const snapshotUnchanged =
+          current.status === input.issue.status &&
+          current.updatedAt.getTime() === input.issue.updatedAt.getTime() &&
+          current.checkoutRunId === input.issue.checkoutRunId &&
+          current.executionRunId === input.issue.executionRunId &&
+          current.assigneeAgentId === input.issue.assigneeAgentId &&
+          current.assigneeUserId === input.issue.assigneeUserId;
+        if (!snapshotUnchanged) return null;
+      }
+
+      // Every recovery cause must repeat its active/durable-path scan while it
+      // holds the source issue lock. Process-loss retry publication, pause-hold
+      // creation, and active routine-continuation creation take this same lock,
+      // so whichever path commits first remains authoritative.
+      const sourceState = await collectDispositionRepairSourceState(tx as unknown as Db, {
+        issue: current,
+        // The terminal run being repaired, and its linked wake request, are
+        // source evidence rather than a competing continuation. A retry that
+        // publishes under the issue lock has a different run id and remains
+        // visible to this scan.
+        excludeRunId:
+          input.successfulRunHandoffEvidence?.sourceRunId ?? input.latestRun?.id ?? null,
+      });
+      // A pending execution stage whose participant is known to be
+      // misconfigured is the stranded path being repaired, not a competing
+      // continuation. A newly published run, pause, routine, or other durable
+      // wait still wins this in-lock check.
+      const hasCompetingDurablePath = sourceState.hasDurableWaitingPath && !(
+        (
+          recoveryCause === "configuration_incomplete" ||
+          recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+        ) &&
+        sourceState.durablePathReason === "execution_stage"
+      );
+      if (sourceState.hasActiveExecutionPath || hasCompetingDurablePath) return null;
+
+      const blockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+        tx as unknown as Db,
+      );
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+      }, tx);
+      return updated ? { updated, blockerIds } : null;
     });
-    if (!updated) return null;
+    if (!transition) {
+      await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: recoveryAction.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: "concurrent_source_path_restored",
+      });
+      return null;
+    }
+    const { updated, blockerIds } = transition;
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
@@ -3174,7 +3253,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       notice = buildSuccessfulRunHandoffExhaustedNotice({
         issue: input.issue,
         sourceRun: sourceRun ?? null,
-        correctiveRun: input.latestRun
+        correctiveRun: input.successfulRunHandoffEvidence.correctiveRunId && input.latestRun
           ? { id: input.latestRun.id, status: input.latestRun.status, agentId: input.latestRun.agentId }
           : null,
         sourceAssignee,
@@ -3182,8 +3261,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryActionId: recoveryAction.id,
         recoveryOwner,
         latestIssueStatus: input.issue.status,
-        latestHandoffRunStatus: input.latestRun?.status ?? "unknown",
+        latestHandoffRunStatus: input.successfulRunHandoffEvidence.correctiveRunId
+          ? input.latestRun?.status ?? "unknown"
+          : "not_started",
         missingDisposition: input.successfulRunHandoffEvidence.missingDisposition,
+        handoffDenialReason: input.successfulRunHandoffEvidence.handoffDenialReason,
       });
     }
     const escalationNotice = buildStrandedRecoveryEscalationNotice({

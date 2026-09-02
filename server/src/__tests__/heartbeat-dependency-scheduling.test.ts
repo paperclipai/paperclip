@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -773,6 +774,194 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       finishFirstRun();
     }
   }, 40_000);
+
+  it("keeps a live continuation when checkout commits before run completion", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    let finishFirstRun!: () => void;
+    let finishContinuationRun!: () => void;
+    const firstRunCanFinish = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+    const continuationRunCanFinish = new Promise<void>((resolve) => {
+      finishContinuationRun = resolve;
+    });
+
+    mockAdapterExecute
+      .mockImplementationOnce(async () => {
+        await firstRunCanFinish;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Checkout-first run completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      })
+      .mockImplementationOnce(async () => {
+        await continuationRunCanFinish;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Corrective continuation completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout first, completion second",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+
+      const firstAdapterStarted = await waitForCondition(
+        async () => mockAdapterExecute.mock.calls.length === 1,
+        30_000,
+      );
+      expect(firstAdapterStarted).toBe(true);
+
+      const checkedOut = await issueService(db).checkout(
+        issueId,
+        agentId,
+        ["todo"],
+        firstWake!.id,
+      );
+      expect(checkedOut).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: firstWake!.id,
+        executionRunId: firstWake!.id,
+      });
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: firstWake!.id,
+        body: "Checkout committed before this run completed.",
+      });
+
+      finishFirstRun();
+
+      const correctiveRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              sql`${heartbeatRuns.id} <> ${firstWake!.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'finish_successful_run_handoff'`,
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running" && mockAdapterExecute.mock.calls.length === 2;
+      }, 30_000);
+      expect(correctiveRunStarted).toBe(true);
+
+      const [firstRun, correctiveRun, issueAfterCompletion] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstWake!.id))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              sql`${heartbeatRuns.id} <> ${firstWake!.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'finish_successful_run_handoff'`,
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({
+            status: issues.status,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(firstRun?.status).toBe("succeeded");
+      expect(correctiveRun?.status).toBe("running");
+      expect(issueAfterCompletion).toMatchObject({ status: "in_progress" });
+      expect(issueAfterCompletion?.checkoutRunId).toBe(correctiveRun?.id);
+      expect(issueAfterCompletion?.executionRunId).toBe(correctiveRun?.id);
+
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      finishContinuationRun();
+
+      const correctiveRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, correctiveRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 30_000);
+      expect(correctiveRunSucceeded).toBe(true);
+
+      const finalIssue = await db
+        .select({ status: issues.status, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(finalIssue).toEqual({ status: "done", executionRunId: null });
+    } finally {
+      finishFirstRun();
+      finishContinuationRun();
+    }
+  }, 60_000);
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
