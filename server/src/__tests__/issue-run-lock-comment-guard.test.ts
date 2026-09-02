@@ -132,7 +132,7 @@ describeEmbeddedPostgres("issue run-lock comment guard (LUX-1797)", () => {
     } as Express.Request["actor"];
   }
 
-  it("strips status when a board actor with no run id PATCHes a comment+done on a run-locked issue", async () => {
+  it("allows a comment+done PATCH with no run id to close a run-locked issue (null run id falls through)", async () => {
     const { companyId, issueId, lockedRunId } = await seedCompanyAgentAndIssue();
 
     const res = await request(createApp(boardActorNoRunId(companyId)))
@@ -150,9 +150,51 @@ describeEmbeddedPostgres("issue run-lock comment guard (LUX-1797)", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
 
-    // Status should NOT have changed to done — stripped by the guard.
+    // A null run id (no X-Paperclip-Run-Id header) must fall through unchanged.
+    // The guard fires only when actor.runId is present AND differs.
+    expect(row?.status).toBe("done");
+
+    // Comment should still be persisted.
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBe(1);
+    expect(comments[0]?.body).toBe("Hourly health check + git pull completed.");
+  });
+
+  it("strips status when a board actor with a DIFFERENT run id PATCHes a comment+done on a run-locked issue", async () => {
+    const { companyId, agentId, issueId, lockedRunId } = await seedCompanyAgentAndIssue();
+    const otherRunId = randomUUID();
+
+    // The other run must exist in heartbeat_runs for the route to accept it.
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const res = await request(createApp(boardActorWithRunId(companyId, otherRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        comment: "Routine completion from a different run.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+    // Status should NOT have changed to done — stripped by the guard because
+    // the actor's run id differs from the issue's executionRunId.
     expect(row?.status).toBe("in_progress");
-    // Execution lock should still be in place.
     expect(row?.executionRunId).toBe(lockedRunId);
 
     // But the comment should have been persisted.
@@ -161,7 +203,7 @@ describeEmbeddedPostgres("issue run-lock comment guard (LUX-1797)", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments.length).toBe(1);
-    expect(comments[0]?.body).toBe("Hourly health check + git pull completed.");
+    expect(comments[0]?.body).toBe("Routine completion from a different run.");
   });
 
   it("allows a plain board close (no comment) of a run-locked issue", async () => {
