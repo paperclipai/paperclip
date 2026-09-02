@@ -8696,6 +8696,53 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
   });
 
+  it("reuses and revives a removed pasted-link app without requiring its applicationId", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://relink.example.test/mcp",
+      name: "Relinked app",
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+
+    const [archivedApplication] = await db.select().from(toolApplications)
+      .where(eq(toolApplications.id, first.application.id));
+    expect(archivedApplication.status).toBe("archived");
+
+    // Re-adding the same pasted link is a fresh connect with no applicationId,
+    // and no surface lists archived apps for the caller to reference. The
+    // archived row still holds the company-unique name, so this must adopt it
+    // rather than insert a duplicate the unique index rejects.
+    const second = await service.connectGalleryApp(company.id, {
+      link: "https://relink.example.test/mcp",
+      name: "Relinked app",
+    }, actor);
+
+    expect(second.application.id).toBe(first.application.id);
+    expect(second.connectionId).toBe(first.connectionId);
+    expect(second.application.status).toBe("draft");
+    expect(second.connection.status).toBe("draft");
+    // Recovery restores the identity, not the access. The revived connection
+    // must stay disabled until it is configured and enabled again, so a
+    // removed app cannot silently regain a live tool-access path.
+    expect(second.connection.enabled).toBe(false);
+    const [revivedConnection] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, first.connectionId));
+    expect(revivedConnection.enabled).toBe(false);
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+  });
+
   it("allows multiple same-named connections on one application", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
