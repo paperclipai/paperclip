@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   access,
   mkdir,
@@ -2969,6 +2969,26 @@ describe("native process ownership", () => {
 });
 
 describe("runnerd provider runtime wiring", () => {
+  let isolatedStateDirectory: string;
+  let previousStateDirectory: string | undefined;
+
+  beforeEach(async () => {
+    previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    isolatedStateDirectory = await mkdtemp(
+      join(tmpdir(), "paperclip-runnerd-wiring-"),
+    );
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = isolatedStateDirectory;
+  });
+
+  afterEach(async () => {
+    if (previousStateDirectory === undefined) {
+      delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    } else {
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+    }
+    await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
   it("rejects overlapping runs for the same runnerd provider session scope", async () => {
     const first = {
       ...execution,
