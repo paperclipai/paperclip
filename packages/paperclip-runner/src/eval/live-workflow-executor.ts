@@ -332,6 +332,25 @@ function candidateBudgetViolations(
   return violations;
 }
 
+function candidateBudgetThresholdsReached(
+  candidate: RunnerLiveEvalCandidate,
+  snapshot: CapabilityLiveSessionSnapshot | undefined,
+): string[] {
+  const usage = usageTotals(snapshot);
+  const reached: string[] = [];
+  if (usage.totalTokens >= candidate.budget.maxTotalTokens) {
+    reached.push(
+      `totalTokens ${usage.totalTokens} reached budget ${candidate.budget.maxTotalTokens}`,
+    );
+  }
+  if (usage.costUsd >= candidate.budget.maxCostUsd) {
+    reached.push(
+      `costUsd ${usage.costUsd} reached budget ${candidate.budget.maxCostUsd}`,
+    );
+  }
+  return reached;
+}
+
 function liveCandidateBudgetStopReason(
   candidate: RunnerLiveEvalCandidate,
   snapshot: CapabilityLiveSessionSnapshot,
@@ -481,8 +500,8 @@ export async function executeLiveRunnerWorkflow(input: {
   let budgetStopReason: string | null = null;
   const withinBudget = (): boolean =>
     budgetStopReason === null &&
-    candidateBudgetViolations(input.candidate, session?.snapshot()).length ===
-    0;
+    candidateBudgetThresholdsReached(input.candidate, session?.snapshot())
+      .length === 0;
   try {
     session = await service.create({
       workingDirectory: input.workingDirectory ?? runtimeRoot,
@@ -631,18 +650,27 @@ export async function executeLiveRunnerWorkflow(input: {
   const trace = traceMetadata(rawTrace);
   const { totalTokens, costUsd } = usageTotals(snapshot);
   const budgetViolations = candidateBudgetViolations(input.candidate, snapshot);
+  const budgetThresholdsReached = candidateBudgetThresholdsReached(
+    input.candidate,
+    snapshot,
+  );
   const budgetFailure =
     budgetViolations.length > 0
       ? {
           code: "candidate_budget_exceeded",
           message: budgetViolations.join("; "),
         }
-      : budgetStopReason === null
-        ? null
-        : {
+      : budgetStopReason !== null
+        ? {
             code: "candidate_budget_reached",
             message: budgetStopReason,
-          };
+          }
+        : budgetThresholdsReached.length > 0
+          ? {
+              code: "candidate_budget_reached",
+              message: budgetThresholdsReached.join("; "),
+            }
+          : null;
   const receiptIds =
     snapshot?.evidence
       .filter((entry) => entry.kind === "tool_result")

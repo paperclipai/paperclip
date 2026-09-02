@@ -268,6 +268,81 @@ describe("live workflow executor infrastructure failures", () => {
     );
   });
 
+  it("stops at an exact terminal budget before a paid continuation", async () => {
+    liveSessionMocks.snapshot.mockReturnValue({
+      sessionId: "session-budget-reached",
+      authority: {},
+      mockState: JSON.stringify({ tasks: [] }),
+      transcript: [],
+      evidence: [],
+      authorizationRecords: [],
+      attempts: [],
+      usageLedger: [
+        {
+          receiptId: "usage-budget-reached",
+          attemptId: "attempt-budget-reached",
+          providerResponseId: "response-budget-reached",
+          turnId: "turn-budget-reached",
+          providerCalls: 1,
+          providerRequests: 1,
+          inputTokens: 70,
+          outputTokens: 20,
+          cachedInputTokens: 0,
+          reasoningTokens: 10,
+          costNanodollars: 10_000_000,
+          observedAt: "2026-09-01T00:00:00.000Z",
+        },
+      ],
+      stateHistory: [],
+      workspaceDiffs: [],
+    });
+    const source = RUNNER_LIVE_CANDIDATE_SLOTS[0]!.candidates[0]!;
+    const candidate = {
+      ...source,
+      budget: {
+        ...source.budget,
+        maxTotalTokens: 100,
+        maxCostUsd: 0.01,
+      },
+    };
+    const entry: RunnerLiveScheduleEntry = {
+      executionId: "candidate-budget-reached",
+      caseId: "steering-causality",
+      candidateId: candidate.id,
+      slotId: candidate.slotId,
+      repetition: 1,
+      providerTrace: "raw",
+      budget: candidate.budget,
+    };
+
+    const observation = await executeLiveRunnerWorkflow({
+      entry,
+      candidate,
+      evalCase: runnerWorkflowCase(entry.caseId),
+    });
+
+    expect(liveSessionMocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(observation).toMatchObject({
+      classification: "candidate_failure",
+      metrics: { totalTokens: 100, costUsd: 0.01 },
+      failure: {
+        code: "candidate_budget_reached",
+        category: "candidate",
+        retryable: false,
+      },
+    });
+    expect(observation.lifecycle.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "token-budget", passed: true }),
+        expect.objectContaining({ id: "cost-budget", passed: true }),
+        expect.objectContaining({
+          id: "candidate-budget-stop",
+          passed: false,
+        }),
+      ]),
+    );
+  });
+
   it("interrupts an active paid turn as soon as live usage reaches its budget", async () => {
     const emptySnapshot = {
       sessionId: "session-live-budget-test",
