@@ -1,13 +1,14 @@
 #!/bin/bash
-# Sync fork with upstream main and rebuild.
-# Run this to pull latest upstream changes into the patch branch.
+# Sync fork with upstream and rebuild.
+# Run this to pull upstream changes into the patch branch.
 #
-# Usage: ./sync-upstream.sh
+# Usage: ./sync-upstream.sh [ref]
 #
-# This merges upstream/master into fix/hermes-gateway-delta-log-fragmentation,
-# keeping the transcript fragmentation fix on top of the latest main.
-# If the PR has been merged upstream, the merge will be a no-op for the patch
-# (git will recognize it as already applied) and you can switch to plain master.
+# Merges the given ref (default: latest stable v* tag) into
+# fix/hermes-gateway-delta-log-fragmentation, keeping the transcript
+# fragmentation fix on top of a tagged release (fleet convention:
+# tagged releases only, never :latest/:main/master).
+# To test master explicitly: ./sync-upstream.sh upstream/master
 
 set -euo pipefail
 
@@ -15,6 +16,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 BRANCH="fix/hermes-gateway-delta-log-fragmentation"
+
+# Default target: latest stable v* tag (fleet convention: tagged releases only).
+# Override with the first argument, e.g. ./sync-upstream.sh upstream/master
+REF="${1:-}"
+if [ -z "$REF" ]; then
+  REF="$(git tag -l 'v*' --sort=-creatordate | head -1)"
+  if [ -z "$REF" ]; then
+    echo "No v* tags found — pass a ref explicitly: ./sync-upstream.sh <ref>"
+    exit 1
+  fi
+fi
+echo "=== Target: $REF ==="
 
 echo "=== Safety net: rollback tag ==="
 TAG="backup/pre-sync-$(date +%Y%m%d-%H%M)"
@@ -27,7 +40,7 @@ echo "Tagged rollback point: $TAG ($PRE_MERGE_HEAD)"
 echo "Rollback: git reset --hard $TAG && pnpm install --frozen-lockfile && pnpm build"
 
 echo "=== Fetching upstream ==="
-git fetch upstream
+git fetch upstream --tags
 
 echo "=== Current branch: $(git branch --show-current) ==="
 if [ "$(git branch --show-current)" != "$BRANCH" ]; then
@@ -35,8 +48,8 @@ if [ "$(git branch --show-current)" != "$BRANCH" ]; then
   git checkout "$BRANCH"
 fi
 
-echo "=== Merging upstream/master ==="
-git merge upstream/master --no-edit
+echo "=== Merging $REF ==="
+git merge "$REF" --no-edit
 
 if [ $? -ne 0 ]; then
   echo ""
@@ -65,8 +78,8 @@ echo "=== Building ==="
 pnpm build
 
 echo ""
-echo "✅ Synced and built. Restart Paperclip to pick up changes:"
+echo "✅ Synced to $REF and built. Restart Paperclip to pick up changes:"
 echo "   $SCRIPT_DIR/run-paperclip.sh"
 echo ""
-echo "Or if the PR was merged upstream, you can now use plain master:"
+echo "If the PR has been merged upstream, you can switch to plain master:"
 echo "   git checkout master && $SCRIPT_DIR/run-paperclip.sh"

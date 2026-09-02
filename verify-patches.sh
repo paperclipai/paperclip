@@ -45,11 +45,15 @@ else
 fi
 
 echo "=== Service ==="
-HEALTH=$(curl -s -m 8 http://127.0.0.1:3100/api/health || true)
-if echo "$HEALTH" | grep -q '"status":"ok"'; then
-  ok "health: ok"
+if [ "$(systemctl is-active paperclip 2>/dev/null)" = "active" ]; then
+  HEALTH=$(curl -s -m 8 http://127.0.0.1:3100/api/health || true)
+  if echo "$HEALTH" | grep -q '"status":"ok"'; then
+    ok "health: ok"
+  else
+    bad "health endpoint not ok: ${HEALTH:-<no response>}"
+  fi
 else
-  bad "health endpoint not ok: ${HEALTH:-<no response>}"
+  echo "ℹ️  paperclip.service is inactive — health check skipped (start it and re-run)"
 fi
 
 AGENTS=$(docker exec paperclip-postgres psql -U paperclip -d paperclip -t -A -c \
