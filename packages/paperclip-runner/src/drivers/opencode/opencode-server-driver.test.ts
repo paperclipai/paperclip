@@ -708,6 +708,7 @@ describe("OpenCodeServerDriver", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(JSON.stringify(traceEntries)).not.toContain("test-openrouter-key");
     const traceFrames = traceEntries.filter((entry) => entry.kind === "frame");
     expect(traceFrames.map((entry) => entry.direction)).toEqual(
       expect.arrayContaining([

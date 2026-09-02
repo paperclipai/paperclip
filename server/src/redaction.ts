@@ -386,14 +386,6 @@ function inlineWhitespaceEnd(input: string, start: number): number {
   return index;
 }
 
-function lineEnd(input: string, start: number): number {
-  const carriageReturn = input.indexOf("\r", start);
-  const newline = input.indexOf("\n", start);
-  if (carriageReturn < 0) return newline < 0 ? input.length : newline;
-  if (newline < 0) return carriageReturn;
-  return Math.min(carriageReturn, newline);
-}
-
 function quotedValueBoundary(
   input: string,
   index: number,
@@ -413,7 +405,7 @@ function rawQuotedValueEnd(
   start: number,
   quote: '"' | "'",
 ): number {
-  const end = lineEnd(input, start);
+  const end = input.length;
   let provisionalEnd: number | null = null;
   let unsafeAfterProvisional = false;
   for (let index = start + 1; index < end; index += 1) {
@@ -434,8 +426,9 @@ function rawQuotedValueEnd(
     }
   }
   // Whitespace normally separates safe trailing context, so retain a final
-  // provisional delimiter when no later quote contradicts it. If token bytes
-  // follow the last candidate, fail closed through the line boundary.
+  // provisional delimiter when no later quote contradicts it. Literal newlines
+  // can occur inside provider-controlled credentials, so an unterminated
+  // malformed value fails closed through the complete bounded diagnostic.
   return provisionalEnd !== null && !unsafeAfterProvisional
     ? provisionalEnd
     : end;
@@ -446,7 +439,7 @@ function escapedQuotedValueEnd(
   start: number,
   quote: '"' | "'",
 ): number {
-  const end = lineEnd(input, start);
+  const end = input.length;
   let provisionalEnd: number | null = null;
   let unsafeAfterProvisional = false;
   for (let index = start + 2; index < end; index += 1) {
@@ -493,7 +486,7 @@ function credentialEndAfterQuotedDelimiter(input: string, quotedEnd: number) {
   // provider diagnostic is malformed this way, whitespace is not a safe
   // boundary either (`"a"b c"`). Fail closed through the rest of the
   // diagnostic so no later credential fragment survives.
-  return lineEnd(input, quotedEnd);
+  return input.length;
 }
 
 interface AuthorizationCredentialRange {
@@ -524,7 +517,7 @@ function authorizationCredentialRange(
   }
 
   valueStart = inlineWhitespaceEnd(input, valueStart);
-  if (input[valueStart] === ":") {
+  if (input[valueStart] === ":" || input[valueStart] === "=") {
     valueStart = inlineWhitespaceEnd(input, valueStart + 1);
   }
 

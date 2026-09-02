@@ -4,10 +4,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
-if (process.env.OPENROUTER_API_KEY)
-  process.stderr.write(
-    `fixture credential=${process.env.OPENROUTER_API_KEY}\n`,
-  );
+// Exercise diagnostic redaction without copying a real environment credential
+// into stderr or the provider trace.
+process.stderr.write("authorization=synthetic-redaction-sentinel\n");
 const port = Number(args[args.indexOf("--port") + 1]);
 const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const password = process.env.OPENCODE_SERVER_PASSWORD ?? "";

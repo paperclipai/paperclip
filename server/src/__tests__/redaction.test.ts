@@ -465,12 +465,21 @@ describe("redaction", () => {
       },
       {
         input: 'Authorization: Basic "abc"defg retry\nsafe context',
-        expected: `Authorization: ${REDACTED_EVENT_VALUE}\nsafe context`,
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}`,
       },
       {
         input:
           String.raw`Authorization: Basic \"abc\"defg retry` + "\nsafe context",
-        expected: `Authorization: ${REDACTED_EVENT_VALUE}\nsafe context`,
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}`,
+      },
+      {
+        input: 'authorization="Bearer abc\ndef" status=401',
+        expected: `authorization="${REDACTED_EVENT_VALUE}" status=401`,
+      },
+      {
+        input: String.raw`authorization=\"Bearer abc
+def\" status=401`,
+        expected: String.raw`authorization=\"***REDACTED***\" status=401`,
       },
       {
         input: String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
@@ -508,6 +517,8 @@ describe("redaction", () => {
         diagnostics: [
           String.raw`Bearer \"abc\"defg retry`,
           String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
+          String.raw`authorization=\"Bearer first-line
+second-line\" status=401`,
         ],
       },
     });
@@ -519,6 +530,7 @@ describe("redaction", () => {
         diagnostics: [
           String.raw`Bearer \"***REDACTED***\"`,
           String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
+          String.raw`authorization=\"***REDACTED***\" status=401`,
         ],
       },
     });

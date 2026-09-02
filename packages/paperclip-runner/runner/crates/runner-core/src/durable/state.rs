@@ -1236,9 +1236,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
     };
     let quoted_value_end = |start: usize, quote: (u8, usize)| {
         let (quote, delimiter_backslashes) = quote;
-        let scan_end = (start..bytes.len())
-            .find(|index| matches!(bytes[*index], b'\r' | b'\n'))
-            .unwrap_or(bytes.len());
+        let scan_end = bytes.len();
         let mut end = start;
         let mut provisional_end = None;
         let mut unsafe_after_provisional = false;
@@ -1272,7 +1270,9 @@ fn redact_sensitive_text_values(input: &str) -> String {
         }
         // A quote followed by whitespace normally closes a value and preserves
         // useful trailing context. Keep it only when no later same-depth quote
-        // contradicts it; otherwise an unterminated malformed value fails closed.
+        // contradicts it. Literal newlines can occur inside provider-controlled
+        // credentials, so an unterminated malformed value fails closed through
+        // the complete bounded diagnostic rather than exposing a later line.
         provisional_end
             .filter(|_| !unsafe_after_provisional)
             .unwrap_or(scan_end)
@@ -1802,6 +1802,7 @@ mod tests {
                     "diagnostic": r#"provider said Bearer \\"nested-secret\\" status=401"#,
                     "nestedAuthorizationDiagnostic": r#"{\"authorization\":\"CustomScheme \\"credential-tail\\"\"}"#,
                     "embeddedQuoteDiagnostic": r#"password=abc"defg status=403"#,
+                    "multilineProviderDiagnostic": "authorization=\\\"Bearer first-line\nsecond-line\\\" status=401",
                     "providerApiKeyDiagnostic": "Invalid API key: sk-proj-provider-secret; request rejected",
                     "compoundWhitespaceDiagnostic": "OPENAI_API_KEY first-secret; proxyAuthorization Basic dXNlcjpwYXNz",
                 }}),
@@ -1870,6 +1871,12 @@ mod tests {
                 .envelope
                 .pointer("/payload/payload/nested/embeddedQuoteDiagnostic"),
             Some(&json!("password=[REDACTED] status=403"))
+        );
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/nested/multilineProviderDiagnostic"),
+            Some(&json!(r#"authorization=\"Bearer [REDACTED]\" status=401"#))
         );
         assert_eq!(
             state.outbox[0]
@@ -2122,11 +2129,19 @@ mod tests {
             ),
             (
                 "OPENAI_API_KEY \\\"abc\\\"defg retry\nsafe context",
-                "OPENAI_API_KEY \\\"[REDACTED]\nsafe context",
+                "OPENAI_API_KEY \\\"[REDACTED]",
             ),
             (
                 "OPENAI_API_KEY \"abc\"defg retry\nsafe context",
-                "OPENAI_API_KEY \"[REDACTED]\nsafe context",
+                "OPENAI_API_KEY \"[REDACTED]",
+            ),
+            (
+                "authorization=\\\"Bearer abc\ndef\\\" status=401",
+                r#"authorization=\"Bearer [REDACTED]\" status=401"#,
+            ),
+            (
+                "authorization=\"Bearer abc\ndef\" status=401",
+                r#"authorization="Bearer [REDACTED]" status=401"#,
             ),
             (
                 r#"{\"authorization\":\"Bearer a\"b c\"} status=401"#,
