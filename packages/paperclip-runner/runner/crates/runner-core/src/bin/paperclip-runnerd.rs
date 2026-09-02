@@ -3,10 +3,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use paperclip_runner_core::durable::{
-    capture_bootstrap_ticket, run_durable_runner, DurableRunnerConfig,
+    capture_bootstrap_ticket, run_durable_runner, AcpxLaunchProfile, DurableRunnerConfig,
+    OpenCodeLaunchProfile, QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
-use paperclip_runner_core::provider_backend::CodexCommandExecutor;
+use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use serde_json::json;
 
 const RUNNERD_BUILD_METADATA_SCHEMA: &str = "paperclip-runner/runnerd-build-metadata/v1";
@@ -50,6 +51,106 @@ fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerE
         .parse::<u64>()
         .map(Some)
         .map_err(|error| LocalRunnerError::invalid(format!("invalid {name}: {error}")))
+}
+
+fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRunnerError> {
+    let Some(index) = args.iter().position(|argument| argument == name) else {
+        return Ok(None);
+    };
+    args.get(index + 1)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
+}
+
+fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, LocalRunnerError> {
+    let authority_digest = optional_value(args, "--acpx-launch-authority-digest")?;
+    let command = optional_value(args, "--acpx-sidecar-command")?;
+    let command_sha256 = optional_value(args, "--acpx-sidecar-command-sha256")?;
+    let sidecar = optional_value(args, "--acpx-sidecar-script")?;
+    let sidecar_sha256 = optional_value(args, "--acpx-sidecar-script-sha256")?;
+    match (
+        authority_digest,
+        command,
+        command_sha256,
+        sidecar,
+        sidecar_sha256,
+    ) {
+        (None, None, None, None, None) => Ok(None),
+        (
+            Some(authority_digest),
+            Some(command),
+            Some(command_sha256),
+            Some(sidecar),
+            Some(sidecar_sha256),
+        ) => {
+            let command = PathBuf::from(command);
+            let sidecar = PathBuf::from(sidecar);
+            Ok(Some(AcpxLaunchProfile {
+                authority_digest,
+                command: command.clone(),
+                args: vec![sidecar.to_string_lossy().into_owned()],
+                artifacts: vec![
+                    QualifiedLaunchArtifact {
+                        path: command,
+                        sha256: command_sha256,
+                    },
+                    QualifiedLaunchArtifact {
+                        path: sidecar,
+                        sha256: sidecar_sha256,
+                    },
+                ],
+            }))
+        }
+        _ => Err(LocalRunnerError::invalid(
+            "ACPX sidecar launch profile requires its authority, command, script, and both SHA-256 digests",
+        )),
+    }
+}
+
+fn opencode_launch_profile(
+    args: &[String],
+) -> Result<Option<OpenCodeLaunchProfile>, LocalRunnerError> {
+    let command = optional_value(args, "--opencode-proxy-command")?;
+    let command_sha256 = optional_value(args, "--opencode-proxy-command-sha256")?;
+    let proxy_script = optional_value(args, "--opencode-proxy-script")?;
+    let proxy_script_sha256 = optional_value(args, "--opencode-proxy-script-sha256")?;
+    let executable = optional_value(args, "--opencode-executable")?;
+    let executable_sha256 = optional_value(args, "--opencode-executable-sha256")?;
+    match (
+        command,
+        command_sha256,
+        proxy_script,
+        proxy_script_sha256,
+        executable,
+        executable_sha256,
+    ) {
+        (None, None, None, None, None, None) => Ok(None),
+        (
+            Some(command),
+            Some(command_sha256),
+            Some(proxy_script),
+            Some(proxy_script_sha256),
+            Some(executable),
+            Some(executable_sha256),
+        ) => Ok(Some(OpenCodeLaunchProfile {
+            command: QualifiedLaunchArtifact {
+                path: PathBuf::from(command),
+                sha256: command_sha256,
+            },
+            proxy_script: QualifiedLaunchArtifact {
+                path: PathBuf::from(proxy_script),
+                sha256: proxy_script_sha256,
+            },
+            executable: QualifiedLaunchArtifact {
+                path: PathBuf::from(executable),
+                sha256: executable_sha256,
+            },
+        })),
+        _ => Err(LocalRunnerError::invalid(
+            "OpenCode launch profile requires command, proxy, executable, and all SHA-256 digests",
+        )),
+    }
 }
 
 fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, LocalRunnerError> {
@@ -122,6 +223,8 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         item_id: value(args, "--item-id")?,
         runner_version: value(args, "--runner-version")?,
         runner_digest: value(args, "--runner-digest")?,
+        acpx_launch_profile: acpx_launch_profile(args)?,
+        opencode_launch_profile: opencode_launch_profile(args)?,
         max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
         p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
@@ -129,7 +232,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
     };
-    let executor = CodexCommandExecutor::with_runner_config(state_dir, &config);
+    let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }

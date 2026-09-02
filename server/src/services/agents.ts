@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  agentRuntimeConfigSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -288,6 +289,12 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   if (typeof snapshot.budgetMonthlyCents !== "number" || !Number.isFinite(snapshot.budgetMonthlyCents)) {
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
+  const runtimeConfig = agentRuntimeConfigSchema.safeParse(
+    isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+  );
+  if (!runtimeConfig.success) {
+    throw unprocessable("Invalid revision snapshot: runtimeConfig");
+  }
 
   return {
     name: snapshot.name,
@@ -301,7 +308,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         : null,
     adapterType: snapshot.adapterType,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
-    runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    runtimeConfig: runtimeConfig.data,
     defaultEnvironmentId:
       typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
         ? snapshot.defaultEnvironmentId

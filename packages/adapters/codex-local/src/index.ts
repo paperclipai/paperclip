@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "codex_local";
 export const label = "Codex";
 
@@ -72,16 +70,6 @@ export const models = [
   { id: "gpt-5-nano", label: "gpt-5-nano" },
   { id: "o3-mini", label: "o3-mini" },
   { id: "codex-mini-latest", label: "Codex Mini" },
-];
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
-    adapterConfig: {},
-    source: "adapter_default",
-  },
 ];
 
 export const agentConfigurationDoc = `# codex_local agent configuration

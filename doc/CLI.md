@@ -899,7 +899,6 @@ npx paperclipai adapter delete <adapter-type>
 npx paperclipai adapter config-schema <adapter-type>
 npx paperclipai adapter ui-parser <adapter-type>
 npx paperclipai adapter models <adapter-type> --company-id <company-id> [--refresh] [--environment-id <id>]
-npx paperclipai adapter model-profiles <adapter-type> --company-id <company-id>
 npx paperclipai adapter detect-model <adapter-type> --company-id <company-id>
 npx paperclipai adapter test-environment <adapter-type> --company-id <company-id> --payload-json '{...}'
 ```

@@ -42,7 +42,15 @@ export function resolveAppsConnectRouteKey(input: {
 }
 
 export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
-  if (searchParams.get("byo") === "1") return true;
+  if (searchParams.get("byo") === "1") {
+    // The old BYO discovery page has moved to the Connectors list. Keep only
+    // exact custom-connection reconnects using this legacy query contract.
+    return Boolean(
+      searchParams.get("reconnect")?.trim()
+      && searchParams.get("applicationId")?.trim()
+      && searchParams.get("link")?.trim(),
+    );
+  }
   const source = searchParams.get("source") ?? "";
   const entry = getAppStoreDefinition(source);
   // A retained connection may belong to a provider hidden from fresh catalog

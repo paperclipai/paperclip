@@ -20,7 +20,6 @@ import { queryKeys } from "../lib/queryKeys";
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
-  adapterModelProfiles: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -28,6 +27,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   controlRuntimeCommands: vi.fn(),
 }));
 
@@ -462,8 +462,8 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
@@ -497,7 +497,6 @@ describe("IssueProperties", () => {
       ],
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
     });
   });
 
@@ -507,7 +506,6 @@ describe("IssueProperties", () => {
 
   it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     const root = renderProperties(container, {
@@ -555,7 +553,6 @@ describe("IssueProperties", () => {
       latestRevisionId: "revision-evidence",
     } satisfies IssueDocument;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
@@ -859,7 +856,6 @@ describe("IssueProperties", () => {
     // The chat shell hosts the full tree in the center pane; the slim pill row
     // + its Add sub-task button only render in the classic layout (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const onAddSubIssue = vi.fn();
@@ -904,24 +900,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hides watchdog setup controls while the experimental flag is off", async () => {
-    const root = renderProperties(container, {
-      issue: createIssue(),
-      childIssues: [],
-      onUpdate: vi.fn(),
-    });
-    await flush();
-
-    expect(container.textContent).not.toContain("Watchdog");
-    expect(container.textContent).not.toContain("Set watchdog");
-
-    act(() => root.unmount());
-  });
-
-  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
-    });
+  it("always shows watchdog setup controls", async () => {
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -1206,7 +1185,6 @@ describe("IssueProperties", () => {
     // The sub-task pill row (with its collapse control) is classic-layout only
     // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
@@ -2517,7 +2495,6 @@ describe("IssueProperties", () => {
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2584,7 +2561,6 @@ describe("IssueProperties", () => {
 
   it("updates cached issue detail when saving a watchdog", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
@@ -2639,7 +2615,6 @@ describe("IssueProperties", () => {
 
   it("renders an existing watchdog and removes it via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2681,7 +2656,6 @@ describe("IssueProperties", () => {
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
@@ -2720,7 +2694,6 @@ describe("IssueProperties", () => {
 
   it("links to the generated watchdog task when one exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {
@@ -3048,6 +3021,141 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(findApprovalsRow()?.textContent).toContain("Anyone else");
+
+    act(() => root.unmount());
+  });
+
+  it("hides the execution workspace picker without an enabled project policy", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: null })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
+    expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("shows the workspace picker with no bound workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
+    })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")?.textContent).toBe("Default");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("saves the exact isolated-workspace payload", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const isolatedOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("New isolated workspace"));
+    act(() => isolatedOption!.click());
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceId: null,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
+    act(() => root.unmount());
+  });
+
+  it("searches reusable workspaces and saves the selected workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const alphaWorkspace = createExecutionWorkspace({
+      id: "workspace-alpha",
+      name: "Alpha workspace",
+      cwd: "/tmp/paperclip/alpha",
+      branchName: "alpha-branch",
+      lastUsedAt: new Date(),
+    });
+    const betaWorkspace = createExecutionWorkspace({
+      id: "workspace-beta",
+      name: "Beta workspace",
+      cwd: "/tmp/paperclip/beta",
+      branchName: "beta-branch",
+      lastUsedAt: new Date(),
+    });
+    mockExecutionWorkspacesApi.list.mockResolvedValue([alphaWorkspace, betaWorkspace]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const reuseOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Reuse existing workspace"));
+    act(() => reuseOption!.click());
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Recent");
+      expect(container.textContent).toContain("Alpha workspace");
+      expect(container.textContent).toContain("Beta workspace");
+    });
+    expect(mockExecutionWorkspacesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-main",
+      reuseEligible: true,
+    });
+
+    const search = container.querySelector('input[aria-label="Search reusable workspaces"]') as HTMLInputElement;
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(search, "Beta");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("Alpha workspace");
+    expect(container.textContent).toContain("Beta workspace");
+
+    const betaOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Beta workspace"));
+    act(() => betaOption!.click());
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: "workspace-beta",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
 
     act(() => root.unmount());
   });

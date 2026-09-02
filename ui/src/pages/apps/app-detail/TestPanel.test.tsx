@@ -9,6 +9,7 @@ import type { ToolCatalogEntry } from "@paperclipai/shared";
 import { TestPanel, errorHints } from "./TestPanel";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
+const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
 const runTestCallMock = vi.hoisted(() => vi.fn());
 const getTestCallStatusMock = vi.hoisted(() => vi.fn());
 const declineActionRequestMock = vi.hoisted(() => vi.fn());
@@ -16,6 +17,8 @@ const declineActionRequestMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listTestAgents: (connectionId: string) => listTestAgentsMock(connectionId),
+    getTestAgentAccess: (connectionId: string, agentId: string) =>
+      getTestAgentAccessMock(connectionId, agentId),
     runTestCall: (connectionId: string, input: unknown) => runTestCallMock(connectionId, input),
     getTestCallStatus: (connectionId: string, actionRequestId: string) =>
       getTestCallStatusMock(connectionId, actionRequestId),
@@ -177,12 +180,12 @@ const offEntry = catalogEntry({
 let container: HTMLDivElement;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let root: any;
+let client: QueryClient;
 
 function renderPanel(
   active: ToolCatalogEntry[] = [readEntry, writeAskEntry, offEntry],
   quarantined: ToolCatalogEntry[] = [],
 ) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <QueryClientProvider client={client}>
       <TestPanel connectionId="conn-1" appName="Google Sheets" active={active} quarantined={quarantined} />
@@ -194,11 +197,14 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   listTestAgentsMock.mockReset();
+  getTestAgentAccessMock.mockReset();
   runTestCallMock.mockReset();
   getTestCallStatusMock.mockReset();
   declineActionRequestMock.mockReset();
   listTestAgentsMock.mockResolvedValue({ agents: [agent()] });
+  getTestAgentAccessMock.mockResolvedValue({ access: agent().effectiveAccess });
   // Default ask-first polls report the request still waiting on approval.
   getTestCallStatusMock.mockResolvedValue({
     actionRequestId: "req-1",
@@ -219,14 +225,30 @@ afterEach(() => {
 });
 
 describe("TestPanel", () => {
-  it("pairs the loading skeleton with explicit MCP wait copy and animation", async () => {
+  it("shows a lightweight agent-loading state before requesting permissions", async () => {
     listTestAgentsMock.mockImplementation(() => new Promise(() => undefined));
 
     await act(async () => renderPanel());
 
-    expect(container.textContent).toContain("Loading MCP actions, this may take a minute.");
+    expect(container.textContent).toContain("Loading agents…");
     expect(container.querySelector(".animate-spin")).toBeTruthy();
     expect(container.querySelectorAll('[data-slot="skeleton"]')).not.toHaveLength(0);
+    expect(getTestAgentAccessMock).not.toHaveBeenCalled();
+  });
+
+  it("loads permissions only for the selected agent and reuses the cached summary", async () => {
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(getTestAgentAccessMock).toHaveBeenCalledTimes(1);
+    expect(getTestAgentAccessMock).toHaveBeenCalledWith("conn-1", "agent-claude");
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(getTestAgentAccessMock).toHaveBeenCalledTimes(1);
   });
 
   it("renders the test hierarchy and grouped actions with access badges", async () => {
@@ -472,17 +494,13 @@ describe("TestPanel", () => {
   });
 
   it("shows the 'Last changed by' audit hint when the access summary carries one", async () => {
-    listTestAgentsMock.mockResolvedValue({
-      agents: [
-        agent({
-          effectiveAccess: {
-            ...agent().effectiveAccess,
-            lastChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-            lastChangedByAgentId: "agent-admin",
-            lastChangedByName: "Dotta",
-          },
-        }),
-      ],
+    getTestAgentAccessMock.mockResolvedValue({
+      access: {
+        ...agent().effectiveAccess,
+        lastChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        lastChangedByAgentId: "agent-admin",
+        lastChangedByName: "Dotta",
+      },
     });
     await act(async () => renderPanel());
     await flushReact();

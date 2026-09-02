@@ -23,8 +23,12 @@ const TOKEN_SENTINEL = "SENTINEL_REFRESH_TOKEN_XYZ";
 // an independent readiness check on the exact staged credential first, then
 // validates its shape, then writes only the company-scoped credential home. It
 // writes only while the session holds the sole active claim on the slot, and
-// only for a user-initiated login. It never writes the instance-global host,
-// never crosses a company boundary, and never logs a secret.
+// only for a user-initiated login. For a home that already holds the SAME
+// account, it installs the login only when the login is strictly newer than
+// the existing credential (the same freshness predicate the teardown
+// copy-back path uses), so it never replaces a fresher remote copy-back
+// credential. It never writes the instance-global host, never crosses a
+// company boundary, and never logs a secret.
 describe("grok device-login credential promotion", () => {
   const cleanupDirs: string[] = [];
 
@@ -50,14 +54,19 @@ describe("grok device-login credential promotion", () => {
     };
   }
 
-  function grokAuth(input: { uuid: string; issuer?: string; marker?: string }): Buffer {
+  function grokAuth(input: {
+    uuid: string;
+    issuer?: string;
+    marker?: string;
+    expiresAt?: string;
+  }): Buffer {
     const suffix = input.marker ?? input.uuid;
     return Buffer.from(
       JSON.stringify({
         [`${input.issuer ?? ISSUER}::${input.uuid}`]: {
           key: `api-key-${suffix}`,
           refresh_token: `${TOKEN_SENTINEL}-${suffix}`,
-          expires_at: "2026-01-01T00:00:00Z",
+          expires_at: input.expiresAt ?? "2026-01-01T00:00:00Z",
           oidc_issuer: input.issuer ?? ISSUER,
           oidc_client_id: "client-1",
           email: `user-${suffix}@example.com`,
@@ -345,11 +354,11 @@ describe("grok device-login credential promotion", () => {
     expect(allLogs).not.toContain(UUID_B);
   });
 
-  it("overwrites the home with a refreshed credential for the same identity", async () => {
+  it("overwrites the home with a strictly newer credential for the same identity", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
     await promoteGrokDeviceLoginCredential({
-      authBytes: grokAuth({ uuid: UUID_A, marker: "first" }),
+      authBytes: grokAuth({ uuid: UUID_A, marker: "first", expiresAt: "2026-01-01T00:00:00Z" }),
       companyId: COMPANY_A,
       userInitiated: true,
       checkReadiness: ready,
@@ -358,7 +367,7 @@ describe("grok device-login credential promotion", () => {
       log: noopLog,
     });
     const outcome = await promoteGrokDeviceLoginCredential({
-      authBytes: grokAuth({ uuid: UUID_A, marker: "second" }),
+      authBytes: grokAuth({ uuid: UUID_A, marker: "second", expiresAt: "2026-06-01T00:00:00Z" }),
       companyId: COMPANY_A,
       userInitiated: true,
       checkReadiness: ready,
@@ -371,6 +380,135 @@ describe("grok device-login credential promotion", () => {
     const authPath = companyHomeAuthPath(env, COMPANY_A);
     const written = JSON.parse(await readFile(authPath, "utf8"));
     expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-second`);
+  });
+
+  // ---------------------------------------------------------------------
+  // The freshness gate: a same-identity login never replaces a home
+  // credential that is at least as new, so a remote copy-back cannot lose
+  // its fresher credential to an older device login.
+  // ---------------------------------------------------------------------
+
+  it("keeps the home when the login is older than the existing same-identity credential", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "fresher", expiresAt: "2026-06-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "staler", expiresAt: "2026-01-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("kept");
+
+    const authPath = companyHomeAuthPath(env, COMPANY_A);
+    const written = JSON.parse(await readFile(authPath, "utf8"));
+    expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-fresher`);
+  });
+
+  it("keeps the home when the login expiry ties the existing same-identity credential", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "first", expiresAt: "2026-01-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "second", expiresAt: "2026-01-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("kept");
+
+    const authPath = companyHomeAuthPath(env, COMPANY_A);
+    const written = JSON.parse(await readFile(authPath, "utf8"));
+    expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-first`);
+  });
+
+  it("leaves no staged temporary file in the company home after a kept (not-fresher) outcome", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "fresher", expiresAt: "2026-06-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "staler", expiresAt: "2026-01-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("kept");
+
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    const entries = await readdir(companyHome);
+    expect(entries).toEqual(["auth.json"]);
+  });
+
+  it("redacts the credential bytes on a kept (not-fresher) outcome the same way as a promoted outcome", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const logs: string[] = [];
+    const captureLog = (line: string): void => {
+      logs.push(line);
+    };
+
+    await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "fresher", expiresAt: "2026-06-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: captureLog,
+    });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A, marker: "staler", expiresAt: "2026-01-01T00:00:00Z" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: captureLog,
+    });
+    expect(outcome).toBe("kept");
+
+    const allLogs = logs.join("\n");
+    expect(allLogs).not.toContain(TOKEN_SENTINEL);
+    expect(allLogs).not.toContain(`user-fresher@example.com`);
+    expect(allLogs).not.toContain(`user-staler@example.com`);
+    expect(allLogs).not.toContain(UUID_A);
   });
 
   // ---------------------------------------------------------------------

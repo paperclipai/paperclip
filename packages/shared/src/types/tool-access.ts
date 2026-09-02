@@ -1573,11 +1573,15 @@ export interface ToolConnectionTestAgent {
   status: string;
   /** Zero-based depth in the company reporting tree; roots are highest-ranked. */
   orgDepth: number;
-  effectiveAccess: ToolConnectionAccessSummary;
 }
 
 export interface ToolConnectionTestAgentsResponse {
   agents: ToolConnectionTestAgent[];
+}
+
+/** Display summary for one selected Test-tab agent. */
+export interface ToolConnectionTestAgentAccessResponse {
+  access: ToolConnectionAccessSummary;
 }
 
 /** Result of `POST /tool-connections/:id/test-calls`. */

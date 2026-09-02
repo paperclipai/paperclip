@@ -357,7 +357,11 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   try {
     config = paperclipCloudConnectorConfigFromEnv(env);
   } catch (error) {
-    if (error instanceof PaperclipCloudConnectorError && error.code === "CONNECTOR_MIGRATION_REQUIRED") return [];
+    // Gallery discovery is useful even while connector enrollment is pending or
+    // local connector settings are incomplete. Treat every connector-config
+    // error as "no managed profiles" here; enrollment/status surfaces still
+    // report the actionable configuration problem.
+    if (error instanceof PaperclipCloudConnectorError) return [];
     throw error;
   }
   if (!config) return [];

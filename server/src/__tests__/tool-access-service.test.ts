@@ -2310,7 +2310,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("lists testable agents with per-connection effective access summaries", async () => {
+  it("lists testable agents without calculating every agent's access summary", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, ["tools:use"]);
@@ -2335,13 +2335,18 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.agents[0]).toMatchObject({
       id: agent.id,
       orgDepth: 0,
-      effectiveAccess: {
-        connectionId: connection.id,
-        toolCount: 1,
-        allowedCount: 1,
-        askFirstCount: 0,
-        offCount: 0,
-      },
+    });
+    expect(res.body.agents[0]).not.toHaveProperty("effectiveAccess");
+
+    const accessRes = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-agents/${agent.id}/access`)
+      .expect(200);
+    expect(accessRes.body.access).toMatchObject({
+      connectionId: connection.id,
+      toolCount: 1,
+      allowedCount: 1,
+      askFirstCount: 0,
+      offCount: 0,
     });
   });
 
@@ -2412,10 +2417,10 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
     const res = await request(app)
-      .get(`/api/tool-connections/${connection.id}/test-agents`)
+      .get(`/api/tool-connections/${connection.id}/test-agents/${agent.id}/access`)
       .expect(200);
 
-    const summary = res.body.agents[0].effectiveAccess;
+    const summary = res.body.access;
     expect(typeof summary.lastChangedAt).toBe("string");
     expect(summary.lastChangedByAgentId).toBe(agent.id);
     expect(summary.lastChangedByName).toBe(agent.name);
@@ -2521,6 +2526,44 @@ describeEmbeddedPostgres("tool access service", () => {
         metadata: expect.objectContaining({ source: "test" }),
       }),
     ]));
+  });
+
+  it("cancels an ask-first test request when approval signing is unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first without signing ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: " " }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(500);
+
+    expect(res.body).toMatchObject({
+      reasonCode: "signing_secret_unconfigured",
+      error: expect.stringContaining("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET"),
+    });
+    const [actionRequest] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    expect(actionRequest).toMatchObject({ status: "cancelled", signedArguments: null });
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({
+      status: "failed",
+      errorCode: "signing_secret_unconfigured",
+    });
   });
 
   it("audits ask-first test calls with the real board actor and selected agent", async () => {
@@ -3418,6 +3461,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .put(`/api/tool-connections/${connection.id}/installs`)
         .send({ installs: [] }),
       await request(app).get(`/api/tool-connections/${connection.id}/test-agents`),
+      await request(app).get(`/api/tool-connections/${connection.id}/test-agents/${randomUUID()}/access`),
       await request(app)
         .post(`/api/tool-connections/${connection.id}/test-calls`)
         .send({ agentId: randomUUID(), toolName: "read_notes", parameters: {} }),
@@ -3620,7 +3664,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("serves the app gallery manifest through the board route", async () => {
     const company = await createCompany(db);
-    const app = createRouteApp(db);
+    const app = createRouteApp(db, undefined, undefined, { paperclipCloudConnector: null });
 
     const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
 
@@ -8097,6 +8141,12 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "pending",
       canonicalArgumentsHash: "args-hash",
       canonicalArgumentsSummary: { summary: "redacted", redactedFields: [] },
+      signedArguments: signToolArguments({
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        canonicalArguments: canonicalToolArguments({ redacted: true }),
+        signingSecret: "attention-test-secret",
+      }),
     });
 
     const res = await request(app).get(`/api/companies/${company.id}/tools/apps/attention`);
@@ -8152,7 +8202,7 @@ describeEmbeddedPostgres("tool access service", () => {
       schemaHash: "s1",
     }).returning();
     const canonicalArguments = canonicalToolArguments({ key: "alpha", value: "one" });
-    const invocationValues = [1, 2, 3].map(() => ({
+    const invocationValues = [1, 2, 3, 4].map(() => ({
       companyId: company.id,
       applicationId: application.id,
       connectionId: connection.id,
@@ -8164,7 +8214,7 @@ describeEmbeddedPostgres("tool access service", () => {
       approvalState: "pending" as const,
       status: "awaiting_approval" as const,
     }));
-    const [validInvocation, missingSignatureInvocation, oldSecretInvocation] =
+    const [validInvocation, missingSignatureInvocation, staleMissingSignatureInvocation, oldSecretInvocation] =
       await db.insert(toolInvocations).values(invocationValues).returning();
     const validSignedArguments = signToolArguments({
       invocationId: validInvocation.id,
@@ -8178,7 +8228,7 @@ describeEmbeddedPostgres("tool access service", () => {
       canonicalArguments,
       signingSecret: "old-secret",
     });
-    const [validRequest, missingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
+    const [validRequest, missingSignatureRequest, staleMissingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
       {
         companyId: company.id,
         invocationId: validInvocation.id,
@@ -8194,6 +8244,19 @@ describeEmbeddedPostgres("tool access service", () => {
         canonicalArgumentsHash: "args-hash",
         canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
         signedArguments: null,
+      },
+      {
+        companyId: company.id,
+        invocationId: staleMissingSignatureInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: {
+          summary: canonicalArguments,
+          sha256: "args-hash",
+          sizeBytes: canonicalArguments.length,
+        },
+        signedArguments: null,
+        createdAt: new Date(Date.now() - 3 * 60 * 1000),
       },
       {
         companyId: company.id,
@@ -8214,6 +8277,9 @@ describeEmbeddedPostgres("tool access service", () => {
     // An unsigned request is still being created; the read hides it but keeps it
     // pending, so the creator can finish signing and the later approve succeeds.
     expect(statusById.get(missingSignatureRequest.id)).toBe("pending");
+    // If the creator never finishes signing, Review retires the stale orphan
+    // instead of leaving a permanent badge for a request no human can approve.
+    expect(statusById.get(staleMissingSignatureRequest.id)).toBe("cancelled");
     // A request signed with a rotated/old secret is unverifiable and is cancelled.
     expect(statusById.get(oldSecretRequest.id)).toBe("cancelled");
   });

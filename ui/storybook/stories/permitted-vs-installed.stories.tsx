@@ -291,8 +291,6 @@ function SeededAccessStep({
     <QueryClientProvider client={client}>
       <div className="bg-background p-6">
         <AccessStep
-          appName="Gmail"
-          providerName="Gmail"
           companyId={COMPANY}
           authKind={authKind}
           grantKind={grantKind}
@@ -312,7 +310,7 @@ function SeededAccessStep({
 }
 
 export const ConnectAccessJustMePickedAgents: Story = {
-  name: "3 · Connect Access — Just me + Agents I pick",
+  name: "3 · Connect Access — Just me + Just agents I pick",
   render: () => (
     <SeededAccessStep
       authKind="oauth"

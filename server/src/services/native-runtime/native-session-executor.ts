@@ -2719,7 +2719,7 @@ export async function executePaperclipNativeSession(input: {
     processGroupId: number | null;
     startedAt: string;
   }) => Promise<void>;
-  /** Test seam at the provider boundary; production always uses the package Codex backend. */
+  /** Test seam at the provider boundary; production uses a qualified package backend. */
   backend?: NativeSessionBackend;
   useRunnerd?: boolean;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -2750,8 +2750,22 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
-  if (input.execution.provider.kind !== "codex") {
+  if (
+    input.execution.provider.kind !== "codex"
+    && input.execution.provider.kind !== "opencode"
+    && input.execution.provider.kind !== "claude_managed"
+    && input.execution.provider.kind !== "aws_agentcore"
+    && input.execution.provider.kind !== "acpx"
+  ) {
     throw new Error("paperclip_runner_provider_unsupported");
+  }
+  if (
+    input.execution.provider.kind === "acpx"
+    && input.execution.provider.agent === "pi"
+  ) {
+    throw new Error(
+      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+    );
   }
   const earliestPreparationStart = input.preparationSpans?.reduce(
     (earliest, span) => Math.min(earliest, span.startedAtMs),
@@ -3950,6 +3964,14 @@ const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
   codex:
     "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
 } as const;
+const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
+  nodeCommand: "node_modules/node/bin/node",
+  productionLock: "pnpm-lock.yaml",
+  opencodeCommand: "node_modules/.bin/opencode",
+  opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+  opencodeProxy: "dist/cli/opencode-app-server-proxy.js",
+  acpxSidecar: "dist/cli/acpx-runtime-sidecar.js",
+} as const;
 
 type RemoteProviderPackManifest = {
   schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
@@ -4060,18 +4082,23 @@ export function readRemoteProviderPackManifest(
     );
   }
   const artifactEntries = [
-    ["provider Node", payload.artifacts?.nodeCommand],
-    ["production lockfile", payload.artifacts?.productionLock],
-    ["OpenCode command", payload.artifacts?.opencodeCommand],
-    ["OpenCode executable", payload.artifacts?.opencodeExecutable],
-    ["OpenCode proxy", payload.artifacts?.opencodeProxy],
-    ["ACPX sidecar", payload.artifacts?.acpxSidecar],
+    ["provider Node", payload.artifacts?.nodeCommand, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.nodeCommand],
+    ["production lockfile", payload.artifacts?.productionLock, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.productionLock],
+    ["OpenCode command", payload.artifacts?.opencodeCommand, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeCommand],
+    ["OpenCode executable", payload.artifacts?.opencodeExecutable, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeExecutable],
+    ["OpenCode proxy", payload.artifacts?.opencodeProxy, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeProxy],
+    ["ACPX sidecar", payload.artifacts?.acpxSidecar, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.acpxSidecar],
   ] as const;
-  for (const [label, artifact] of artifactEntries) {
+  for (const [label, artifact, expectedPath] of artifactEntries) {
     const artifactPath = providerPackRelativePath(
       artifact?.path,
       `${label} path`,
     );
+    if (artifactPath !== expectedPath) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${label} path must be ${expectedPath}`,
+      );
+    }
     if (
       typeof artifact?.sha256 !== "string" ||
       sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256
@@ -4684,11 +4711,6 @@ export async function createRunnerdBackend(input: {
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend> {
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
-  if (target.kind === "remote" && input.execution.provider.kind !== "codex") {
-    throw new Error(
-      `runner_remote_provider_artifact_incompatible: remote ${input.execution.provider.kind} is unavailable until runnerd provider dispatch is qualified`,
-    );
-  }
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
@@ -6003,9 +6025,13 @@ export async function createRunnerdBackend(input: {
             ? "codex"
             : input.execution.provider.kind === "opencode"
               ? "opencode"
-              : input.execution.provider.kind === "acpx"
-                ? "acpx"
-                : undefined,
+              : input.execution.provider.kind === "claude_managed"
+                ? "claude_managed"
+                : input.execution.provider.kind === "aws_agentcore"
+                  ? "aws_agentcore"
+                  : input.execution.provider.kind === "acpx"
+                    ? "acpx"
+                    : undefined,
         ...(input.execution.provider.kind === "acpx"
           ? {
               acpxAgent: input.execution.provider.agent,
@@ -6023,26 +6049,69 @@ export async function createRunnerdBackend(input: {
                   ),
             }
           : {}),
+        ...(input.execution.provider.kind === "opencode"
+          ? {
+              opencodePermissionMode: input.execution.provider.permissionMode,
+            }
+          : {}),
+        ...(input.execution.provider.kind === "claude_managed"
+          ? {
+              managedProfile: {
+                ...input.execution.provider.managedProfile,
+                maxSessionListCostUsd:
+                  input.execution.provider.maxSessionListCostUsd,
+                model: input.execution.provider.model,
+              },
+            }
+          : {}),
+        ...(input.execution.provider.kind === "aws_agentcore"
+          ? {
+              agentCoreProfile: {
+                ...input.execution.provider.agentCoreProfile,
+                maxEstimatedSessionCostUsd:
+                  input.execution.provider.maxEstimatedSessionCostUsd,
+                maxIterations:
+                  input.execution.provider.invocationLimits.maxIterations,
+                maxOutputTokens:
+                  input.execution.provider.invocationLimits.maxOutputTokens,
+                timeoutSeconds:
+                  input.execution.provider.invocationLimits.timeoutSeconds,
+                model: input.execution.provider.model,
+              },
+            }
+          : {}),
         ...(expectedProviderPackManifest && stagedRemoteProviderPackRoot
           ? {
               providerNodeCommand: posix.join(
                 stagedRemoteProviderPackRoot,
                 expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
               ),
+              providerNodeCommandSha256:
+                expectedProviderPackManifest.payload.artifacts.nodeCommand.sha256,
+              providerPackAuthorityDigest:
+                expectedProviderPackManifest.digest,
               opencodeCommand: posix.join(
                 stagedRemoteProviderPackRoot,
                 expectedProviderPackManifest.payload.artifacts
                   .opencodeExecutable.path,
               ),
+              opencodeCommandSha256:
+                expectedProviderPackManifest.payload.artifacts
+                  .opencodeExecutable.sha256,
               opencodeProxyPath: posix.join(
                 stagedRemoteProviderPackRoot,
                 expectedProviderPackManifest.payload.artifacts.opencodeProxy
                   .path,
               ),
+              opencodeProxySha256:
+                expectedProviderPackManifest.payload.artifacts.opencodeProxy
+                  .sha256,
               acpxSidecarPath: posix.join(
                 stagedRemoteProviderPackRoot,
                 expectedProviderPackManifest.payload.artifacts.acpxSidecar.path,
               ),
+              acpxSidecarSha256:
+                expectedProviderPackManifest.payload.artifacts.acpxSidecar.sha256,
             }
           : {}),
         stateDirectory: root,

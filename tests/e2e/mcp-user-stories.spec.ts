@@ -410,7 +410,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
     const health = await request.post(`/api/tool-connections/${connectionId}/health-check`);
     expect(health.status()).toBe(502);
     await page.goto(`/${seed.prefix}/apps/connections`);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
     await screenshot(page, "US-8", "01-needs-attention");
 
     const recovered = await startMockMcp();

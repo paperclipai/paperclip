@@ -593,7 +593,7 @@ describe("Layout", () => {
   });
 
   it("keeps the Apps sidebar on the M8 advanced-setup tabs", async () => {
-    currentPathname = "/PAP/apps/advanced/run-your-own";
+    currentPathname = "/PAP/apps/advanced/paste-config";
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

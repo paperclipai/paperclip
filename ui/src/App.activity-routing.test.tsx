@@ -69,6 +69,13 @@ vi.mock("./pages/audit/CompanyActivity", () => ({
   },
 }));
 
+vi.mock("./pages/Issues", () => ({
+  Issues: () => {
+    const location = useLocation();
+    return <div>{`TASKS_PAGE@${location.pathname}`}</div>;
+  },
+}));
+
 const PAP_COMPANY = {
   id: "company-1",
   name: "Paperclip",
@@ -170,6 +177,13 @@ describe("App Activity routing (PAP-16302)", () => {
     const root = renderAppAt(container, "/audit");
     await waitForRoute(container, "ACTIVITY_PAGE@/PAP/activity?mode=agents");
     expect(container.textContent).not.toContain("No organization matches prefix");
+    flushSync(() => root.unmount());
+  });
+
+  it("redirects the bare /tasks post-login target to the real task list", async () => {
+    const root = renderAppAt(container, "/tasks");
+    await waitForRoute(container, "TASKS_PAGE@/PAP/issues");
+    expect(container.textContent).not.toContain("/tasks/dashboard");
     flushSync(() => root.unmount());
   });
 });

@@ -117,8 +117,13 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: /Connect your own tool/i }).click();
+  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  const customConnector = page
+    .getByRole("list", { name: "Connector list" })
+    .getByRole("listitem")
+    .filter({ hasText: "Connect your own tool" });
+  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
+  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -177,7 +182,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
     // The new connection should show up on /apps/connections.
     await gotoApps(page, seed.prefix);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
   });
 
@@ -215,8 +220,8 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByText(/connection needs attention/i).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.
@@ -251,27 +256,15 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     }
   });
 
-  test("/apps/advanced still mounts both tabs", async ({ page, request }) => {
+  test("/apps/advanced mounts the paste-config path", async ({ page, request }) => {
     const seed = await newCompany(request, "advanced");
 
     await gotoAdvanced(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-09-advanced-default.png`, fullPage: true });
 
-    // M8a paste tab.
-    const pasteTab = page.getByRole("tab", { name: /Paste/i }).first();
-    if (await pasteTab.isVisible().catch(() => false)) {
-      await pasteTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
-    }
-
-    // M8b run-your-own tab.
-    const ownTab = page.getByRole("tab", { name: /Run your own|Self host|Stdio|Local/i }).first();
-    if (await ownTab.isVisible().catch(() => false)) {
-      await ownTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-11-advanced-own-tab.png`, fullPage: true });
-    }
+    await expect(page.getByRole("link", { name: "Paste a config" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Run your own|Self host|Stdio|Local/i })).toHaveCount(0);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
   });
 });

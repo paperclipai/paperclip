@@ -8,21 +8,13 @@ import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
- * Secondary sidebar for the prosumer Apps area (PAP-10856; three-door IA
- * PAP-13254 / U3).
+ * Secondary sidebar for the Apps area.
  *
- *   ← Back · APPS: Browse / Review (n)
- *   DEVELOPER: Connections / Activity
+ *   ← Back · APPS: Connectors / Review (n)
  *
- * "Browse" is the store and "Review" holds decisions waiting on the user's
- * OK. Connection management lives with the Developer tools.
- * "Needs attention" is no longer a door: health/error triage folds into
- * Connections as a status filter + banner, so approvals are never buried
- * behind an error label. The Developer section was folded in from the retired
- * ToolsSidebar (PAP-10915) so the whole Apps area shares one sidebar; a
- * one-line caption frames who it's for (Finding A). "Run your own" and "Paste a
- * config" moved out of the sidebar into rows on the Connect-an-app page
- * (PAP-10922).
+ * The landing page combines connector discovery, account management, and
+ * connection health. Review keeps governed actions waiting on the user's OK.
+ * Advanced developer surfaces remain hidden unless one is explicitly enabled.
  */
 export function AppsSidebar() {
   const { selectedCompany } = useCompany();
@@ -61,7 +53,7 @@ export function AppsSidebar() {
           Apps
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
+          <SidebarNavItem to="/apps" label="Connectors" icon={Store} end />
           <SidebarNavItem
             to="/apps/review"
             label="Review"
@@ -71,24 +63,27 @@ export function AppsSidebar() {
             badgeLabel="waiting for your OK"
           />
         </div>
-        <div className="px-3 pb-1 pt-4 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Developer
-        </div>
-        <p className="px-3 pb-1.5 text-(length:--text-micro) leading-snug text-muted-foreground/70">
-          Advanced setup for developers.
-        </p>
-        <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
-          {developerTabs.map((tab) => (
-            <SidebarNavItem
-              key={tab.key}
-              to={advancedTabHref(tab.key)}
-              label={tab.label}
-              icon={tab.icon}
-              end
-            />
-          ))}
-        </div>
+        {developerTabs.length > 0 ? (
+          <>
+            <div className="px-3 pb-1 pt-4 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
+              Developer
+            </div>
+            <p className="px-3 pb-1.5 text-(length:--text-micro) leading-snug text-muted-foreground/70">
+              Advanced setup for developers.
+            </p>
+            <div className="flex flex-col gap-0.5">
+              {developerTabs.map((tab) => (
+                <SidebarNavItem
+                  key={tab.key}
+                  to={advancedTabHref(tab.key)}
+                  label={tab.label}
+                  icon={tab.icon}
+                  end
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
       </nav>
     </aside>
   );

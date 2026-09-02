@@ -1,13 +1,19 @@
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
 
 use paperclip_runner_core::local_runner::HarnessCommand;
-use paperclip_runner_core::process_supervisor::SupervisedProcess;
+use paperclip_runner_core::process_supervisor::{
+    SupervisedProcess, VerifiedProcessArgument, VerifiedProcessArtifact, VerifiedProcessLaunch,
+};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 fn process_exists(pid: u64) -> bool {
     Command::new("kill")
@@ -16,6 +22,90 @@ fn process_exists(pid: u64) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    let mut file = File::create(path).unwrap();
+    file.write_all(contents.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+fn sha256(contents: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(contents.as_bytes()))
+}
+
+#[test]
+fn verified_launch_uses_open_command_and_script_after_atomic_path_replacement() {
+    let directory = std::env::temp_dir().join(format!(
+        "paperclip-verified-launch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    let command = directory.join("command");
+    let script = directory.join("script");
+    let original_command = "#!/bin/sh\nprintf '%s\\n' old-command\nexec /bin/sh \"$1\"\n";
+    let original_script = "#!/bin/sh\nprintf '%s\\n' old-script\n";
+    write_executable(&command, original_command);
+    write_executable(&script, original_script);
+
+    let launch = VerifiedProcessLaunch::new(
+        VerifiedProcessArtifact::snapshot_verified(
+            command.clone(),
+            File::open(&command).unwrap(),
+            &sha256(original_command),
+        )
+        .unwrap(),
+        vec![VerifiedProcessArgument::Artifact(
+            VerifiedProcessArtifact::snapshot_verified(
+                script.clone(),
+                File::open(&script).unwrap(),
+                &sha256(original_script),
+            )
+            .unwrap(),
+        )],
+    );
+
+    let replacement_command = directory.join("replacement-command");
+    let replacement_script = directory.join("replacement-script");
+    write_executable(
+        &replacement_command,
+        "#!/bin/sh\nprintf '%s\\n' replacement-command\nexec /bin/sh \"$1\"\n",
+    );
+    write_executable(
+        &replacement_script,
+        "#!/bin/sh\nprintf '%s\\n' replacement-script\n",
+    );
+    fs::rename(replacement_command, &command).unwrap();
+    fs::rename(replacement_script, &script).unwrap();
+
+    let mut process = SupervisedProcess::spawn_verified_with_environment_keys(
+        &launch,
+        Duration::from_millis(50),
+        1024,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        process
+            .receive_stdout_line(Duration::from_secs(1))
+            .unwrap()
+            .as_deref(),
+        Some("old-command")
+    );
+    assert_eq!(
+        process
+            .receive_stdout_line(Duration::from_secs(1))
+            .unwrap()
+            .as_deref(),
+        Some("old-script")
+    );
+    process.wait().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn spawn_linger_process() -> (SupervisedProcess, u32, u64) {

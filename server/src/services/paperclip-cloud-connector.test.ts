@@ -12,6 +12,7 @@ import {
   createPaperclipCloudConnector,
   GMAIL_CONNECTOR_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   paperclipCloudConnectorConfigFromEnv,
   PaperclipCloudConnectorError,
   type PaperclipCloudConnectorConfig,
@@ -270,6 +271,13 @@ describe("Paperclip Cloud connector", () => {
     })();
     expect(legacyError).toMatchObject({ code: "CONNECTOR_MIGRATION_REQUIRED" });
     expect(String(legacyError)).toContain("incompatible legacy protocol");
+  });
+
+  it("keeps gallery capability discovery available during incomplete enrollment", async () => {
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv({
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://my-staging.paperclip.app",
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "staging",
+    })).resolves.toEqual([]);
   });
 });
 

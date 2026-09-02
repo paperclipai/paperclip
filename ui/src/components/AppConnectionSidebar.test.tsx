@@ -189,7 +189,7 @@ describe("AppConnectionSidebar", () => {
   it("renders a back link and the connected app tabs with Test after Setup", async () => {
     await renderSidebar();
 
-    expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All connectors");
     expect(container.textContent).toContain("GitHub");
     expect(container.querySelectorAll("[data-to]").length).toBe(5);
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/setup", label: "Setup", end: true }));
@@ -269,7 +269,7 @@ describe("AppConnectionSidebar", () => {
 
     await renderSidebar(<AppDetailSidebar kind="application" applicationId="app-1" />);
 
-    expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All connectors");
     expect(container.textContent).toContain("GitHub");
     expect(mockToolsApi.getConnection).not.toHaveBeenCalled();
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/setup", label: "Setup", end: true }));
@@ -291,7 +291,7 @@ describe("AppConnectionSidebar", () => {
     await renderSidebar();
 
     expect(container.textContent).toContain("App");
-    expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All connectors");
     expect(container.querySelectorAll("[data-to]").length).toBe(5);
   });
 
@@ -304,7 +304,7 @@ describe("AppConnectionSidebar", () => {
     await renderSidebar(<AppDetailSidebar kind="application" applicationId="missing-app" />);
 
     expect(container.textContent).toContain("App");
-    expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
+    expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All connectors");
     expect(container.querySelectorAll("[data-to]").length).toBe(4);
   });
 });

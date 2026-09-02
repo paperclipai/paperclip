@@ -213,7 +213,8 @@ impl AcpxProviderSession {
                 LocalRunnerError::invalid(format!("ACPX authorized tools are invalid: {error}"))
             })?;
         let reserved_tool_bridge = reserved_terminal_tool_bridge()?;
-        let mut transport = AcpxSidecarTransport::start(&config.transport)?;
+        let mut transport =
+            AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
         let bootstrap = bootstrap(&mut transport, config);
         let (identity, state) = match bootstrap {
             Ok(value) => value,
@@ -705,7 +706,10 @@ impl AcpxProviderSession {
 
         let mut restart_config = self.config.clone();
         restart_config.expected_identity = Some(self.identity.clone());
-        let mut replacement = AcpxSidecarTransport::start(&restart_config.transport)?;
+        let mut replacement = AcpxSidecarTransport::start_for_agent(
+            &restart_config.transport,
+            &restart_config.agent,
+        )?;
         let (replacement_identity, _) = match bootstrap(&mut replacement, &restart_config) {
             Ok(value) => value,
             Err(error) => {

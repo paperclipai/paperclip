@@ -44,7 +44,6 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
-import { AdvancedToolsLink } from "./store-cards";
 import { connectionNameForCredentialPolicy, connectionTypeLabel } from "./connection-identity";
 import {
   ConnectionOwnerIdentity,
@@ -531,11 +530,10 @@ export function Connections() {
             </table>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs text-muted-foreground">
               Apps you connect become available to every agent unless you change “Who can use it”.
             </p>
-            <AdvancedToolsLink />
           </div>
         </div>
       )}

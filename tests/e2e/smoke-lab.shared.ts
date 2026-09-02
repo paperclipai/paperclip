@@ -165,7 +165,7 @@ async function navigateForEvidence(page: Page, seed: Seed, connectionId: string,
   }
   if (scenario.uiEntryPath === "attention") {
     await page.goto(`/${seed.prefix}/apps/connections`);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 20_000 });
     return;
   }
   await page.goto(`/${seed.prefix}/apps/${connectionId}`);

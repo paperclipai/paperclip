@@ -47,6 +47,7 @@ import type {
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
+  ToolConnectionTestAgentAccessResponse,
   ToolConnectionTestCallResult,
   ToolConnectionTestCallStatus,
   ToolActionRequest,
@@ -426,6 +427,10 @@ export const toolsApi = {
   listTestAgents: (connectionId: string) =>
     api.get<ToolConnectionTestAgentsResponse>(
       `/tool-connections/${connectionId}/test-agents`,
+    ),
+  getTestAgentAccess: (connectionId: string, agentId: string) =>
+    api.get<ToolConnectionTestAgentAccessResponse>(
+      `/tool-connections/${connectionId}/test-agents/${agentId}/access`,
     ),
   runTestCall: (
     connectionId: string,

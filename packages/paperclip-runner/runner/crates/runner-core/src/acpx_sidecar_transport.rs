@@ -11,7 +11,9 @@ use crate::generated_acpx_sidecar_contract::{
     GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
 use crate::local_runner::LocalRunnerError;
-use crate::process_supervisor::{BoundedLogBuffer, ProcessOutput, SupervisedProcess};
+use crate::process_supervisor::{
+    BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
+};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -23,13 +25,16 @@ const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub struct AcpxSidecarTransportConfig {
     pub command: PathBuf,
     pub args: Vec<String>,
+    pub verified_launch: Option<VerifiedProcessLaunch>,
     pub request_timeout: Duration,
     pub shutdown_grace: Duration,
 }
 
 impl AcpxSidecarTransportConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if !self.command.is_absolute() || !self.command.is_file() {
+        if !self.command.is_absolute()
+            || (self.verified_launch.is_none() && !self.command.is_file())
+        {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar command must be an existing absolute file",
             ));
@@ -82,13 +87,64 @@ pub struct AcpxSidecarTransport {
 
 impl AcpxSidecarTransport {
     pub fn start(config: &AcpxSidecarTransportConfig) -> Result<Self, LocalRunnerError> {
+        Self::start_with_environment_keys(config, &[])
+    }
+
+    pub fn start_for_agent(
+        config: &AcpxSidecarTransportConfig,
+        agent: &str,
+    ) -> Result<Self, LocalRunnerError> {
+        let credential_keys: &[&str] = match agent {
+            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX sidecar credentials require a qualified claude or codex agent",
+                ))
+            }
+        };
+        let mut keys = vec![
+            "LANGUAGE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "RUST_BACKTRACE",
+            "PAPERCLIP_NATIVE_MCP_NAME",
+            "PAPERCLIP_NATIVE_MCP_URL",
+        ];
+        keys.extend_from_slice(credential_keys);
+        Self::start_with_environment_keys(config, &keys)
+    }
+
+    fn start_with_environment_keys(
+        config: &AcpxSidecarTransportConfig,
+        environment_keys: &[&str],
+    ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
-        let process = SupervisedProcess::spawn(
-            &config.command,
-            &config.args,
-            config.shutdown_grace,
-            ACPX_SIDECAR_MAX_FRAME_BYTES,
-        )?;
+        let process = if let Some(launch) = config.verified_launch.as_ref() {
+            SupervisedProcess::spawn_verified_with_environment_keys(
+                launch,
+                config.shutdown_grace,
+                ACPX_SIDECAR_MAX_FRAME_BYTES,
+                environment_keys,
+            )?
+        } else {
+            SupervisedProcess::spawn_with_environment_keys(
+                &config.command,
+                &config.args,
+                config.shutdown_grace,
+                ACPX_SIDECAR_MAX_FRAME_BYTES,
+                environment_keys,
+            )?
+        };
         Ok(Self {
             process,
             request_timeout: config.request_timeout,

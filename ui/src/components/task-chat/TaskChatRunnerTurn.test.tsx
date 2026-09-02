@@ -314,6 +314,47 @@ describe("TaskChatRunnerTurn", () => {
     ).toContain("Reasoning");
   });
 
+  it("keeps the latest provider-authored reasoning line visible while activity is folded", () => {
+    render([
+      {
+        id: "reasoning",
+        kind: "thinking",
+        lines: ["Inspecting the task state.", "Checking the steering path."],
+        streaming: true,
+        channel: "summary",
+        transcriptIndex: 2,
+      },
+    ]);
+
+    const ticker = container.querySelector('[data-testid="task-chat-reasoning-ticker"]');
+    expect(ticker?.textContent).toContain("Checking the steering path.");
+    expect(container.querySelector('[data-testid="task-chat-thinking"]')).toBeNull();
+  });
+
+  it("surfaces native activity transport failure while retrying", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ThemeProvider>
+            <TaskChatRunnerTurn
+              runId="run-1"
+              agentName="Runner"
+              items={[]}
+              status="running"
+              startedAtMs={Date.now() - 2_000}
+              activityUnavailable
+            />
+          </ThemeProvider>
+        </MemoryRouter>,
+      ),
+    );
+
+    expect(
+      container.querySelector('[data-testid="task-chat-activity-unavailable"]')
+        ?.textContent,
+    ).toContain("temporarily unavailable");
+  });
+
   it("starts a separate activity group at every commentary boundary", () => {
     render([
       {

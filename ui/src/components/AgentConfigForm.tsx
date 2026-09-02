@@ -51,7 +51,6 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -153,8 +152,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.debug).length > 0 ||
-    Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    Object.keys(o.runtime).length > 0
   );
 }
 
@@ -778,29 +776,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
-  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
-
-  // Cheap model profile state — only relevant when the adapter advertises
-  // `supportsModelProfiles`. Defaults are sourced from the adapter's
-  // /model-profiles endpoint so the UI does not encode adapter-specific
-  // cheap defaults.
-  const supportsModelProfiles = adapterCaps.supportsModelProfiles;
-  const { data: adapterCheapProfileDefinitions } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModelProfiles(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-model-profiles", adapterType],
-    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
-    enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
-  });
-  const adapterCheapDefault = useMemo(() => {
-    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
-  }, [adapterCheapProfileDefinitions]);
-  const adapterCheapDefaultModel = useMemo(() => {
-    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
-    const value = (adapterConfig as Record<string, unknown>).model;
-    return typeof value === "string" ? value : "";
-  }, [adapterCheapDefault]);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
@@ -818,86 +794,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return omitUndefinedEntries(next);
   }
 
-  function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
-    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
-    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
-    const cheapAdapterConfig = isCreate
-      ? {
-          ...adapterDefaultConfig,
-          ...(createCheapModel ? { model: createCheapModel } : {}),
-        }
-      : {
-          ...adapterDefaultConfig,
-          ...cheapProfileFromAgent.adapterConfig,
-          ...asObject(cheapOverlay?.adapterConfig),
-        };
-    return buildAdapterConfigForTest({ ...cheapAdapterConfig, ...adapterConfigPatch });
-  }
-
-  function getCheapModelTestCase(adapterConfigPatch?: Record<string, unknown>): { model: string; adapterConfig: Record<string, unknown> } | null {
-    if (!currentCheapEnabled) return null;
-    const adapterConfig = buildCheapAdapterConfigForTest(adapterConfigPatch);
-    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
-    const model = configModel || currentCheapModel.trim();
-    if (!model) return null;
-    adapterConfig.model = model;
-    return { model, adapterConfig };
-  }
-
-  function prefixEnvironmentTestChecks(
-    result: AdapterEnvironmentTestResult,
-    label: string,
-    model: string | null,
-  ): AdapterEnvironmentTestResult {
-    const modelLabel = model ? ` (${model})` : "";
-    return {
-      ...result,
-      checks: [
-        {
-          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
-          level: "info",
-          message: `${label} test${modelLabel}`,
-        },
-        ...result.checks.map((check) => ({
-          ...check,
-          message: `${label} test${modelLabel}: ${check.message}`,
-        })),
-      ],
-    };
-  }
-
-  async function runEnvironmentTestCase(
-    label: string,
-    model: string | null,
-    adapterConfig: Record<string, unknown>,
-    environmentId: string | null,
-  ): Promise<AdapterEnvironmentTestResult> {
-    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
-      adapterConfig,
-      environmentId,
-    });
-    return prefixEnvironmentTestChecks(result, label, model);
-  }
-
-  function mergeEnvironmentTestResults(
-    results: AdapterEnvironmentTestResult[],
-  ): AdapterEnvironmentTestResult {
-    const checks = results.flatMap((result) => result.checks);
-    const status = results.some((result) => result.status === "fail")
-      ? "fail"
-      : results.some((result) => result.status === "warn")
-        ? "warn"
-        : "pass";
-    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
-
-    return {
-      adapterType,
-      status,
-      checks,
-      testedAt,
-    };
-  }
-
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -905,8 +801,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
-      const primaryModel = currentModelId.trim() || null;
-      const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
       // agent that runs in the instance-default sandbox reports failures
@@ -974,35 +868,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
-        {
-          label: "Primary model",
-          model: primaryModel,
-          result: await runEnvironmentTestCase(
-            "Primary model",
-            primaryModel,
-            buildAdapterConfigForTest(adapterConfigPatch),
-            environmentId,
-          ),
-        },
-      ];
-
-      if (cheapTestCase) {
-        testResults.push({
-          label: "Cheap model",
-          model: cheapTestCase.model,
-          result: await runEnvironmentTestCase(
-            "Cheap model",
-            cheapTestCase.model,
-            cheapTestCase.adapterConfig,
-            environmentId,
-          ),
-        });
-      }
-
-      return testResults.length > 1
-        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
-        : testResults[0]!.result;
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
+        adapterConfig: buildAdapterConfigForTest(adapterConfigPatch),
+        environmentId,
+      });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1228,70 +1097,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  // Cheap profile read/write helpers. Edit-mode values come from
-  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
-  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
-    const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = asObject(cheap.adapterConfig);
-    return {
-      enabled: cheap.enabled !== false,
-      adapterConfig: cheapAdapterConfig,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
-    };
-  }, [runtimeConfig]);
-  const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
-  const currentCheapEnabled = isCreate
-    ? val!.cheapModelEnabled ?? false
-    : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
-  const currentCheapModel = isCreate
-    ? val!.cheapModel ?? ""
-    : (() => {
-        const overlayModel = (cheapOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
-        if (typeof overlayModel === "string") return overlayModel;
-        return cheapProfileFromAgent.model;
-      })();
-
-  function setCheapEnabled(next: boolean) {
-    if (isCreate) {
-      set!({ cheapModelEnabled: next });
-      return;
-    }
-    setOverlay((prev) => ({
-      ...prev,
-      modelProfiles: {
-        cheap: {
-          ...(prev.modelProfiles?.cheap ?? {}),
-          enabled: next,
-        },
-      },
-    }));
-  }
-
-  function setCheapModel(next: string) {
-    if (isCreate) {
-      set!({ cheapModel: next });
-      return;
-    }
-    setOverlay((prev) => {
-      const existing = prev.modelProfiles?.cheap ?? {};
-      const nextAdapterConfig = {
-        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
-        model: next || undefined,
-      };
-      return {
-        ...prev,
-        modelProfiles: {
-          cheap: {
-            ...existing,
-            adapterConfig: nextAdapterConfig,
-          },
-        },
-      };
-    });
-  }
-
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -1579,7 +1384,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1722,9 +1526,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </Field>
               )}
 
-              {supportsModelProfiles && (
-                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>
-              )}
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1770,20 +1571,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <p className="text-xs text-muted-foreground">
                   Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
                 </p>
-              )}
-
-              {supportsModelProfiles && (
-                <CheapModelSection
-                  enabled={currentCheapEnabled}
-                  model={currentCheapModel}
-                  models={models}
-                  adapterType={adapterType}
-                  adapterDefaultModel={adapterCheapDefaultModel}
-                  onEnabledChange={setCheapEnabled}
-                  onModelChange={setCheapModel}
-                  open={cheapModelOpen}
-                  onOpenChange={setCheapModelOpen}
-                />
               )}
 
               {showThinkingEffort && (
@@ -3357,72 +3144,6 @@ export function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
-  );
-}
-
-function CheapModelSection({
-  enabled,
-  model,
-  models,
-  adapterType,
-  adapterDefaultModel,
-  onEnabledChange,
-  onModelChange,
-  open,
-  onOpenChange,
-}: {
-  enabled: boolean;
-  model: string;
-  models: AdapterModel[];
-  adapterType: string;
-  adapterDefaultModel: string;
-  onEnabledChange: (next: boolean) => void;
-  onModelChange: (next: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
-  return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Cheap model</div>
-          <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
-        </div>
-        <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
-      </div>
-      {enabled ? (
-        <ModelDropdown
-          models={models}
-          value={model}
-          onChange={onModelChange}
-          open={open}
-          onOpenChange={onOpenChange}
-          allowDefault
-          required={false}
-          groupByProvider={adapterType === "opencode_local"}
-          creatable
-          detectedModel={null}
-          detectedModelCandidates={[]}
-          emptyDetectHint={placeholderHint}
-          defaultLabel={placeholderHint}
-        />
-      ) : null}
-      {enabled && !model && adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
-        </p>
-      ) : null}
-      {enabled && !model && !adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
-        </p>
-      ) : null}
-    </div>
   );
 }
 

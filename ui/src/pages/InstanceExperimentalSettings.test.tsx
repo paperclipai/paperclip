@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   InstanceExperimentalSettings as InstanceExperimentalSettingsPayload,
   InstanceExperimentalSettingsWithManaged,
-  IssueGraphLivenessAutoRecoveryPreview,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
@@ -15,8 +14,6 @@ import { queryKeys } from "../lib/queryKeys";
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
   updateExperimental: vi.fn(),
-  previewIssueGraphLivenessAutoRecovery: vi.fn(),
-  runIssueGraphLivenessAutoRecovery: vi.fn(),
 }));
 
 vi.mock("@/api/instanceSettings", () => ({
@@ -47,8 +44,6 @@ const CONFERENCE_TOGGLE_SELECTOR =
   'button[aria-label="Toggle conference room chat experimental setting"]';
 const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
-const TASK_WATCHDOGS_TOGGLE_SELECTOR =
-  'button[aria-label="Toggle task watchdogs experimental setting"]';
 const CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR =
   'button[aria-label="Toggle classic task interface experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
@@ -68,8 +63,6 @@ const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
 const STATUS_CARDS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle status cards experimental setting"]';
-const AUTO_RECOVERY_TOGGLE_SELECTOR =
-  'button[aria-label="Toggle task graph liveness auto-recovery"]';
 const PAPERCLIP_RUNNER_TOGGLE_SELECTOR =
   'button[aria-label="Toggle Paperclip Runner experimental setting"]';
 
@@ -94,14 +87,11 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
-    enableTaskWatchdogs: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
-    enableIssueGraphLivenessAutoRecovery: false,
-    issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
@@ -110,18 +100,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
-  };
-}
-
-function emptyRecoveryPreview(): IssueGraphLivenessAutoRecoveryPreview {
-  return {
-    lookbackHours: 24,
-    cutoff: "2026-07-12T16:00:00.000Z",
-    generatedAt: "2026-07-13T16:00:00.000Z",
-    findings: 0,
-    recoverableFindings: 0,
-    skippedOutsideLookback: 0,
-    items: [],
   };
 }
 
@@ -262,45 +240,11 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
-  it("renders and patches the Task Watchdogs experimental toggle on and off", async () => {
+  it("does not render a Task Watchdogs toggle because watchdogs are always enabled", async () => {
     await renderPage();
 
-    expect(container.textContent).toContain("Task Watchdogs");
-    expect(container.textContent).toContain(
-      "Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue.",
-    );
-
-    const toggle = container.querySelector<HTMLButtonElement>(TASK_WATCHDOGS_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableTaskWatchdogs: true,
-    });
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
-
-    flushSync(() => {
-      root?.unmount();
-    });
-    root = null;
-    container.textContent = "";
-    await renderPage();
-
-    const enabledToggle = container.querySelector<HTMLButtonElement>(TASK_WATCHDOGS_TOGGLE_SELECTOR);
-    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
-
-    await act(async () => {
-      enabledToggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
-      enableTaskWatchdogs: false,
-    });
+    expect(container.textContent).not.toContain("Task Watchdogs");
+    expect(container.querySelector('button[aria-label="Toggle task watchdogs experimental setting"]')).toBeNull();
   });
 
   it("does not expose the retired Runner Preview Ingress setting separately", async () => {
@@ -673,89 +617,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("removes the auto-recovery confirmation overlay after enabling only", async () => {
-    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(emptyRecoveryPreview());
-    await renderPage();
-
-    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery).toHaveBeenCalledWith({
-      lookbackHours: 24,
-    });
-    expect(document.body.textContent).toContain("Confirm auto-recovery");
-    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).not.toBeNull();
-
-    const enableOnlyButton = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Enable only",
-    );
-
-    await act(async () => {
-      enableOnlyButton?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableIssueGraphLivenessAutoRecovery: true,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
-    });
-    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
-    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
-    const enabledToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("removes the auto-recovery confirmation overlay after enabling and running", async () => {
-    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(emptyRecoveryPreview());
-    mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery.mockResolvedValue({
-      findings: 0,
-      autoRecoveryEnabled: true,
-      lookbackHours: 24,
-      cutoff: "2026-07-12T16:00:00.000Z",
-      escalationsCreated: 0,
-      existingEscalations: 0,
-      skipped: 0,
-      skippedAutoRecoveryDisabled: 0,
-    });
-    await renderPage();
-
-    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(document.body.textContent).toContain("Confirm auto-recovery");
-    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).not.toBeNull();
-
-    const enableAndRunButton = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Enable",
-    );
-
-    await act(async () => {
-      enableAndRunButton?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableIssueGraphLivenessAutoRecovery: true,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
-    });
-    expect(mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery).toHaveBeenCalledWith({
-      lookbackHours: 24,
-    });
-    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
-    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
-    const enabledToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
-  });
 });
 
 describe("InstanceExperimentalSettings — cloud-managed keys", () => {
@@ -795,6 +656,7 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
       root?.unmount();
     });
     root = null;
+    queryClient?.clear();
     container.remove();
     vi.clearAllMocks();
   });
@@ -862,58 +724,6 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
-  it("locks the managed auto-recovery toggle without opening the preview dialog", async () => {
-    await renderPage({
-      ...defaultExperimentalSettings(),
-      managedKeys: {
-        enableIssueGraphLivenessAutoRecovery: { managed: true, managedBy: "paperclip-cloud" },
-      },
-    });
-
-    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(toggle?.disabled).toBe(true);
-
-    await act(() => toggle?.click());
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
-    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
-  });
-
-  it("closes an open recovery preview when a refresh marks auto-recovery as managed", async () => {
-    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(
-      emptyRecoveryPreview(),
-    );
-    const settings = defaultExperimentalSettings();
-    await renderPage(settings);
-
-    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    await act(() => toggle?.click());
-    await flushReact();
-    expect(document.body.textContent).toContain("Confirm auto-recovery");
-
-    const managedSettings: InstanceExperimentalSettingsWithManaged = {
-      ...settings,
-      enableIssueGraphLivenessAutoRecovery: true,
-      managedKeys: {
-        enableIssueGraphLivenessAutoRecovery: { managed: true, managedBy: "paperclip-cloud" },
-      },
-    };
-    await act(() => {
-      queryClient.setQueryData(queryKeys.instance.experimentalSettings, managedSettings);
-    });
-    await flushReact();
-
-    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
-    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
-    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
-    expect(mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
-
-    const lockedToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
-    expect(lockedToggle?.disabled).toBe(true);
-  });
-
   it("renders no managed badge and keeps toggles editable without managedKeys (self-hosted)", async () => {
     await renderPage(defaultExperimentalSettings());
 
@@ -963,23 +773,43 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     });
     root = null;
     container.remove();
+    setWorktreeRuntimeMeta(false);
     vi.clearAllMocks();
   });
 
-  it("renders every card heading in alphabetical order", async () => {
+  it("groups developer and legacy settings into sections", async () => {
+    setWorktreeRuntimeMeta(true);
     await renderPage(defaultExperimentalSettings());
 
-    const headings = [...container.querySelectorAll("h2")].map(
+    const headings = [...container.querySelectorAll("section > div > h2")].map(
       (heading) => heading.textContent ?? "",
     );
+    expect(headings).toEqual([
+      "Experimental features",
+      "Paperclip Developer Mode",
+      "Legacy",
+    ]);
 
-    // Sanity: the page rendered a meaningful set of cards, not an empty list.
-    expect(headings.length).toBeGreaterThan(10);
+    const sections = [...container.querySelectorAll("section")];
+    expect(sections.at(0)?.textContent).not.toContain("Run tasks in this worktree");
+    expect(sections.at(0)?.textContent).not.toContain("Managed Environment Only");
+    expect(sections.at(-2)?.textContent).toContain("Run tasks in this worktree");
+    expect(sections.at(-2)?.textContent).toContain("Managed Environment Only");
+    expect(sections.at(-2)?.textContent).toContain("Auto-Restart Dev Server When Idle");
+    expect(sections.at(-2)?.textContent).toContain("Server Info Debug View");
+    expect(sections.at(-2)?.textContent).toContain("Smoke Lab");
+    expect(sections.at(-2)?.textContent).toContain("Task Plan Decomposition");
+    expect(sections.at(-1)?.textContent).toContain("These features are going to be removed.");
+    expect(sections.at(-1)?.textContent).toContain("Classic Task Interface");
+    expect(sections.at(-1)?.textContent).toContain("Goals Sidebar Link");
+  });
 
-    const alphabetical = [...headings].sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" }),
-    );
-    expect(headings).toEqual(alphabetical);
+  it("renders setting cards without a background color", async () => {
+    await renderPage(defaultExperimentalSettings());
+
+    const cards = [...container.querySelectorAll('[data-slot="card"]')];
+    expect(cards.length).toBeGreaterThan(10);
+    expect(cards.every((card) => card.classList.contains("bg-transparent"))).toBe(true);
   });
 
   it("no longer renders an 'Experimental' secondary badge on any card", async () => {
@@ -1033,7 +863,7 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
-    expect(container.textContent).toContain("Task Watchdogs");
+    expect(container.textContent).toContain("Apps");
   });
 
   it("shows every toggle when nothing is hidden", async () => {

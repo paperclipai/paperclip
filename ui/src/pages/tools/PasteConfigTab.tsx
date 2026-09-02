@@ -238,7 +238,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           setOAuthPhase("starting");
           oauthStartMutation.mutate(connectResult.connectionId);
         }}
-        onCancel={() => navigate(`/apps/${connectResult.connectionId}/setup`)}
+        onBack={() => navigate(`/apps/${connectResult.connectionId}/setup`)}
+        onCancel={() => navigate("/apps")}
       />
     );
   }

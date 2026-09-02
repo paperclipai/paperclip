@@ -8,17 +8,13 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  ClipboardPaste,
   Link2,
   Loader2,
   Lock,
   Search,
-  ShieldCheck,
-  TerminalSquare,
   UserRound,
   UsersRound,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
   AppDefinition,
@@ -53,7 +49,6 @@ import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
-import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { InlineBanner } from "@/components/InlineBanner";
@@ -583,7 +578,7 @@ export function ConnectionSetupFlow({
       setCredentials({});
       setConnectResult(null);
       setStep("key");
-      navigate(withConnectionIntent("/apps/connect?byo=1&source=zapier", connectionIntentId));
+      navigate(withConnectionIntent("/apps/connect?source=zapier", connectionIntentId));
       return;
     }
     if (credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(picked)) {
@@ -619,31 +614,14 @@ export function ConnectionSetupFlow({
     );
   };
 
-  const openGallery = () => {
-    setEntry(null);
-    setGalleryName("");
-    setLinkUrl("");
-    setLinkName("");
-    setLinkNeedsKey(false);
-    setLinkKey("");
-    resetGenericAuthState();
-    setCredentials({});
-    setCuratedOAuthClientId("");
-    setCuratedOAuthClientSecret("");
-    setVercelConnector("");
-    setConnectionMethodKey("");
-    setConfigValues({});
-    setGoogleSheetsLinks("");
-    setGoogleSheetsError(null);
-    setConnectResult(null);
-    setInstallAgentIds(new Set(requestedAgentId ? [requestedAgentId] : []));
-    setInstallChoice(requestedAgentId ? "specific" : "all");
-    setGrantKind("organization");
+  const backToGallery = () => {
+    // Back is a wizard transition, so keep the selected app and entered draft
+    // intact. Picking another connector will replace that state explicitly.
     setStep("gallery");
     navigate(withConnectionIntent(
       credentialSource === "vercel_connect"
         ? vercelConnectSourceHref()
-        : byoOnly ? "/apps/byo" : "/apps/connect?byo=1",
+        : byoOnly ? "/apps/byo" : "/apps",
       connectionIntentId,
     ));
   };
@@ -1499,7 +1477,12 @@ export function ConnectionSetupFlow({
             directOAuthRetryingRef.current = false;
           }
         }}
-        onCancel={onCancel ?? (() => navigate("/apps/browse"))}
+        onBack={() => {
+          setOAuthPhase("entry");
+          setOAuthError(null);
+          setAppStep("access");
+        }}
+        onCancel={onCancel ?? (() => navigate("/apps"))}
       />
     );
   }
@@ -1529,11 +1512,12 @@ export function ConnectionSetupFlow({
           setGenericOAuthPending(false);
           setOAuthPhase("entry");
         }}
-        onCancel={() => {
+        onBack={() => {
           setGenericOAuthPending(false);
           setOAuthPhase("entry");
           setOAuthError(null);
         }}
+        onCancel={onCancel ?? (() => navigate("/apps"))}
       />
     );
   }
@@ -1643,8 +1627,6 @@ export function ConnectionSetupFlow({
             setGrantKind(reconnectGrantKind ?? "organization");
             setStep("key");
           }}
-          onRunYourOwn={() => navigate(advancedTabHref("run-your-own"))}
-          onPasteConfig={() => navigate(advancedTabHref("paste-config"))}
         />
       )}
 
@@ -1684,16 +1666,9 @@ export function ConnectionSetupFlow({
             setGoogleSheetsError(null);
           }}
           submitting={connectMutation.isPending}
-          // Back returns to Access, not to the gallery: the design requires the
-          // identity and agent selections to survive moving backward, and
-          // `openGallery` resets them.
-          onBack={() => {
-            if (resumeConnectionId || reconnectConnectionId) {
-              navigate("/apps");
-              return;
-            }
-            setAppStep("access");
-          }}
+          // Back returns to Access for new, resumed, and reconnected accounts.
+          // Cancel is the separate exit to the connector list.
+          onBack={() => setAppStep("access")}
           onConnect={() => {
             if (isGoogleSheetsRobotMethod(entry, connectionMethodKey)) {
               const parsed = parseGoogleSheetIds(googleSheetsLinks);
@@ -1771,7 +1746,7 @@ export function ConnectionSetupFlow({
           matchedEntry={linkMatchedEntry}
           onUseMatchedEntry={linkMatchedEntry ? () => useMatchedGalleryEntry(linkMatchedEntry) : undefined}
           submitting={connectMutation.isPending || genericOAuthPending}
-          onBack={() => setStep("gallery")}
+          onBack={backToGallery}
           onConnect={() => {
             setLinkGuidance(null);
             connectMutation.mutate(undefined);
@@ -1784,15 +1759,13 @@ export function ConnectionSetupFlow({
           link={linkUrl}
           onLinkChange={setLinkUrl}
           submitting={connectMutation.isPending}
-          onBack={() => navigate("/apps")}
+          onBack={backToGallery}
           onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
 
       {step === "access" && (
         <AccessStep
-          appName={appName}
-          providerName={entry?.name ?? appName}
           companyId={selectedCompanyId}
           authKind={accessStepAuthKind}
           grantKinds={fixedGrantKind ? [fixedGrantKind] : accessStepMethod?.grantKinds}
@@ -1804,17 +1777,11 @@ export function ConnectionSetupFlow({
           setInstallAgentIds={setInstallAgentIds}
           lockedAgentId={requestedAgentId}
           capabilities={galleryQuery.data?.capabilities}
-          guidance={accessStepMethod?.guidanceMd}
-          warnings={accessStepMethod?.warnings}
-          setupPrerequisite={entry?.setupPrerequisite}
-          docsUrl={accessStepMethod?.consoleLinks?.docs ?? entry?.docsUrl}
           submitLabel={accessSubmitLabel}
           identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
           preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
           pending={connectMutation.isPending || oauthStartMutation.isPending}
-          // Leaving Access abandons the app choice entirely, so this resets the
-          // draft and returns to the gallery the operator came from.
-          onBack={() => (entry || linkUrl ? openGallery() : navigate("/apps"))}
+          onBack={backToGallery}
           onContinue={() => {
             if (directOAuthEntry) {
               directOAuthAccessConfirmedRef.current = true;
@@ -1843,7 +1810,7 @@ export function ConnectionSetupFlow({
             installCount: installAgentIds.size,
             enabledCount: Object.values(enabled).filter(Boolean).length,
           })}
-          onDone={onCancel ?? (() => navigate("/apps/connections"))}
+          onDone={onCancel ?? (() => navigate("/apps"))}
         />
       )}
     </div>
@@ -1916,6 +1883,7 @@ export function OAuthConnectStateScreen({
   error,
   authorizationHost,
   onRetry,
+  onBack,
   onCancel,
 }: {
   /** A curated app. Omit for a generic endpoint and pass `identity` instead. */
@@ -1933,6 +1901,7 @@ export function OAuthConnectStateScreen({
    */
   authorizationHost?: string | null;
   onRetry: () => void;
+  onBack: () => void;
   onCancel: () => void;
 }) {
   const serverName = entry?.name ?? identity?.name ?? "this server";
@@ -2004,7 +1973,7 @@ export function OAuthConnectStateScreen({
               {phase === "redirecting" ? `Opening ${serverName}…` : "Preparing…"}
             </Button>
           )}
-          <Button type="button" variant="ghost" onClick={onCancel}>Back to apps</Button>
+          <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
         </div>
         <p className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <Lock className="h-3.5 w-3.5" />
@@ -2092,14 +2061,12 @@ function GalleryStep({
   source = null,
   onPick,
   onUseLink,
-  onRunYourOwn,
-  onPasteConfig,
 }: {
   loading: boolean;
   apps: AppDefinition[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
-  /** Canonical BYO page: keep the URL path and alternate methods, without the app gallery. */
+  /** Canonical BYO page: keep the focused URL setup without the app gallery. */
   byoOnly?: boolean;
   /** Isolated Vercel catalog: no native-provider or bring-your-own setup paths. */
   vercelConnect?: boolean;
@@ -2111,8 +2078,6 @@ function GalleryStep({
   source?: string | null;
   onPick: (entry: AppDefinition) => void;
   onUseLink: (link: string) => void;
-  onRunYourOwn: () => void;
-  onPasteConfig: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [linkInput, setLinkInput] = useState("");
@@ -2332,56 +2297,7 @@ function GalleryStep({
         </div>
       </div> : null}
 
-      {!vercelConnect ? <div className="border-t border-border pt-5">
-        <div className="text-sm font-semibold text-foreground">More ways to connect</div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          For tools that aren’t in the gallery. You’ll need details from the tool’s docs.
-        </p>
-        <div className="mt-3 flex flex-col gap-2">
-          <ConnectMethodRow
-            icon={TerminalSquare}
-            title="Run your own"
-            description="Register a command Paperclip runs in your workspace for a tool that isn’t listed."
-            onClick={onRunYourOwn}
-          />
-          <ConnectMethodRow
-            icon={ClipboardPaste}
-            title="Paste a config"
-            description="Already have a setup snippet from a README? Paste it and we’ll connect it."
-            onClick={onPasteConfig}
-          />
-        </div>
-      </div> : null}
     </div>
-  );
-}
-
-function ConnectMethodRow({
-  icon: Icon,
-  title,
-  description,
-  onClick,
-}: {
-  icon: LucideIcon;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
-    >
-      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-foreground">{title}</div>
-        <div className="truncate text-xs text-muted-foreground">{description}</div>
-      </div>
-      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </button>
   );
 }
 
@@ -3435,8 +3351,6 @@ function MethodConfigField({
  * get. Hick's Law: two choices, not a matrix. Both use full-row radio targets.
  */
 export function AccessStep({
-  appName,
-  providerName,
   companyId,
   authKind,
   grantKinds,
@@ -3448,10 +3362,6 @@ export function AccessStep({
   setInstallAgentIds,
   lockedAgentId,
   capabilities,
-  guidance,
-  warnings,
-  setupPrerequisite,
-  docsUrl,
   submitLabel,
   identityLoading = false,
   preserveAgentAccess = false,
@@ -3459,8 +3369,6 @@ export function AccessStep({
   onBack,
   onContinue,
 }: {
-  appName: string;
-  providerName: string;
   companyId: string;
   authKind: ToolConnectionAuthKind;
   grantKinds?: ConnectionGrantKind[];
@@ -3476,10 +3384,6 @@ export function AccessStep({
     companyInstallReason?: string | null;
     editableAgentIds?: string[];
   } | null;
-  guidance?: string;
-  warnings?: string[];
-  setupPrerequisite?: AppDefinition["setupPrerequisite"];
-  docsUrl?: string;
   submitLabel: string;
   /** Wait for a durable OAuth connection before showing a reconnect identity. */
   identityLoading?: boolean;
@@ -3494,7 +3398,7 @@ export function AccessStep({
     queryFn: () => agentsApi.list(companyId),
   });
   const allAgents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
-  // "Agents I pick" means agents this person may actually edit. When the server
+  // "Just agents I pick" means agents this person may actually edit. When the server
   // has not told us, fall back to every live agent rather than an empty list —
   // an empty picker would read as "you have no agents".
   const editableAgentIds = capabilities?.editableAgentIds;
@@ -3520,106 +3424,29 @@ export function AccessStep({
 
   return (
     <div className="mx-auto max-w-2xl">
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        <div className="flex items-start gap-3 border-b border-border p-6">
-          <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <ShieldCheck className="h-5 w-5" aria-hidden="true" />
-          </span>
-          <div>
-            <h2 className="text-xl font-bold tracking-tight">
-              {authKind === "oauth" ? "Choose access before sign-in" : "Choose access before adding credentials"}
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {authKind === "oauth"
-                ? `Set the identity and agent reach first. Then ${providerName} will ask you to authorize that exact connection.`
-                : "Set the identity and agent reach first. Then add the credential for that exact connection."}
-            </p>
-          </div>
-        </div>
-
-        {guidance || warnings?.length || setupPrerequisite || docsUrl ? (
-          <div className="space-y-3 border-b border-border p-6">
-            {warnings?.map((warning) => (
-              <InlineBanner key={warning} tone="warning" compact>{warning}</InlineBanner>
-            ))}
-            {guidance ? <p className="text-sm text-foreground">{guidance}</p> : null}
-            {setupPrerequisite ? (
-              <div className="rounded-lg border border-border bg-muted/30 p-4">
-                <h3 className="text-sm font-semibold text-foreground">{setupPrerequisite.title}</h3>
-                <p className="mt-1 text-xs text-muted-foreground">{setupPrerequisite.description}</p>
-                {setupPrerequisite.steps?.length ? (
-                  <ol
-                    aria-label={`${setupPrerequisite.title} steps`}
-                    className="mt-3 list-decimal space-y-1 pl-4 text-xs text-muted-foreground"
-                  >
-                    {setupPrerequisite.steps.map((step) => <li key={step}>{step}</li>)}
-                  </ol>
-                ) : null}
-                <a
-                  href={setupPrerequisite.actionUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
-                >
-                  {setupPrerequisite.actionLabel}
-                  <ArrowUpRight className="h-3 w-3" />
-                </a>
-              </div>
-            ) : null}
-            {docsUrl ? (
-              <a
-                href={docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
-              >
-                Review {providerName} setup requirements
-                <ArrowUpRight className="h-3 w-3" />
-              </a>
-            ) : null}
-          </div>
-        ) : null}
-
+      <div className="overflow-hidden rounded-xl border border-border">
         <div className="divide-y divide-border">
           <section className="p-6">
-            <div className="flex items-start gap-3">
-              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                <UserRound className="h-4 w-4" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">Who is this credential for?</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Whose {appName} account should agents act as?
-                </p>
-              </div>
-            </div>
+            <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>
             {identityLoading ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="Loading connection identity">
                 <Skeleton className="h-20 w-full rounded-md" />
                 <Skeleton className="h-20 w-full rounded-md" />
               </div>
             ) : needsIdentityChoice && allowedGrantKinds.length === 1 ? (
-              <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
+              <div className="mt-4 flex items-center gap-3 rounded-md border border-border p-4">
                 {allowedGrantKinds[0] === "user" ? (
-                  <UserRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                  <UserRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 ) : (
-                  <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                  <UsersRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
-                <div>
-                  <div className="text-sm font-medium text-foreground">
-                    {allowedGrantKinds[0] === "user" ? "Just me." : "Everyone in the company"}
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {allowedGrantKinds[0] === "user"
-                      ? `Agents use this ${appName} identity only when work runs for you.`
-                      : `Eligible company members share this ${appName} identity.`}
-                    {preserveAgentAccess ? " Reconnect keeps this identity type." : null}
-                  </p>
+                <div className="text-sm font-medium text-foreground">
+                  {allowedGrantKinds[0] === "user" ? "Just me" : "Any human in the company"}
                 </div>
               </div>
             ) : needsIdentityChoice ? (
               <RadioCardGroup
-                ariaLabel="Who is this credential for?"
+                ariaLabel="Which humans can use this credential?"
                 className="mt-4 sm:grid-cols-2"
                 value={grantKind}
                 onValueChange={(next) => setGrantKind(next as ConnectionGrantKind)}
@@ -3627,12 +3454,12 @@ export function AccessStep({
                   {
                     value: "user",
                     title: "Just me",
-                    description: "Agents use this identity only when work runs for you.",
+                    icon: <UserRound className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "organization",
-                    title: "Everyone in the company",
-                    description: "Eligible company members use one shared identity.",
+                    title: "Any human in the company",
+                    icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
                   },
                 ].filter((option) => allowedGrantKinds.includes(option.value as ConnectionGrantKind))}
               />
@@ -3644,15 +3471,7 @@ export function AccessStep({
           </section>
 
           <section className="p-6">
-            <div className="flex items-start gap-3">
-              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                <Bot className="h-4 w-4" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h3>
-                <p className="mt-1 text-xs text-muted-foreground">Choose where this connection will be available.</p>
-              </div>
-            </div>
+            <h2 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h2>
             {preserveAgentAccess ? (
               <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
                 <UsersRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
@@ -3677,14 +3496,19 @@ export function AccessStep({
                 options={[
                   {
                     value: "specific",
-                    title: "Agents I pick",
-                    description: "Choose one or more agents you can edit.",
+                    title: "Just agents I pick",
+                    icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "all",
                     title: "Any agent",
-                    description: canSetCompanyInstall
-                      ? "Make this connection available to every agent."
+                    icon: <BotGroupIcon />,
+                    accessibleLabel: canSetCompanyInstall
+                      ? "Any agent"
+                      : `Any agent. Unavailable: ${capabilities?.companyInstallReason ??
+                        "Only someone who can configure this connection can choose this."}`,
+                    tooltip: canSetCompanyInstall
+                      ? undefined
                       : capabilities?.companyInstallReason ??
                         "Only someone who can configure this connection can choose this.",
                     disabled: !canSetCompanyInstall,
@@ -3725,6 +3549,15 @@ export function AccessStep({
         </Button>
       </div>
     </div>
+  );
+}
+
+function BotGroupIcon() {
+  return (
+    <span className="relative block h-4 w-5" aria-hidden="true">
+      <Bot className="absolute left-0 top-0 h-3.5 w-3.5" />
+      <Bot className="absolute bottom-0 right-0 h-3.5 w-3.5" />
+    </span>
   );
 }
 

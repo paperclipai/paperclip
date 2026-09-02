@@ -18,6 +18,16 @@ describe("instance experimental settings validators", () => {
     ).toEqual({ enablePaperclipDeveloperMode: true });
   });
 
+  it("strips retired watchdog and liveness auto-recovery settings", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableTaskWatchdogs: false,
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 24,
+      }),
+    ).toEqual({});
+  });
+
   it("defaults workspace branch repair settings on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 

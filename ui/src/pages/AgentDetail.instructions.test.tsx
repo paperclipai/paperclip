@@ -42,7 +42,6 @@ vi.mock("@/adapters/use-adapter-capabilities", () => ({
     supportsSkills: true,
     supportsLocalAgentJwt: true,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: true,
   }),
 }));
 
