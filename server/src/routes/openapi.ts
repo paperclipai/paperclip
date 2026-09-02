@@ -977,6 +977,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/cancel",
   "PATCH /api/issues/{id}/queued-comments/{commentId}",
   "DELETE /api/issues/{id}/queued-comments/{commentId}",
+  "POST /api/issues/{id}/queued-comments/{commentId}/steer",
   "PUT /api/issues/{id}/queued-comments/order",
   "POST /api/issues/{id}/scheduled-retry/retry-now",
   "POST /api/issues/{id}/stalled-review-decision",
@@ -1158,8 +1159,6 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "PATCH /api/instance/settings",
   "PATCH /api/instance/settings/general",
   "PATCH /api/instance/settings/experimental",
-  "POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
-  "POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
   "POST /api/instance/task-drain",
   "DELETE /api/instance/task-drain",
 ]);
