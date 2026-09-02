@@ -171,10 +171,7 @@ function readBoundedNativeFile(
   maxBytes: number,
   errorCode: string,
 ): Buffer {
-  const descriptor = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  );
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = fstatSync(descriptor);
     if (!before.isFile() || before.size > maxBytes) throw new Error(errorCode);
@@ -1038,7 +1035,72 @@ function nativeSessionKey(execution: NativeExecutionInput): string {
   );
 }
 
+function nativeSessionWorkspaceScope(execution: NativeExecutionInput) {
+  // Projectless local runs use the heartbeat run id as a durable placeholder
+  // rather than fabricating an execution_workspaces row. Do not let that
+  // per-run placeholder break continuity for the same provider session; the
+  // immutable workspace descriptor is the stable identity in that case.
+  const transientWorkspace =
+    execution.binding.executionWorkspaceId === execution.binding.runId;
+  return transientWorkspace
+    ? {
+        kind: "transient" as const,
+        cwd: execution.workspace.cwd,
+        repoUrl: execution.workspace.repoUrl,
+        repoRef: execution.workspace.repoRef,
+        branchName: execution.workspace.branchName,
+      }
+    : {
+        kind: "managed" as const,
+        executionWorkspaceId: execution.binding.executionWorkspaceId,
+      };
+}
+
+function nativeProviderSessionScope(execution: NativeExecutionInput) {
+  switch (execution.provider.kind) {
+    case "claude_managed":
+      return {
+        kind: execution.provider.kind,
+        profileId: execution.provider.managedProfile.profileId,
+      };
+    case "aws_agentcore":
+      return {
+        kind: execution.provider.kind,
+        profileId: execution.provider.agentCoreProfile.profileId,
+      };
+    case "acpx":
+      return {
+        kind: execution.provider.kind,
+        agent: execution.provider.agent,
+        profile: execution.provider.profile,
+      };
+    case "codex":
+    case "opencode":
+      // These local providers have no separate persisted profile id. Company,
+      // agent, and workspace bind their credential/session context; mutable
+      // model and permission settings remain in nativeSessionConfigDigest so
+      // they rotate an incompatible warm session within the same scope.
+      return { kind: execution.provider.kind };
+  }
+}
+
 function nativeSessionScopeKey(execution: NativeExecutionInput): string {
+  return canonicalJson({
+    schema: "paperclip.native-session-scope.v2",
+    companyId: execution.binding.companyId,
+    agentId: execution.binding.agentId,
+    workspace: nativeSessionWorkspaceScope(execution),
+    provider: {
+      driverKind: execution.session.driverKind,
+      identity: nativeProviderSessionScope(execution),
+    },
+    normalizedSessionId: nativeSessionKey(execution),
+  });
+}
+
+function legacyCompanyNativeSessionScopeKey(
+  execution: NativeExecutionInput,
+): string {
   return JSON.stringify([
     execution.binding.companyId,
     nativeSessionKey(execution),
@@ -1046,19 +1108,31 @@ function nativeSessionScopeKey(execution: NativeExecutionInput): string {
 }
 
 function runnerdStateBase(): string {
-  return process.env.PAPERCLIP_RUNNER_STATE_DIR ?? resolve(
-    resolvePaperclipInstanceRoot(),
-    "runtime",
-    "paperclip-runner",
-    "durable-sessions",
+  return (
+    process.env.PAPERCLIP_RUNNER_STATE_DIR ??
+    resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "durable-sessions",
+    )
   );
 }
 
 function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   return resolve(
     runnerdStateBase(),
+    createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex"),
+  );
+}
+
+function legacyCompanyRunnerdStateRoot(
+  execution: NativeExecutionInput,
+): string {
+  return resolve(
+    runnerdStateBase(),
     createHash("sha256")
-      .update(nativeSessionScopeKey(execution))
+      .update(legacyCompanyNativeSessionScopeKey(execution))
       .digest("hex"),
   );
 }
@@ -1068,6 +1142,38 @@ function legacyRunnerdStateRoot(execution: NativeExecutionInput): string {
     runnerdStateBase(),
     createHash("sha256").update(nativeSessionKey(execution)).digest("hex"),
   );
+}
+
+function migrateLegacyRunnerdStateRoot(input: {
+  legacy: string;
+  scoped: string;
+  execution: NativeExecutionInput;
+}): string | null {
+  if (!existsSync(input.legacy)) return null;
+  if (!isSafeNativeStateDirectory(input.legacy)) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  const legacyIdentity = readRunnerdDurableIdentity(input.legacy);
+  if (!durableIdentityMatchesExecution(legacyIdentity, input.execution)) {
+    throw new Error("runner_state_identity_mismatch");
+  }
+  try {
+    renameSync(input.legacy, input.scoped);
+  } catch (error) {
+    // Another in-process recovery may have won the atomic rename. The scoped
+    // directory is authoritative once it exists; otherwise preserve the
+    // original migration failure rather than silently starting empty state.
+    if (!isSafeNativeStateDirectory(input.scoped)) throw error;
+    if (
+      !durableIdentityMatchesSession(
+        readRunnerdDurableIdentity(input.scoped),
+        input.execution,
+      )
+    ) {
+      throw new Error("runner_state_identity_mismatch");
+    }
+  }
+  return input.scoped;
 }
 
 function isSafeNativeStateDirectory(path: string): boolean {
@@ -1112,8 +1218,8 @@ function durableIdentityMatchesExecution(
 ): identity is RunnerdDurableIdentity {
   return Boolean(
     identity &&
-      identity.runId === execution.binding.runId &&
-      durableIdentityMatchesSession(identity, execution),
+    identity.runId === execution.binding.runId &&
+    durableIdentityMatchesSession(identity, execution),
   );
 }
 
@@ -1123,21 +1229,21 @@ function durableIdentityMatchesSession(
 ): identity is RunnerdDurableIdentity {
   return Boolean(
     identity &&
-      identity.normalizedSessionId === nativeSessionKey(execution) &&
-      typeof identity.runId === "string" &&
-      identity.runId.length > 0 &&
-      typeof identity.runnerInstanceId === "string" &&
-      identity.runnerInstanceId.length > 0 &&
-      typeof identity.environmentLeaseId === "string" &&
-      identity.environmentLeaseId.length > 0,
+    identity.normalizedSessionId === nativeSessionKey(execution) &&
+    typeof identity.runId === "string" &&
+    identity.runId.length > 0 &&
+    typeof identity.runnerInstanceId === "string" &&
+    identity.runnerInstanceId.length > 0 &&
+    typeof identity.environmentLeaseId === "string" &&
+    identity.environmentLeaseId.length > 0,
   );
 }
 
 /**
- * Pre-company-scope state is reused only when its durable identity is bound to
- * this exact run and normalized session. Run ids are globally unique database
- * keys, so another company cannot claim a legacy directory by choosing the
- * same display/session id. New sessions always use the company-scoped root.
+ * Pre-v2 state is migrated only when its durable identity is bound to this
+ * exact run and normalized session. That lets an active run survive an
+ * upgrade, while ambiguous old company/session-only state can never be
+ * claimed by another agent, workspace, or provider profile.
  */
 function runnerdStateRoot(execution: NativeExecutionInput): string {
   const scoped = scopedRunnerdStateRoot(execution);
@@ -1147,13 +1253,18 @@ function runnerdStateRoot(execution: NativeExecutionInput): string {
     }
     return scoped;
   }
-  const legacy = legacyRunnerdStateRoot(execution);
-  return durableIdentityMatchesExecution(
-    readRunnerdDurableIdentity(legacy),
-    execution,
-  )
-    ? legacy
-    : scoped;
+  for (const legacy of [
+    legacyCompanyRunnerdStateRoot(execution),
+    legacyRunnerdStateRoot(execution),
+  ]) {
+    const migrated = migrateLegacyRunnerdStateRoot({
+      legacy,
+      scoped,
+      execution,
+    });
+    if (migrated) return migrated;
+  }
+  return scoped;
 }
 
 function loadRunnerdDurableBinding(execution: NativeExecutionInput): {
@@ -1582,6 +1693,17 @@ function nativeSessionCheckpointPath(execution: NativeExecutionInput): string {
   );
 }
 
+function legacyCompanyNativeSessionCheckpointPath(
+  execution: NativeExecutionInput,
+): string {
+  return resolve(
+    nativeSessionCheckpointDirectory(),
+    `${createHash("sha256")
+      .update(legacyCompanyNativeSessionScopeKey(execution))
+      .digest("hex")}.json`,
+  );
+}
+
 function legacyNativeSessionCheckpointPath(
   execution: NativeExecutionInput,
 ): string {
@@ -1619,10 +1741,12 @@ function loadWarmNativeCheckpoint(
   configDigest: string,
 ): PersistedNativeSession | null {
   const scopedPath = nativeSessionCheckpointPath(execution);
-  const path = existsSync(scopedPath)
-    ? scopedPath
-    : legacyNativeSessionCheckpointPath(execution);
-  if (!existsSync(path)) return null;
+  const path = [
+    scopedPath,
+    legacyCompanyNativeSessionCheckpointPath(execution),
+    legacyNativeSessionCheckpointPath(execution),
+  ].find((candidate) => existsSync(candidate));
+  if (!path) return null;
   const envelope = JSON.parse(
     readBoundedNativeFile(
       path,
@@ -1644,7 +1768,15 @@ function loadWarmNativeCheckpoint(
   // incompatibility boundary. Leave the older checkpoint replayable by its
   // original execution, but start a fresh provider session for this config.
   if (envelope.configDigest !== configDigest) return null;
-  return {
+  const persistedIdentity = record(envelope.snapshot.identity);
+  if (
+    persistedIdentity.sessionId !== nativeSessionKey(execution) ||
+    persistedIdentity.companyId !== execution.binding.companyId ||
+    persistedIdentity.agentId !== execution.binding.agentId
+  ) {
+    throw new Error("native_session_supervisor_checkpoint_mismatch");
+  }
+  const resumed = {
     ...envelope.snapshot,
     identity: {
       runId: execution.binding.runId,
@@ -1659,6 +1791,13 @@ function loadWarmNativeCheckpoint(
     terminalTurns: [],
     pendingRuntimeRequests: [],
   };
+  if (path !== scopedPath) {
+    // Copy the validated legacy checkpoint into the fully scoped location.
+    // persistWarmNativeCheckpoint uses an atomic rename and leaving the old
+    // file in place keeps this migration idempotent across interrupted boots.
+    persistWarmNativeCheckpoint(execution, configDigest, resumed);
+  }
+  return resumed;
 }
 
 async function releaseWarmNativeSession(
@@ -2180,9 +2319,7 @@ export async function cancelNativeSession(
           lastStatusDecisionId: issues.lastStatusDecisionId,
         })
         .from(issues)
-        .where(
-          and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
-        )
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!issue) throw new Error("native_cancellation_binding_missing");
@@ -2260,10 +2397,7 @@ export async function cancelNativeSession(
         .where(
           and(
             eq(nativeRunFinalizations.runId, runId),
-            eq(
-              nativeRunFinalizations.companyId,
-              cancellationContext.companyId,
-            ),
+            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
             eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
           ),
         )
@@ -2377,8 +2511,7 @@ export async function cancelNativeSession(
         acknowledged: false,
         dispatched: false,
         decisionId: null,
-        priorCoordinatorDecisionId:
-          cancellationContext.coordinatorDecisionId,
+        priorCoordinatorDecisionId: cancellationContext.coordinatorDecisionId,
         existing: false,
       };
     });
@@ -2499,10 +2632,7 @@ export async function cancelNativeSession(
         .where(
           and(
             eq(nativeRunFinalizations.runId, runId),
-            eq(
-              nativeRunFinalizations.companyId,
-              cancellationContext.companyId,
-            ),
+            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
             eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
           ),
         )
@@ -2543,8 +2673,7 @@ export async function cancelNativeSession(
           .set({
             status: "running",
             continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
-            nextAction:
-              "Accept a replacement native turn on the existing run.",
+            nextAction: "Accept a replacement native turn on the existing run.",
             updatedAt: new Date(),
           })
           .where(
@@ -2662,8 +2791,7 @@ export async function renewNativeSessionExecutionLease(input: {
   attempt: number;
   leaseTtlMs?: number;
 }): Promise<void> {
-  const leaseTtlMs =
-    input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
+  const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   if (
     !Number.isInteger(leaseTtlMs) ||
     leaseTtlMs < 1_000 ||
@@ -2773,17 +2901,17 @@ export async function executePaperclipNativeSession(input: {
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
   if (
-    input.execution.provider.kind !== "codex"
-    && input.execution.provider.kind !== "opencode"
-    && input.execution.provider.kind !== "claude_managed"
-    && input.execution.provider.kind !== "aws_agentcore"
-    && input.execution.provider.kind !== "acpx"
+    input.execution.provider.kind !== "codex" &&
+    input.execution.provider.kind !== "opencode" &&
+    input.execution.provider.kind !== "claude_managed" &&
+    input.execution.provider.kind !== "aws_agentcore" &&
+    input.execution.provider.kind !== "acpx"
   ) {
     throw new Error("paperclip_runner_provider_unsupported");
   }
   if (
-    input.execution.provider.kind === "acpx"
-    && input.execution.provider.agent === "pi"
+    input.execution.provider.kind === "acpx" &&
+    input.execution.provider.agent === "pi"
   ) {
     throw new Error(
       "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
@@ -3654,10 +3782,7 @@ export async function executePaperclipNativeSession(input: {
               nativeRunFinalizations.companyId,
               input.execution.binding.companyId,
             ),
-            eq(
-              nativeRunFinalizations.issueId,
-              input.execution.binding.issueId,
-            ),
+            eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
             gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
@@ -3766,14 +3891,8 @@ export async function executePaperclipNativeSession(input: {
     .where(
       and(
         eq(nativeRunFinalizations.runId, input.execution.binding.runId),
-        eq(
-          nativeRunFinalizations.companyId,
-          input.execution.binding.companyId,
-        ),
-        eq(
-          nativeRunFinalizations.issueId,
-          input.execution.binding.issueId,
-        ),
+        eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+        eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
         eq(nativeRunFinalizations.leaseOwner, leaseOwner),
         eq(nativeRunFinalizations.attempt, attempt),
         gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
@@ -4104,12 +4223,36 @@ export function readRemoteProviderPackManifest(
     );
   }
   const artifactEntries = [
-    ["provider Node", payload.artifacts?.nodeCommand, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.nodeCommand],
-    ["production lockfile", payload.artifacts?.productionLock, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.productionLock],
-    ["OpenCode command", payload.artifacts?.opencodeCommand, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeCommand],
-    ["OpenCode executable", payload.artifacts?.opencodeExecutable, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeExecutable],
-    ["OpenCode proxy", payload.artifacts?.opencodeProxy, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeProxy],
-    ["ACPX sidecar", payload.artifacts?.acpxSidecar, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.acpxSidecar],
+    [
+      "provider Node",
+      payload.artifacts?.nodeCommand,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.nodeCommand,
+    ],
+    [
+      "production lockfile",
+      payload.artifacts?.productionLock,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.productionLock,
+    ],
+    [
+      "OpenCode command",
+      payload.artifacts?.opencodeCommand,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeCommand,
+    ],
+    [
+      "OpenCode executable",
+      payload.artifacts?.opencodeExecutable,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeExecutable,
+    ],
+    [
+      "OpenCode proxy",
+      payload.artifacts?.opencodeProxy,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeProxy,
+    ],
+    [
+      "ACPX sidecar",
+      payload.artifacts?.acpxSidecar,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.acpxSidecar,
+    ],
   ] as const;
   for (const [label, artifact, expectedPath] of artifactEntries) {
     const artifactPath = providerPackRelativePath(
@@ -4750,6 +4893,19 @@ export async function createRunnerdBackend(input: {
   sessionToolRouters.set(sessionScopeId, authorityRouter);
   const dynamicTools = await authorityRouter.definitions();
   const root = runnerdStateRoot(input.execution);
+  const durableIdentity = readRunnerdDurableIdentity(root);
+  const durableBinding = durableIdentityMatchesSession(
+    durableIdentity,
+    input.execution,
+  )
+    ? durableIdentity
+    : null;
+  const effectiveRunnerInstanceId =
+    durableBinding?.runnerInstanceId ?? input.runnerInstanceId;
+  const effectiveEnvironmentLeaseId =
+    durableBinding?.environmentLeaseId ??
+    input.durableEnvironmentLeaseId ??
+    input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const remoteTarget = target.kind === "remote" ? target : null;
   const remoteCommandRunner = remoteTarget
@@ -6114,9 +6270,9 @@ export async function createRunnerdBackend(input: {
                 expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
               ),
               providerNodeCommandSha256:
-                expectedProviderPackManifest.payload.artifacts.nodeCommand.sha256,
-              providerPackAuthorityDigest:
-                expectedProviderPackManifest.digest,
+                expectedProviderPackManifest.payload.artifacts.nodeCommand
+                  .sha256,
+              providerPackAuthorityDigest: expectedProviderPackManifest.digest,
               opencodeCommand: posix.join(
                 stagedRemoteProviderPackRoot,
                 expectedProviderPackManifest.payload.artifacts
@@ -6138,7 +6294,8 @@ export async function createRunnerdBackend(input: {
                 expectedProviderPackManifest.payload.artifacts.acpxSidecar.path,
               ),
               acpxSidecarSha256:
-                expectedProviderPackManifest.payload.artifacts.acpxSidecar.sha256,
+                expectedProviderPackManifest.payload.artifacts.acpxSidecar
+                  .sha256,
             }
           : {}),
         stateDirectory: root,
@@ -6184,10 +6341,8 @@ export async function createRunnerdBackend(input: {
             ? "allow_replacement_after_governed_wait"
             : undefined),
         prpIdentity: {
-          runnerInstanceId: input.runnerInstanceId,
-          environmentLeaseId:
-            input.durableEnvironmentLeaseId ??
-            input.execution.binding.executionWorkspaceId,
+          runnerInstanceId: effectiveRunnerInstanceId,
+          environmentLeaseId: effectiveEnvironmentLeaseId,
           runId: input.execution.binding.runId,
           normalizedSessionId:
             input.execution.session.normalizedSessionId ??
@@ -6234,8 +6389,7 @@ export async function createRunnerdBackend(input: {
 
               const requiredMode = resolveRemoteRunnerTransportMode({
                 target,
-                runnerIngressAuthorized:
-                  input.runnerIngressAuthorized === true,
+                runnerIngressAuthorized: input.runnerIngressAuthorized === true,
               });
               let transport: PaperclipRunnerTransport;
               if (requiredMode === "dial_wss") {

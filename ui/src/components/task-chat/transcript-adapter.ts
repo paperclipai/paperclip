@@ -601,22 +601,23 @@ export function transcriptToTaskChatItems(
     switch (entry.kind) {
       case "thinking": {
         const lifecycleOnly = !entry.text;
-        const openThinking = thinkingIndex >= 0 ? items[thinkingIndex] : undefined;
+        const openThinking =
+          thinkingIndex >= 0 ? items[thinkingIndex] : undefined;
         const continuesAnonymousLifecycle =
-          entry.itemId === undefined
-          && thinkingItemId === undefined
-          && lifecycleOnly
-          && entry.lifecycle === "completed"
-          && openThinking?.kind === "thinking"
-          && openThinking.lifecycleOnly === true;
+          entry.itemId === undefined &&
+          thinkingItemId === undefined &&
+          lifecycleOnly &&
+          entry.lifecycle === "completed" &&
+          openThinking?.kind === "thinking" &&
+          openThinking.lifecycleOnly === true;
         const sameThinkingItem =
-          thinkingIndex >= 0
-          && thinkingChannel === entry.channel
-          && (
-            (entry.itemId !== undefined && entry.itemId === thinkingItemId)
-            || (entry.itemId === undefined && thinkingItemId === undefined && entry.delta === true)
-            || continuesAnonymousLifecycle
-          );
+          thinkingIndex >= 0 &&
+          thinkingChannel === entry.channel &&
+          ((entry.itemId !== undefined && entry.itemId === thinkingItemId) ||
+            (entry.itemId === undefined &&
+              thinkingItemId === undefined &&
+              entry.delta === true) ||
+            continuesAnonymousLifecycle);
         if (sameThinkingItem) {
           const it = items[thinkingIndex];
           if (it.kind === "thinking") {
@@ -666,12 +667,12 @@ export function transcriptToTaskChatItems(
         finishThinking();
         const channel = entry.channel;
         const sameMessage =
-          messageIndex >= 0
-          && messageChannel === channel
-          && (
-            (entry.itemId !== undefined && entry.itemId === messageItemId)
-            || (entry.itemId === undefined && messageItemId === undefined && entry.delta === true)
-          );
+          messageIndex >= 0 &&
+          messageChannel === channel &&
+          ((entry.itemId !== undefined && entry.itemId === messageItemId) ||
+            (entry.itemId === undefined &&
+              messageItemId === undefined &&
+              entry.delta === true));
         if (sameMessage) {
           const it = items[messageIndex];
           if (it.kind === "message") {
@@ -966,7 +967,8 @@ export function transcriptToTaskChatItems(
         if (
           entry.subtype !== "paperclip_runner_usage" &&
           entry.subtype !== "paperclip_runner_session_usage"
-        ) break;
+        )
+          break;
         const inputTokens = entry.inputTokens || 0;
         const outputTokens = entry.outputTokens || 0;
         items.push({
@@ -1102,7 +1104,8 @@ export function paperclipRunnerActivityItems(
         if (
           hasAggregateWorkspaceChange &&
           (normalizedName === "file_change" || normalizedName === "filechange")
-        ) return false;
+        )
+          return false;
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
@@ -1164,8 +1167,9 @@ export function paperclipRunnerTimelineItems(
 
 /**
  * Resolve the durable response owned by a Paperclip Runner turn. Provider final
- * text wins when present; yielded control-plane runs fall back to the accepted
- * run-result summary because those runs intentionally do not post a comment.
+ * text wins when present, followed by a compatible terminal assistant message
+ * and then the accepted run-result summary. The caller keeps yielded
+ * control-plane waits out of the final-response slot.
  */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
@@ -1199,7 +1203,12 @@ export function paperclipRunnerFinalResponse(
       item.channel !== "progress" &&
       item.text.trim()
     ) {
-      return { ...item, channel: "final", interstitial: false, streaming: false };
+      return {
+        ...item,
+        channel: "final",
+        interstitial: false,
+        streaming: false,
+      };
     }
   }
   const runResult = [...parsed]
@@ -1528,27 +1537,26 @@ export function buildTurnTimelineRows(
     }
     return current;
   };
-  const legacyReplyBoundary = [...parsed]
-    .reverse()
-    .find((item) => {
-      if (item.kind === "usage" || item.kind === "status") return false;
-      if (item.kind === "marker") {
-        return item.variant === "interrupted";
-      }
-      if (item.kind === "protocol") {
-        return (
-          item.surface === "provider_activity" ||
-          item.surface === "runtime_request"
-        );
-      }
-      return true;
-    });
+  const legacyReplyBoundary = [...parsed].reverse().find((item) => {
+    if (item.kind === "usage" || item.kind === "status") return false;
+    if (item.kind === "marker") {
+      return item.variant === "interrupted";
+    }
+    if (item.kind === "protocol") {
+      return (
+        item.surface === "provider_activity" ||
+        item.surface === "runtime_request"
+      );
+    }
+    return true;
+  });
   for (const item of parsed) {
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
       // usage row makes them non-tail. Channel-less legacy transcripts retain
       // the last-visible fallback until the posted reply lands.
-      const explicitFinal = item.channel === "final" || item.interstitial === false;
+      const explicitFinal =
+        item.channel === "final" || item.interstitial === false;
       const legacyTrailingReply =
         (item.channel == null || item.channel === "unknown") &&
         item === legacyReplyBoundary;
@@ -1574,7 +1582,10 @@ export function buildTurnTimelineRows(
       ) {
         rows.push(latest.id === item.id ? latest : { ...latest, id: item.id });
       }
-    } else if (item.kind === "protocol" && item.surface === "workspace_change") {
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "workspace_change"
+    ) {
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {

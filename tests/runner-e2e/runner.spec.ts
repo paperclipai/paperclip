@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
@@ -83,6 +83,7 @@ interface InteractionRecord {
   status: string;
   kind?: string;
   payload?: {
+    version?: number;
     acceptLabel?: string;
     rejectLabel?: string;
     target?: {
@@ -99,6 +100,14 @@ interface InteractionRecord {
       options: Array<{ id: string; label: string }>;
     }>;
   };
+  result?: {
+    version?: number;
+    answers?: Array<{
+      questionId?: string;
+      optionIds?: string[];
+      otherText?: string;
+    }>;
+  } | null;
 }
 interface IssueDocumentRecord {
   id: string;
@@ -135,6 +144,75 @@ function definitiveRunFailure(runs: readonly RunRecord[]) {
   );
   if (!failed) return undefined;
   return `heartbeat run ${failed.id} ended ${failed.status}${failed.errorCode ? ` (${failed.errorCode})` : ""}${failed.error ? `: ${failed.error}` : ""}`;
+}
+
+function chronologicalRunTime(run: RunRecord): number {
+  const value = run.startedAt ?? run.finishedAt;
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sortRunsChronologically(runs: readonly RunRecord[]): RunRecord[] {
+  return [...runs].sort(
+    (left, right) =>
+      chronologicalRunTime(left) - chronologicalRunTime(right) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+async function restartIsolatedPaperclipServer(input: {
+  api: RunnerApi;
+  requestId: string;
+  deadlineAt: number;
+}): Promise<void> {
+  const controlDirectory = path.join(privateRoot!, "control");
+  const requestPath = path.join(
+    controlDirectory,
+    "server-restart.request.json",
+  );
+  const acknowledgementPath = path.join(
+    controlDirectory,
+    "server-restart.ack.json",
+  );
+  await mkdir(controlDirectory, { recursive: true });
+  const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
+  await writeFile(
+    temporaryRequestPath,
+    JSON.stringify({ requestId: input.requestId }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+  await rename(temporaryRequestPath, requestPath);
+
+  await pollUntil({
+    label: `isolated server restart ${input.requestId}`,
+    deadlineAt: input.deadlineAt,
+    intervalMs: 250,
+    load: async () => {
+      try {
+        return JSON.parse(
+          await readFile(acknowledgementPath, "utf8"),
+        ) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    },
+    accept: (acknowledgement) =>
+      acknowledgement.requestId === input.requestId &&
+      acknowledgement.status === "ready",
+    reject: (acknowledgement) =>
+      acknowledgement.requestId === input.requestId &&
+      acknowledgement.status === "failed"
+        ? String(acknowledgement.message ?? "replacement server failed")
+        : undefined,
+  });
+  await pollUntil({
+    label: `replacement server health ${input.requestId}`,
+    deadlineAt: input.deadlineAt,
+    intervalMs: 250,
+    load: () => input.api.get<Record<string, unknown>>("/api/health"),
+    accept: (health) => Boolean(health),
+  });
 }
 
 const executionIds = (() => {
@@ -313,6 +391,7 @@ function nativeRunEventIntegrityFailures(
   const sourceEventIds = new Set<string>();
   const runnerEventTypes: string[] = [];
   const runTerminalSources: unknown[] = [];
+  const resultAcceptedSources: unknown[] = [];
 
   for (const event of events) {
     if (typeof event.seq !== "number" || event.seq <= lastOuterSeq) {
@@ -325,14 +404,16 @@ function nativeRunEventIntegrityFailures(
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
     if (
-      envelope.schema !== "paperclip.prp.event.v1"
-      || envelope.schemaVersion !== 1
-      || event.protocolSchemaVersion !== 1
+      envelope.schema !== "paperclip.prp.event.v1" ||
+      envelope.schemaVersion !== 1 ||
+      event.protocolSchemaVersion !== 1
     ) {
       failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
     }
     if (envelope.runId !== run.id) {
-      failures.push(`run ${run.id} exposed an event bound to ${String(envelope.runId)}`);
+      failures.push(
+        `run ${run.id} exposed an event bound to ${String(envelope.runId)}`,
+      );
     }
     if (envelope.eventType !== event.eventType) {
       failures.push(
@@ -340,21 +421,25 @@ function nativeRunEventIntegrityFailures(
       );
     }
     if (
-      envelope.sourceInstanceId !== event.sourceInstanceId
-      || envelope.sourceEventId !== event.sourceEventId
-      || envelope.sourceSeq !== event.sourceSeq
+      envelope.sourceInstanceId !== event.sourceInstanceId ||
+      envelope.sourceEventId !== event.sourceEventId ||
+      envelope.sourceSeq !== event.sourceSeq
     ) {
-      failures.push(`run ${run.id} event source identity changed during persistence/redaction`);
+      failures.push(
+        `run ${run.id} event source identity changed during persistence/redaction`,
+      );
     }
     if (typeof event.sourceEventId === "string") {
       if (sourceEventIds.has(event.sourceEventId)) {
-        failures.push(`run ${run.id} duplicated source event ${event.sourceEventId}`);
+        failures.push(
+          `run ${run.id} duplicated source event ${event.sourceEventId}`,
+        );
       }
       sourceEventIds.add(event.sourceEventId);
     }
     if (
-      typeof event.sourceInstanceId === "string"
-      && typeof event.sourceSeq === "number"
+      typeof event.sourceInstanceId === "string" &&
+      typeof event.sourceSeq === "number"
     ) {
       const previous = lastSourceSeq.get(event.sourceInstanceId) ?? 0;
       if (event.sourceSeq <= previous) {
@@ -364,21 +449,43 @@ function nativeRunEventIntegrityFailures(
       }
       lastSourceSeq.set(event.sourceInstanceId, event.sourceSeq);
     }
-    if (envelope.sourceKind === "runner" && typeof event.eventType === "string") {
+    if (
+      envelope.sourceKind === "runner" &&
+      typeof event.eventType === "string"
+    ) {
       runnerEventTypes.push(event.eventType);
     }
     if (event.eventType === "run.terminal") {
       runTerminalSources.push(envelope.sourceKind);
     }
+    if (event.eventType === "run.result.accepted") {
+      resultAcceptedSources.push(envelope.sourceKind);
+    }
   }
 
-  if (runnerEventTypes.filter((value) => value === "run.result.proposed").length !== 1) {
-    failures.push(`run ${run.id} must persist exactly one runner semantic result`);
+  if (
+    runnerEventTypes.filter((value) => value === "run.result.proposed")
+      .length !== 1
+  ) {
+    failures.push(
+      `run ${run.id} must persist exactly one runner semantic result`,
+    );
+  }
+  if (resultAcceptedSources.length !== 1) {
+    failures.push(
+      `run ${run.id} must persist exactly one accepted semantic result`,
+    );
+  } else if (resultAcceptedSources[0] !== "control_plane") {
+    failures.push(
+      `run ${run.id} accepted semantic result must be control-plane authoritative`,
+    );
   }
   if (runTerminalSources.length !== 1) {
     failures.push(`run ${run.id} must persist exactly one terminal event`);
   } else if (runTerminalSources[0] !== "control_plane") {
-    failures.push(`run ${run.id} terminal event must be control-plane authoritative`);
+    failures.push(
+      `run ${run.id} terminal event must be control-plane authoritative`,
+    );
   }
   return failures;
 }
@@ -670,6 +777,10 @@ for (const execution of executions) {
 
       let planLifecycleEvidence: Record<string, unknown> | null = null;
       let questionLifecycleEvidence: Record<string, unknown> | null = null;
+      let expectedQuestionResolution: {
+        interactionId: string;
+        optionId: string;
+      } | null = null;
       if (execution.task.flow === "plan_revision_acceptance") {
         const planMarkers = execution.task.buildPlanMarkers?.(nonce);
         const revisionRequest = execution.task.buildRevisionRequest?.(nonce);
@@ -833,17 +944,55 @@ for (const execution of executions) {
             interactions.some(isPendingQuestion),
           reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
         });
-        const questionInteraction =
-          pendingState.interactions.find(isPendingQuestion)!;
-        const labels =
-          questionInteraction.payload?.questions?.flatMap((question) =>
-            question.options.map((option) => option.label),
-          ) ?? [];
-        if (!labels.includes(expectedAnswer.optionLabel)) {
+        const questionInteractions = pendingState.interactions.filter(
+          (interaction) => interaction.kind === "ask_user_questions",
+        );
+        if (
+          questionInteractions.length !== 1 ||
+          !isPendingQuestion(questionInteractions[0]!)
+        ) {
+          throw new Error(
+            `Expected exactly one pending question interaction; observed ${JSON.stringify(questionInteractions)}`,
+          );
+        }
+        const questionInteraction = questionInteractions[0]!;
+        const questions = questionInteraction.payload?.questions ?? [];
+        if (questionInteraction.payload?.version !== 1) {
+          throw new Error("Question interaction omitted payload version 1");
+        }
+        if (questions.length !== 1) {
+          throw new Error(
+            `Expected exactly one question; observed ${questions.length}`,
+          );
+        }
+        const question = questions[0]!;
+        if (
+          question.id !== "verification-word" ||
+          question.prompt !== "Choose the verification word." ||
+          question.selectionMode !== "single" ||
+          question.required !== true ||
+          JSON.stringify(question.options) !==
+            JSON.stringify([
+              { id: "cobalt", label: "Cobalt" },
+              { id: "amber", label: "Amber" },
+            ])
+        ) {
+          throw new Error(
+            `Question interaction did not preserve the exact verification contract: ${JSON.stringify(question)}`,
+          );
+        }
+        const selectedOption = question.options.find(
+          (option) => option.label === expectedAnswer.optionLabel,
+        );
+        if (!selectedOption) {
           throw new Error(
             `Question interaction omitted ${expectedAnswer.optionLabel}`,
           );
         }
+        expectedQuestionResolution = {
+          interactionId: questionInteraction.id,
+          optionId: selectedOption.id,
+        };
         await page.goto(
           `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
           { waitUntil: "domcontentloaded" },
@@ -861,6 +1010,46 @@ for (const execution of executions) {
           "Structured question awaiting an answer",
           "question-pending.png",
         );
+        if (execution.task.restartServerBeforeQuestionAnswer) {
+          const restartRequestId = `question-wait-${nonce}`;
+          await restartIsolatedPaperclipServer({
+            api,
+            requestId: restartRequestId,
+            deadlineAt,
+          });
+          await page.goto(
+            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+            { waitUntil: "domcontentloaded" },
+          );
+          await expect(
+            page
+              .getByRole("button", {
+                name: expectedAnswer.optionLabel,
+                exact: true,
+              })
+              .last(),
+          ).toBeVisible({ timeout: 30_000 });
+          const reloadedInteractions = await api.get<InteractionRecord[]>(
+            `/api/issues/${issue.id}/interactions`,
+          );
+          const reloadedQuestions = reloadedInteractions.filter(
+            (interaction) => interaction.kind === "ask_user_questions",
+          );
+          if (
+            reloadedQuestions.length !== 1 ||
+            reloadedQuestions[0]?.id !== questionInteraction.id ||
+            !isPendingQuestion(reloadedQuestions[0])
+          ) {
+            throw new Error(
+              `Server restart did not preserve the exact pending interaction ${questionInteraction.id}: ${JSON.stringify(reloadedQuestions)}`,
+            );
+          }
+          await captureScreenshot(
+            "question-pending-after-server-restart",
+            "Structured question preserved across server restart",
+            "question-pending-after-server-restart.png",
+          );
+        }
         await page
           .getByRole("button", {
             name: expectedAnswer.optionLabel,
@@ -876,6 +1065,8 @@ for (const execution of executions) {
           interaction: questionInteraction,
           answer: expectedAnswer.optionLabel,
           expectedMarker: expectedAnswer.expectedMarker,
+          serverRestartedBeforeAnswer:
+            execution.task.restartServerBeforeQuestionAnswer ?? false,
         };
       } else if (execution.task.flow === "plan_approval_completion") {
         const planMarkers = execution.task.buildPlanMarkers?.(nonce);
@@ -976,47 +1167,52 @@ for (const execution of executions) {
           api.get<RunRecord>(`/api/heartbeat-runs/${candidate.id}`),
         ),
       );
+      selectedRuns = sortRunsChronologically(selectedRuns);
       const run =
         selectedRuns.find(
           (candidate) => candidate.id === issue!.executionRunId,
         ) ?? selectedRuns[0];
-      const [persistedAgentValue, persistedEnvironmentValue, runLogs, runEventsByRun] =
-        await Promise.all([
-          api.get<unknown>(`/api/agents/${fixtures.agent.id}`),
-          api.get<unknown>(`/api/environments/${fixtures.environment.id}`),
-          Promise.all(
-            selectedRuns.map(async (candidate) => ({
-              runId: candidate.id,
-              log: await api
-                .get<unknown>(
-                  `/api/heartbeat-runs/${candidate.id}/log?limitBytes=1048576`,
-                )
-                .catch((error) => ({
-                  evidenceCaptureError:
-                    error instanceof Error ? error.message : String(error),
-                })),
-            })),
-          ),
-          Promise.all(
-            selectedRuns.map(async (candidate) => {
-              try {
-                return {
-                  runId: candidate.id,
-                  events: await api.get<RunEventRecord[]>(
-                    `/api/heartbeat-runs/${candidate.id}/events?limit=1000`,
-                  ),
-                  error: null,
-                };
-              } catch (error) {
-                return {
-                  runId: candidate.id,
-                  events: [] as RunEventRecord[],
-                  error: error instanceof Error ? error.message : String(error),
-                };
-              }
-            }),
-          ),
-        ]);
+      const [
+        persistedAgentValue,
+        persistedEnvironmentValue,
+        runLogs,
+        runEventsByRun,
+      ] = await Promise.all([
+        api.get<unknown>(`/api/agents/${fixtures.agent.id}`),
+        api.get<unknown>(`/api/environments/${fixtures.environment.id}`),
+        Promise.all(
+          selectedRuns.map(async (candidate) => ({
+            runId: candidate.id,
+            log: await api
+              .get<unknown>(
+                `/api/heartbeat-runs/${candidate.id}/log?limitBytes=1048576`,
+              )
+              .catch((error) => ({
+                evidenceCaptureError:
+                  error instanceof Error ? error.message : String(error),
+              })),
+          })),
+        ),
+        Promise.all(
+          selectedRuns.map(async (candidate) => {
+            try {
+              return {
+                runId: candidate.id,
+                events: await api.get<RunEventRecord[]>(
+                  `/api/heartbeat-runs/${candidate.id}/events?limit=1000`,
+                ),
+                error: null,
+              };
+            } catch (error) {
+              return {
+                runId: candidate.id,
+                events: [] as RunEventRecord[],
+                error: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }),
+        ),
+      ]);
       const runLog =
         runLogs.find((candidate) => candidate.runId === run.id)?.log ?? {};
       const persistedAgent = record(persistedAgentValue);
@@ -1044,6 +1240,90 @@ for (const execution of executions) {
         invariantFailures.push(
           `expected no unresolved interaction; observed ${pendingInteractions.length}`,
         );
+      if (expectedQuestionResolution) {
+        const questionInteractions = terminal.interactions.filter(
+          (interaction) => interaction.kind === "ask_user_questions",
+        );
+        if (
+          questionInteractions.length !== 1 ||
+          questionInteractions[0]?.id !==
+            expectedQuestionResolution.interactionId
+        ) {
+          invariantFailures.push(
+            `expected exactly one stable question interaction ${expectedQuestionResolution.interactionId}; observed ${JSON.stringify(questionInteractions)}`,
+          );
+        }
+        const resolvedQuestion = questionInteractions.find(
+          (interaction) =>
+            interaction.id === expectedQuestionResolution.interactionId,
+        );
+        const answers = resolvedQuestion?.result?.answers ?? [];
+        if (
+          resolvedQuestion?.status !== "answered" ||
+          resolvedQuestion.result?.version !== 1 ||
+          answers.length !== 1 ||
+          answers[0]?.questionId !== "verification-word" ||
+          JSON.stringify(answers[0]?.optionIds) !==
+            JSON.stringify([expectedQuestionResolution.optionId]) ||
+          answers[0]?.otherText !== undefined
+        ) {
+          invariantFailures.push(
+            `expected interaction ${expectedQuestionResolution.interactionId} to resolve with exactly ${expectedQuestionResolution.optionId}; observed ${JSON.stringify(resolvedQuestion)}`,
+          );
+        }
+        const continuationRun = selectedRuns.at(-1);
+        const continuationContext = record(continuationRun?.contextSnapshot);
+        if (
+          !continuationRun ||
+          continuationContext.interactionId !==
+            expectedQuestionResolution.interactionId
+        ) {
+          invariantFailures.push(
+            `expected the continuation run to consume interaction ${expectedQuestionResolution.interactionId}; observed ${String(continuationContext.interactionId)}`,
+          );
+        }
+        if (execution.profile.generation === "native" && continuationRun) {
+          const runnerProfile = record(continuationRun.runnerProfileJson);
+          const nativeExecutionInput = record(
+            runnerProfile.nativeExecutionInput,
+          );
+          const interactionResponses = Array.isArray(
+            nativeExecutionInput.interactionResponses,
+          )
+            ? nativeExecutionInput.interactionResponses.map(record)
+            : [];
+          const matchingResponses = interactionResponses.filter(
+            (candidate) =>
+              candidate.interactionId ===
+              expectedQuestionResolution.interactionId,
+          );
+          const responseEnvelope = matchingResponses[0];
+          const response = record(responseEnvelope?.response);
+          const responseResult = record(response.result);
+          const responseAnswers = Array.isArray(responseResult.answers)
+            ? responseResult.answers.map(record)
+            : [];
+          if (
+            matchingResponses.length !== 1 ||
+            responseEnvelope?.kind !== "ask_user_questions" ||
+            response.status !== "answered" ||
+            responseResult.version !== 1 ||
+            responseAnswers.length !== 1 ||
+            responseAnswers[0]?.questionId !== "verification-word" ||
+            JSON.stringify(responseAnswers[0]?.optionIds) !==
+              JSON.stringify([expectedQuestionResolution.optionId])
+          ) {
+            invariantFailures.push(
+              `expected native continuation input to carry exactly one answered interaction ${expectedQuestionResolution.interactionId}; observed ${JSON.stringify(matchingResponses)}`,
+            );
+          }
+        }
+        questionLifecycleEvidence = {
+          ...(questionLifecycleEvidence ?? {}),
+          resolvedInteraction: resolvedQuestion ?? null,
+          continuationRunId: continuationRun?.id ?? null,
+        };
+      }
       for (const candidate of selectedRuns) {
         if (
           (candidate.continuationAttempt ?? 0) !== 0 ||
@@ -1133,14 +1413,14 @@ for (const execution of executions) {
           );
         }
       }
-      const runEvents = runEventsByRun.find(
-        (candidate) => candidate.runId === run.id,
-      )?.events ?? [];
+      const runEvents =
+        runEventsByRun.find((candidate) => candidate.runId === run.id)
+          ?.events ?? [];
       if (execution.profile.generation === "native") {
         for (const candidate of selectedRuns) {
-          const candidateEvents = runEventsByRun.find(
-            (captured) => captured.runId === candidate.id,
-          )?.events ?? [];
+          const candidateEvents =
+            runEventsByRun.find((captured) => captured.runId === candidate.id)
+              ?.events ?? [];
           const runnerInstanceObserved =
             Boolean(candidate.runnerInstanceId) ||
             candidateEvents.some(
@@ -1159,16 +1439,16 @@ for (const execution of executions) {
           );
         }
         if (
-          (execution.profile.provider === "codex"
-            || execution.profile.provider === "opencode")
-          && selectedRuns.length > 1
+          (execution.profile.provider === "codex" ||
+            execution.profile.provider === "opencode") &&
+          selectedRuns.length > 1
         ) {
           const providerSessions = selectedRuns.map(
             (candidate) => candidate.sessionIdAfter,
           );
           if (
-            providerSessions.some((sessionId) => !sessionId)
-            || new Set(providerSessions).size !== 1
+            providerSessions.some((sessionId) => !sessionId) ||
+            new Set(providerSessions).size !== 1
           ) {
             invariantFailures.push(
               `expected ${execution.profile.provider} to preserve one provider session across all heartbeat runs`,
@@ -1189,18 +1469,21 @@ for (const execution of executions) {
               continue;
             }
             if (previousSessionId === currentSessionId) continue;
-            const currentEvents = runEventsByRun.find(
-              (captured) => captured.runId === current.id,
-            )?.events ?? [];
-            const recordedContinuityBreak = currentEvents.some(
-              (event) =>
+            const currentEvents =
+              runEventsByRun.find((captured) => captured.runId === current.id)
+                ?.events ?? [];
+            const recordedContinuityBreak = currentEvents.some((event) => {
+              const payload = record(event.payload);
+              return (
                 event.eventType === "run.performance.span" &&
-                record(event.payload).span ===
-                  "provider.session.continuity_break",
-            );
+                payload.span === "provider.session.continuity_break" &&
+                payload.previousProviderSessionId === previousSessionId &&
+                payload.replacementProviderSessionId === currentSessionId
+              );
+            });
             if (!recordedContinuityBreak) {
               invariantFailures.push(
-                `ACPX provider session changed from ${previousSessionId} to ${currentSessionId} without a continuity event`,
+                `ACPX provider session changed from ${previousSessionId} to ${currentSessionId} without a matching continuity event`,
               );
             }
           }
@@ -1234,14 +1517,16 @@ for (const execution of executions) {
         }
       } else {
         for (const candidate of selectedRuns) {
-          const candidateEvents = runEventsByRun.find(
-            (captured) => captured.runId === candidate.id,
-          )?.events ?? [];
+          const candidateEvents =
+            runEventsByRun.find((captured) => captured.runId === candidate.id)
+              ?.events ?? [];
           if (
-            candidate.runtimeMode !== "legacy"
-            || candidate.runnerInstanceId
-            || candidateEvents.some((event) =>
-              Object.keys(record(event.payload?.prpEvent)).length > 0)
+            candidate.runtimeMode !== "legacy" ||
+            candidate.runnerInstanceId ||
+            candidateEvents.some(
+              (event) =>
+                Object.keys(record(event.payload?.prpEvent)).length > 0,
+            )
           ) {
             invariantFailures.push(
               `legacy run ${candidate.id} crossed into native runner persistence`,
@@ -1277,12 +1562,14 @@ for (const execution of executions) {
         `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
         { waitUntil: "domcontentloaded" },
       );
-      const visibleFinalReplies = page
+      const visibleAgentReplies = page
         .getByTestId("task-chat-thread")
-        .getByTestId("task-chat-agent-bubble")
-        .filter({ hasText: renderedMarkerPattern(marker) });
-      await expect(visibleFinalReplies).toHaveCount(1, { timeout: 30_000 });
-      await expect(visibleFinalReplies.first()).toBeVisible();
+        .getByTestId("task-chat-agent-bubble");
+      await expect(visibleAgentReplies).toHaveCount(1, { timeout: 30_000 });
+      await expect(visibleAgentReplies.first()).toBeVisible();
+      await expect(visibleAgentReplies.first()).toContainText(
+        renderedMarkerPattern(marker),
+      );
       await expect(
         page.getByTestId("issue-detail-header").getByRole("button", {
           name: "Change status (current: Done)",

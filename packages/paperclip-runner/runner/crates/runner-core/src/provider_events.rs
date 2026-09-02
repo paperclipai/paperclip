@@ -1324,6 +1324,47 @@ mod tests {
     }
 
     #[test]
+    fn preserves_bounded_actionable_opencode_proxy_failure_details() {
+        let terminal = normalize_codex_notification(
+            "turn/failed",
+            &json!({
+                "threadId": "opencode-session-1",
+                "turnId": "opencode-turn-1",
+                "turn": {
+                    "id": "opencode-turn-1",
+                    "status": "failed",
+                    "error": {
+                        "code": "provider_rate_limited",
+                        "message": "Retry after the provider window resets.",
+                        "retryAfterMs": 1500,
+                        "accessToken": "provider-secret",
+                        "debug": "x".repeat(MAX_TEXT_CHARS + 500),
+                    }
+                }
+            }),
+        );
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].event_type, "turn.failed");
+        assert_eq!(terminal[0].payload["providerTurnId"], "opencode-turn-1");
+        assert_eq!(
+            terminal[0].payload["error"]["code"],
+            "provider_rate_limited"
+        );
+        assert_eq!(
+            terminal[0].payload["error"]["message"],
+            "Retry after the provider window resets."
+        );
+        assert_eq!(terminal[0].payload["error"]["retryAfterMs"], 1500);
+        assert_eq!(terminal[0].payload["error"]["accessToken"], "[REDACTED]");
+        let debug = terminal[0].payload["error"]["debug"]
+            .as_str()
+            .expect("debug detail remains text");
+        assert!(debug.chars().count() <= MAX_TEXT_CHARS + 32);
+        assert!(debug.ends_with("…[truncated]"));
+        assert!(!terminal[0].payload.to_string().contains("provider-secret"));
+    }
+
+    #[test]
     fn does_not_substitute_session_cumulative_usage_for_a_missing_run_delta() {
         let first = normalize_codex_notification(
             "thread/tokenUsage/updated",

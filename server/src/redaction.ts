@@ -1,7 +1,6 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
-const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
@@ -24,19 +23,35 @@ const AUDIT_COUNT_PAYLOAD_KEYS = new Set([
   "secretBindingsRemoved",
   "tokenIssuanceHashesCleared",
   "gatewayTokensRevoked",
+  // PRP usage.reported metrics count model tokens; they never carry token
+  // credential material. Keep the exemption closed to finite numbers.
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "preTokens",
+  "postTokens",
 ]);
 
 function isAuditCountField(key: string, value: unknown): boolean {
-  return AUDIT_COUNT_PAYLOAD_KEYS.has(key) && typeof value === "number" && Number.isFinite(value);
+  return (
+    AUDIT_COUNT_PAYLOAD_KEYS.has(key) &&
+    typeof value === "number" &&
+    Number.isFinite(value)
+  );
 }
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
-const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+const JWT_VALUE_RE =
+  /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 // Durable protocol schema identifiers share JWT's broad dotted shape but are
-// public discriminators, not credentials. Exempt only the closed Paperclip
-// schema namespace while retaining the existing fail-closed JWT value guard.
-const PAPERCLIP_SCHEMA_ID_RE = /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
+// public discriminators, not credentials. Exempt the Paperclip schema
+// namespace only in fields that actually declare a schema; the same value in
+// arbitrary provider data remains subject to the fail-closed JWT guard.
+const PAPERCLIP_SCHEMA_ID_RE =
+  /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
+const PAPERCLIP_SCHEMA_FIELDS = new Set(["schema", "runtimeSchema"]);
 // Keep this closed catalog aligned with PRP v1's event.schema.json. These
 // values are public protocol discriminators, but their dotted shape overlaps
 // the deliberately broad JWT heuristic. They are exempt only in the
@@ -178,9 +193,14 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "task.run.measured",
   "task.settle",
 ]);
-const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
+const CLI_SECRET_FLAG_RE = new RegExp(
+  String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`,
+  "i",
+);
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+    "`" +
+    String.raw`\r\n]+((?:"|'))`,
   "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
@@ -211,11 +231,15 @@ export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
-  return SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) || input.includes(".");
+  return (
+    SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) ||
+    input.includes(".")
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
@@ -225,22 +249,29 @@ function sanitizeValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
   if (isUserSecretRefBinding(value)) return value;
-  if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
+  if (isPlainBinding(value))
+    return { type: "plain", value: sanitizeValue(value.value) };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
 
-function isSecretRefBinding(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
+function isSecretRefBinding(
+  value: unknown,
+): value is { type: "secret_ref"; secretId: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "secret_ref" && typeof value.secretId === "string";
 }
 
-function isUserSecretRefBinding(value: unknown): value is { type: "user_secret_ref"; key: string; version?: unknown } {
+function isUserSecretRefBinding(
+  value: unknown,
+): value is { type: "user_secret_ref"; key: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "user_secret_ref" && typeof value.key === "string";
 }
 
-function isPlainBinding(value: unknown): value is { type: "plain"; value: unknown } {
+function isPlainBinding(
+  value: unknown,
+): value is { type: "plain"; value: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "plain" && "value" in value;
 }
@@ -266,14 +297,29 @@ function isKnownPrpEventDiscriminator(
   key: string,
   value: unknown,
 ): value is string {
-  return key === "eventType"
-    && container.schema === "paperclip.prp.event.v1"
-    && container.schemaVersion === 1
-    && typeof value === "string"
-    && PRP_V1_EVENT_TYPES.has(value);
+  return (
+    key === "eventType" &&
+    container.schema === "paperclip.prp.event.v1" &&
+    container.schemaVersion === 1 &&
+    typeof value === "string" &&
+    PRP_V1_EVENT_TYPES.has(value)
+  );
 }
 
-export function sanitizeRecord(record: Record<string, unknown>): Record<string, unknown> {
+function isPaperclipSchemaDiscriminator(
+  key: string,
+  value: unknown,
+): value is string {
+  return (
+    PAPERCLIP_SCHEMA_FIELDS.has(key) &&
+    typeof value === "string" &&
+    PAPERCLIP_SCHEMA_ID_RE.test(value)
+  );
+}
+
+export function sanitizeRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     if (COMMAND_ARGS_PAYLOAD_KEY_RE.test(key) && Array.isArray(value)) {
@@ -285,9 +331,9 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       continue;
     }
     if (
-      SECRET_PAYLOAD_KEY_RE.test(key)
-      && !AUDIT_REASON_PAYLOAD_KEY_RE.test(key)
-      && !isAuditCountField(key, value)
+      SECRET_PAYLOAD_KEY_RE.test(key) &&
+      !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
+      !isAuditCountField(key, value)
     ) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
@@ -312,10 +358,10 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       continue;
     }
     if (
-      typeof value === "string"
-      && JWT_VALUE_RE.test(value)
-      && !PAPERCLIP_SCHEMA_ID_RE.test(value)
-      && !AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key)
+      typeof value === "string" &&
+      JWT_VALUE_RE.test(value) &&
+      !isPaperclipSchemaDiscriminator(key, value) &&
+      !AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key)
     ) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
@@ -325,7 +371,9 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
   return redacted;
 }
 
-export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+export function redactEventPayload(
+  payload: Record<string, unknown> | null,
+): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
   const sanitized = sanitizeRecord(payload);
@@ -350,7 +398,10 @@ export function redactSensitiveText(input: string): string {
   return redactCommandText(
     input
       .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
+      .replace(
+        ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
+        `$1${REDACTED_EVENT_VALUE}$2`,
+      ),
     REDACTED_EVENT_VALUE,
   );
 }

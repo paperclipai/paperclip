@@ -307,9 +307,9 @@ describe("remote provider pack manifest", () => {
       writeFile(
         join(root, "provider-pack.json"),
         JSON.stringify({
-        schema: "paperclip-runner/remote-provider-pack/v1",
-        digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
-        payload,
+          schema: "paperclip-runner/remote-provider-pack/v1",
+          digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
+          payload,
         }),
       );
     await writeManifest();
@@ -2799,32 +2799,43 @@ describe("native process ownership", () => {
 
 describe("runnerd provider runtime wiring", () => {
   it("carries the verified runner and lease binding into a projectless continuation", async () => {
-    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runner-binding-"));
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-runner-binding-"),
+    );
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
-    const continuation = {
+    const prior = {
       ...execution,
       binding: {
         ...execution.binding,
         companyId: "company-projectless-continuation",
-        runId: "run-projectless-next",
-        executionWorkspaceId: "run-projectless-next",
+        runId: "run-projectless-prior",
+        executionWorkspaceId: "run-projectless-prior",
       },
       session: {
         ...execution.session,
         normalizedSessionId: "session-projectless-continuation",
       },
     } as NativeExecutionInputV1;
-    const scopedRoot = join(
-      stateBase,
-      createHash("sha256")
-        .update(JSON.stringify([
-          continuation.binding.companyId,
-          continuation.session.normalizedSessionId,
-        ]))
-        .digest("hex"),
-    );
+    const continuation = {
+      ...prior,
+      binding: {
+        ...prior.binding,
+        runId: "run-projectless-next",
+        executionWorkspaceId: "run-projectless-next",
+      },
+    } as NativeExecutionInputV1;
     try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(prior),
+        execution: prior,
+        runnerInstanceId: "runner-projectless-stable",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
       await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
       await writeFile(
         join(scopedRoot, "control-plane", "control-plane-state.json"),
@@ -2903,7 +2914,7 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
-  it("reuses legacy unscoped state only for its exact durable run identity", async () => {
+  it("atomically migrates legacy unscoped state only for its exact durable run identity", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-legacy-runner-state-"),
     );
@@ -2946,8 +2957,19 @@ describe("runnerd provider runtime wiring", () => {
       });
       state.createTransport.mockClear();
       state.createBackend.mock.calls[0]![1].codexTransportFactory!();
-      expect(state.createTransport.mock.calls[0]![0].stateDirectory).toBe(
-        legacyRoot,
+      const migratedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      expect(migratedRoot).not.toBe(legacyRoot);
+      await expect(access(legacyRoot)).rejects.toThrow();
+      await expect(
+        access(join(migratedRoot, "control-plane", "control-plane-state.json")),
+      ).resolves.toBeUndefined();
+      expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
+        expect.objectContaining({
+          runnerInstanceId: "runner-legacy-state",
+          environmentLeaseId: "lease-legacy-state",
+          runId: "run-legacy-state",
+        }),
       );
       expect(state.createTransport.mock.calls[0]![0].runnerBinary).toBe(
         "/tmp/paperclip-runnerd",
@@ -2971,6 +2993,139 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.createTransport.mock.calls[1]![0].stateDirectory).not.toBe(
         legacyRoot,
       );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates the former company/session scope into the full native session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-company-session-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const legacyExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-former-scope",
+        runId: "run-former-scope",
+        agentId: "agent-former-scope",
+        executionWorkspaceId: "workspace-former-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-former-scope",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            legacyExecution.binding.companyId,
+            legacyExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify({
+          identity: {
+            runId: legacyExecution.binding.runId,
+            normalizedSessionId: legacyExecution.session.normalizedSessionId,
+            runnerInstanceId: "runner-former-scope",
+            environmentLeaseId: "lease-former-scope",
+          },
+        }),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await createRunnerdBackend({
+        db: leaseDb(legacyExecution),
+        execution: legacyExecution,
+        runnerInstanceId: "runner-former-scope",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const migratedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      expect(migratedRoot).not.toBe(legacyRoot);
+      await expect(access(legacyRoot)).rejects.toThrow();
+      await expect(
+        access(join(migratedRoot, "control-plane", "control-plane-state.json")),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed instead of claiming a mismatched former session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-mismatched-session-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const currentExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-mismatched-scope",
+        runId: "run-current-scope",
+        agentId: "agent-current-scope",
+        executionWorkspaceId: "workspace-current-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-mismatched-scope",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            currentExecution.binding.companyId,
+            currentExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify({
+          identity: {
+            runId: "run-unrelated-scope",
+            normalizedSessionId: currentExecution.session.normalizedSessionId,
+            runnerInstanceId: "runner-unrelated-scope",
+            environmentLeaseId: "lease-unrelated-scope",
+          },
+        }),
+      );
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(currentExecution),
+          execution: currentExecution,
+          runnerInstanceId: "runner-current-scope",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(legacyRoot)).resolves.toBeUndefined();
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -3052,6 +3207,131 @@ describe("runnerd provider runtime wiring", () => {
     await expect(secondOptions.dynamicToolHandler!({})).resolves.toEqual({
       runId: "run-second",
     });
+  });
+
+  it("scopes local durable sessions by agent, workspace, and provider profile while reusing them across runs", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-session-scope-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const scopedExecution = (input: {
+      runId: string;
+      agentId?: string;
+      workspaceId?: string;
+      providerKind?: "codex" | "opencode";
+    }) =>
+      ({
+        ...execution,
+        schema: "paperclip.native-execution-input.v4",
+        binding: {
+          ...execution.binding,
+          companyId: "company-session-scope",
+          runId: input.runId,
+          issueId: "issue-session-scope",
+          agentId: input.agentId ?? "agent-session-scope",
+          executionWorkspaceId: input.workspaceId ?? "workspace-session-scope",
+        },
+        workspace: {
+          cwd: "/tmp/native-session-scope",
+          repoUrl: "https://example.test/paperclip.git",
+          repoRef: "refs/heads/main",
+          branchName: "main",
+        },
+        session: {
+          normalizedSessionId: "shared-scoped-session",
+          driverKind:
+            input.providerKind === "opencode"
+              ? "opencode_server"
+              : "codex_app_server",
+          protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+        },
+        provider:
+          input.providerKind === "opencode"
+            ? {
+                kind: "opencode",
+                model: "openrouter/deepseek/deepseek-v4-flash-0731",
+                permissionMode: "ask",
+              }
+            : {
+                kind: "codex",
+                model: null,
+                approvalPolicy: "never",
+              },
+        executionMode: "default",
+        planningContext: null,
+        interactionResponses: [],
+        credentialBindings: [],
+        runtimeContext: {},
+      }) as unknown as NativeExecutionInputV1;
+    const first = scopedExecution({ runId: "run-session-scope-first" });
+    const continuation = scopedExecution({
+      runId: "run-session-scope-continuation",
+    });
+    const differentAgent = scopedExecution({
+      runId: "run-session-scope-agent",
+      agentId: "agent-session-scope-other",
+    });
+    const differentWorkspace = scopedExecution({
+      runId: "run-session-scope-workspace",
+      workspaceId: "workspace-session-scope-other",
+    });
+    const differentProviderProfile = scopedExecution({
+      runId: "run-session-scope-provider",
+      providerKind: "opencode",
+    });
+
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.toolAuthorityExecute
+        .mockReset()
+        .mockImplementation((binding: Record<string, unknown>) =>
+          Promise.resolve({ runId: binding.runId }),
+        );
+      for (const candidate of [
+        first,
+        continuation,
+        differentAgent,
+        differentWorkspace,
+        differentProviderProfile,
+      ]) {
+        await createRunnerdBackend({
+          db: leaseDb(candidate),
+          execution: candidate,
+          runnerInstanceId: `runner-${candidate.binding.runId}`,
+        });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      }
+
+      const stateDirectories = state.createTransport.mock.calls.map(
+        ([options]) => options.stateDirectory,
+      );
+      expect(stateDirectories[1]).toBe(stateDirectories[0]);
+      expect(
+        new Set([
+          stateDirectories[0],
+          stateDirectories[2],
+          stateDirectories[3],
+          stateDirectories[4],
+        ]).size,
+      ).toBe(4);
+
+      const firstOptions = state.createBackend.mock.calls[0]![1];
+      const continuationOptions = state.createBackend.mock.calls[1]![1];
+      await expect(firstOptions.dynamicToolHandler!({})).resolves.toEqual({
+        runId: continuation.binding.runId,
+      });
+      await expect(
+        continuationOptions.dynamicToolHandler!({}),
+      ).resolves.toEqual({ runId: continuation.binding.runId });
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
   });
 
   it("uses the remote workspace for both the runner backend and native session", async () => {

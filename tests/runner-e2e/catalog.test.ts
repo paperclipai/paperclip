@@ -4,6 +4,7 @@ import {
   runnerMatrix,
   openRouterBreadthProfiles,
   openRouterBreadthTasks,
+  localIntegrityTasks,
   runnerProfiles,
   runnerSuites,
   runnerTasks,
@@ -18,20 +19,26 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
-  it("validates the 42-cell core and 15-cell breadth suites", () => {
+  it("validates the core, local-integrity, and breadth suites", () => {
     expect(runnerProfiles).toHaveLength(7);
     expect(openRouterBreadthProfiles).toHaveLength(5);
     expect(runnerEnvironments).toHaveLength(2);
     expect(runnerTasks).toHaveLength(3);
+    expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      42, 15,
+      42, 14, 15,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(57);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(57);
+    expect(validateRunnerCatalog()).toHaveLength(71);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(71);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
+    expect(
+      runnerMatrix.filter(
+        (entry) => entry.suite.id === "local-session-integrity",
+      ),
+    ).toHaveLength(14);
     expect(
       runnerMatrix.filter(
         (entry) => entry.suite.id === "openrouter-model-breadth",
@@ -42,7 +49,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(95);
+    ).toBe(123);
   });
 
   it("derives five local native OpenCode profiles from the ranked snapshot", () => {
@@ -62,6 +69,12 @@ describe("runner E2E catalog", () => {
   });
 
   it("defines deterministic two-run question and plan state machines", () => {
+    const localQuestion = localIntegrityTasks.find(
+      (task) => task.id === "structured-question-resume",
+    );
+    const restartQuestion = localIntegrityTasks.find(
+      (task) => task.id === "structured-question-restart-resume",
+    );
     const question = openRouterBreadthTasks.find(
       (task) => task.id === "question-resume-complete",
     );
@@ -74,6 +87,16 @@ describe("runner E2E catalog", () => {
     });
     expect(question?.buildQuestionAnswer?.("nonce")).toMatchObject({
       optionLabel: "Cobalt",
+    });
+    expect(localQuestion).toMatchObject({
+      flow: "question_resume_completion",
+      expectedRunCount: 2,
+    });
+    expect(localQuestion?.buildPrompt("nonce")).toContain("ask_user_questions");
+    expect(restartQuestion).toMatchObject({
+      flow: "question_resume_completion",
+      expectedRunCount: 2,
+      restartServerBeforeQuestionAnswer: true,
     });
     expect(plan).toMatchObject({
       flow: "plan_approval_completion",
@@ -223,6 +246,10 @@ describe("runner E2E selectors", () => {
       "core-compatibility.runner-codex.local.message-marker",
       "core-compatibility.runner-codex.local.plan-revise-accept",
       "core-compatibility.runner-codex.local.ask-question",
+      "local-session-integrity.legacy-codex.local.structured-question-resume",
+      "local-session-integrity.legacy-codex.local.structured-question-restart-resume",
+      "local-session-integrity.runner-codex.local.structured-question-resume",
+      "local-session-integrity.runner-codex.local.structured-question-restart-resume",
     ]);
   });
 
@@ -267,9 +294,9 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(57);
+    expect(jobs).toHaveLength(71);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(21);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(57);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(71);
     expect(
       jobs.every((job) =>
         runnerMatrix.some(

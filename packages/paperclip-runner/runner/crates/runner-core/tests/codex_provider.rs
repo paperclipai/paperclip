@@ -2547,6 +2547,50 @@ fn reused_provider_question_ids_get_unique_controller_identities() {
 }
 
 #[test]
+fn codex_facade_bridges_opencode_native_questions_instead_of_rejecting_the_method() {
+    let directory = temporary_directory("opencode-proxy-runtime-question");
+    let config = provider_config(&directory, &["--opencode-proxy-runtime-question"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start facade provider");
+    provider
+        .start_turn("Ask through the OpenCode proxy.", &config.cwd)
+        .expect("start provider turn");
+
+    let (request_id, question_set) = (0..16)
+        .find_map(
+            |_| match provider.poll().expect("poll proxy runtime question") {
+                Some(CodexProviderEvent::RuntimeRequest {
+                    request_id,
+                    question_set,
+                }) => Some((request_id, question_set)),
+                _ => None,
+            },
+        )
+        .expect("the provider-native paperclip/runtimeRequest reaches runnerd");
+    assert_eq!(question_set["schema"], "paperclip.question_set.v1");
+    assert_eq!(question_set["questions"][0]["id"], "environment");
+
+    provider
+        .resolve_runtime_request(
+            &request_id,
+            &json!({
+                "schema": "paperclip.question_response.v1",
+                "answers": {
+                    "environment": {"selectedOptionIds": ["staging"]}
+                }
+            }),
+        )
+        .expect("return a canonical resolution to the OpenCode proxy");
+    wait_for_notification(&mut provider, "turn/completed");
+    assert_eq!(
+        call_count(&directory, "opencode-runtime-response:submitted"),
+        1
+    );
+
+    let _ = provider.shutdown();
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn codex_resume_advertises_the_same_authorized_tools() {
     let directory = temporary_directory("dynamic-tool-resume");
     let config = provider_config(&directory, &["--require-dynamic-tool"]);
@@ -3013,6 +3057,9 @@ fn durable_backend_rejects_tool_catalog_drift_during_attach() {
             }),
         ))
         .expect("prepare the durable tool catalog");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open a settled provider session before attachment");
 
     let mut changed = task_context_tool_set();
     changed.operations[0].description = "Changed after recovery.".to_owned();
@@ -3020,13 +3067,21 @@ fn durable_backend_rejects_tool_catalog_drift_during_attach() {
     let error = executor
         .execute(&command(
             "attach",
-            2,
+            3,
             "run.attach",
             json!({"authorizedTools": changed}),
         ))
         .expect_err("attach must reject tool catalog drift");
-    assert!(error.to_string().contains("tool contract changed"));
+    assert!(
+        error
+            .to_string()
+            .contains("authorized tool set changed across a durable session"),
+        "unexpected attach error: {error}"
+    );
 
+    executor
+        .shutdown()
+        .expect("stop provider after rejected attach");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 
@@ -3044,6 +3099,10 @@ fn durable_backend_attaches_after_a_settled_restore_notice() {
             json!({
                 "provider": config,
                 "authorizedTools": task_context_tool_set(),
+                "completionContract": {
+                    "revision": "sha256:settled-attach-contract",
+                    "criterionIds": ["criterion_settled_attach"]
+                },
             }),
         ))
         .expect("prepare the durable provider");
@@ -3060,13 +3119,17 @@ fn durable_backend_attaches_after_a_settled_restore_notice() {
         .expect("start the provider turn");
 
     let mut saw_terminal = false;
-    for _ in 0..32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
         saw_terminal |= events
             .iter()
             .any(|event| event.event_type == "run.terminal");
         if saw_terminal && events.is_empty() {
             break;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
     assert!(saw_terminal, "the first run must settle before attachment");

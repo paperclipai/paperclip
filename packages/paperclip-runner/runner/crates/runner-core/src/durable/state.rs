@@ -366,6 +366,13 @@ impl DurableState {
             ));
         }
 
+        let sanitized_payload = sanitize_value(&payload);
+        if durable_semantics_changed_by_sanitization(&payload, &sanitized_payload) {
+            return Err(DurableRunnerError::invalid(
+                "durable identity or validation semantics contain credential-shaped material",
+            ));
+        }
+
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
         let envelope = json!({
@@ -392,7 +399,7 @@ impl DurableState {
                 "schemaVersion": 1,
                 "priority": priority.number(),
                 "emittedAt": emitted_at,
-                "payload": sanitize_value(&payload),
+                "payload": sanitized_payload,
             },
         });
         let byte_size = serde_json::to_vec(&envelope)
@@ -1101,23 +1108,66 @@ fn protocol_authorization_boundary(key: &str, value: &Value) -> bool {
         })
 }
 
+fn sanitized_object_field(key: &str, value: &Value) -> Value {
+    if protocol_authorization_boundary(key, value) {
+        value.clone()
+    } else if sensitive_key(key) {
+        Value::String("[REDACTED]".to_owned())
+    } else {
+        sanitize_value(value)
+    }
+}
+
+fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value) -> bool {
+    match (original, sanitized) {
+        (Value::Object(original), Value::Object(sanitized)) => {
+            original.iter().any(|(key, value)| {
+                let Some(sanitized_value) = sanitized.get(key) else {
+                    return true;
+                };
+                let identity_or_validation_field = matches!(
+                    key.as_str(),
+                    "callId"
+                        | "correlationId"
+                        | "driverSessionId"
+                        | "executionId"
+                        | "idempotencyKey"
+                        | "itemId"
+                        | "normalizedSessionId"
+                        | "operationId"
+                        | "planId"
+                        | "providerRequestId"
+                        | "providerSessionId"
+                        | "providerTurnId"
+                        | "requestId"
+                        | "runId"
+                        | "sourceEventId"
+                        | "stepId"
+                        | "textValidation"
+                        | "turnId"
+                );
+                if identity_or_validation_field && value != sanitized_value {
+                    return true;
+                }
+                durable_semantics_changed_by_sanitization(value, sanitized_value)
+            })
+        }
+        (Value::Array(original), Value::Array(sanitized)) => {
+            original.len() != sanitized.len()
+                || original.iter().zip(sanitized).any(|(original, sanitized)| {
+                    durable_semantics_changed_by_sanitization(original, sanitized)
+                })
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => Value::Object(
             object
                 .iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        if protocol_authorization_boundary(key, value) {
-                            value.clone()
-                        } else if sensitive_key(key) {
-                            Value::String("[REDACTED]".to_owned())
-                        } else {
-                            sanitize_value(value)
-                        },
-                    )
-                })
+                .map(|(key, value)| (key.clone(), sanitized_object_field(key, value)))
                 .collect(),
         ),
         Value::Array(values) => Value::Array(values.iter().map(sanitize_value).collect()),
@@ -1198,6 +1248,40 @@ fn redact_sensitive_text_values(input: &str) -> String {
             || normalized[start..].starts_with("***redacted***")
     };
 
+    // PEM private keys are multiline values, so the ordinary assignment scanner
+    // cannot safely stop at whitespace. Redact the complete block, including an
+    // unterminated block whose remaining bytes must be treated as key material.
+    let mut pem_search_start = 0;
+    while let Some(relative_start) = normalized[pem_search_start..].find("-----begin ") {
+        let begin = pem_search_start + relative_start;
+        let header_end = (begin..bytes.len())
+            .find(|index| {
+                matches!(bytes[*index], b'\n' | b'\r')
+                    || (bytes[*index] == b'\\'
+                        && bytes
+                            .get((*index).saturating_add(1))
+                            .is_some_and(|value| matches!(value, b'n' | b'r')))
+            })
+            .unwrap_or(bytes.len());
+        let label_start = begin + "-----begin ".len();
+        let Some(label) = normalized[label_start..header_end]
+            .trim_end()
+            .strip_suffix("-----")
+            .map(str::trim)
+            .filter(|label| label.contains("private key"))
+        else {
+            pem_search_start = header_end.saturating_add(1).min(bytes.len());
+            continue;
+        };
+        let end_marker = format!("-----end {label}-----");
+        let end = normalized[header_end..]
+            .find(&end_marker)
+            .map(|offset| header_end + offset + end_marker.len())
+            .unwrap_or(bytes.len());
+        ranges.push((begin, end));
+        pem_search_start = end;
+    }
+
     // Provider errors sometimes echo a credential without a field name.
     // Retain only high-confidence public token prefixes here; generic dotted
     // strings are handled schema-aware at the server boundary so PRP
@@ -1267,7 +1351,18 @@ fn redact_sensitive_text_values(input: &str) -> String {
             continue;
         }
         let end = quote.map_or_else(
-            || value_end(value_start),
+            || {
+                let end = value_end(value_start);
+                if end > value_start && matches!(bytes[end - 1], b'\'' | b'"') {
+                    let mut delimiter_start = end - 1;
+                    while delimiter_start > value_start && bytes[delimiter_start - 1] == b'\\' {
+                        delimiter_start -= 1;
+                    }
+                    delimiter_start
+                } else {
+                    end
+                }
+            },
             |quote| quoted_value_end(value_start, quote),
         );
         if end > value_start {
@@ -1309,6 +1404,13 @@ fn redact_sensitive_text_values(input: &str) -> String {
         "token",
     ] {
         for (start, _) in normalized.match_indices(key) {
+            if ranges
+                .iter()
+                .any(|(range_start, range_end)| start >= *range_start && start < *range_end)
+            {
+                continue;
+            }
+            let key_is_compound = start > 0 && is_name_byte(bytes[start - 1]);
             let mut separator = start + key.len();
             // Match the full sensitive name or a compound identifier that ends
             // with it (for example OPENAI_API_KEY or proxyAuthorization).
@@ -1330,9 +1432,17 @@ fn redact_sensitive_text_values(input: &str) -> String {
             let has_assignment_separator =
                 separator < bytes.len() && matches!(bytes[separator], b':' | b'=');
             // Provider diagnostics also use shell-style `token value` pairs.
-            // Keep free-form authorization prose visible; Bearer and Basic
-            // credentials are handled by the scheme-aware scanner above.
-            let has_whitespace_separator = separator > whitespace_start && key != "authorization";
+            // Keep free-form authorization prose visible; only explicit Bearer
+            // and Basic scheme/value pairs use whitespace as their separator.
+            let authorization_scheme_start = quoted_value_start(separator).0;
+            let has_authorization_scheme = ["bearer", "basic"].iter().any(|scheme| {
+                normalized[authorization_scheme_start..].starts_with(scheme)
+                    && authorization_scheme_start + scheme.len() < bytes.len()
+                    && bytes[authorization_scheme_start + scheme.len()].is_ascii_whitespace()
+            });
+            let has_whitespace_separator = !key_is_compound
+                && separator > whitespace_start
+                && (key != "authorization" || has_authorization_scheme);
             if !has_assignment_separator && !has_whitespace_separator {
                 continue;
             }
@@ -1346,6 +1456,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
             }
             let (next_value_start, mut quote) = quoted_value_start(value_start);
             value_start = next_value_start;
+            let mut recognized_authorization_scheme = false;
             if key == "authorization" {
                 for scheme in ["bearer", "basic"] {
                     if !normalized[value_start..].starts_with(scheme) {
@@ -1355,6 +1466,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
                     if after_scheme >= bytes.len() || !bytes[after_scheme].is_ascii_whitespace() {
                         continue;
                     }
+                    recognized_authorization_scheme = true;
                     value_start = after_scheme;
                     while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
                         value_start += 1;
@@ -1370,14 +1482,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
             }
             let end = if let Some(quote) = quote {
                 quoted_value_end(value_start, quote)
-            } else if key == "authorization"
-                && !["bearer", "basic"].iter().any(|scheme| {
-                    normalized[separator + 1..]
-                        .trim_start()
-                        .to_ascii_lowercase()
-                        .starts_with(scheme)
-                })
-            {
+            } else if key == "authorization" && !recognized_authorization_scheme {
                 let mut end = value_start;
                 while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r' | b',' | b';' | b'&')
                 {
@@ -1676,8 +1781,125 @@ mod tests {
             state.outbox[0]
                 .envelope
                 .pointer("/payload/payload/nested/providerApiKeyDiagnostic"),
-            Some(&json!("Invalid API key: [REDACTED]; request rejected"))
+            Some(&json!("[REDACTED]"))
         );
+    }
+
+    #[test]
+    fn durable_question_sets_preserve_safe_identity_and_redact_display_text() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "runtime_request.created",
+                EventPriority::P0,
+                json!({
+                    "request": {
+                        "schema": "paperclip.runtime_request.v2",
+                        "requestKind": "runtime",
+                        "requestId": "request-1",
+                        "type": "input",
+                        "status": "pending",
+                        "prompt": "Choose one.",
+                        "input": {
+                            "schema": "paperclip.question_set.v1",
+                            "title": "token=question-set-secret",
+                            "questions": [{
+                                "id": "stable-question-id",
+                                "prompt": "password=question-prompt-secret",
+                                "required": true,
+                                "answerMode": "single_select",
+                                "options": [{
+                                    "id": "stable-option-id",
+                                    "label": "secret=option-label-secret"
+                                }],
+                                "textValidation": {
+                                    "pattern": "^[a-z]+$"
+                                },
+                                "helpText": "api_key=validation-message-secret"
+                            }]
+                        }
+                    },
+                    "diagnostic": "token=outside-secret"
+                }),
+            )
+            .unwrap();
+
+        let payload = state.outbox[0]
+            .envelope
+            .pointer("/payload/payload")
+            .unwrap();
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/id"),
+            Some(&json!("stable-question-id"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/options/0/id"),
+            Some(&json!("stable-option-id"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/textValidation/pattern"),
+            Some(&json!("^[a-z]+$"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/title"),
+            Some(&json!("token=[REDACTED]"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/prompt"),
+            Some(&json!("password=[REDACTED]"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/options/0/label"),
+            Some(&json!("secret=[REDACTED]"))
+        );
+        assert_eq!(
+            payload.pointer("/request/input/questions/0/helpText"),
+            Some(&json!("api_key=[REDACTED]"))
+        );
+        assert_eq!(payload["diagnostic"], json!("token=[REDACTED]"));
+    }
+
+    #[test]
+    fn credential_shaped_question_identity_and_validation_fail_closed() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let error = state
+            .enqueue_event(
+                &config,
+                "runtime_request.created",
+                EventPriority::P0,
+                json!({
+                    "request": {
+                        "schema": "paperclip.runtime_request.v2",
+                        "requestKind": "runtime",
+                        "requestId": "request-1",
+                        "type": "input",
+                        "status": "pending",
+                        "prompt": "Choose one.",
+                        "input": {
+                            "schema": "paperclip.question_set.v1",
+                            "questions": [{
+                                "id": "token=question-secret",
+                                "prompt": "Choose one.",
+                                "required": true,
+                                "answerMode": "single_select",
+                                "options": [{
+                                    "id": "abcdefgh.ijklmnop.qrstuvwx",
+                                    "label": "Yes"
+                                }],
+                                "textValidation": {"pattern": "^token=pattern-secret$"}
+                            }]
+                        }
+                    }
+                }),
+            )
+            .expect_err("identity-bearing question fields must not be rewritten");
+        assert!(error
+            .to_string()
+            .contains("identity or validation semantics contain credential-shaped material"));
+        assert!(state.outbox.is_empty());
     }
 
     #[test]
@@ -1746,6 +1968,22 @@ mod tests {
         assert_eq!(
             redact_text("Authorization: Basic dXNlcjpwYXNz retry"),
             "Authorization: Basic [REDACTED] retry"
+        );
+        assert_eq!(
+            redact_text("Authorization Basic dXNlcjpwYXNz retry"),
+            "Authorization Basic [REDACTED] retry"
+        );
+        assert_eq!(
+            redact_text("Authorization Bearer bearer-secret retry"),
+            "Authorization Bearer [REDACTED] retry"
+        );
+        assert_eq!(
+            redact_text(r#"Authorization "Basic dXNlcjpwYXNz" retry"#),
+            r#"Authorization "Basic [REDACTED]" retry"#
+        );
+        assert_eq!(
+            redact_text(r#"Authorization: "Bearer bearer-secret" retry"#),
+            r#"Authorization: "Bearer [REDACTED]" retry"#
         );
         assert_eq!(
             redact_text("login failed password=\"two word secret\" status=403"),
@@ -1833,6 +2071,56 @@ mod tests {
             assert_eq!(redact_text(input), expected);
             assert_eq!(redact_text(expected), expected);
         }
+    }
+
+    #[test]
+    fn diagnostic_redaction_removes_complete_private_key_pem_blocks() {
+        let complete = concat!(
+            "provider rejected private key: -----BEGIN PRIVATE KEY-----\n",
+            "cHJpdmF0ZS1rZXktbWF0ZXJpYWw=\n",
+            "-----END PRIVATE KEY-----\n",
+            "status=401",
+        );
+        assert_eq!(
+            redact_text(complete),
+            "provider rejected private key: [REDACTED]\nstatus=401"
+        );
+
+        let escaped = concat!(
+            "provider rejected -----BEGIN RSA PRIVATE KEY-----\\n",
+            "cHJpdmF0ZS1rZXktbWF0ZXJpYWw=\\n",
+            "-----END RSA PRIVATE KEY----- status=401",
+        );
+        assert_eq!(
+            redact_text(escaped),
+            "provider rejected [REDACTED] status=401"
+        );
+
+        let padded_header = concat!(
+            "provider rejected -----BEGIN PRIVATE KEY----- \t\n",
+            "cHJpdmF0ZS1rZXktbWF0ZXJpYWw=\n",
+            "-----END PRIVATE KEY----- status=401",
+        );
+        assert_eq!(
+            redact_text(padded_header),
+            "provider rejected [REDACTED] status=401"
+        );
+
+        let escaped_padded_header = concat!(
+            "provider rejected -----BEGIN RSA PRIVATE KEY----- \t\\n",
+            "cHJpdmF0ZS1rZXktbWF0ZXJpYWw=\\n",
+            "-----END RSA PRIVATE KEY----- status=401",
+        );
+        assert_eq!(
+            redact_text(escaped_padded_header),
+            "provider rejected [REDACTED] status=401"
+        );
+
+        let unterminated = concat!(
+            "provider rejected -----BEGIN OPENSSH PRIVATE KEY-----\n",
+            "cHJpdmF0ZS1rZXktbWF0ZXJpYWw=",
+        );
+        assert_eq!(redact_text(unterminated), "provider rejected [REDACTED]");
     }
 
     #[test]

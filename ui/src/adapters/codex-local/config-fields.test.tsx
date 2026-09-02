@@ -45,8 +45,12 @@ describe("Paperclip Runner Codex configuration", () => {
       opencodePermissionMode: "allow",
     });
 
-    expect(html).toContain('<option value="opencode" selected="">OpenCode 1.18.17</option>');
-    expect(html).toContain('<option value="allow" selected="">Full auto (allow)</option>');
+    expect(html).toContain(
+      '<option value="opencode" selected="">OpenCode 1.18.17</option>',
+    );
+    expect(html).toContain(
+      '<option value="allow" selected="">Full auto (allow)</option>',
+    );
     expect(html).toContain("Ask for permission");
     expect(html).toContain("Deny operations");
     expect(html).not.toContain("Ask for untrusted operations");
@@ -60,10 +64,14 @@ describe("Paperclip Runner Codex configuration", () => {
     });
 
     expect(html).toContain('<option value="acpx" selected="">ACPX</option>');
-    expect(html).toContain('<option value="claude" selected="">Claude via ACPX</option>');
+    expect(html).toContain(
+      '<option value="claude" selected="">Claude via ACPX</option>',
+    );
     expect(html).toContain("Codex via ACPX");
     expect(html).not.toContain("Pi via ACPX");
-    expect(html).toContain('<option value="approve-reads" selected="">Ask for mutations</option>');
+    expect(html).toContain(
+      '<option value="approve-reads" selected="">Conservative (fail closed)</option>',
+    );
   });
 
   it("falls back to the fail-closed Codex permission mode", () => {

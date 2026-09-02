@@ -141,6 +141,9 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).toContain(
       'data-history-suite-trends="openrouter-model-breadth"',
     );
+    expect(dashboard).toContain(
+      'data-history-suite-trends="local-session-integrity"',
+    );
     expect(dashboard).toContain("Suite pass rate");
     expect(dashboard).toContain("lines break at definition changes");
     expect(dashboard).toContain("cleanup passed");
@@ -148,8 +151,8 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
-    expect(index).toContain("57/57 passed");
-    expect(index).toContain("56/57 passed");
+    expect(index).toContain("71/71 passed");
+    expect(index).toContain("70/71 passed");
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
       "Visual evidence remains in access-controlled workflow artifacts",

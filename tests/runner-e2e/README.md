@@ -71,7 +71,7 @@ pnpm test:e2e:runner -- --case ask-question --group native
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains two suites. `core-compatibility` (**Core Runner
+The catalog contains three suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -90,7 +90,15 @@ three workflows: 15 cells. Its cases are:
 - `plan-approve-complete`: one exact two-step Plan, browser approval of that
   revision, then a resumed completion on the same task.
 
-The complete catalog is 57 cells and 95 expected paid agent turns. Follow-up
+`local-session-integrity` (**Local Session Integrity**) is the seven supported
+local native and direct-adapter profiles × two two-run structured-question
+workflows: 14 cells. Both prove that a required structured interaction is
+rendered, answered in the browser, and resumed once on the same task without
+duplicating the final response. The second workflow restarts the isolated
+Paperclip server while the interaction is waiting, reloads that state, and
+then resumes it. The suite has no Daytona cells.
+
+The complete catalog is 71 cells and 123 expected paid agent turns. Follow-up
 steps remain ordered within their cell; all other cells are independent.
 Narrow selectors are strongly recommended while developing fixtures.
 

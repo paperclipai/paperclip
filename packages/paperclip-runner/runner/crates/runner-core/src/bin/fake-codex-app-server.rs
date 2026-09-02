@@ -332,6 +332,44 @@ fn send_runtime_question(state: &FakeState) -> io::Result<()> {
     }))
 }
 
+fn send_opencode_proxy_runtime_question(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    send(json!({
+        "id": "opencode-runtime-request-1",
+        "method": "paperclip/runtimeRequest",
+        "params": {
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "opencode-question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "OpenCode requests user input.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "environment",
+                        "prompt": "Where should we deploy?",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [
+                            {"id": "staging", "label": "Staging"},
+                            {"id": "production", "label": "Production"}
+                        ]
+                    }]
+                },
+                "origin": {
+                    "adapter": "opencode-server",
+                    "provider": "opencode",
+                    "method": "question.asked"
+                },
+                "turnId": turn_id,
+                "itemId": "opencode-question-1"
+            }
+        }
+    }))
+}
+
 fn send_runtime_elicitation(state: &FakeState) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
     send(json!({
@@ -440,6 +478,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
     let emit_question = args.iter().any(|value| value == "--emit-question");
     let emit_runtime_question = args.iter().any(|value| value == "--runtime-question");
+    let emit_opencode_proxy_runtime_question = args
+        .iter()
+        .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let require_skill_instructions = args
@@ -633,6 +674,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if message.get("method").is_none()
             && message.get("id") == Some(&json!("runtime-elicitation-1"))
         {
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("opencode-runtime-request-1"))
+        {
+            if message.pointer("/result/resolution/action") != Some(&json!("submit"))
+                || message.pointer("/result/resolution/response/schema")
+                    != Some(&json!("paperclip.question_response.v1"))
+            {
+                return Err("OpenCode proxy runtime response changed shape".into());
+            }
+            log_call(call_log.as_deref(), "opencode-runtime-response:submitted")?;
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
@@ -1028,6 +1082,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else if emit_runtime_question {
                     send_runtime_question(&state)?;
+                } else if emit_opencode_proxy_runtime_question {
+                    send_opencode_proxy_runtime_question(&state)?;
                 } else if emit_runtime_elicitation {
                     send_runtime_elicitation(&state)?;
                 } else if emit_structured_activity {

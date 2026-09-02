@@ -87,25 +87,21 @@ function readControlPlaneState(directory: string): Record<string, unknown> {
   const path = resolve(directory, "control-plane-state.json");
   const metadata = lstatSync(path);
   if (
-    metadata.isSymbolicLink()
-    || !metadata.isFile()
-    || metadata.size > 64 * 1024 * 1024
+    metadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    metadata.size > 64 * 1024 * 1024
   ) {
     throw new Error("native_runner_control_plane_state_unsafe");
   }
-  return record(
-    JSON.parse(
-      readFileSync(path, "utf8"),
-    ),
-  );
+  return record(JSON.parse(readFileSync(path, "utf8")));
 }
 
 function readRunnerState(path: string): Record<string, unknown> {
   const metadata = lstatSync(path);
   if (
-    metadata.isSymbolicLink()
-    || !metadata.isFile()
-    || metadata.size > 16 * 1024 * 1024
+    metadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    metadata.size > 16 * 1024 * 1024
   ) {
     throw new Error("native_runner_authority_rotation_state_unsafe");
   }
@@ -167,7 +163,8 @@ function latestArchivedControlPlaneState(
     )
     .map((directory) => ({
       directory,
-      modifiedAt: statSync(resolve(directory, "control-plane-state.json")).mtimeMs,
+      modifiedAt: statSync(resolve(directory, "control-plane-state.json"))
+        .mtimeMs,
     }))
     .sort((left, right) => right.modifiedAt - left.modifiedAt);
   for (const candidate of candidates) {
@@ -260,17 +257,20 @@ function rotatedRunAttachPayload(
   desired: DurableRecoveryIdentity,
   authorizedTools: Record<string, unknown> | null,
   completionContract:
-    | { revision: string; criterionIds: readonly string[] }
-    | undefined,
+    { revision: string; criterionIds: readonly string[] } | undefined,
 ): Record<string, unknown> {
-  const commands = Array.isArray(state.commands) ? state.commands.map(record) : [];
+  const commands = Array.isArray(state.commands)
+    ? state.commands.map(record)
+    : [];
   const seed = [...commands]
     .reverse()
-    .find((command) =>
-      (command.type === "run.prepare" || command.type === "run.attach")
-      && record(command.payload).provider !== undefined,
+    .find(
+      (command) =>
+        (command.type === "run.prepare" || command.type === "run.attach") &&
+        record(command.payload).provider !== undefined,
     );
-  if (!seed) throw new Error("native_runner_authority_rotation_seed_unavailable");
+  if (!seed)
+    throw new Error("native_runner_authority_rotation_seed_unavailable");
   const payload = structuredClone(record(seed.payload));
   const provider = record(payload.provider);
   if (provider.kind === "acpx" || provider.provider === "acpx") {
@@ -299,67 +299,98 @@ function bridgedCodexQuestionParams(
     questionSet.schema !== "paperclip.question_set.v1" ||
     !Array.isArray(questionSet.questions) ||
     questionSet.questions.length === 0
-  ) return null;
+  )
+    return null;
   const common = {
     threadId,
     turnId,
-    itemId: typeof request.itemId === "string" ? request.itemId : String(request.requestId ?? "runtime-input"),
+    itemId:
+      typeof request.itemId === "string"
+        ? request.itemId
+        : String(request.requestId ?? "runtime-input"),
   };
   if (method === "mcpServer/elicitation/request") {
     const required: string[] = [];
-    const properties = Object.fromEntries(questionSet.questions.map((candidate, index) => {
-      const question = record(candidate);
-      const id = typeof question.id === "string" ? question.id : `question-${index + 1}`;
-      if (question.required === true) required.push(id);
-      const validation = record(question.textValidation);
-      const options = Array.isArray(question.options)
-        ? question.options.map((candidateOption) => {
-            const option = record(candidateOption);
-            return {
-              const: typeof option.id === "string" ? option.id : "option",
-              title: typeof option.label === "string" ? option.label : "Option",
-              ...(typeof option.description === "string" ? { description: option.description } : {}),
-            };
-          })
-        : [];
-      const isBoolean = question.answerMode === "single_select"
-        && options.length === 2
-        && options[0]?.const === "true"
-        && options[1]?.const === "false";
-      const inputType = validation.inputType === "integer" || validation.inputType === "number"
-        ? validation.inputType
-        : "string";
-      const scalarSchema = isBoolean
-        ? { type: "boolean" }
-        : options.length > 0
-        ? { type: "string", oneOf: options }
-        : {
-            type: inputType,
-            ...(typeof validation.minLength === "number" ? { minLength: validation.minLength } : {}),
-            ...(typeof validation.maxLength === "number" ? { maxLength: validation.maxLength } : {}),
-            ...(typeof validation.minimum === "number" ? { minimum: validation.minimum } : {}),
-            ...(typeof validation.maximum === "number" ? { maximum: validation.maximum } : {}),
-            ...(typeof validation.pattern === "string" ? { pattern: validation.pattern } : {}),
-          };
-      return [id, {
-        ...(question.answerMode === "multi_select"
-          ? { type: "array", items: scalarSchema }
-          : scalarSchema),
-        ...(typeof question.header === "string"
-          ? { title: question.header }
-          : typeof question.prompt === "string"
-            ? { title: question.prompt }
-            : {}),
-        ...(typeof question.helpText === "string" ? { description: question.helpText } : {}),
-      }];
-    }));
+    const properties = Object.fromEntries(
+      questionSet.questions.map((candidate, index) => {
+        const question = record(candidate);
+        const id =
+          typeof question.id === "string"
+            ? question.id
+            : `question-${index + 1}`;
+        if (question.required === true) required.push(id);
+        const validation = record(question.textValidation);
+        const options = Array.isArray(question.options)
+          ? question.options.map((candidateOption) => {
+              const option = record(candidateOption);
+              return {
+                const: typeof option.id === "string" ? option.id : "option",
+                title:
+                  typeof option.label === "string" ? option.label : "Option",
+                ...(typeof option.description === "string"
+                  ? { description: option.description }
+                  : {}),
+              };
+            })
+          : [];
+        const isBoolean =
+          question.answerMode === "single_select" &&
+          options.length === 2 &&
+          options[0]?.const === "true" &&
+          options[1]?.const === "false";
+        const inputType =
+          validation.inputType === "integer" ||
+          validation.inputType === "number"
+            ? validation.inputType
+            : "string";
+        const scalarSchema = isBoolean
+          ? { type: "boolean" }
+          : options.length > 0
+            ? { type: "string", oneOf: options }
+            : {
+                type: inputType,
+                ...(typeof validation.minLength === "number"
+                  ? { minLength: validation.minLength }
+                  : {}),
+                ...(typeof validation.maxLength === "number"
+                  ? { maxLength: validation.maxLength }
+                  : {}),
+                ...(typeof validation.minimum === "number"
+                  ? { minimum: validation.minimum }
+                  : {}),
+                ...(typeof validation.maximum === "number"
+                  ? { maximum: validation.maximum }
+                  : {}),
+                ...(typeof validation.pattern === "string"
+                  ? { pattern: validation.pattern }
+                  : {}),
+              };
+        return [
+          id,
+          {
+            ...(question.answerMode === "multi_select"
+              ? { type: "array", items: scalarSchema }
+              : scalarSchema),
+            ...(typeof question.header === "string"
+              ? { title: question.header }
+              : typeof question.prompt === "string"
+                ? { title: question.prompt }
+                : {}),
+            ...(typeof question.helpText === "string"
+              ? { description: question.helpText }
+              : {}),
+          },
+        ];
+      }),
+    );
     return {
       ...common,
-      message: typeof questionSet.description === "string"
-        ? questionSet.description
-        : typeof questionSet.title === "string"
-          ? questionSet.title
-          : "A tool needs your input",
+      message:
+        typeof questionSet.description === "string"
+          ? questionSet.description
+          : typeof questionSet.title === "string"
+            ? questionSet.title
+            : "A tool needs your input",
       requestedSchema: {
         type: "object",
         properties,
@@ -369,34 +400,66 @@ function bridgedCodexQuestionParams(
   }
   return {
     ...common,
-    ...(typeof questionSet.title === "string" ? { title: questionSet.title } : {}),
-    ...(typeof questionSet.description === "string" ? { description: questionSet.description } : {}),
-    ...(typeof questionSet.submitLabel === "string" ? { submitLabel: questionSet.submitLabel } : {}),
+    ...(typeof questionSet.title === "string"
+      ? { title: questionSet.title }
+      : {}),
+    ...(typeof questionSet.description === "string"
+      ? { description: questionSet.description }
+      : {}),
+    ...(typeof questionSet.submitLabel === "string"
+      ? { submitLabel: questionSet.submitLabel }
+      : {}),
     questions: questionSet.questions.map((candidate, index) => {
       const question = record(candidate);
       const validation = record(question.textValidation);
       return {
-        id: typeof question.id === "string" ? question.id : `question-${index + 1}`,
-        ...(typeof question.header === "string" ? { header: question.header } : {}),
-        question: typeof question.prompt === "string" ? question.prompt : `Question ${index + 1}`,
-        ...(typeof question.helpText === "string" ? { description: question.helpText } : {}),
+        id:
+          typeof question.id === "string"
+            ? question.id
+            : `question-${index + 1}`,
+        ...(typeof question.header === "string"
+          ? { header: question.header }
+          : {}),
+        question:
+          typeof question.prompt === "string"
+            ? question.prompt
+            : `Question ${index + 1}`,
+        ...(typeof question.helpText === "string"
+          ? { description: question.helpText }
+          : {}),
         required: question.required === true,
-        ...(question.answerMode === "multi_select" ? { multiSelect: true } : {}),
+        ...(question.answerMode === "multi_select"
+          ? { multiSelect: true }
+          : {}),
         ...(Array.isArray(question.options)
           ? {
               options: question.options.map((candidateOption, optionIndex) => {
                 const option = record(candidateOption);
                 return {
-                  id: typeof option.id === "string" ? option.id : `option-${optionIndex + 1}`,
-                  label: typeof option.label === "string" ? option.label : `Option ${optionIndex + 1}`,
-                  ...(typeof option.description === "string" ? { description: option.description } : {}),
+                  id:
+                    typeof option.id === "string"
+                      ? option.id
+                      : `option-${optionIndex + 1}`,
+                  label:
+                    typeof option.label === "string"
+                      ? option.label
+                      : `Option ${optionIndex + 1}`,
+                  ...(typeof option.description === "string"
+                    ? { description: option.description }
+                    : {}),
                 };
               }),
             }
           : {}),
-        ...(record(question.customAnswer).enabled === true ? { isOther: true } : {}),
-        ...(typeof validation.minLength === "number" ? { minLength: validation.minLength } : {}),
-        ...(typeof validation.maxLength === "number" ? { maxLength: validation.maxLength } : {}),
+        ...(record(question.customAnswer).enabled === true
+          ? { isOther: true }
+          : {}),
+        ...(typeof validation.minLength === "number"
+          ? { minLength: validation.minLength }
+          : {}),
+        ...(typeof validation.maxLength === "number"
+          ? { maxLength: validation.maxLength }
+          : {}),
       };
     }),
   };
@@ -735,21 +798,25 @@ function appendRunnerdRehydrationTrace(
         frameId,
         stage: "typescript_runnerd_rehydration",
         ruleId: `runnerd.rehydrate.${eventType}`,
+        sourceEventId,
+        sourceEventType: eventType,
         disposition: visibleNotificationCount > 0 ? "mapped" : "ignored",
-        emittedEventIds: [sourceEventId],
+        emittedEventIds: visibleNotificationCount > 0 ? [sourceEventId] : [],
         droppedFields: [],
         fieldMappings: [
           {
             inputPath: "sourceEventId",
             outputPath: "paperclipTrace.sourceEventId",
             action: "copied",
-            reason: "Preserved the durable event identity while rehydrating the provider notification",
+            reason:
+              "Preserved the durable event identity while rehydrating the provider notification",
           },
           {
             inputPath: "eventType",
             outputPath: "paperclipTrace.sourceEventType",
             action: "renamed",
-            reason: "Attached the canonical PRP type to the rehydrated notification",
+            reason:
+              "Attached the canonical PRP type to the rehydrated notification",
           },
         ],
         reason:
@@ -791,6 +858,8 @@ function appendCodexDriverInterpretationTrace(
         frameId,
         stage: "typescript_codex_driver_normalization",
         ruleId: `codex_driver.normalize.${input.providerMethod}`,
+        sourceEventId: input.sourceEventId,
+        sourceEventType: input.sourceEventType,
         disposition: input.disposition,
         emittedEventIds: input.emittedEventIds,
         droppedFields: [],
@@ -799,12 +868,14 @@ function appendCodexDriverInterpretationTrace(
             inputPath: "params",
             outputPath: "payload",
             action: "normalized",
-            reason: "Codex notification fields were normalized into canonical PRP event payloads",
+            reason:
+              "Codex notification fields were normalized into canonical PRP event payloads",
           },
           ...input.emittedEventIds.map((eventId) => ({
             outputPath: `event:${eventId}`,
             action: "derived",
-            reason: "The driver emitted this canonical PRP event from the normalized notification",
+            reason:
+              "The driver emitted this canonical PRP event from the normalized notification",
           })),
         ],
         reason: input.reason,
@@ -896,7 +967,8 @@ export function rehydrateRunnerdTurnNotification(
 ): Record<string, unknown> {
   const rawTurn = record(rawParams.turn);
   const providerTurnId =
-    typeof rawParams.providerTurnId === "string" && rawParams.providerTurnId.length > 0
+    typeof rawParams.providerTurnId === "string" &&
+    rawParams.providerTurnId.length > 0
       ? rawParams.providerTurnId
       : null;
   const rawTurnId =
@@ -907,9 +979,7 @@ export function rehydrateRunnerdTurnNotification(
         ? rawParams.turnId
         : activeTurnId);
   const boundTurnId =
-    method === "turn/completed"
-      ? providerTurnId ?? activeTurnId
-      : rawTurnId;
+    method === "turn/completed" ? (providerTurnId ?? activeTurnId) : rawTurnId;
   return {
     ...rawParams,
     // A canonical runnerd terminal is bound by the authenticated PRP envelope.
@@ -981,8 +1051,7 @@ export function rehydrateRunnerdPlanNotification(
           const step = record(value);
           return {
             step: typeof step.body === "string" ? step.body : "",
-            status:
-              typeof step.status === "string" ? step.status : "pending",
+            status: typeof step.status === "string" ? step.status : "pending",
           };
         }),
   };
@@ -1007,9 +1076,10 @@ function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
 
-function approvedRunnerArtifact(
-  runnerBinaryPath: string,
-): { version: string; digest: string } {
+function approvedRunnerArtifact(runnerBinaryPath: string): {
+  version: string;
+  digest: string;
+} {
   return {
     version: RUNNER_CLIENT_VERSION,
     digest: `sha256:${createHash("sha256")
@@ -1284,9 +1354,9 @@ function createSanitizedOpenCodeRunnerEnvironment(
   return Object.fromEntries(
     Object.entries(candidate).filter(
       ([key, value]) =>
-        typeof value === "string"
-        && (OPEN_CODE_RUNNER_ENVIRONMENT_KEYS.has(key)
-          || /^LC_[A-Z0-9_]{1,32}$/.test(key)),
+        typeof value === "string" &&
+        (OPEN_CODE_RUNNER_ENVIRONMENT_KEYS.has(key) ||
+          /^LC_[A-Z0-9_]{1,32}$/.test(key)),
     ),
   );
 }
@@ -1319,9 +1389,7 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
-function unwrapToolResponse(
-  response: Record<string, unknown>,
-): {
+function unwrapToolResponse(response: Record<string, unknown>): {
   readonly __paperclipSemanticToolOutcome: true;
   readonly result: unknown;
   readonly isError: boolean;
@@ -1370,6 +1438,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #failure: Error | null = null;
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
@@ -1529,9 +1598,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : [{ id: activeProviderTurnId, status: "inProgress" }];
       if (activeProviderTurnId === null && this.#turnId.length > 0) {
         const recoveryDeadline = Date.now() + 5_000;
-        let terminal = (
-          this.#core?.store.state.committedEvents ?? []
-        ).find(() => false);
+        let terminal = (this.#core?.store.state.committedEvents ?? []).find(
+          () => false,
+        );
         while (Date.now() < recoveryDeadline) {
           this.#throwIfFailed();
           this.#pumpEvents();
@@ -1543,7 +1612,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                 event.eventType !== "turn.failed" &&
                 event.eventType !== "turn.interrupted" &&
                 event.eventType !== "turn.cancelled"
-              ) return false;
+              )
+                return false;
               const payload = record(record(event.envelope.payload).payload);
               const providerTurnId =
                 payload.providerTurnId ??
@@ -1578,9 +1648,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           cwd:
             typeof snapshot.cwd === "string" && snapshot.cwd.length > 0
               ? snapshot.cwd
-              : this.options.environment?.PAPERCLIP_WORKSPACE_CWD ??
+              : (this.options.environment?.PAPERCLIP_WORKSPACE_CWD ??
                 this.options.runnerFilesystemRoot ??
-                tmpdir(),
+                tmpdir()),
           turns: recoveredTurns,
         },
       };
@@ -1624,7 +1694,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void> {
     const pending = this.#bridgedRuntimeInputs.get(input.requestId);
-    if (!pending) throw new Error(`PRP runtime request ${input.requestId} is no longer pending`);
+    if (!pending)
+      throw new Error(
+        `PRP runtime request ${input.requestId} is no longer pending`,
+      );
     if (!("response" in input.resolution)) {
       throw new Error(
         "runnerd-native runtime requests require a canonical question response",
@@ -1688,19 +1761,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
-  #providerDrainState(): {
-    pendingEventCount: number;
-    providerSettled: boolean;
-  } | "unreadable" | null {
+  #providerDrainState():
+    | {
+        pendingEventCount: number;
+        providerSettled: boolean;
+      }
+    | "unreadable"
+    | null {
     if (this.options.runnerFilesystemRoot !== undefined) return null;
     const provider = this.options.provider ?? "codex";
-    const filename = provider === "acpx"
-      ? "acpx-provider-state.json"
-      : provider === "claude_managed" || provider === "aws_agentcore"
-        ? "managed-provider-state.json"
-        : "codex-provider-state.json";
-    const stateDirectory = this.options.runnerStateDirectory
-      ?? resolve(this.#root, "runner");
+    const filename =
+      provider === "acpx"
+        ? "acpx-provider-state.json"
+        : provider === "claude_managed" || provider === "aws_agentcore"
+          ? "managed-provider-state.json"
+          : "codex-provider-state.json";
+    const stateDirectory =
+      this.options.runnerStateDirectory ?? resolve(this.#root, "runner");
     const statePath = resolve(stateDirectory, filename);
     if (!existsSync(statePath)) {
       return { pendingEventCount: 0, providerSettled: true };
@@ -1716,9 +1793,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return {
         pendingEventCount: pending + queued,
         providerSettled:
-          !(typeof state.activeProviderTurnId === "string"
-            && state.activeProviderTurnId.length > 0)
-          && state.ambiguousTurnStartPending !== true,
+          !(
+            typeof state.activeProviderTurnId === "string" &&
+            state.activeProviderTurnId.length > 0
+          ) && state.ambiguousTurnStartPending !== true,
       };
     } catch {
       return "unreadable";
@@ -1739,7 +1817,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         crossedDrainBarrier &&
         state.pendingEventCount === 0 &&
         state.providerSettled
-      ) return;
+      )
+        return;
       const core = this.#core;
       if (core === null || state === "unreadable") {
         await new Promise((resolveWait) => setTimeout(resolveWait, 5));
@@ -1775,8 +1854,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    this.#closePromise ??= this.#closeOnce();
+    return this.#closePromise;
+  }
+
+  async #closeOnce(): Promise<void> {
     this.#closed = true;
     if (this.#core !== null && this.#handle !== null) {
       // A terminal provider frame can become visible one control loop before
@@ -1913,7 +1996,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? resolve(this.options.runnerFilesystemRoot, "runtime-context.json")
       : localRuntimeContextPath;
     if (runtimeContext !== null) {
-      writeFileSync(localRuntimeContextPath, `${JSON.stringify(runtimeContext)}\n`, { mode: 0o600 });
+      writeFileSync(
+        localRuntimeContextPath,
+        `${JSON.stringify(runtimeContext)}\n`,
+        { mode: 0o600 },
+      );
     }
     const localCodexHome = resolve(this.#root, "codex-home");
     const codexHome = this.options.runnerFilesystemRoot
@@ -1968,8 +2055,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           )
         : undefined;
     if (
-      this.options.runnerFilesystemRoot
-      && (provider === "opencode" || provider === "acpx")
+      this.options.runnerFilesystemRoot &&
+      (provider === "opencode" || provider === "acpx")
     ) {
       const providerPaths = [
         ["provider Node", providerNodeCommand],
@@ -1979,8 +2066,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ] as const;
       for (const [label, candidate] of providerPaths) {
         if (
-          candidate.startsWith("/Users/")
-          || /^[A-Za-z]:\\\\Users\\\\/.test(candidate)
+          candidate.startsWith("/Users/") ||
+          /^[A-Za-z]:\\\\Users\\\\/.test(candidate)
         ) {
           throw new Error(
             `runner_remote_provider_artifact_incompatible: ${label} path belongs to the controller host`,
@@ -2028,100 +2115,108 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const agentCoreProfile = this.options.agentCoreProfile;
     if (provider === "claude_managed") {
       if (!managedProfile) {
-        throw new Error("Claude Managed runner transport requires a qualified managed profile");
+        throw new Error(
+          "Claude Managed runner transport requires a qualified managed profile",
+        );
       }
       if (requestedModel !== managedProfile.model) {
-        throw new Error("Claude Managed requested model does not match its qualified profile");
+        throw new Error(
+          "Claude Managed requested model does not match its qualified profile",
+        );
       }
     }
     if (provider === "aws_agentcore") {
       if (!agentCoreProfile) {
-        throw new Error("AWS AgentCore runner transport requires a qualified AgentCore profile");
+        throw new Error(
+          "AWS AgentCore runner transport requires a qualified AgentCore profile",
+        );
       }
       if (requestedModel !== agentCoreProfile.model) {
-        throw new Error("AWS AgentCore requested model does not match its qualified profile");
+        throw new Error(
+          "AWS AgentCore requested model does not match its qualified profile",
+        );
       }
     }
     const completionContract = record(params.completionContract);
     core.queueCommand("run.prepare", {
       authorizedTools: this.#authorizedTools,
-      ...(completionContract.revision
-        && Array.isArray(completionContract.criterionIds)
+      ...(completionContract.revision &&
+      Array.isArray(completionContract.criterionIds)
         ? { completionContract }
         : {}),
       provider:
         provider === "acpx"
+          ? {
+              kind: "acpx",
+              provider: "acpx",
+              driver: "acpx_runtime",
+              providerVersion: acpxProfile!.acpxVersion,
+              agent: acpxProfile!.agent,
+              model: requestedModel,
+              acpxVersion: acpxProfile!.acpxVersion,
+              agentServerPackage: acpxProfile!.agentServerPackage,
+              agentServerVersion: acpxProfile!.agentServerVersion,
+              agentRuntimePackage: acpxProfile!.agentRuntimePackage,
+              agentRuntimeVersion: acpxProfile!.agentRuntimeVersion,
+              commandDigest: acpxProfile!.commandDigest,
+              sidecarCommand: providerNodeCommand,
+              sidecarArgs: [acpxSidecarPath],
+              runtimeDirectory:
+                this.options.acpxRuntimeDirectory ??
+                resolve(this.#root, "acpx"),
+              normalizedSessionId: identity.normalizedSessionId,
+              runId: identity.runId,
+              cwd: String(params.cwd ?? tmpdir()),
+              instructions: baseInstructions,
+              permissionMode: resolveRunnerdAcpxPermissionMode(
+                this.options.acpxPermissionMode,
+              ),
+              permissionModePinned:
+                this.options.acpxPermissionModePinned ?? true,
+              runtimeContext,
+            }
+          : provider === "claude_managed"
+            ? {
+                kind: "claude_managed",
+                model: managedProfile!.model,
+                profileId: managedProfile!.profileId,
+                anthropicAgentId: managedProfile!.anthropicAgentId,
+                agentVersion: managedProfile!.agentVersion,
+                environmentId: managedProfile!.environmentId,
+                betaVersion: managedProfile!.betaVersion,
+                maxSessionListCostUsd: managedProfile!.maxSessionListCostUsd,
+                instructions: baseInstructions,
+                runtimeContext,
+              }
+            : provider === "aws_agentcore"
               ? {
-                  kind: "acpx",
-                  provider: "acpx",
-                  driver: "acpx_runtime",
-                  providerVersion: acpxProfile!.acpxVersion,
-                  agent: acpxProfile!.agent,
-                  model: requestedModel,
-                  acpxVersion: acpxProfile!.acpxVersion,
-                  agentServerPackage: acpxProfile!.agentServerPackage,
-                  agentServerVersion: acpxProfile!.agentServerVersion,
-                  agentRuntimePackage: acpxProfile!.agentRuntimePackage,
-                  agentRuntimeVersion: acpxProfile!.agentRuntimeVersion,
-                  commandDigest: acpxProfile!.commandDigest,
-                  sidecarCommand: providerNodeCommand,
-                  sidecarArgs: [acpxSidecarPath],
-                  runtimeDirectory:
-                    this.options.acpxRuntimeDirectory ??
-                    resolve(this.#root, "acpx"),
-                  normalizedSessionId: identity.normalizedSessionId,
-                  runId: identity.runId,
-                  cwd: String(params.cwd ?? tmpdir()),
+                  kind: "aws_agentcore",
+                  model: agentCoreProfile!.model,
+                  profileId: agentCoreProfile!.profileId,
+                  region: agentCoreProfile!.region,
+                  accountId: agentCoreProfile!.accountId,
+                  harnessArn: agentCoreProfile!.harnessArn,
+                  harnessVersion: agentCoreProfile!.harnessVersion,
+                  endpointArn: agentCoreProfile!.endpointArn,
+                  endpointQualifier: agentCoreProfile!.endpointQualifier,
+                  agentRuntimeArn: agentCoreProfile!.agentRuntimeArn,
+                  memoryArn: agentCoreProfile!.memoryArn,
+                  memoryId: agentCoreProfile!.memoryId,
+                  invocationRoleArn: agentCoreProfile!.invocationRoleArn,
+                  contextBucket: agentCoreProfile!.contextBucket,
+                  contextPrefix: agentCoreProfile!.contextPrefix,
+                  contextKmsKeyArn: agentCoreProfile!.contextKmsKeyArn,
+                  qualificationRevision:
+                    agentCoreProfile!.qualificationRevision,
+                  eventExpiryDays: agentCoreProfile!.eventExpiryDays,
+                  maxEstimatedSessionCostUsd:
+                    agentCoreProfile!.maxEstimatedSessionCostUsd,
+                  maxIterations: agentCoreProfile!.maxIterations,
+                  maxOutputTokens: agentCoreProfile!.maxOutputTokens,
+                  timeoutSeconds: agentCoreProfile!.timeoutSeconds,
                   instructions: baseInstructions,
-                  permissionMode: resolveRunnerdAcpxPermissionMode(
-                    this.options.acpxPermissionMode,
-                  ),
-                  permissionModePinned: this.options.acpxPermissionModePinned ?? true,
                   runtimeContext,
                 }
-              : provider === "claude_managed"
-                ? {
-                    kind: "claude_managed",
-                    model: managedProfile!.model,
-                    profileId: managedProfile!.profileId,
-                    anthropicAgentId: managedProfile!.anthropicAgentId,
-                    agentVersion: managedProfile!.agentVersion,
-                    environmentId: managedProfile!.environmentId,
-                    betaVersion: managedProfile!.betaVersion,
-                    maxSessionListCostUsd:
-                      managedProfile!.maxSessionListCostUsd,
-                    instructions: baseInstructions,
-                    runtimeContext,
-                  }
-                : provider === "aws_agentcore"
-                  ? {
-                      kind: "aws_agentcore",
-                      model: agentCoreProfile!.model,
-                      profileId: agentCoreProfile!.profileId,
-                      region: agentCoreProfile!.region,
-                      accountId: agentCoreProfile!.accountId,
-                      harnessArn: agentCoreProfile!.harnessArn,
-                      harnessVersion: agentCoreProfile!.harnessVersion,
-                      endpointArn: agentCoreProfile!.endpointArn,
-                      endpointQualifier: agentCoreProfile!.endpointQualifier,
-                      agentRuntimeArn: agentCoreProfile!.agentRuntimeArn,
-                      memoryArn: agentCoreProfile!.memoryArn,
-                      memoryId: agentCoreProfile!.memoryId,
-                      invocationRoleArn: agentCoreProfile!.invocationRoleArn,
-                      contextBucket: agentCoreProfile!.contextBucket,
-                      contextPrefix: agentCoreProfile!.contextPrefix,
-                      contextKmsKeyArn: agentCoreProfile!.contextKmsKeyArn,
-                      qualificationRevision:
-                        agentCoreProfile!.qualificationRevision,
-                      eventExpiryDays: agentCoreProfile!.eventExpiryDays,
-                      maxEstimatedSessionCostUsd:
-                        agentCoreProfile!.maxEstimatedSessionCostUsd,
-                      maxIterations: agentCoreProfile!.maxIterations,
-                      maxOutputTokens: agentCoreProfile!.maxOutputTokens,
-                      timeoutSeconds: agentCoreProfile!.timeoutSeconds,
-                      instructions: baseInstructions,
-                      runtimeContext,
-                    }
               : {
                   kind: provider,
                   provider,
@@ -2130,9 +2225,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       ? "opencode_server"
                       : "codex_app_server",
                   providerVersion:
-                    provider === "opencode"
-                      ? "1.18.17"
-                      : "codex-app-server-v1",
+                    provider === "opencode" ? "1.18.17" : "codex-app-server-v1",
                   command:
                     provider === "opencode"
                       ? providerNodeCommand
@@ -2144,7 +2237,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                         createIsolatedCodexAppServerArgs(
                           this.options.environment,
                           [
-                            ...trustedRuntimeReadOnlyRoots(this.options.environment),
+                            ...trustedRuntimeReadOnlyRoots(
+                              this.options.environment,
+                            ),
                             ...(runtimeContext
                               ? [
                                   resolve(codexHome, "skills"),
@@ -2159,7 +2254,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   cwd: String(params.cwd ?? tmpdir()),
                   model: typeof params.model === "string" ? params.model : null,
                   approvalPolicy:
-                    params.approvalPolicy === "on-request" || params.approvalPolicy === "untrusted"
+                    params.approvalPolicy === "on-request" ||
+                    params.approvalPolicy === "untrusted"
                       ? params.approvalPolicy
                       : "never",
                   instructions:
@@ -2176,7 +2272,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       : "default",
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
-                  includeSkillInstructions: provider === "codex" && runtimeContext !== null,
+                  includeSkillInstructions:
+                    provider === "codex" && runtimeContext !== null,
                   runtimeContext,
                 },
     });
@@ -2259,13 +2356,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               ? "anthropic"
               : provider === "aws_agentcore"
                 ? "aws"
-            : provider === "acpx"
-              ? acpxAgent === "pi"
-                ? "openrouter"
-                : acpxAgent === "claude"
-                  ? "anthropic"
-                  : "openai"
-              : "openai",
+                : provider === "acpx"
+                  ? acpxAgent === "pi"
+                    ? "openrouter"
+                    : acpxAgent === "claude"
+                      ? "anthropic"
+                      : "openai"
+                  : "openai",
       },
     };
   }
@@ -2281,14 +2378,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       "control-plane-state.json",
     );
     const localProvider =
-      this.options.provider === undefined
-      || this.options.provider === "codex"
-      || this.options.provider === "opencode"
-      || this.options.provider === "acpx";
+      this.options.provider === undefined ||
+      this.options.provider === "codex" ||
+      this.options.provider === "opencode" ||
+      this.options.provider === "acpx";
     const localStateOwner =
-      this.options.readRunnerState === undefined
-      && this.options.runnerStateDirectory === undefined
-      && this.options.runnerFilesystemRoot === undefined;
+      this.options.readRunnerState === undefined &&
+      this.options.runnerStateDirectory === undefined &&
+      this.options.runnerFilesystemRoot === undefined;
     let controlPlaneState: Record<string, unknown> | null;
     try {
       controlPlaneState = existsSync(controlPlaneStatePath)
@@ -2304,13 +2401,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? controlPlaneIdentity(controlPlaneState)
       : desiredIdentity;
     const exactAuthority =
-      controlPlaneState !== null
-      && identity.runnerInstanceId === desiredIdentity.runnerInstanceId
-      && identity.environmentLeaseId === desiredIdentity.environmentLeaseId
-      && identity.runId === desiredIdentity.runId
-      && identity.normalizedSessionId === desiredIdentity.normalizedSessionId
-      && identity.turnId === desiredIdentity.turnId
-      && identity.itemId === desiredIdentity.itemId;
+      controlPlaneState !== null &&
+      identity.runnerInstanceId === desiredIdentity.runnerInstanceId &&
+      identity.environmentLeaseId === desiredIdentity.environmentLeaseId &&
+      identity.runId === desiredIdentity.runId &&
+      identity.normalizedSessionId === desiredIdentity.normalizedSessionId &&
+      identity.turnId === desiredIdentity.turnId &&
+      identity.itemId === desiredIdentity.itemId;
     let rotatedAuthority = false;
     if (controlPlaneState === null) {
       if (!localProvider || !localStateOwner) {
@@ -2350,8 +2447,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity = desiredIdentity;
       rotatedAuthority = true;
     } else if (
-      localStateOwner
-      && !existsSync(resolve(this.#root, "runner", "runner-state.json"))
+      localStateOwner &&
+      !existsSync(resolve(this.#root, "runner", "runner-state.json"))
     ) {
       quarantineLocalRuntimeState(
         this.#root,
@@ -2371,9 +2468,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? resolve(this.options.runnerFilesystemRoot, "runtime-context.json")
       : localRuntimeContextPath;
     if (runtimeContext !== null) {
-      writeFileSync(localRuntimeContextPath, `${JSON.stringify(runtimeContext)}\n`, {
-        mode: 0o600,
-      });
+      writeFileSync(
+        localRuntimeContextPath,
+        `${JSON.stringify(runtimeContext)}\n`,
+        {
+          mode: 0o600,
+        },
+      );
     }
     const localCodexHome = resolve(this.#root, "codex-home");
     const codexHome = this.options.runnerFilesystemRoot
@@ -2535,9 +2636,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (rotatedAuthority) await this.#waitCommand("run.attach");
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
-    this.#diagnostic(rotatedAuthority
-      ? "runnerd attached the durable provider session to a fresh PRP run authority"
-      : "runnerd restored its durable PRP session and provider thread");
+    this.#diagnostic(
+      rotatedAuthority
+        ? "runnerd attached the durable provider session to a fresh PRP run authority"
+        : "runnerd restored its durable PRP session and provider thread",
+    );
   }
 
   async #startTurn(
@@ -2742,12 +2845,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (event.eventType === "runtime_request.created") {
         const request = record(record(event.envelope.payload).payload).request;
         const normalizedRequest = record(request);
-        const requestId = typeof normalizedRequest.requestId === "string"
-          ? normalizedRequest.requestId
-          : "";
+        const requestId =
+          typeof normalizedRequest.requestId === "string"
+            ? normalizedRequest.requestId
+            : "";
         const origin = record(normalizedRequest.origin);
         const method = typeof origin.method === "string" ? origin.method : "";
-        const params = bridgedCodexQuestionParams(normalizedRequest, method, this.#threadId, this.#turnId);
+        const params = bridgedCodexQuestionParams(
+          normalizedRequest,
+          method,
+          this.#threadId,
+          this.#turnId,
+        );
         if (
           requestId &&
           params &&
@@ -2757,9 +2866,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           !this.#bridgedRuntimeInputs.has(requestId)
         ) {
           this.#bridgedRuntimeInputs.set(requestId, {
-            durableTurnId: typeof event.envelope.turnId === "string"
-              ? event.envelope.turnId
-              : this.#durableTurnId,
+            durableTurnId:
+              typeof event.envelope.turnId === "string"
+                ? event.envelope.turnId
+                : this.#durableTurnId,
           });
           void this.#handler({
             id: requestId,
@@ -2770,7 +2880,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               sourceEventType: event.eventType,
             },
           }).catch((error) => {
-            this.#failTransport(error instanceof Error ? error : new Error(String(error)));
+            this.#failTransport(
+              error instanceof Error ? error : new Error(String(error)),
+            );
           });
         }
         continue;
@@ -2780,8 +2892,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         event.eventType === "runtime_request.cancelled" ||
         event.eventType === "runtime_request.expired"
       ) {
-        const requestId = record(record(event.envelope.payload).payload).requestId;
-        if (typeof requestId === "string") this.#bridgedRuntimeInputs.delete(requestId);
+        const requestId = record(
+          record(event.envelope.payload).payload,
+        ).requestId;
+        if (typeof requestId === "string")
+          this.#bridgedRuntimeInputs.delete(requestId);
         continue;
       }
       const eventPayload = record(event.envelope.payload).payload;
@@ -2829,37 +2944,38 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   this.#threadId,
                   this.#turnId,
                 )
-            : method === "paperclip/workspaceChange/updated"
-              ? rehydrateRunnerdWorkspaceChangeNotification(
-                  rawParams,
-                  this.#threadId,
-                  this.#turnId,
-                )
-            : method === "paperclip/runResult"
-              ? rehydrateRunnerdResultNotification(
-                  rawParams,
-                  this.#threadId,
-                  this.#turnId,
-                  typeof event.envelope.itemId === "string"
-                    ? event.envelope.itemId
-                    : "semantic-result",
-                )
-            : event.eventType !== "provider.event" &&
-                (method === "item/started" || method === "item/completed")
-              ? rehydrateRunnerdItemNotification(
-                  rawParams,
-                  this.#threadId,
-                  this.#turnId,
-                )
-            : event.eventType !== "provider.event" &&
-                (method === "turn/started" || method === "turn/completed")
-              ? rehydrateRunnerdTurnNotification(
-                  rawParams,
-                  this.#threadId,
-                  this.#turnId,
-                  method,
-                )
-              : rawParams;
+              : method === "paperclip/workspaceChange/updated"
+                ? rehydrateRunnerdWorkspaceChangeNotification(
+                    rawParams,
+                    this.#threadId,
+                    this.#turnId,
+                  )
+                : method === "paperclip/runResult"
+                  ? rehydrateRunnerdResultNotification(
+                      rawParams,
+                      this.#threadId,
+                      this.#turnId,
+                      typeof event.envelope.itemId === "string"
+                        ? event.envelope.itemId
+                        : "semantic-result",
+                    )
+                  : event.eventType !== "provider.event" &&
+                      (method === "item/started" || method === "item/completed")
+                    ? rehydrateRunnerdItemNotification(
+                        rawParams,
+                        this.#threadId,
+                        this.#turnId,
+                      )
+                    : event.eventType !== "provider.event" &&
+                        (method === "turn/started" ||
+                          method === "turn/completed")
+                      ? rehydrateRunnerdTurnNotification(
+                          rawParams,
+                          this.#threadId,
+                          this.#turnId,
+                          method,
+                        )
+                      : rawParams;
         if (
           params.turnId === undefined &&
           typeof event.envelope.turnId === "string"
@@ -2920,7 +3036,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // remaining events after the promise resolves.
       if (
         this.#turnStartResponsePending &&
-        notifications.some((notification) => notification.method === "turn/started")
+        notifications.some(
+          (notification) => notification.method === "turn/started",
+        )
       ) {
         return;
       }
@@ -2990,7 +3108,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             (event) =>
               event.eventType === "runner.suspending" ||
               event.eventType === "run.terminal",
-          ) ?? false);
+          ) ??
+            false);
         if (expectedPerTurnExit) return;
         const code = /provider_frame_too_large|stdout frame exceeded/i.test(
           detail,
@@ -2998,11 +3117,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? "provider_frame_too_large"
           : /runner_ingress_bind_conflict/i.test(detail)
             ? "runner_ingress_bind_conflict"
-          : /transport_reconnect_grace_exceeded/i.test(detail)
-            ? "transport_reconnect_grace_exceeded"
-          : this.#startupComplete
-            ? "native_runner_process_exited"
-            : this.#startupFailureCode;
+            : /transport_reconnect_grace_exceeded/i.test(detail)
+              ? "transport_reconnect_grace_exceeded"
+              : this.#startupComplete
+                ? "native_runner_process_exited"
+                : this.#startupFailureCode;
         if (
           code === "native_runner_process_exited" &&
           this.options.runnerReconnectGraceMs !== undefined &&
@@ -3049,7 +3168,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#handle !== failedHandle ||
       this.#core === null ||
       !failedHandle.restart
-    ) return;
+    )
+      return;
     this.#runnerRecoveryInProgress = true;
     const graceMs = this.options.runnerReconnectGraceMs ?? 0;
     const deadline = Date.now() + graceMs;
@@ -3110,7 +3230,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               this.#core !== null &&
               this.#core.store.state.connectionCount > priorConnectionCount &&
               this.#core.activeRunnerConnectionCount() === 1
-            ) return true;
+            )
+              return true;
             await new Promise((resolveWait) => setTimeout(resolveWait, 25));
           }
           return false;

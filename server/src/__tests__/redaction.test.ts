@@ -92,12 +92,14 @@ describe("redaction", () => {
       nested: {
         schema: "paperclip.question_response.v1",
         runtimeSchema: "paperclip.runtime_request.v2",
+        arbitraryProviderValue: "paperclip.question_set.v1",
       },
     })).toEqual({
       schema: "paperclip.question_set.v1",
       nested: {
         schema: "paperclip.question_response.v1",
         runtimeSchema: "paperclip.runtime_request.v2",
+        arbitraryProviderValue: REDACTED_EVENT_VALUE,
       },
     });
   });

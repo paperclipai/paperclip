@@ -18,6 +18,7 @@ use crate::process_supervisor::{
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
 use crate::qualified_launch::verify_launch_artifact;
+use crate::question_response::validate_question_response;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
@@ -43,6 +44,7 @@ const MAX_PENDING_TOOL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMPLETED_TOOL_CALL_IDS: usize = 4_096;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 128;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const OPENCODE_RUNTIME_REQUEST_METHOD: &str = "paperclip/runtimeRequest";
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
@@ -1142,6 +1144,11 @@ impl CodexProvider {
                 "id": rpc_id,
                 "result": codex_tool_failure("the Codex turn has already terminated"),
             })
+        } else if method == OPENCODE_RUNTIME_REQUEST_METHOD {
+            json!({
+                "id": rpc_id,
+                "result": {"resolution": {"action": "cancel"}},
+            })
         } else {
             json!({
                 "id": rpc_id,
@@ -1467,9 +1474,15 @@ impl CodexProvider {
                     input,
                 }));
             }
-            if method == "item/tool/requestUserInput" {
+            if matches!(
+                method,
+                "item/tool/requestUserInput" | OPENCODE_RUNTIME_REQUEST_METHOD
+            ) {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+                if method == "item/tool/requestUserInput"
+                    && params.get("threadId").and_then(Value::as_str)
+                        != Some(self.thread_id.as_str())
+                {
                     return Err(LocalRunnerError::invalid(
                         "Codex runtime request named another thread",
                     ));
@@ -1486,13 +1499,17 @@ impl CodexProvider {
                         "Codex runtime request arrived outside an active turn",
                     )
                 })?;
-                if params.get("turnId").and_then(Value::as_str) != Some(active_turn_id.as_str()) {
+                if runtime_request_turn_id(&params) != Some(active_turn_id.as_str()) {
                     return Err(LocalRunnerError::invalid(
                         "Codex runtime request named another turn",
                     ));
                 }
                 let (provider_request_id, question_set, option_labels) =
-                    codex_question_set(&rpc_id, &params)?;
+                    if method == OPENCODE_RUNTIME_REQUEST_METHOD {
+                        opencode_question_set(&params)?
+                    } else {
+                        codex_question_set(&rpc_id, &params)?
+                    };
                 let retained_bytes = pending_runtime_request_size(
                     &rpc_id,
                     &active_turn_id,
@@ -1540,7 +1557,7 @@ impl CodexProvider {
                         method: "warning".to_owned(),
                         params: json!({
                             "message": "rejected a Codex runtime request at the bounded pending-input limit",
-                            "providerMethod": "item/tool/requestUserInput",
+                            "providerMethod": bounded_method(method),
                         }),
                     }));
                 }
@@ -1703,9 +1720,14 @@ impl CodexProvider {
         self.pending_tool_request_bytes = 0;
         let mut first_error = None;
         for request in pending_runtime.into_values() {
+            let result = if request.method == OPENCODE_RUNTIME_REQUEST_METHOD {
+                json!({"resolution": {"action": "cancel"}})
+            } else {
+                json!({"answers": {}})
+            };
             if let Err(error) = self.send_frame(&json!({
                 "id": request.rpc_id,
-                "result": {"answers": {}},
+                "result": result,
             })) {
                 first_error.get_or_insert(error);
             }
@@ -2091,10 +2113,17 @@ fn request_targets_non_active_turn(
     settled_turn_ids: &SettledProviderTurnIds,
     params: &Value,
 ) -> bool {
-    let requested_turn_id = params.get("turnId").and_then(Value::as_str);
+    let requested_turn_id = runtime_request_turn_id(params);
     requested_turn_id.is_some_and(|requested| {
         settled_turn_ids.contains(requested) || active_turn_id != Some(requested)
     })
+}
+
+fn runtime_request_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.pointer("/request/turnId"))
+        .and_then(Value::as_str)
 }
 
 fn latest_active_turn_id(snapshot: &Value) -> Option<String> {
@@ -2121,6 +2150,170 @@ fn bounded_method(method: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric() || "._/-".contains(*character))
         .take(160)
         .collect()
+}
+
+fn opencode_question_set(params: &Value) -> Result<QuestionSetMapping, LocalRunnerError> {
+    let params = params
+        .as_object()
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request params are invalid"))?;
+    if params.keys().any(|key| key != "request") {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request params contain an unknown field",
+        ));
+    }
+    let request = params
+        .get("request")
+        .and_then(Value::as_object)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request is required"))?;
+    if request.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "schema"
+                | "requestKind"
+                | "requestId"
+                | "type"
+                | "status"
+                | "prompt"
+                | "input"
+                | "origin"
+                | "turnId"
+                | "itemId"
+        )
+    }) {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request contains an unknown field",
+        ));
+    }
+    if request.get("schema").and_then(Value::as_str) != Some("paperclip.runtime_request.v2")
+        || request.get("requestKind").and_then(Value::as_str) != Some("runtime")
+        || request.get("status").and_then(Value::as_str) != Some("pending")
+    {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request discriminator is invalid",
+        ));
+    }
+    if request.get("type").and_then(Value::as_str) != Some("input") {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runnerd bridge currently supports structured input requests only",
+        ));
+    }
+    let request_id = request
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|request_id| {
+            !request_id.is_empty()
+                && request_id.chars().count() <= 160
+                && !request_id.chars().any(char::is_control)
+        })
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime requestId is invalid"))?
+        .to_owned();
+    bounded_provider_turn_id(request.get("turnId").and_then(Value::as_str))
+        .map_err(|_| LocalRunnerError::invalid("OpenCode runtime request turnId is invalid"))?;
+    request
+        .get("prompt")
+        .and_then(Value::as_str)
+        .filter(|prompt| !prompt.is_empty() && prompt.chars().count() <= 4_000)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request prompt is invalid"))?;
+    if let Some(item_id) = request.get("itemId") {
+        bounded_provider_turn_id(item_id.as_str())
+            .map_err(|_| LocalRunnerError::invalid("OpenCode runtime request itemId is invalid"))?;
+    }
+    if let Some(origin) = request.get("origin") {
+        let origin = origin.as_object().ok_or_else(|| {
+            LocalRunnerError::invalid("OpenCode runtime request origin is invalid")
+        })?;
+        if origin
+            .keys()
+            .any(|key| !matches!(key.as_str(), "adapter" | "provider" | "method"))
+            || origin.get("adapter").and_then(Value::as_str) != Some("opencode-server")
+            || origin.get("provider").and_then(Value::as_str) != Some("opencode")
+            || origin
+                .get("method")
+                .and_then(Value::as_str)
+                .is_none_or(|method| method.is_empty() || method.chars().count() > 500)
+        {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode runtime request origin is invalid",
+            ));
+        }
+    }
+    let question_set = request
+        .get("input")
+        .cloned()
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request input is required"))?;
+    validate_opencode_question_set(&question_set)?;
+    Ok((request_id, question_set, BTreeMap::new()))
+}
+
+fn validate_opencode_question_set(question_set: &Value) -> Result<(), LocalRunnerError> {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/question-set.schema.json"
+    ))
+    .map_err(|_| LocalRunnerError::invalid("embedded question-set schema is invalid"))?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|_| LocalRunnerError::invalid("embedded question-set schema cannot compile"))?;
+    if !validator.is_valid(question_set) {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request input failed the Paperclip question-set schema",
+        ));
+    }
+    let questions = question_set
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode question set is malformed"))?;
+    let mut question_ids = BTreeSet::new();
+    for question in questions {
+        let question_id = question
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LocalRunnerError::invalid("OpenCode question id is malformed"))?;
+        if !question_ids.insert(question_id) {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode question ids must be unique",
+            ));
+        }
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let mut option_ids = BTreeSet::new();
+        for option in options {
+            let option_id = option
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| LocalRunnerError::invalid("OpenCode option id is malformed"))?;
+            if !option_ids.insert(option_id) {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode question option ids must be unique",
+                ));
+            }
+        }
+        if let Some(validation) = question.get("textValidation") {
+            if validation
+                .get("minLength")
+                .and_then(Value::as_u64)
+                .zip(validation.get("maxLength").and_then(Value::as_u64))
+                .is_some_and(|(minimum, maximum)| minimum > maximum)
+                || validation
+                    .get("minimum")
+                    .and_then(Value::as_f64)
+                    .zip(validation.get("maximum").and_then(Value::as_f64))
+                    .is_some_and(|(minimum, maximum)| minimum > maximum)
+            {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode question constraints are inverted",
+                ));
+            }
+            if let Some(pattern) = validation.get("pattern").and_then(Value::as_str) {
+                let pattern_schema = json!({"type": "string", "pattern": pattern});
+                jsonschema::validator_for(&pattern_schema).map_err(|_| {
+                    LocalRunnerError::invalid("OpenCode question pattern cannot compile")
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn codex_question_set(
@@ -2264,6 +2457,15 @@ fn codex_question_response(
     pending: &PendingRuntimeRequest,
     response: &Value,
 ) -> Result<Value, LocalRunnerError> {
+    if pending.method == OPENCODE_RUNTIME_REQUEST_METHOD {
+        validate_question_response(&pending.question_set, response)?;
+        return Ok(json!({
+            "resolution": {
+                "action": "submit",
+                "response": response,
+            },
+        }));
+    }
     let response_object = response
         .as_object()
         .ok_or_else(|| LocalRunnerError::invalid("runtime response must be an object"))?;
@@ -2490,6 +2692,119 @@ mod tests {
     }
 
     #[test]
+    fn preserves_canonical_opencode_questions_and_wraps_the_validated_resolution() {
+        let params = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "opencode-question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "OpenCode requests user input.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "regions",
+                        "prompt": "Which regions should receive the deployment?",
+                        "required": true,
+                        "answerMode": "multi_select",
+                        "options": [
+                            {"id": "east", "label": "us-east-1"},
+                            {"id": "west", "label": "us-west-2"}
+                        ]
+                    }]
+                },
+                "origin": {
+                    "adapter": "opencode-server",
+                    "provider": "opencode",
+                    "method": "question.asked"
+                },
+                "turnId": "turn-1",
+                "itemId": "opencode-question-1"
+            }
+        });
+        let (request_id, question_set, option_labels) =
+            opencode_question_set(&params).expect("accept the proxy's canonical request");
+        assert_eq!(request_id, "opencode-question-1");
+        assert_eq!(question_set, params["request"]["input"]);
+        assert!(option_labels.is_empty());
+
+        let pending = PendingRuntimeRequest {
+            rpc_id: json!("proxy-rpc-1"),
+            turn_id: "turn-1".to_owned(),
+            method: OPENCODE_RUNTIME_REQUEST_METHOD.to_owned(),
+            params,
+            question_set,
+            option_labels,
+            retained_bytes: 0,
+        };
+        let response = json!({
+            "schema": "paperclip.question_response.v1",
+            "answers": {
+                "regions": {"selectedOptionIds": ["east", "west"]}
+            }
+        });
+        assert_eq!(
+            codex_question_response(&pending, &response)
+                .expect("wrap the validated response for the OpenCode proxy"),
+            json!({
+                "resolution": {
+                    "action": "submit",
+                    "response": response,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_non_input_and_malformed_opencode_runtime_requests() {
+        let permission = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "permission-1",
+                "type": "permission",
+                "status": "pending",
+                "prompt": "Approve this operation?",
+                "turnId": "turn-1"
+            }
+        });
+        assert!(opencode_question_set(&permission)
+            .unwrap_err()
+            .to_string()
+            .contains("structured input"));
+
+        let duplicate_options = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "Choose.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "target",
+                        "prompt": "Choose a target.",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [
+                            {"id": "same", "label": "One"},
+                            {"id": "same", "label": "Two"}
+                        ]
+                    }]
+                },
+                "turnId": "turn-1"
+            }
+        });
+        assert!(opencode_question_set(&duplicate_options)
+            .unwrap_err()
+            .to_string()
+            .contains("option ids must be unique"));
+    }
+
+    #[test]
     fn finds_only_active_turns_during_resume() {
         let snapshot = json!({"thread": {"turns": [
             {"id": "done", "status": "completed"},
@@ -2556,6 +2871,16 @@ mod tests {
             None,
             &no_settled_turns,
             &json!({}),
+        ));
+        assert!(request_targets_non_active_turn(
+            Some("turn-2"),
+            &turn_one_settled,
+            &json!({"request": {"turnId": "turn-1"}}),
+        ));
+        assert!(!request_targets_non_active_turn(
+            Some("turn-2"),
+            &turn_one_settled,
+            &json!({"request": {"turnId": "turn-2"}}),
         ));
     }
 

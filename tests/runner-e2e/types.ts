@@ -128,6 +128,8 @@ export interface RunnerTaskFixture {
     optionLabel: string;
     expectedMarker: string;
   };
+  /** Restart the isolated Paperclip server after the waiting turn settles. */
+  restartServerBeforeQuestionAnswer?: boolean;
   buildPlanMarkers?(nonce: string): {
     draft: string;
     revised: string;
