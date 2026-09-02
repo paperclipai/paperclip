@@ -843,8 +843,30 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ blockedByIssueIds: [otherOwnedBlockerId] }),
+      expect.anything(),
     );
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+  });
+
+  it("denies the removal when blocker ownership changes after the initial authorization check", async () => {
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: peerAgentId }],
+        blocks: [],
+      })
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: ownerAgentId }],
+        blocks: [],
+      });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.getByIdForUpdate).toHaveBeenCalledWith(issueId, expect.anything());
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("denies a blocker assignee removing another owner's blocker", async () => {

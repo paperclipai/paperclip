@@ -6139,14 +6139,14 @@ export function issueService(db: Db) {
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
-    getRelationSummaries: async (issueId: string) => {
-      const issue = await db
+    getRelationSummaries: async (issueId: string, dbOrTx: any = db) => {
+      const issue = await dbOrTx
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+        .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
-      const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
+      const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], dbOrTx);
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
     },
 
