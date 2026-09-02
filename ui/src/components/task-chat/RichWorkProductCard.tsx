@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
   ExternalLink,
@@ -117,7 +117,6 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
   const isImage = contentType.startsWith("image/");
   const isVideo = contentType.startsWith("video/");
   let Icon: LucideIcon = File;
-  let leading: ReactNode = null;
   let meta: Array<string | null> = [];
   let stats: Array<string | null> = [];
   let action = "Open preview";
@@ -148,8 +147,6 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
       const size = numberMeta(metadata, "byteSize", "size");
       meta = [isImage ? "Image" : isVideo ? "Video" : stringMeta(metadata, "kind", "fileType") ?? "File", size === null ? null : formatBytes(size)];
       action = isImage || isVideo ? "Open gallery" : "Open preview";
-      if (href && isImage) leading = <img src={href} alt="" className="h-10 w-10 rounded-sm object-cover" />;
-      if (href && isVideo) leading = <video src={href} aria-hidden muted preload="metadata" className="h-10 w-10 rounded-sm object-cover" />;
       break;
     }
     case "document":
@@ -196,7 +193,7 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
   return (
     <article className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-card/60 px-3 py-2.5" data-testid={`task-chat-rich-work-product-${workProduct.type}`}>
       <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-muted/60 text-muted-foreground">
-        {leading ?? <Icon aria-hidden className="h-5 w-5" />}
+        <Icon aria-hidden className="h-5 w-5" />
       </div>
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-sm font-medium text-foreground">{workProduct.title}</strong>
