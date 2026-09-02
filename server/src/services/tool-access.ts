@@ -191,6 +191,7 @@ type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   sessionId?: string | null;
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
 };
 
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
@@ -8468,6 +8469,40 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ? "user"
         : "organization"
       : null;
+    // The route can authorize an explicit resume before entering the service,
+    // but name/source recovery happens here. Do not let a caller submit a
+    // personal grant choice to pass the route and then inherit an implicitly
+    // recovered organization identity. Local implicit mode is already the
+    // unrestricted instance operator; every authenticated user must still hold
+    // current connection-manager authority before this retained row is touched.
+    if (
+      retainedGrantKind === "organization"
+      && input.grantKind === "user"
+      && actor?.actorType === "user"
+      && actor.actorSource !== "local_implicit"
+    ) {
+      const actorUserId = actor.actorId;
+      const [membership] = actorUserId ? await db.select({
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actorUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1) : [];
+      const roleCanManage = membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage || !actorUserId ? [] : await db.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, actorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1);
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
+      }
+    }
     const requestedGrantKind = retainedGrantKind ?? input.grantKind ?? "organization";
     if (method?.grantKinds && !method.grantKinds.includes(requestedGrantKind)) {
       throw badRequest(`${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`);

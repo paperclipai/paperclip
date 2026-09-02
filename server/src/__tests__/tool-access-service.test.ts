@@ -3949,6 +3949,13 @@ describeEmbeddedPostgres("tool access service", () => {
         grantKind: "user",
       })
       .expect(403);
+
+    // Omitting the explicit id must not bypass the same check through the
+    // service's retained draft lookup by application name and source.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion", grantKind: "user" })
+      .expect(403);
   });
 
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {
