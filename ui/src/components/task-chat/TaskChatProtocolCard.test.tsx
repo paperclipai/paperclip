@@ -143,7 +143,7 @@ describe("TaskChatProtocolCard", () => {
     expect(container.querySelector('[data-testid="task-chat-rich-work-product-pull_request"]')).not.toBeNull();
     expect(container.textContent).toContain("Open on GitHub");
     expect(container.textContent).toContain("paperclipai/paperclip · #42 · master ← feat/rich-cards");
-    expect(container.textContent).toContain("+17 · −5 · 3 files");
+    expect(container.textContent).toContain("+17 −5 · 3 files");
     expect(container.textContent).toContain("Merged");
     expect(container.textContent).not.toContain("Completed");
   });
@@ -177,9 +177,35 @@ describe("TaskChatProtocolCard", () => {
   it("keeps completed and approved states out of the state-chip policy", () => {
     expect(stateChipFor("commit", "completed", "none")).toBeNull();
     expect(stateChipFor("document", "approved", "approved")).toBeNull();
+    expect(stateChipFor("pull_request", "open", "none")).toMatchObject({ label: "Open", tone: "progress" });
     expect(stateChipFor("pull_request", "merged", "none")).toMatchObject({ label: "Merged", tone: "success" });
     expect(stateChipFor("pull_request", "closed", "none")).toMatchObject({ label: "Closed", tone: "neutral" });
     expect(stateChipFor("artifact", "pending", "none")).toMatchObject({ label: "Pending", dashed: true });
+  });
+
+  it("shows the live open pull request state while preserving explicit review-state precedence", () => {
+    const product = workProduct({
+      status: "ready_for_review",
+      metadata: { state: "open" },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "pull request · open",
+      href: product.url,
+      workProduct: product,
+    });
+
+    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Open");
+    expect(chip).toBeDefined();
+    expect(container.textContent).not.toContain("Review");
+    expect(stateChipFor("pull_request", "open", "needs_board_review")).toMatchObject({
+      label: "Review",
+      tone: "review",
+    });
   });
 
   it("shows an unhealthy active runtime as unhealthy", () => {

@@ -39,7 +39,7 @@ export function stateChipFor(
   if (["pending", "opening"].includes(status ?? "")) {
     return { label: status === "opening" ? "Opening" : "Pending", tone: "progress", dashed: true };
   }
-  if (kind === "pull_request" && status === "active") {
+  if (kind === "pull_request" && (status === "active" || status === "open")) {
     return { label: "Open", tone: "progress" };
   }
   if (kind === "pull_request" && status === "draft") {
@@ -128,7 +128,6 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
   const isVideo = contentType.startsWith("video/");
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
-  let stats: Array<string | null> = [];
   let action = "Open preview";
 
   switch (workProduct.type) {
@@ -179,9 +178,6 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
   const additions = numberMeta(metadata, "additions");
   const deletions = numberMeta(metadata, "deletions");
   const files = numberMeta(metadata, "files", "changedFiles");
-  if (additions !== null || deletions !== null || files !== null) {
-    stats = [additions === null ? null : `+${additions}`, deletions === null ? null : `−${deletions}`, files === null ? null : `${files} ${files === 1 ? "file" : "files"}`];
-  }
   const unhealthyChip =
     workProduct.healthStatus === "unhealthy"
       ? workProduct.type === "preview_url"
@@ -204,7 +200,11 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
       workProduct.reviewState,
     );
   const visibleMeta = meta.filter((value): value is string => Boolean(value));
-  const visibleStats = stats.filter((value): value is string => Boolean(value));
+  const changeCounts = [additions === null ? null : `+${additions}`, deletions === null ? null : `−${deletions}`]
+    .filter(Boolean)
+    .join(" ");
+  const fileCount = files === null ? null : `${files} ${files === 1 ? "file" : "files"}`;
+  const statsLabel = [changeCounts || null, fileCount].filter(Boolean).join(" · ");
 
   return (
     <article className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-card/60 px-3 py-2.5" data-testid={`task-chat-rich-work-product-${workProduct.type}`}>
@@ -214,7 +214,7 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-sm font-medium text-foreground">{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
-        {visibleStats.length > 0 ? <p className="mt-1 text-xs text-muted-foreground">{visibleStats.join(" · ")}</p> : null}
+        {statsLabel ? <p className="mt-1 text-xs text-muted-foreground">{statsLabel}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {chip ? <Chip chip={chip} /> : null}
