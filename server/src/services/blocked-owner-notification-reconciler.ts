@@ -1,9 +1,9 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { deliverAgentUnblockNotification } from "./routable-blocked.js";
+import { deliverAgentUnblockNotification, ROUTABLE_BLOCKED_ROLLOUT_AT } from "./routable-blocked.js";
 
 // `deliverAgentUnblockNotification` has exactly one call site
 // (routes/issues.ts, guarded by `enteringBlocked` — the not-blocked -> blocked
@@ -50,6 +50,15 @@ export function blockedOwnerNotificationReconcilerService(
   },
 ) {
   async function reconcileBlockedOwnerNotifications(opts?: { companyId?: string }) {
+    // The batch must contain only rows this sweep can actually deliver.
+    // `deliverAgentUnblockNotification` no-ops on a board-owned descriptor and
+    // on a stamp older than the rollout cutover, and those two classes are
+    // permanent: the row never becomes deliverable by being looked at again.
+    // Left in the query, enough of them fill the whole limit on every tick and
+    // the deliverable rows behind them are never reached. Excluding them in SQL
+    // means every row in the batch can make progress, so the backlog drains.
+    // Oldest transition first, so a large backlog drains in a fair order rather
+    // than an arbitrary one.
     const candidates = await db
       .select()
       .from(issues)
@@ -60,8 +69,11 @@ export function blockedOwnerNotificationReconcilerService(
           eq(issues.status, "blocked"),
           isNotNull(issues.unblockDescriptor),
           isNull(issues.blockedOwnerNotifiedAt),
+          gte(issues.blockedTransitionAt, ROUTABLE_BLOCKED_ROLLOUT_AT),
+          sql`${issues.unblockDescriptor} -> 'owner' ->> 'agentId' is not null`,
         ),
       )
+      .orderBy(asc(issues.blockedTransitionAt))
       .limit(MAX_BLOCKED_OWNER_NOTIFICATION_CANDIDATES);
 
     const result = {
@@ -75,6 +87,19 @@ export function blockedOwnerNotificationReconcilerService(
 
     for (const candidate of candidates) {
       try {
+        // Both are guaranteed non-null by the candidate query's own filters;
+        // the narrowing is for the type checker and for safety if that query
+        // is ever loosened.
+        const candidateStamp = candidate.blockedTransitionAt;
+        const candidateOwner = candidate.unblockDescriptor?.owner;
+        const candidateOwnerAgentId =
+          candidateOwner && candidateOwner !== "board" && "agentId" in candidateOwner
+            ? candidateOwner.agentId
+            : null;
+        if (!candidateStamp || !candidateOwnerAgentId) {
+          result.skipped += 1;
+          continue;
+        }
         let notifiedAt: Date | null = null;
         const delivered = await deliverAgentUnblockNotification({
           issue: candidate,
@@ -91,10 +116,34 @@ export function blockedOwnerNotificationReconcilerService(
           result.skipped += 1;
           continue;
         }
-        await db
+        // Compare-and-set against the snapshot this wake was built from. The
+        // row can move between the select and this write: it can exit and
+        // re-enter `blocked` (new stamp, new cycle), have its owner changed,
+        // or be notified by the edge-triggered path in routes/issues.ts.
+        // Without the fence, this write stamps whatever cycle is current now
+        // as notified, using a wake that went to the previous cycle or the
+        // previous owner — and the current cycle is then excluded from every
+        // later sweep, so its owner is never woken. Matching the stamp, the
+        // owner and the still-null notified-at makes the write apply only to
+        // the exact row state that was delivered for.
+        const applied = await db
           .update(issues)
           .set({ blockedOwnerNotifiedAt: notifiedAt })
-          .where(and(eq(issues.id, candidate.id), eq(issues.companyId, candidate.companyId)));
+          .where(and(
+            eq(issues.id, candidate.id),
+            eq(issues.companyId, candidate.companyId),
+            eq(issues.blockedTransitionAt, candidateStamp),
+            isNull(issues.blockedOwnerNotifiedAt),
+            sql`${issues.unblockDescriptor} -> 'owner' ->> 'agentId' = ${candidateOwnerAgentId}`,
+          ))
+          .returning({ id: issues.id });
+        if (applied.length === 0) {
+          // The row moved under us. The wake we sent carries the cycle key of
+          // the snapshot, so it cannot double-notify that cycle, and the
+          // current state stays eligible for the next sweep.
+          result.skipped += 1;
+          continue;
+        }
         result.notified += 1;
         result.notifiedIssueIds.push(candidate.id);
       } catch (err) {

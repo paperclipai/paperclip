@@ -6,7 +6,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { blockedOwnerNotificationReconcilerService } from "../services/blocked-owner-notification-reconciler.js";
+import {
+  blockedOwnerNotificationReconcilerService,
+  MAX_BLOCKED_OWNER_NOTIFICATION_CANDIDATES,
+} from "../services/blocked-owner-notification-reconciler.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 // deliverAgentUnblockNotification has exactly one call site
@@ -135,7 +138,12 @@ describeEmbeddedPostgres("blocked-owner notification reconciler", () => {
     expect(second).toMatchObject({ scanned: 0, notified: 0 });
   });
 
-  it("skips a board-owned descriptor — that owner is covered live by the attention feed, not this sweep", async () => {
+  // A board-owned descriptor is now excluded by the candidate query itself,
+  // not scanned and then skipped in the loop. The behaviour that matters is
+  // unchanged — no wake, never marked notified — but the row no longer takes
+  // up a slot in the batch, which is what let these rows starve deliverable
+  // ones (Greptile finding 2 on #12734).
+  it("excludes a board-owned descriptor — that owner is covered live by the attention feed, not this sweep", async () => {
     const { companyId } = await createCompany("BOC");
     const issueId = await insertBlockedIssue({
       companyId,
@@ -149,7 +157,7 @@ describeEmbeddedPostgres("blocked-owner notification reconciler", () => {
     const result = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
 
     expect(wakeup).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ scanned: 1, notified: 0, skipped: 1 });
+    expect(result).toMatchObject({ scanned: 0, notified: 0, skipped: 0 });
     const row = await readIssue(issueId);
     expect(row?.blockedOwnerNotifiedAt).toBeNull();
   });
@@ -212,5 +220,100 @@ describeEmbeddedPostgres("blocked-owner notification reconciler", () => {
 
     expect(wakeup).not.toHaveBeenCalled();
     expect(result).toMatchObject({ scanned: 0, notified: 0 });
+  });
+  // Greptile finding 1 on #12734: the completion write matched on id and
+  // companyId alone, so a row that moved between the select and the write had
+  // the *current* cycle stamped notified by a wake built for the previous one.
+  it("does not mark a new blocked cycle notified with a wake built for the old one", async () => {
+    const { companyId, agentId } = await createCompany("BOF");
+    const firstCycle = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1000);
+    const secondCycle = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 90_000);
+    const issueId = await insertBlockedIssue({
+      companyId,
+      title: "Re-enters blocked while the wake is in flight",
+      unblockDescriptor: { owner: { agentId }, action: "Rule on the four options" },
+      blockedTransitionAt: firstCycle,
+    });
+
+    // The row exits and re-enters blocked while the wake is being delivered.
+    const wakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({ blockedTransitionAt: secondCycle, blockedOwnerNotifiedAt: null })
+        .where(eq(issues.id, issueId));
+    });
+    const reconciler = blockedOwnerNotificationReconcilerService(db, { wakeup });
+    const result = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      idempotencyKey: `issue-unblock:${issueId}:${firstCycle.toISOString()}`,
+    }));
+    expect(result).toMatchObject({ notified: 0, skipped: 1 });
+
+    // The new cycle must stay eligible, not be written off as notified.
+    const row = await readIssue(issueId);
+    expect(row?.blockedOwnerNotifiedAt).toBeNull();
+    expect(row?.blockedTransitionAt?.toISOString()).toBe(secondCycle.toISOString());
+  });
+
+  it("does not mark a row notified when its unblock owner changed during delivery", async () => {
+    const { companyId, agentId } = await createCompany("BOG");
+    const { agentId: newOwnerId } = await createCompany("BOH");
+    const stamp = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1000);
+    const issueId = await insertBlockedIssue({
+      companyId,
+      title: "Owner reassigned while the wake is in flight",
+      unblockDescriptor: { owner: { agentId }, action: "Rule on the four options" },
+      blockedTransitionAt: stamp,
+    });
+
+    const wakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({ unblockDescriptor: { owner: { agentId: newOwnerId }, action: "Rule on the four options" } })
+        .where(eq(issues.id, issueId));
+    });
+    const reconciler = blockedOwnerNotificationReconcilerService(db, { wakeup });
+    const result = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+
+    expect(result).toMatchObject({ notified: 0, skipped: 1 });
+    const row = await readIssue(issueId);
+    expect(row?.blockedOwnerNotifiedAt).toBeNull();
+  });
+
+  // Greptile finding 2 on #12734: the candidate query was unordered and did
+  // not exclude rows the delivery helper permanently no-ops on, so a full
+  // batch of those rows starved every deliverable row behind them.
+  it("does not let permanently undeliverable rows starve a deliverable one", async () => {
+    const { companyId, agentId } = await createCompany("BOI");
+    const oldStamp = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1000);
+
+    // Fill the whole batch with board-owned rows: always a no-op, forever.
+    for (let i = 0; i < MAX_BLOCKED_OWNER_NOTIFICATION_CANDIDATES; i += 1) {
+      await insertBlockedIssue({
+        companyId,
+        title: `Board-owned, never deliverable ${i}`,
+        unblockDescriptor: { owner: "board", action: "Board decides" },
+        blockedTransitionAt: oldStamp,
+      });
+    }
+    // One deliverable row, stamped later so an unordered or oldest-first scan
+    // over the undeliverable rows would reach it last.
+    const deliverableId = await insertBlockedIssue({
+      companyId,
+      title: "Agent-owned and deliverable",
+      unblockDescriptor: { owner: { agentId }, action: "Rule on the four options" },
+      blockedTransitionAt: new Date(oldStamp.getTime() + 60_000),
+    });
+
+    const wakeup = vi.fn(async () => undefined);
+    const reconciler = blockedOwnerNotificationReconcilerService(db, { wakeup });
+    const result = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+
+    expect(result.notified).toBe(1);
+    expect(result.notifiedIssueIds).toEqual([deliverableId]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const row = await readIssue(deliverableId);
+    expect(row?.blockedOwnerNotifiedAt).not.toBeNull();
   });
 });
