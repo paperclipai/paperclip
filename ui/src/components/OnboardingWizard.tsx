@@ -1046,6 +1046,26 @@ function OnboardingWizardInner({
     sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
 
   /**
+   * Whether the connect step may advance.
+   *
+   * One predicate, because there are two ways to advance and they drifted. The
+   * button's condition and Cmd+Enter's were written out separately, so when the
+   * button gained `sourceSelected` and `adapterEnvLoading` the keyboard kept the
+   * older, shorter list — and hired against a source the row had never shown.
+   * The same defect the button was just fixed for, one path over.
+   *
+   * `loading` is deliberately not here. The keyboard handler returns on it
+   * before reaching any step, for a reason particular to keystrokes: a second
+   * Enter re-enters a handler whose guard is state the first has not written
+   * yet. That check belongs at the top of the handler, not per-step.
+   *
+   * Anything that gates this step belongs in here, so the next one is added
+   * once rather than twice.
+   */
+  const connectStepReady =
+    sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
+
+  /**
    * When the input canvas is open: exactly when a source has been chosen.
    *
    * The card is the answer to the tile that was just pressed, so an untouched
@@ -2006,7 +2026,11 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+      // `connectStepReady`, the same predicate the step's button uses. Spelling
+      // the condition out here again is what let this path hire against a
+      // source the tile row had never shown, after the button was gated and
+      // this was not.
+      else if (step === 4 && agentName.trim() && connectStepReady)
         handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
@@ -2944,19 +2968,9 @@ function OnboardingWizardInner({
                             // advance until something is. Without this a customer
                             // could pass the model step having touched none of
                             // it, and be hired against whatever the draft
-                            // happened to carry.
-                            //
-                            // `sourceSelected`, not `sourcePicked`: the second only
-                            // says a draft named an adapter, and a draft can name
-                            // one this step no longer offers. That leaves the row
-                            // with nothing highlighted and the canvas shut — a step
-                            // that has visibly asked nothing — while the button
-                            // advances and hires against the hidden name. The gate
-                            // has to be the thing the customer can see.
-                            !sourceSelected ||
-                            loading ||
-                            adapterEnvLoading ||
-                            missionUnresolvedForHire
+                            // happened to carry. See `connectStepReady`, which
+                            // Cmd+Enter asks as well.
+                            !connectStepReady || loading
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {

@@ -1795,6 +1795,60 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("will not hire from the keyboard on a source nobody selected", async () => {
+      // The step has two ways forward, and gating only the visible one leaves
+      // the defect intact behind a keystroke. Cmd+Enter called
+      // `handleGiveHeartbeat` directly with its own, older list of conditions,
+      // so with the button correctly disabled the same screen still hired on
+      // Cmd+Enter. Reported by Greptile on #12726 after the button was fixed.
+      //
+      // The saved adapter is one the registry no longer carries, so the snap
+      // replaces it with `claude_local` and clears the pick: the row shows two
+      // tiles, neither chosen. A keystroke that gets through hires claude_local
+      // — a real, offerable adapter that nobody on this screen selected, which
+      // is what makes the bypass worth a test rather than a comment.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the snap must not leave a tile reading as chosen",
+      ).toBe(false);
+
+      const wizard = document.querySelector('[data-testid="onboarding-wizard"]');
+      expect(wizard, "the wizard should be mounted").not.toBeNull();
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+        await act(async () => {
+          wizard!.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...modifier }),
+          );
+        });
+        for (let i = 0; i < 6; i++) await flushReact();
+      }
+
+      expect(
+        mockAgentsApi.hire,
+        "no keystroke may hire a source nobody selected",
+      ).not.toHaveBeenCalled();
+
+      // And it works once the question is answered, so this is a gate rather
+      // than a dead shortcut.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      await act(async () => {
+        wizard!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true }),
+        );
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
     it("starts no call to the test-environment route on adapter selection", async () => {
       const { root } = await openStep4();
       expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
