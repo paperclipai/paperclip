@@ -1267,12 +1267,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) return watchdog;
-    const watchdogIssue = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
-      .then((rows) => rows[0] ?? null);
+    const watchdogIssue = watchdog.watchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
+        .then((rows) => rows[0] ?? null)
+      : await findTaskWatchdogIssue(watchdog.companyId, watchdog.issueId);
     if (!watchdogIssue) return watchdog;
     const hasPendingReviewPath = watchdogIssue.status === "in_review"
       ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
@@ -1291,6 +1292,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const [updated] = await db
       .update(issueWatchdogs)
       .set({
+        watchdogIssueId: watchdogIssue.id,
+        lastObservedFingerprint: watchdog.lastObservedFingerprint ?? reviewedFingerprint,
         lastReviewedFingerprint: reviewedFingerprint,
         lastReviewedStopSnapshot: reviewedStopSnapshot,
         lastCompletedAt: new Date(),
