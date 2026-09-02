@@ -98,6 +98,7 @@ import {
   resolveVerifiedRuntimeApiUrl,
   RUNTIME_API_PROBE_PATH,
 } from "./runtime-api-probe.js";
+import { getServerInfoSnapshot } from "./server-info.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1831,7 +1832,15 @@ export async function startServer(): Promise<StartedServer> {
       // append the loopback origin, which reaches a wildcard-bound listener even
       // when nothing else does.
       fallbackApiUrls: [...runtimeApiCandidates, `http://127.0.0.1:${listenPort}`],
-      probe: (apiUrl) => probeRuntimeApiUrl(apiUrl),
+      // Every fallback is this process's own bound port on one of its own
+      // hostnames, so a fallback must prove it is this build before spawned runs
+      // send it their bearer token. `commit` rides every variant of the health
+      // route, including the redacted one this unauthenticated probe receives.
+      selfCommit: (() => {
+        const git = getServerInfoSnapshot().git;
+        return git.available ? git.fullSha : null;
+      })(),
+      probe: (apiUrl, identity) => probeRuntimeApiUrl(apiUrl, identity),
     });
     if (runtimeApiResolution.unverified) {
       // Keep booting rather than exit: external clients may well reach an origin

@@ -100,6 +100,57 @@ describe("probeRuntimeApiUrl", () => {
     expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
   });
 
+  it("accepts a board health response whose commit is this build's, when self-identity is required", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: "a".repeat(40) }));
+
+    await expect(
+      probeRuntimeApiUrl("http://127.0.0.1:3100", {
+        fetchImpl: fetchImpl as any,
+        requireCommit: "a".repeat(40),
+      }),
+    ).resolves.toEqual({ ok: true, status: 200 });
+  });
+
+  it("rejects a board-shaped response from a different build when self-identity is required", async () => {
+    // A fallback origin is this server's own port on its own hostname, so
+    // anything reporting another commit is not this server and must not receive
+    // spawned runs' bearer tokens.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: "b".repeat(40) }));
+
+    const result = await probeRuntimeApiUrl("http://10.0.0.5:3100", {
+      fetchImpl: fetchImpl as any,
+      requireCommit: "a".repeat(40),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain(`reports build commit ${"b".repeat(40)}`);
+    expect(result.ok === false && result.reason).toContain(`not this server's ${"a".repeat(40)}`);
+  });
+
+  it("rejects a board-shaped response with no commit when self-identity is required", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "cloud", commit: null }));
+
+    const result = await probeRuntimeApiUrl("http://10.0.0.5:3100", {
+      fetchImpl: fetchImpl as any,
+      requireCommit: "a".repeat(40),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("reports no build commit");
+  });
+
+  it("waives the commit check when this server cannot read its own commit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "cloud", commit: null }));
+
+    await expect(
+      probeRuntimeApiUrl("http://10.0.0.5:3100", { fetchImpl: fetchImpl as any, requireCommit: null }),
+    ).resolves.toEqual({ ok: true, status: 200 });
+  });
+
   it("rejects an auth-proxy origin that answers 200 text/html", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(200));
 
@@ -243,6 +294,77 @@ describe("resolveVerifiedRuntimeApiUrl", () => {
       "https://board.example.com",
       "http://127.0.0.1:3100",
     ]);
+  });
+
+  it("holds fallbacks to this server's commit while leaving the configured URL on the shape check", async () => {
+    // The configured URL is the operator's own choice and already reached every
+    // run before this check existed, so probing it can only narrow where
+    // credentials go. Promoting a fallback is the one path that could widen it.
+    const probe = vi.fn(async () => ok);
+
+    await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      fallbackApiUrls: ["http://127.0.0.1:3100"],
+      selfCommit: "a".repeat(40),
+      probe,
+    });
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe.mock.calls[0]![1]).toEqual({ requireCommit: null });
+  });
+
+  it("requires this server's commit of every fallback it promotes", async () => {
+    const probe = vi.fn(async (_apiUrl: string, identity: { requireCommit: string | null }) =>
+      identity.requireCommit === null ? bad("answered HTTP 200 with content-type text/html instead of JSON") : ok,
+    );
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      fallbackApiUrls: ["http://10.0.0.5:3100"],
+      selfCommit: "a".repeat(40),
+      probe,
+    });
+
+    expect(resolution.apiUrl).toBe("http://10.0.0.5:3100");
+    expect(resolution.changed).toBe(true);
+    expect(probe.mock.calls.map((call) => call[1])).toEqual([
+      { requireCommit: null },
+      { requireCommit: "a".repeat(40) },
+    ]);
+  });
+
+  it("waives the fallback commit check when this server cannot read its own commit", async () => {
+    const probe = vi.fn(async (apiUrl: string) => (apiUrl === "http://127.0.0.1:3100" ? ok : bad("text/html")));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      fallbackApiUrls: ["http://127.0.0.1:3100"],
+      selfCommit: null,
+      probe,
+    });
+
+    expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
+    expect(probe.mock.calls[1]![1]).toEqual({ requireCommit: null });
+  });
+
+  it("does not re-probe the configured URL under the strict check when the candidate list repeats it", async () => {
+    // The candidate list starts with the preferred API URL, so the configured
+    // value appears twice. Re-probing it as a fallback would reject an origin
+    // the operator explicitly chose.
+    const probe = vi.fn(async (_apiUrl: string, identity: { requireCommit: string | null }) =>
+      identity.requireCommit === null ? ok : bad("reports no build commit"),
+    );
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      fallbackApiUrls: ["https://board.example.com", "http://127.0.0.1:3100"],
+      selfCommit: "a".repeat(40),
+      probe,
+    });
+
+    expect(resolution.apiUrl).toBe("https://board.example.com");
+    expect(resolution.changed).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it("skips blank candidates", async () => {

@@ -13,6 +13,20 @@
  * fall back to a candidate origin that does answer. The probe is a routing
  * check, not a health check: a Paperclip-shaped health response means the board
  * API is on the other end, including a `503 unhealthy` one.
+ *
+ * Two candidate classes, two strictnesses, because spawned runs attach their
+ * bearer run token to whatever origin wins:
+ *
+ * - The **configured** URL is the operator's own explicit choice, and it is
+ *   what every run already inherited before this check existed. The probe can
+ *   only ever reject it, never widen where credentials go, so the board health
+ *   shape is signal enough to keep it.
+ * - A **fallback** is chosen by this server, not the operator, so promoting one
+ *   is the only way this check could send a run somewhere new. Every fallback
+ *   candidate is built on this process's own bound port, so a fallback that is
+ *   not this very build has no business winning: they must additionally echo
+ *   our own `commit`. That is a value only this server knows it has, rather
+ *   than a field name any service could publish.
  */
 
 export const RUNTIME_API_PROBE_PATH = "/api/health";
@@ -54,7 +68,24 @@ export type RuntimeApiProbeResult =
   | { ok: true; status: number }
   | { ok: false; reason: string };
 
-export type RuntimeApiProbe = (apiUrl: string) => Promise<RuntimeApiProbeResult>;
+/**
+ * Extra strictness for a candidate this server chose for itself.
+ *
+ * `requireCommit` is this process's own build commit. When set, a candidate has
+ * to report that same commit on its health response — proof it is this build and
+ * not a co-located service that happens to publish Paperclip-shaped fields.
+ * `null` waives the check: the caller either owns the URL (the operator's
+ * configured value) or cannot read its own commit, in which case the board
+ * health shape is the strongest signal available.
+ */
+export interface RuntimeApiProbeIdentity {
+  requireCommit: string | null;
+}
+
+export type RuntimeApiProbe = (
+  apiUrl: string,
+  identity: RuntimeApiProbeIdentity,
+) => Promise<RuntimeApiProbeResult>;
 
 export function runtimeApiProbeUrl(apiUrl: string): string | null {
   try {
@@ -64,9 +95,33 @@ export function runtimeApiProbeUrl(apiUrl: string): string | null {
   }
 }
 
+/**
+ * Whether a board health response came from this exact build.
+ *
+ * `commit` is the one self-identifying value on every variant of the route —
+ * the redacted shape an unauthenticated caller gets carries it just as the
+ * full-detail and `503 unhealthy` shapes do — so no authentication is needed to
+ * check it. Returns a rejection reason, or `null` when the response is ours.
+ */
+function selfIdentityRejection(body: Record<string, unknown>, requireCommit: string): string | null {
+  const commit = body.commit;
+  if (typeof commit !== "string" || commit.length === 0) {
+    return "reports no build commit, so it cannot be confirmed as this server";
+  }
+  if (commit !== requireCommit) {
+    return `reports build commit ${commit}, not this server's ${requireCommit}`;
+  }
+  return null;
+}
+
 export async function probeRuntimeApiUrl(
   apiUrl: string,
-  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  options: {
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    /** See {@link RuntimeApiProbeIdentity}. Waived when absent. */
+    requireCommit?: string | null;
+  } = {},
 ): Promise<RuntimeApiProbeResult> {
   const probeUrl = runtimeApiProbeUrl(apiUrl);
   if (!probeUrl) return { ok: false, reason: "is not a parseable absolute URL" };
@@ -126,6 +181,17 @@ export async function probeRuntimeApiUrl(
       };
     }
 
+    const requireCommit = options.requireCommit;
+    if (requireCommit) {
+      const mismatch = selfIdentityRejection(parsed as Record<string, unknown>, requireCommit);
+      if (mismatch) {
+        return {
+          ok: false,
+          reason: `served a Paperclip ${RUNTIME_API_PROBE_PATH} response but ${mismatch}`,
+        };
+      }
+    }
+
     return { ok: true, status: response.status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -159,22 +225,36 @@ export interface RuntimeApiUrlResolution {
  *
  * The configured URL is always tried first, so the healthy case costs exactly
  * one local request and the operator override keeps winning whenever it works.
+ * Only the fallbacks after it are held to the self-identity check — see the
+ * two-candidate-class note at the top of this module.
  */
 export async function resolveVerifiedRuntimeApiUrl(input: {
   configuredApiUrl: string;
   fallbackApiUrls: string[];
+  /**
+   * This process's own build commit, when it can read it. Every fallback has to
+   * report the same one before it may receive spawned runs' credentials. Left
+   * unset (or null) the fallbacks are accepted on the board health shape alone,
+   * which is still narrower than the unconditional trust that preceded this
+   * check.
+   */
+  selfCommit?: string | null;
   probe: RuntimeApiProbe;
 }): Promise<RuntimeApiUrlResolution> {
   const configuredApiUrl = input.configuredApiUrl.trim();
+  const selfCommit = input.selfCommit?.trim() || null;
   const rejected: Array<{ apiUrl: string; reason: string }> = [];
   const tried = new Set<string>();
 
-  for (const candidate of [configuredApiUrl, ...input.fallbackApiUrls]) {
+  for (const [index, candidate] of [configuredApiUrl, ...input.fallbackApiUrls].entries()) {
     const apiUrl = candidate?.trim();
     if (!apiUrl || tried.has(apiUrl)) continue;
     tried.add(apiUrl);
 
-    const result = await input.probe(apiUrl);
+    const isConfigured = index === 0;
+    const result = await input.probe(apiUrl, {
+      requireCommit: isConfigured ? null : selfCommit,
+    });
     if (result.ok) {
       return { apiUrl, changed: apiUrl !== configuredApiUrl, rejected, unverified: false };
     }
