@@ -235,8 +235,12 @@ pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
 
 Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
-networking charges. Destruction requires `--yes` and refuses to remove a stack
-with an active recorded lab unless `--force` is also supplied.
+networking charges. Provisioning refuses to modify a colliding stack unless its
+Paperclip ownership tags and template description match. A verified
+`ROLLBACK_COMPLETE` stack still requires `--replace-failed-stack` plus an
+interactive confirmation (or `--yes`) before it can be deleted and recreated.
+Destruction requires `--yes` and refuses to remove a stack with an active
+recorded lab unless `--force` is also supplied.
 
 ## Package-owned commands
 

@@ -17,14 +17,18 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: global.anthropic.claude-sonnet-4-6
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be a Bedrock-native model ID without ARN, path, glob, or wildcard syntax.
   BedrockModelResourceArn:
     Type: String
     Description: Exact application/system inference-profile ARN for the selected model.
-    AllowedPattern: "^arn:aws(-[^:]+)?:bedrock:[^:]+:[0-9]{12}:(inference-profile|application-inference-profile)/.+$"
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn|aws-iso|aws-iso-b):bedrock:[a-z0-9-]+:[0-9]{12}:(inference-profile|application-inference-profile)/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be one exact Bedrock inference-profile ARN without path, glob, or wildcard syntax.
   BedrockFoundationModelResourceArn:
     Type: String
     Description: Selected foundation-model ARN; the region segment may be * for cross-region inference.
-    AllowedPattern: "^arn:aws(-[^:]+)?:bedrock:[^:]*::foundation-model/.+$"
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn|aws-iso|aws-iso-b):bedrock:([a-z0-9-]+|[*])::foundation-model/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be one exact Bedrock foundation-model ARN; only the cross-region region segment may be a wildcard.
   BedrockMarketplaceProductId:
     Type: String
     Description: Exact AWS Marketplace product ID for the selected third-party model.

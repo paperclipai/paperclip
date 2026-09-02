@@ -3,6 +3,7 @@ set -euo pipefail
 
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$PACKAGE_DIR/infra/aws-agentcore-paperclip.yaml"
+STACK_DESCRIPTION="Paperclip proof-of-concept Amazon Bedrock AgentCore Harness and least-privilege invocation roles."
 LOCAL_DIR="$PACKAGE_DIR/.paperclip-local"
 ENV_FILE="$LOCAL_DIR/aws-agentcore.env"
 ACTIVE_FILE="$LOCAL_DIR/aws-agentcore-lab.pid"
@@ -25,6 +26,7 @@ CONTEXT_PREFIX=""
 DRY_RUN=false
 FORCE=false
 YES=false
+REPLACE_FAILED_STACK=false
 
 usage() {
   printf '%s\n' \
@@ -38,7 +40,8 @@ usage() {
     "  --principal ARN      stable IAM role/user trusted to assume runner role" \
     "  --context-prefix PFX S3 prefix dedicated to this qualified profile" \
     "  --dry-run            validate and print changes without deployment" \
-    "  --yes                confirm destructive teardown" \
+    "  --replace-failed-stack  explicitly replace an owned ROLLBACK_COMPLETE stack" \
+    "  --yes                confirm destructive replacement or teardown" \
     "  --force              destroy even when a recorded Lab process is active"
 }
 
@@ -54,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --principal) TRUSTED_PRINCIPAL="$2"; shift 2 ;;
     --context-prefix) CONTEXT_PREFIX="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --replace-failed-stack) REPLACE_FAILED_STACK=true; shift ;;
     --force) FORCE=true; shift ;;
     --yes) YES=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -75,6 +79,10 @@ if [[ ! "$AWS_PROFILE_NAME" =~ ^[A-Za-z0-9_.@+-]+$ ]]; then
 fi
 if [[ ! "$AWS_REGION_NAME" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ || "$AWS_REGION_NAME" == cn-* || "$AWS_REGION_NAME" == us-gov-* ]]; then
   printf 'This proof of concept currently supports commercial AWS regions only.\n' >&2
+  exit 2
+fi
+if [[ ! "$MODEL_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$ ]]; then
+  printf 'Bedrock model ID must not contain ARN, path, glob, or wildcard syntax.\n' >&2
   exit 2
 fi
 if [[ "$MODEL_ID" != "global.anthropic.claude-sonnet-4-6" && "$MARKETPLACE_PRODUCT_ID_EXPLICIT" != true ]]; then
@@ -105,6 +113,11 @@ require_aws() {
 json_field() {
   local key="$1"
   node -e 'const fs=require("fs");const o=JSON.parse(fs.readFileSync(0,"utf8"));let v=o;for(const k of process.argv[1].split("."))v=v?.[k];if(v!==undefined&&v!==null)process.stdout.write(String(v));' "$key"
+}
+
+stack_tag_value() {
+  local key="$1"
+  node -e 'const fs=require("fs");const o=JSON.parse(fs.readFileSync(0,"utf8"));const tag=o.Stacks?.[0]?.Tags?.find((candidate)=>candidate.Key===process.argv[1]);if(tag?.Value)process.stdout.write(tag.Value);' "$key"
 }
 
 stack_output() {
@@ -289,10 +302,35 @@ provision() {
     printf 'Dry run complete; the template is syntactically valid and no resources were changed.\n'
     return
   fi
-  local existing_status
-  existing_status="$(aws_cli cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+  local existing_stack="" existing_status=""
+  if existing_stack="$(aws_cli cloudformation describe-stacks --stack-name "$STACK_NAME" --output json 2>&1)"; then
+    local existing_description existing_owned existing_environment existing_cost_center
+    existing_status="$(printf '%s' "$existing_stack" | json_field Stacks.0.StackStatus)"
+    existing_description="$(printf '%s' "$existing_stack" | json_field Stacks.0.Description)"
+    existing_owned="$(printf '%s' "$existing_stack" | stack_tag_value paperclip:owned)"
+    existing_environment="$(printf '%s' "$existing_stack" | stack_tag_value paperclip:environment)"
+    existing_cost_center="$(printf '%s' "$existing_stack" | stack_tag_value paperclip:cost-center)"
+    if [[ -z "$existing_status" || "$existing_description" != "$STACK_DESCRIPTION" || "$existing_owned" != "true" || "$existing_environment" != "development" || "$existing_cost_center" != "runner-lab" ]]; then
+      printf 'Refusing to modify stack %s: Paperclip ownership tags or template provenance do not match. Inspect or remove it manually, or choose another --stack-name.\n' "$STACK_NAME" >&2
+      exit 1
+    fi
+  elif [[ "$existing_stack" == *"(ValidationError)"* && "$existing_stack" == *"does not exist"* ]]; then
+    existing_stack=""
+  else
+    printf 'Unable to verify whether stack %s exists and is owned by Paperclip; refusing to provision.\n' "$STACK_NAME" >&2
+    exit 1
+  fi
   if [[ "$existing_status" == "ROLLBACK_COMPLETE" ]]; then
-    printf 'Removing failed initial stack %s before retrying provisioning.\n' "$STACK_NAME"
+    if ! $REPLACE_FAILED_STACK; then
+      printf 'Stack %s is ROLLBACK_COMPLETE. Re-run with --replace-failed-stack to explicitly authorize deleting this verified Paperclip stack.\n' "$STACK_NAME" >&2
+      exit 1
+    fi
+    if ! $YES; then
+      printf 'Delete verified Paperclip stack %s before retrying provisioning? [y/N] ' "$STACK_NAME"
+      read -r answer || true
+      [[ "$answer" == y || "$answer" == Y ]] || { printf 'Cancelled.\n'; return; }
+    fi
+    printf 'Removing verified failed Paperclip stack %s before retrying provisioning.\n' "$STACK_NAME"
     aws_cli cloudformation delete-stack --stack-name "$STACK_NAME"
     aws_cli cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
   fi

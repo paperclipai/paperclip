@@ -1,12 +1,27 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const templateUrl = new URL("../infra/aws-agentcore-paperclip.yaml", import.meta.url);
 const wrapperUrl = new URL("./aws-agentcore.sh", import.meta.url);
 const labServerUrl = new URL("./capability-issue-thread-server.mjs", import.meta.url);
 const liveSessionUrl = new URL("../src/live/live-session.ts", import.meta.url);
+
+function parameterAllowedPattern(source, parameterName) {
+  const marker = `  ${parameterName}:\n`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `missing ${parameterName} parameter`);
+  const remaining = source.slice(start + marker.length);
+  const nextMatch = /\n  \S/.exec(remaining);
+  const nextParameter = nextMatch ? start + marker.length + nextMatch.index : -1;
+  const block = source.slice(start, nextParameter === -1 ? undefined : nextParameter);
+  const match = block.match(/AllowedPattern: "([^"]+)"/);
+  assert.ok(match, `missing ${parameterName} AllowedPattern`);
+  return new RegExp(match[1]);
+}
 
 test("AgentCore template has closed development/private resources and explicit command denial", async () => {
   const source = await readFile(templateUrl, "utf8");
@@ -33,6 +48,23 @@ test("AgentCore template has closed development/private resources and explicit c
   assert.match(source, /Tools: \[\]/);
   assert.match(source, /Skills: \[\]/);
   assert.doesNotMatch(source, /BedrockModelResourceArn:\s+[\s\S]{0,100}Default: "\*"/);
+  assert.match(source, /BedrockModelId:[\s\S]*AllowedPattern: "\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,255\}\$"/);
+  assert.match(source, /BedrockModelResourceArn:[\s\S]*AllowedPattern:[^\n]+inference-profile[^\n]+\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,255\}/);
+  assert.match(source, /BedrockFoundationModelResourceArn:[\s\S]*AllowedPattern:[^\n]+foundation-model\/\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,255\}/);
+  const modelIdPattern = parameterAllowedPattern(source, "BedrockModelId");
+  assert.match("global.anthropic.claude-sonnet-4-6", modelIdPattern);
+  assert.match("anthropic.claude-3-5-sonnet-20241022-v2:0", modelIdPattern);
+  for (const unsafeModelId of ["custom/model", "custom*", "custom?", "arn:aws:bedrock:us-east-1::foundation-model/custom"]) {
+    assert.doesNotMatch(unsafeModelId, modelIdPattern);
+  }
+  const inferenceProfilePattern = parameterAllowedPattern(source, "BedrockModelResourceArn");
+  assert.match("arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-6", inferenceProfilePattern);
+  assert.doesNotMatch("arn:aws:bedrock:us-east-1:123456789012:inference-profile/*", inferenceProfilePattern);
+  assert.doesNotMatch("arn:aws:bedrock:us-east-1:123456789012:inference-profile/custom/model", inferenceProfilePattern);
+  const foundationModelPattern = parameterAllowedPattern(source, "BedrockFoundationModelResourceArn");
+  assert.match("arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6", foundationModelPattern);
+  assert.doesNotMatch("arn:aws:bedrock:*::foundation-model/*", foundationModelPattern);
+  assert.doesNotMatch("arn:aws:bedrock:*::foundation-model/custom/model", foundationModelPattern);
   assert.match(source, /BedrockFoundationModelResourceArn/);
   assert.match(source, /HarnessEndpointName/);
   assert.match(source, /ContextPrefix/);
@@ -89,6 +121,14 @@ test("AgentCore wrapper is valid shell and writes only nonsecret profile metadat
   assert.match(source, /iam get-role --role-name "\$role_name"/);
   assert.doesNotMatch(source, /printf 'arn:%s:iam::%s:role\/%s/);
   assert.match(source, /existing_status.*ROLLBACK_COMPLETE/s);
+  assert.match(source, /--replace-failed-stack/);
+  assert.match(provisionBlock, /existing_description.*STACK_DESCRIPTION/s);
+  assert.match(provisionBlock, /existing_owned.*paperclip:owned/s);
+  assert.match(provisionBlock, /existing_environment.*paperclip:environment/s);
+  assert.match(provisionBlock, /existing_cost_center.*paperclip:cost-center/s);
+  assert.ok(provisionBlock.indexOf("ownership tags or template provenance") < provisionBlock.indexOf("cloudformation delete-stack"));
+  assert.ok(provisionBlock.indexOf("REPLACE_FAILED_STACK") < provisionBlock.indexOf("cloudformation delete-stack"));
+  assert.match(provisionBlock, /Unable to verify whether stack .* exists and is owned by Paperclip/);
   assert.match(source, /cloudformation wait stack-delete-complete/);
   assert.match(source, /--query harness\.status/);
   assert.match(source, /AgentCore tool allowlist drift/);
@@ -103,6 +143,73 @@ test("AgentCore wrapper is valid shell and writes only nonsecret profile metadat
   assert.match(source, /ContextPrefix=\$CONTEXT_PREFIX/);
   assert.match(source, /s3 rm "s3:\/\/\$context_bucket\/\$context_prefix\/assets\/" --recursive/);
   assert.ok(source.indexOf("delete-harness-endpoint") < source.lastIndexOf("cloudformation delete-stack"));
+});
+
+test("AgentCore wrapper rejects unsafe model IDs before AWS access", () => {
+  const result = spawnSync("bash", [
+    wrapperUrl.pathname,
+    "provision",
+    "--model",
+    "custom/model/*",
+    "--marketplace-product-id",
+    "prod-safe123",
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /must not contain ARN, path, glob, or wildcard syntax/);
+});
+
+test("AgentCore wrapper never implicitly deletes a colliding failed stack", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "paperclip-agentcore-test-"));
+  const fakeAws = join(temp, "aws");
+  const commandLog = join(temp, "aws.log");
+  await writeFile(fakeAws, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >>"$MOCK_AWS_LOG"
+if [[ " $* " == *" --version "* || "$1" == "--version" ]]; then
+  printf 'aws-cli/2.31.0 Python/3.13.0\\n'
+elif [[ " $* " == *" sts get-caller-identity "* ]]; then
+  printf '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:role/paperclip-test"}\\n'
+elif [[ " $* " == *" cloudformation describe-stacks "* ]]; then
+  printf '{"Stacks":[{"StackStatus":"ROLLBACK_COMPLETE","Description":"%s","Tags":[{"Key":"paperclip:owned","Value":"%s"},{"Key":"paperclip:environment","Value":"development"},{"Key":"paperclip:cost-center","Value":"runner-lab"}]}]}\\n' "\${MOCK_STACK_DESCRIPTION}" "\${MOCK_STACK_OWNED}"
+elif [[ " $* " == *" cloudformation deploy "* ]]; then
+  exit 42
+fi
+`, { mode: 0o700 });
+  await chmod(fakeAws, 0o700);
+  const baseEnv = {
+    ...process.env,
+    PATH: `${temp}:${process.env.PATH}`,
+    MOCK_AWS_LOG: commandLog,
+    MOCK_STACK_DESCRIPTION: "Paperclip proof-of-concept Amazon Bedrock AgentCore Harness and least-privilege invocation roles.",
+    MOCK_STACK_OWNED: "true",
+  };
+  try {
+    const implicit = spawnSync("bash", [wrapperUrl.pathname, "provision"], { encoding: "utf8", env: baseEnv });
+    assert.equal(implicit.status, 1);
+    assert.match(implicit.stderr, /--replace-failed-stack/);
+    assert.doesNotMatch(await readFile(commandLog, "utf8"), /cloudformation delete-stack/);
+
+    await writeFile(commandLog, "");
+    const foreign = spawnSync("bash", [wrapperUrl.pathname, "provision", "--replace-failed-stack", "--yes"], {
+      encoding: "utf8",
+      env: { ...baseEnv, MOCK_STACK_OWNED: "false" },
+    });
+    assert.equal(foreign.status, 1);
+    assert.match(foreign.stderr, /ownership tags or template provenance do not match/);
+    assert.doesNotMatch(await readFile(commandLog, "utf8"), /cloudformation delete-stack/);
+
+    await writeFile(commandLog, "");
+    const explicit = spawnSync("bash", [wrapperUrl.pathname, "provision", "--replace-failed-stack", "--yes"], {
+      encoding: "utf8",
+      env: baseEnv,
+    });
+    assert.equal(explicit.status, 42);
+    const explicitLog = await readFile(commandLog, "utf8");
+    assert.match(explicitLog, /cloudformation delete-stack/);
+    assert.ok(explicitLog.indexOf("cloudformation delete-stack") < explicitLog.indexOf("cloudformation deploy"));
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("Runner Lab accepts and resolves the complete qualified AgentCore profile", async () => {
