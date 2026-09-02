@@ -56,6 +56,8 @@ describe("board-key route registry", () => {
     ["DELETE", "/api/board-api-keys/11111111-1111-4111-8111-111111111111", "board_api_keys:revoke_self", "key_self"],
     ["POST", "/api/board-api-keys", "deny", "board_key_denied"],
     ["GET", "/api/cli-auth/me", "deny", "board_key_denied"],
+    ["POST", "/runtime-tools/connections/request", "deny", "board_key_denied"],
+    ["POST", "/api/connection-intents/11111111-1111-4111-8111-111111111111/complete", "deny", "board_key_denied"],
     ["GET", "/api/not-yet-registered", "deny", "undeclared"],
   ] as const)("classifies %s %s", (method, routePath, action, classification) => {
     expect(lookupBoardKeyRoute(method, routePath)).toMatchObject({ action, classification });
@@ -70,7 +72,8 @@ describe("board-key route registry", () => {
     expect(paths).toContain("/api/companies/:companyId/issues");
     expect(paths.some((path) => path.startsWith("/api/companies/:companyId/skills/:skillId/"))).toBe(true);
     expect(paths.every((path) => path.startsWith("/api/") || path.startsWith("/_plugins/")
-      || path.startsWith("/llms/") || path.startsWith("/mcp/"))).toBe(true);
+      || path.startsWith("/llms/") || path.startsWith("/mcp/")
+      || path.startsWith("/runtime-tools/"))).toBe(true);
   });
 
   it("declares an explicit policy for every reachable route", () => {
