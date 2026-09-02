@@ -834,10 +834,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     // An omitted grant kind is the backward-compatible organization default.
+    // On resume, the persisted connection identity is authoritative: accepting
+    // a contradictory `grantKind: "user"` here could otherwise let a creator
+    // replace the credential behind an existing organization grant.
+    const resumedConnection = req.body.resumeConnectionId
+      ? await svc.getConnection(req.body.resumeConnectionId, companyId)
+      : null;
+    const effectiveGrantKind = resumedConnection
+      ? resumedConnection.credentialPolicy === "per_user" ? "user" : "organization"
+      : req.body.grantKind ?? "organization";
     // Personal connection creation remains available to ordinary active
-    // members, but sharing a new credential with every human is a manager
+    // members, but sharing a credential with every human is a manager
     // operation and must be enforced here, not inferred by the client.
-    const createsOrganizationGrant = req.body.grantKind !== "user" && !req.body.resumeConnectionId;
+    const createsOrganizationGrant = effectiveGrantKind === "organization";
     if (createsOrganizationGrant && !await isToolConnectionManagerQuiet(req, companyId)) {
       throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
     }

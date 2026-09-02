@@ -3931,6 +3931,26 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it("requires connection-manager authority to resume an organization credential", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const shared = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      grantKind: "organization",
+    }, { actorType: "user", actorId: "member" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "member", "member"));
+
+    // The retained shared identity wins over a contradictory personal value.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "notion",
+        resumeConnectionId: shared.connectionId,
+        grantKind: "user",
+      })
+      .expect(403);
+  });
+
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {
     const company = await createCompany(db);
     const app = createRouteApp(db);
