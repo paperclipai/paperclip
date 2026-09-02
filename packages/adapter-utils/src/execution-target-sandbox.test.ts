@@ -3348,6 +3348,10 @@ describe("sandbox adapter execution targets", () => {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
       // The host builds the origin from the port it assigned, never from a frame.
       expect(bridge?.env.PAPERCLIP_API_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(bridge?.env.PAPERCLIP_RUNTIME_API_URL).toBe(bridge?.env.PAPERCLIP_API_URL);
+      expect(JSON.parse(bridge?.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual([
+        bridge?.env.PAPERCLIP_API_URL,
+      ]);
       expect(bridge?.env.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
 
       // The sandbox gateway forwards one agent request as one real HTTP/2
