@@ -27,6 +27,12 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+import {
+  configuredAwsRegion,
+  isBedrockModelId,
+  isBedrockModelUsableInConfiguredRegion,
+  type BedrockEnv,
+} from "@paperclipai/adapter-claude-local/server";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -738,16 +744,125 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
   };
 }
 
+// A definition's bundled default model is a plain Anthropic alias (e.g. "claude-haiku-4-5").
+// Under Bedrock the adapter offers region-qualified inference-profile ids instead, which no static
+// default can name ahead of time. Map the alias onto the equivalent profile the adapter actually
+// offers rather than failing provisioning.
+async function resolveDefaultAdapterConfig(
+  adapterType: string | undefined,
+  adapterConfig: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!adapterType) return adapterConfig;
+  const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+  if (!model) return adapterConfig;
+
+  const available = await listAdapterModels(adapterType);
+  if (available.length === 0 || available.some((candidate) => candidate.id === model)) {
+    return adapterConfig;
+  }
+
+  const equivalent = available.find((candidate) => candidate.id.includes(model));
+  if (!equivalent) return adapterConfig;
+  return { ...adapterConfig, model: equivalent.id };
+}
+
+// Fill in a definition's bundled default so the caller stores the same model that validation
+// accepted. Callers must not pass the result to the `input.adapterConfig !== undefined` checks that
+// decide whether an operator supplied adapter setup, because a bundled default is not operator input.
+async function resolveBuiltInAgentProvisionInput(
+  definition: BuiltInAgentDefinition,
+  input: BuiltInAgentProvisionInput,
+): Promise<BuiltInAgentProvisionInput> {
+  if (input.adapterConfig || !definition.defaultAdapterConfig) return input;
+  const adapterType = input.adapterType ?? defaultAdapterType(definition);
+  const adapterConfig = await resolveDefaultAdapterConfig(adapterType, definition.defaultAdapterConfig);
+  if (adapterConfig === definition.defaultAdapterConfig) return input;
+  return { ...input, adapterConfig };
+}
+
+// Keys whose value decides which region a model must resolve in. If any of them is bound to a
+// secret, the effective region cannot be read at setup time, and the region check is skipped rather
+// than guessed.
+const REGION_DECIDING_ENV_KEYS: readonly string[] = [
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+];
+
+// A bare string, and `{ type: "plain", value }`, carry their value inline. A `secret_ref` or a
+// `user_secret_ref` only names a secret, which the runtime resolves, so it has no value here.
+function inlineEnvBindingValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!isPlainRecord(value) || value.type !== "plain") return null;
+  return typeof value.value === "string" ? value.value : null;
+}
+
+// The environment an agent will actually run under. `resolveAdapterConfigForRuntime` resolves an
+// agent's `adapterConfig.env` bindings to strings, and the claude_local execution path then spreads
+// the result over `process.env`, so an agent can name its own AWS region, and that region is the one
+// its model must resolve in.
+//
+// The values here are env bindings, not plain strings, so an inline binding is read and a secret
+// binding is not. A secret binding also hides the server's value for that key, because the agent
+// replaces it at execution with something this process cannot see. `regionIsKnown` is false when
+// such a binding decides the region, so the caller can decline to judge it.
+function adapterExecutionEnv(adapterConfig: unknown): { env: BedrockEnv; regionIsKnown: boolean } {
+  if (!isPlainRecord(adapterConfig) || !isPlainRecord(adapterConfig.env)) {
+    return { env: process.env, regionIsKnown: true };
+  }
+  const overrides: BedrockEnv = {};
+  let regionIsKnown = true;
+  for (const [key, value] of Object.entries(adapterConfig.env)) {
+    const inline = inlineEnvBindingValue(value);
+    overrides[key] = inline ?? undefined;
+    if (inline === null && REGION_DECIDING_ENV_KEYS.includes(key)) regionIsKnown = false;
+  }
+  return { env: { ...process.env, ...overrides }, regionIsKnown };
+}
+
 async function assertKnownBuiltInAgentModel(
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
 ) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
-  const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
+  const adapterConfig = input.adapterConfig
+    ?? (definition.defaultAdapterConfig
+      ? await resolveDefaultAdapterConfig(adapterType, definition.defaultAdapterConfig)
+      : {});
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
   const models = await listAdapterModels(adapterType);
+
+  // Bedrock model IDs are region-qualified inference profiles, and the static catalogue cannot
+  // enumerate every region. The execution path already accepts any region-qualified ID, so accept
+  // one here too instead of rejecting a model that would run fine. Only a profile from a region
+  // family that the effective region does not publish is rejected, because Bedrock cannot resolve it.
+  //
+  // The region is checked before the catalogue, not after. The catalogue is built from this process's
+  // environment, which the agent's own `env` overrides at execution, so a listed ID is not evidence
+  // that the ID resolves where the agent will run.
+  if (adapterType === "claude_local" && isBedrockModelId(model)) {
+    const { env: executionEnv, regionIsKnown } = adapterExecutionEnv(adapterConfig);
+    // A secret decides the region, so this process cannot tell whether the profile matches. Accept
+    // it, on the same rule as any other case with no region evidence.
+    if (!regionIsKnown) return;
+    if (isBedrockModelUsableInConfiguredRegion(model, executionEnv)) return;
+    const region = configuredAwsRegion(executionEnv);
+    throw unprocessable(
+      `Model "${model}" is a Bedrock inference profile for a different region, and this agent runs in ${region}.`,
+      {
+        code: "built_in_agent_model_region_mismatch",
+        key: definition.key,
+        adapterType,
+        model,
+        region,
+        availableModelIds: models.map((candidate) => candidate.id),
+      },
+    );
+  }
+
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
@@ -866,7 +981,9 @@ export function builtInAgentService(db: Db) {
       return {
         ...input,
         adapterType: definition.defaultAdapterType,
-        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+        adapterConfig: definition.defaultAdapterConfig
+          ? await resolveDefaultAdapterConfig(definition.defaultAdapterType, { ...definition.defaultAdapterConfig })
+          : undefined,
       };
     }
     if (!definition.bundle) return input;
@@ -1711,7 +1828,12 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
+    // Resolve a bundled default model before validating it, so the pending row stores the profile
+    // that will actually run once the board approves the hire. The unresolved `input` still drives
+    // the "did the operator supply adapter setup?" checks below, which must not see a filled-in
+    // default as operator input.
+    const resolvedInput = await resolveBuiltInAgentProvisionInput(definition, input);
+    await assertKnownBuiltInAgentModel(definition, resolvedInput);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
@@ -1763,7 +1885,7 @@ export function builtInAgentService(db: Db) {
     let pending: Agent;
     try {
       pending = await agentSvc.create(companyId, {
-        ...definitionPatch(definition, input),
+        ...definitionPatch(definition, resolvedInput),
         status: "pending_approval",
         reportsTo,
         metadata: builtInMetadata(definition),
