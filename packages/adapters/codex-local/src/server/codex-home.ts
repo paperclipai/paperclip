@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -572,8 +573,11 @@ export async function stageCodexHomeForSync(
  * `auth.json` from the shared source home (so ChatGPT-subscription credentials
  * stay live and single-use refresh tokens are not copied), copies the static
  * shared config files, and — when an API key is supplied — writes an API-key
- * `auth.json` instead. Used both for the default company home and for the
- * per-agent home set by the server isolation guard.
+ * `auth.json` instead. A promoted device-login credential — a regular-file
+ * `auth.json` holding a subscription identity the shared source does not hold —
+ * is kept authoritative: it is neither removed nor replaced by the shared
+ * symlink. Used both for the default company home and for the per-agent home
+ * set by the server isolation guard.
  */
 export async function seedManagedCodexHome(
   targetHome: string,
@@ -588,20 +592,81 @@ export async function seedManagedCodexHome(
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
+  // A regular-file auth.json in the target home is one of two very different
+  // things. The device-login promotion writes the company credential as a
+  // regular file, and that file is the durable outcome of an interactive login,
+  // so it must survive re-seeding. Everything else — an apikey-mode file left by
+  // a previous run, a stale pre-symlink copy of the shared credential (#5028),
+  // or an unreadable payload — is residue, and removing it lets the chatgpt-mode
+  // symlink be restored (ensureSymlink would otherwise replace it and Codex
+  // would keep authenticating with the stale key).
+  //
+  // The discriminator is identity-anchored, like the promotion and the cache
+  // vend: keep the file only when it holds a usable subscription identity that
+  // the shared source does not also hold. A same-identity regular file is the
+  // #5028 stale copy — the symlink serves the same account with live, rotating
+  // tokens, so it is strictly better. A different-identity (or source-less)
+  // subscription file is the promoted company credential; on a server with no
+  // shared login there is nothing to symlink at all, and deleting it would
+  // silently sign the company out right after a successful device login.
+  let keepPromotedAuth = false;
   if (!apiKey && seedFromShared) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      await fs.rm(authPath, { force: true });
+      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
+      if (targetIdentity) {
+        // Any source read failure — absent or unreadable — keeps the usable
+        // target file. The alternative, removal plus the existence-only
+        // symlink pass below, links the home to a source this process just
+        // failed to read, and every downstream reader (the probe seeding, the
+        // sandbox stage sync, the CLI itself) runs with the same access, so
+        // that home is unusable in every scenario. Keeping the target is
+        // better or equal in each case: a promoted credential keeps working,
+        // and even a stale same-identity copy (#5028) can still work, while
+        // the unreadable symlink cannot. A transient read failure also
+        // self-corrects — the next seed with a readable source heals a
+        // same-identity copy into the symlink — whereas removing the promoted
+        // credential is irreversible. The #5028 heal therefore applies
+        // exactly when the source is readable and the identities match.
+        let sourceReadErrorCode: string | null = null;
+        const sourceBytes = await fs
+          .readFile(path.join(sourceHome, "auth.json"))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              sourceReadErrorCode = error.code ?? "unknown";
+            }
+            return null;
+          });
+        const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
+        keepPromotedAuth = sourceIdentity !== targetIdentity;
+        if (keepPromotedAuth && sourceReadErrorCode) {
+          // Deferred heal, made visible: seeding runs before every probe and
+          // every execute, so the next call with a readable source applies
+          // the same-identity symlink heal this call could not decide.
+          await onLog(
+            "stdout",
+            `[paperclip] Keeping the existing subscription auth.json in Codex home "${targetHome}" (shared source read failed: ${sourceReadErrorCode}); the next seed with a readable source reconciles it.\n`,
+          );
+        }
+      }
+      if (keepPromotedAuth) {
+        await onLog(
+          "stdout",
+          `[paperclip] Keeping the promoted subscription auth.json in Codex home "${targetHome}".\n`,
+        );
+      } else {
+        await fs.rm(authPath, { force: true });
+      }
     }
   }
 
   if (seedFromShared) {
     for (const name of SYMLINKED_SHARED_FILES) {
+      // The kept promoted credential is authoritative for this home; the shared
+      // symlink would silently swap the account back to the host login.
+      if (name === "auth.json" && keepPromotedAuth) continue;
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
       await ensureSymlink(path.join(targetHome, name), source);

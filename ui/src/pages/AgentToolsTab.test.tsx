@@ -240,7 +240,7 @@ describe("AgentToolsTab", () => {
     expect(text).toContain("Production GitHub");
     expect(text).toContain("GitHub safe");
     expect(text).toContain("Access profiles");
-    expect(text).toContain("Company default");
+    expect(text).toContain("Organization default");
     expect(container.querySelector('a[href="/apps/advanced/profiles/prof-1"]')?.textContent).toBe("GitHub safe");
     expect(container.querySelector('a[href="/apps/advanced/profiles?check=1"]')?.textContent).toBe("Check access");
     // Governing policy #1 is the company-wide require_approval rule.

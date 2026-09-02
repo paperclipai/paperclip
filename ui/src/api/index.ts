@@ -10,6 +10,7 @@ export { externalObjectsApi } from "./externalObjects";
 export { routinesApi } from "./routines";
 export { goalsApi } from "./goals";
 export { approvalsApi } from "./approvals";
+export { decisionsApi } from "./decisions";
 export { costsApi } from "./costs";
 export { activityApi } from "./activity";
 export { dashboardApi } from "./dashboard";

@@ -1,5 +1,14 @@
 import type { Issue, IssueComment } from "@paperclipai/shared";
 
+/**
+ * First-page size for the issue-detail comment feed. Single source of truth so
+ * the render path (IssueDetail's `useInfiniteQuery`) and the navigation prefetch
+ * (`prefetchIssueComments`) request identically-shaped pages — a mismatch would
+ * leave the prefetched cache entry unable to satisfy the mounted query without a
+ * refetch, defeating warm-navigation instant paint.
+ */
+export const ISSUE_COMMENT_PAGE_SIZE = 50;
+
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -123,12 +132,31 @@ export function mergeIssueComments(
   comments: IssueComment[] | undefined,
   optimisticComments: OptimisticIssueComment[],
 ): IssueTimelineComment[] {
-  const merged = [...(comments ?? [])];
+  const persistedComments = comments ?? [];
+  const merged = [...persistedComments];
   const existingIds = new Set(merged.map((comment) => comment.id));
+  const reconciledPersistedIds = new Set<string>();
   for (const comment of optimisticComments) {
-    if (!existingIds.has(comment.id)) {
-      merged.push(comment);
+    if (existingIds.has(comment.id)) continue;
+
+    // The mutation response and comments feed can publish the canonical
+    // comment in different React Query notifications. Keep the optimistic row
+    // mounted through that handoff without briefly rendering both versions.
+    // Consume matches one-for-one so repeated identical messages remain valid.
+    const matchingPersistedComment = persistedComments.find((persisted) =>
+      !reconciledPersistedIds.has(persisted.id) &&
+      persisted.issueId === comment.issueId &&
+      persisted.authorType === comment.authorType &&
+      persisted.authorUserId === comment.authorUserId &&
+      persisted.body === comment.body &&
+      Math.abs(toTimestamp(persisted.createdAt) - toTimestamp(comment.createdAt)) <= 60_000
+    );
+    if (matchingPersistedComment) {
+      reconciledPersistedIds.add(matchingPersistedComment.id);
+      continue;
     }
+
+    merged.push(comment);
   }
   return sortIssueComments(merged);
 }

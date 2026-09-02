@@ -189,7 +189,7 @@ export function AgentsUsingSkillDialog({
       if (desiredSetsEqual(currentEntries, nextEntries)) {
         return { agentId: agent.id, changed: false };
       }
-      await agentsApi.syncSkills(agent.id, nextEntries, companyId);
+      await agentsApi.syncSkills(agent.id, nextEntries, "replace", companyId);
       return { agentId: agent.id, changed: true };
     },
     onSuccess: async ({ agentId }) => {

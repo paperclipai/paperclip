@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getPageVisibility,
+  getPageVisibilitySnapshot,
   getVisibilityHeaderValue,
   subscribePageVisibility,
 } from "./page-visibility";
@@ -39,6 +40,14 @@ describe("getPageVisibility", () => {
     setVisibility("visible");
     setFocused(true);
     expect(getPageVisibility()).toEqual({ visible: true, focused: true });
+  });
+
+  it("reconciles the snapshot before a hidden tab's first subscription", () => {
+    setVisibility("hidden");
+    expect(getPageVisibilitySnapshot()).toEqual({ visible: false, focused: false });
+
+    setVisibility("visible");
+    expect(getPageVisibilitySnapshot().visible).toBe(true);
   });
 });
 

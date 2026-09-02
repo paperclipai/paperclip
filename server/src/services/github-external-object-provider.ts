@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
+import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import type {
@@ -27,7 +28,6 @@ interface GitHubObjectIdentity {
   pathKind: "pull" | "issues";
 }
 
-const DEFAULT_GITHUB_TOKEN_SECRET_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"] as const;
 const GITHUB_OBJECT_TTL_SECONDS = 300;
 
 function isGitHubHost(host: string) {
@@ -195,6 +195,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
   const authorLogin = asNestedString(body, "user", "login");
   const headRef = asNestedString(body, "head", "ref");
+  const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
 
@@ -252,6 +253,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       draft,
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
+      ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
     },

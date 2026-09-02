@@ -188,11 +188,18 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 
 The server persists canonical company skill keys.
 
+The request must include a merge mode:
+
+- `add` adds the named skills and keeps every other assignment.
+- `remove` removes only the named skills.
+- `replace` overwrites the complete desired skill set. Use it only after explicit confirmation.
+
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "mode": "add",
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]

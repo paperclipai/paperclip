@@ -25,6 +25,7 @@ import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  applyOperatorGeneralDefaults,
   instanceGeneralSettingsSchema,
   type FeedbackTargetType,
   type FeedbackTraceBundle,
@@ -46,6 +47,7 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -157,10 +159,7 @@ function contentTypeForPath(filePath: string) {
 function normalizeInstanceGeneralSettings(raw: unknown) {
   const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
-  return {
-    censorUsernameInLogs: false,
-    feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
-  };
+  return instanceGeneralSettingsSchema.parse({});
 }
 
 function buildIssuePath(identifier: string | null) {
@@ -1977,7 +1976,13 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             })
             .then((rows) => rows[0] ?? null));
 
-        const currentGeneral = normalizeInstanceGeneralSettings(currentInstanceSettings?.general);
+        // Operator setting defaults apply to the effective value: when the
+        // operator supplies a feedback-sharing default, the preference is no
+        // longer "prompt", so a stray answer must not persist over it.
+        const currentGeneral = applyOperatorGeneralDefaults(
+          normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
+          getOperatorSettingDefaults(),
+        );
         if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};

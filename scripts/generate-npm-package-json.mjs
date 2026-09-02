@@ -13,6 +13,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
@@ -75,6 +76,15 @@ for (const pkgPath of workspacePaths) {
   }
 }
 
+if (bundledCliNpmDependencies.has("embedded-postgres")) {
+  const requireFromDb = createRequire(resolve(repoRoot, "packages/db/package.json"));
+  const embeddedPostgresRoot = dirname(requireFromDb.resolve("embedded-postgres"));
+  const embeddedPostgresPackage = JSON.parse(
+    readFileSync(resolve(embeddedPostgresRoot, "..", "package.json"), "utf8"),
+  );
+  Object.assign(allOptionalDeps, embeddedPostgresPackage.optionalDependencies ?? {});
+}
+
 // Sort alphabetically
 const sortedDeps = Object.fromEntries(Object.entries(allDeps).sort(([a], [b]) => a.localeCompare(b)));
 const sortedOptDeps = Object.fromEntries(
@@ -100,7 +110,7 @@ const publishPkg = {
   homepage: cliPkg.homepage,
   bugs: cliPkg.bugs,
   files: cliPkg.files,
-  engines: { node: ">=20" },
+  engines: { node: ">=24.11.0" },
   dependencies: sortedDeps,
 };
 

@@ -31,7 +31,9 @@ import {
   buildEnvironmentLeaseContext,
   type EnvironmentRuntimeLeaseRecord,
   type EnvironmentRuntimeService,
+  type ProviderResourceDisposition,
 } from "./environment-runtime.js";
+import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import {
   resolveEnvironmentExecutionTarget,
   resolveEnvironmentExecutionTransport,
@@ -42,9 +44,11 @@ import {
   type AdapterRemoteExecutionSpec,
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -346,6 +350,12 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    /**
+     * The host duplex observability recorder for this run. The orchestrator threads
+     * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
+     * target. Absent keeps the safe no-op default in the bridge.
+     */
+    duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -374,11 +384,7 @@ export function environmentRunOrchestrator(
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
     let realizedWorkspaceCwd: string | null = null;
-    if (
-      environment.driver === "local" ||
-      environment.driver === "ssh" ||
-      environment.driver === "sandbox"
-    ) {
+    if (ENVIRONMENT_DRIVER_TRAITS[environment.driver].realizesWorkspace) {
       try {
         const remoteCwd =
           typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
@@ -420,7 +426,29 @@ export function environmentRunOrchestrator(
       (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
         ? lease.metadata.remoteCwd.trim()
         : executionWorkspace.cwd);
-    if (provisionCommand && environment.driver !== "local") {
+    // The host `provisionCommand` runs on the host worktree during the
+    // `workspace_provision` step, before the run reaches the environment.
+    // A `sandbox`-driver environment does not receive the repo tree here. The
+    // sandbox driver `realizeWorkspace` step only creates the remote folder.
+    // The adapter uploads the provisioned tree later, in its `stage.sync` step.
+    // So the host command must not run inside the still-empty sandbox; it fails
+    // there (exit 127). Skip the step for `sandbox`, and keep the existing skip
+    // for `local`. Keep the step for `ssh`, which runs the command on the
+    // remote host that shares the workspace path.
+    const driverSkipsHostProvision =
+      environment.driver === "local" || environment.driver === "sandbox";
+    if (provisionCommand && environment.driver === "sandbox") {
+      logger.info(
+        {
+          environmentId: environment.id,
+          driver: environment.driver,
+          issueId,
+          heartbeatRunId,
+        },
+        "Skip host provisionCommand for sandbox-driver environment; the adapter stage.sync step delivers the provisioned tree",
+      );
+    }
+    if (provisionCommand && !driverSkipsHostProvision) {
       try {
         const provisionResult = await environmentRuntime.execute({
           environment,
@@ -432,6 +460,13 @@ export function environmentRunOrchestrator(
             SHELL: "/bin/bash",
           },
           timeoutMs: 300_000,
+          // The provision command runs before the run opens its trace root, so it
+          // carries no run parent. A sandbox provider that opens a persistent
+          // session on the first command must not open the session here, or the
+          // session-setup span loses its parent and the span backend drops it.
+          // Bypass the session for this command; the session opens on the first
+          // in-run command instead, whose setup span parents to the run trace.
+          bypassSession: true,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
@@ -485,6 +520,7 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =
@@ -548,13 +584,29 @@ export function environmentRunOrchestrator(
     agentId: string;
     status?: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
     failureReason?: string;
+    /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
+    providerResourceDisposition?: ProviderResourceDisposition;
+    nativeLifecycleTelemetry?: {
+      provider: string;
+      harness: string;
+      lifecycleMode: "per_turn" | "warm";
+      sandboxResource:
+        | "keep_running"
+        | "stop_and_reuse"
+        | "destroy_after_turn";
+    };
   }): Promise<EnvironmentReleaseResult> {
     const status = input.status ?? "released";
     const result: EnvironmentReleaseResult = { released: [], errors: [] };
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(input.heartbeatRunId, status);
+      releasedLeases = await environmentRuntime.releaseRunLeases(
+        input.heartbeatRunId,
+        status,
+        (leaseId, error) => result.errors.push({ leaseId, error }),
+        input.providerResourceDisposition,
+      );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;
@@ -582,6 +634,8 @@ export function environmentRunOrchestrator(
             status: released.lease.status,
             cleanupStatus: released.lease.cleanupStatus,
             failureReason: input.failureReason ?? released.lease.failureReason,
+            providerResourceDisposition:
+              input.providerResourceDisposition ?? "legacy_default",
           },
         });
       } catch {

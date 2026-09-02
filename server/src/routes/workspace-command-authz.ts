@@ -19,6 +19,9 @@ function collectWorkspaceStrategyCommandPaths(raw: unknown, prefix: string): str
   if (hasOwn(raw, "provisionCommand")) {
     paths.push(prefixPath(prefix, "provisionCommand"));
   }
+  if (hasOwn(raw, "runtimeProvisionCommand")) {
+    paths.push(prefixPath(prefix, "runtimeProvisionCommand"));
+  }
   if (hasOwn(raw, "teardownCommand")) {
     paths.push(prefixPath(prefix, "teardownCommand"));
   }
@@ -30,6 +33,9 @@ function collectExecutionWorkspaceConfigCommandPaths(raw: unknown, prefix: strin
   const paths: string[] = [];
   if (hasOwn(raw, "provisionCommand")) {
     paths.push(prefixPath(prefix, "provisionCommand"));
+  }
+  if (hasOwn(raw, "runtimeProvisionCommand")) {
+    paths.push(prefixPath(prefix, "runtimeProvisionCommand"));
   }
   if (hasOwn(raw, "teardownCommand")) {
     paths.push(prefixPath(prefix, "teardownCommand"));

@@ -11,22 +11,40 @@ import {
   isSameAutocompleteSession,
   issueMentionTitle,
   MarkdownEditor,
+  type MarkdownEditorRef,
   type MentionOption,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
   throwOnRender: false,
+  /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
+  emitMountChange: null as string | null,
+  /** Milliseconds the mock waits before painting its content, to model a slow import. */
+  populateDelayMs: 0,
   markdownValues: [] as string[],
+  /** Every string handed to the editor's imperative `insertMarkdown`. */
+  insertedMarkdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
 }));
 
-function containsHtmlLikeTag(markdown: string) {
-  return /<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^>]*)?\/?>/.test(markdown);
+/**
+ * Stand-in for the real importer's HTML tokenizer. MDXEditor runs with
+ * `suppressHtmlProcessing`, which *removes* the HTML visitor — so a bare `<`
+ * that opens an HTML construct is what throws
+ * `UnrecognizedMarkdownConstructError`, regardless of the flag. Only a
+ * backslash escape (`\<`) hides the bracket from the parser, which is exactly
+ * what `escapeUnsupportedAngleBrackets` produces.
+ */
+function containsUnescapedHtmlLikeTag(markdown: string) {
+  // Consume escape pairs first so `\<` counts as literal text, then look for a
+  // surviving `<` that would open an HTML construct.
+  return /(?:^|[^\\])(?:\\\\)*<[A-Za-z!/?]/.test(markdown);
 }
 
 vi.mock("@mdxeditor/editor", async () => {
@@ -58,7 +76,11 @@ vi.mock("@mdxeditor/editor", async () => {
       suppressHtmlProcessing?: boolean;
       className?: string;
     },
-    forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
+    forwardedRef: React.ForwardedRef<{
+      setMarkdown: (value: string) => void;
+      insertMarkdown: (value: string) => void;
+      focus: (callback?: () => void) => void;
+    } | null>,
   ) {
     if (mdxEditorMockState.throwOnRender) {
       throw new Error("Rich editor render crashed");
@@ -67,22 +89,44 @@ vi.mock("@mdxeditor/editor", async () => {
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
     const editableRef = React.useRef<HTMLDivElement>(null);
+    const onErrorRef = React.useRef(onError);
+    onErrorRef.current = onError;
     const handle = React.useMemo(() => ({
       setMarkdown: (value: string) => setContent(value),
-      focus: () => editableRef.current?.focus(),
+      insertMarkdown: (value: string) => {
+        mdxEditorMockState.insertedMarkdownValues.push(value);
+        // Inserted markdown goes through the same importer as the mounted
+        // document, so an unescaped tag fails here in exactly the same way.
+        if (containsUnescapedHtmlLikeTag(value)) {
+          onErrorRef.current?.({ error: "Unrecognized markdown construct: html", source: value });
+          return;
+        }
+        setContent((previous) => `${previous}${value}`);
+      },
+      // The real `focus` runs its callback once a selection exists.
+      focus: (callback?: () => void) => {
+        editableRef.current?.focus();
+        callback?.();
+      },
     }), []);
 
     React.useEffect(() => {
-      if (!suppressHtmlProcessing && containsHtmlLikeTag(markdown)) {
+      if (containsUnescapedHtmlLikeTag(markdown)) {
         setContent("");
         onError?.({
-          error: "Error parsing markdown: HTML-like formatting requires suppressHtmlProcessing",
+          error: "Unrecognized markdown construct: html",
           source: markdown,
         });
         return;
       }
+      if (mdxEditorMockState.populateDelayMs > 0) {
+        // Model an import that paints its content some time after mount.
+        setContent("");
+        const timer = window.setTimeout(() => setContent(markdown), mdxEditorMockState.populateDelayMs);
+        return () => window.clearTimeout(timer);
+      }
       setContent(markdown);
-    }, [markdown, onError, suppressHtmlProcessing]);
+    }, [markdown, onError]);
 
     React.useEffect(() => {
       setForwardedRef(forwardedRef, null);
@@ -102,6 +146,9 @@ vi.mock("@mdxeditor/editor", async () => {
             source: markdown,
           });
         }
+        if (mdxEditorMockState.emitMountChange !== null) {
+          onChange?.(mdxEditorMockState.emitMountChange);
+        }
       }, 0);
       return () => {
         window.clearTimeout(timer);
@@ -117,7 +164,8 @@ vi.mock("@mdxeditor/editor", async () => {
         contentEditable
         suppressContentEditableWarning
       >
-        {content || placeholder || ""}
+        {/* The real editor paints resolved text, never the escapes that carried it in. */}
+        {content.replace(/\\</g, "<") || placeholder || ""}
       </div>
     );
   });
@@ -163,6 +211,28 @@ async function act(callback: () => void | Promise<void>) {
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function clickRetryRichEditor(scope: HTMLElement) {
+  const button = Array.from(scope.querySelectorAll("button")).find((candidate) =>
+    candidate.textContent?.includes("Retry rich editor"),
+  );
+  if (!button) throw new Error('"Retry rich editor" button not found');
+  button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+}
+
+function fallbackCode(scope: HTMLElement) {
+  return scope.querySelector('[data-testid="markdown-editor-fallback-code"]')?.textContent;
+}
+
+/**
+ * The DOM-empty heuristic checks at 100ms and confirms 200ms later, so a test
+ * that wants to prove no fallback happened has to outlast both phases.
+ */
+async function waitPastEmptyHeuristic() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
   });
 }
 
@@ -243,7 +313,10 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
+    mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
+    mdxEditorMockState.insertedMarkdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
@@ -463,6 +536,7 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-PARSE");
     expect(handleChange).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -493,6 +567,7 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-RENDER");
     expect(consoleError).toHaveBeenCalledWith(
       "Markdown rich editor failed; falling back to raw textarea",
       expect.objectContaining({
@@ -531,7 +606,295 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-EMPTY");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps prose with bare angle brackets in the rich editor", async () => {
+    const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    // The editor is handed the escaped form: the placeholder is hidden from the
+    // HTML tokenizer, while `<=` cannot open a tag and is left exactly as typed.
+    const received = mdxEditorMockState.markdownValues.at(-1);
+    expect(received).toContain("Rename \\<name> to the real name.");
+    expect(received).toContain("Affected versions: <= v0.3.1");
+
+    // What the user sees is still the markdown they wrote.
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("returns editor output to the parent with the transport escaping removed", async () => {
+    const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
+    // What the real exporter emits for this document: `<` re-escaped, `<=` bare.
+    mdxEditorMockState.emitMountChange =
+      "Affected versions: <= v0.3.1\n\nRename \\<name> to the real name.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+
+    // The parent stores the clean form — these fields feed agent prompts, so a
+    // stray `\<` would leak into a prompt.
+    expect(handleChange).toHaveBeenCalledWith(value);
+    expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\<"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not notify the parent when a prop sync echoes escaped markdown back", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="" onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    // The editor echoes an imperative `setMarkdown` back through `onChange` in
+    // editor space, while the component compares in stored space.
+    mdxEditorMockState.emitMountChange = "Rename \\<name> here";
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> here"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("recovers the rich editor on retry after a transient parse failure", async () => {
+    mdxEditorMockState.emitMountParseError = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    expect(fallbackCode(container)).toBe("MDE-PARSE");
+
+    // The failure was transient; the next mount imports the same markdown fine.
+    mdxEditorMockState.emitMountParseError = false;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+    expect(handleChange).not.toHaveBeenCalledWith("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("re-arms the empty-onChange guard when the editor is retried", async () => {
+    // The sequence this guards: the editor mounts, reports an edit (spending the
+    // one-shot mount guard), then fails. The user retries, and the fresh mount
+    // emits the empty onChange that the guard exists to swallow — which would
+    // otherwise wipe the parent's value.
+    mdxEditorMockState.emitMountChange = "Rename \\<name> to the real name.";
+    mdxEditorMockState.emitMountParseError = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+
+    mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountParseError = false;
+    mdxEditorMockState.emitMountEmptyReset = true;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalledWith("");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not fall back again while a retried editor is still populating", async () => {
+    mdxEditorMockState.emitMountParseError = true;
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+
+    // The retried editor paints its content between the first check and the
+    // confirming re-check, so the heuristic must not call it empty.
+    mdxEditorMockState.emitMountParseError = false;
+    mdxEditorMockState.populateDelayMs = 150;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("escapes angle brackets in markdown inserted through the ref", async () => {
+    const editorRef = { current: null as MarkdownEditorRef | null };
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          ref={editorRef}
+          value="Intro."
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      editorRef.current?.insertMarkdown("\n\nRename <name> to the real name.");
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      "\n\nRename \\<name> to the real name.",
+    ]);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("escapes angle brackets in pasted markdown", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="Intro." onChange={() => {}} placeholder="Markdown body" />,
+      );
+    });
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+    const pasted = "## Setup\n\n- Rename <name> to the real name\n";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+
+    await act(async () => {
+      scope?.dispatchEvent(event);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      "## Setup\n\n- Rename \\<name> to the real name\n",
+    ]);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
 
     await act(async () => {
       root.unmount();
@@ -1023,6 +1386,64 @@ describe("MarkdownEditor", () => {
       menu.dispatchEvent(wheel);
     });
     expect(wheel.defaultPrevented).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("lets wheel and touch scrolling reach the autocomplete menu inside a modal", async () => {
+    const root = createRoot(container);
+    const mentions = Array.from({ length: 12 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+
+    await act(async () => {
+      root.render(
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Create task</DialogTitle>
+            <MarkdownEditor value="@Pap" onChange={() => {}} mentions={mentions} />
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    await flush();
+
+    const editable = document.body.querySelector('[data-testid="mdx-editor"]');
+    const textNode = editable?.firstChild;
+    expect(textNode?.nodeType).toBe(Node.TEXT_NODE);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode!, "@Pap".length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await flush();
+
+    const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]');
+    expect(menu).toBeTruthy();
+
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 80 });
+    act(() => {
+      menu?.dispatchEvent(wheel);
+    });
+    expect(wheel.defaultPrevented).toBe(false);
+
+    const touchMove = createTouchEvent("touchmove", [{ clientX: 100, clientY: 90 }]);
+    act(() => {
+      menu?.firstElementChild?.dispatchEvent(touchMove);
+    });
+    expect(touchMove.defaultPrevented).toBe(false);
 
     await act(async () => {
       root.unmount();

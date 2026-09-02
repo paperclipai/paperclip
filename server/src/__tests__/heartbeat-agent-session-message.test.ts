@@ -10,7 +10,13 @@ describe("agent session wake messages", () => {
     ].join("\n");
 
     const wakePayload = await buildPaperclipWakePayload({
-      db: {} as never,
+      db: {
+        select: () => ({
+          from: () => ({
+            where: async () => [],
+          }),
+        }),
+      } as never,
       companyId: "company-1",
       contextSnapshot: {
         wakeReason: "issue_assigned",

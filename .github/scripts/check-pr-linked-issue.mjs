@@ -47,34 +47,111 @@ const TEMPLATE_FIELDS = {
     ["Why this adapter is useful", "Why it's useful", 'Why useful', 'Use case'],
     ['How the agent is invoked', 'How it is invoked', "How it's invoked", 'Invocation'],
   ],
+  // Labels below match .github/ISSUE_TEMPLATE/enhancement.yml exactly.
+  enhancement: [
+    ['What existing behavior does this improve?', 'What existing behavior does this improve'],
+    ['Subsystem affected'],
+    ['Current behavior'],
+    ['Proposed behavior'],
+    ['Reason and benefit'],
+    ['Breaking changes'],
+  ],
+  // Labels below match .github/ISSUE_TEMPLATE/docs_issue.yml exactly. The
+  // template has 4 distinct fields, so it meets the 3-field minimum. A
+  // "docs"-prefixed PR skips this check; this set helps a non-"docs"-prefixed
+  // PR that describes a documentation issue inline.
+  docs: [
+    ['Issue type'],
+    ['Where is the issue?', 'Where is the issue'],
+    ["What's wrong?", "What's wrong"],
+    ['Suggested fix'],
+  ],
 };
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function countMatchedFields(body, fieldSet) {
+// A generic "label line" is a markdown heading (`## Label`) or a bolded label on
+// its own line (`**Label**`). The content scan stops at a label line, because
+// that line starts a new field.
+const LABEL_LINE = /^\s*(?:#{1,6}\s+\S|(?:\*\*|__)[^*_].*(?:\*\*|__)\s*[:?]?\s*$)/;
+
+// Build the regex that matches one field label on its own line.
+function labelLinePattern(label) {
+  const esc = escapeRegExp(label);
+  // Accept markdown headings or bolded/plain labels on their own line.
+  // Examples: "## What happened?", "**Expected behavior**", "Problem:".
+  return new RegExp(
+    `^\\s*(?:#{1,6}\\s+|\\*\\*\\s*|__\\s*)?${esc}(?:\\s*[:?])?(?:\\s*\\*\\*|\\s*__)?\\s*$`,
+    'i'
+  );
+}
+
+// Every known field label from every template, precompiled. The generic
+// LABEL_LINE regex sees a heading or a bold label as a field boundary, but not a
+// plain "Label:" line. A skeleton of stacked plain labels needs each label to
+// act as a boundary. Without this list the scan reads the next label as
+// content, so it counts an empty field as filled.
+const KNOWN_LABEL_PATTERNS = Object.values(TEMPLATE_FIELDS)
+  .flat(2)
+  .map(labelLinePattern);
+
+// Return true if the line starts a new field. The line is a heading, a bold
+// label, or a plain line that equals a known field label.
+function isFieldBoundary(line) {
+  return LABEL_LINE.test(line) || KNOWN_LABEL_PATTERNS.some(p => p.test(line));
+}
+
+// Return true if the line holds real content, not a bare placeholder. The
+// default template skeleton puts a lone "-" under each label, so a label with
+// only "-", blank lines, or a "[...]" placeholder does not count as filled.
+function lineHasContent(line) {
+  let text = line.trim();
+  if (!text) return false;
+  // Drop a leading list marker ("- ", "* ", "1. ") before the check.
+  text = text.replace(/^[-*+]\s*/, '').replace(/^\d+[.)]\s*/, '').trim();
+  if (!text) return false;
+  // Treat a whole-line bracket placeholder ("[describe here]") as empty.
+  if (/^\[.*\]$/.test(text)) return false;
+  return true;
+}
+
+// Return true if a label variant appears on its own line AND at least one
+// content line follows it before the next label line.
+function isFieldFilled(lines, variants) {
+  const patterns = variants.map(labelLinePattern);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!patterns.some(p => p.test(lines[i]))) continue;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (isFieldBoundary(lines[j])) break; // next field starts here
+      if (lineHasContent(lines[j])) return true;
+    }
+  }
+  return false;
+}
+
+function countMatchedFields(lines, fieldSet) {
   let matched = 0;
   for (const variants of fieldSet) {
-    const hasMatch = variants.some(label => {
-      const esc = escapeRegExp(label);
-      // Accept markdown headings or bolded/plain labels on their own line.
-      // Examples: "## What happened?", "**Expected behavior**", "Problem:".
-      const pattern = new RegExp(
-        `^\\s*(?:#{1,6}\\s+|\\*\\*\\s*|__\\s*)?${esc}(?:\\s*[:?])?(?:\\s*\\*\\*|\\s*__)?\\s*$`,
-        'im'
-      );
-      return pattern.test(body);
-    });
-    if (hasMatch) matched += 1;
+    if (isFieldFilled(lines, variants)) matched += 1;
   }
   return matched;
 }
 
+// Remove HTML comments. The PR template puts its guidance and its example
+// issue links ("Fixes: #123") inside comments, so the gate must not read them
+// as author content.
+function stripHtmlComments(body) {
+  return body.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 export function hasInlineIssueDescription(body) {
   if (!body || !body.trim()) return false;
+  // Strip the guidance comments, then scan the body line by line.
+  const lines = stripHtmlComments(body).split(/\r?\n/);
   for (const fieldSet of Object.values(TEMPLATE_FIELDS)) {
-    if (countMatchedFields(body, fieldSet) >= INLINE_DESCRIPTION_MIN_FIELDS) {
+    if (countMatchedFields(lines, fieldSet) >= INLINE_DESCRIPTION_MIN_FIELDS) {
       return true;
     }
   }
@@ -98,7 +175,7 @@ export function checkLinkedIssue(body, prTitle = '') {
     return { passed: false, failures: ['PR body is empty — please fill out the PR template'] };
   }
 
-  const linked = ISSUE_PATTERNS.some(p => p.test(body));
+  const linked = ISSUE_PATTERNS.some(p => p.test(stripHtmlComments(body)));
   const inlined = hasInlineIssueDescription(body);
   const passed = linked || inlined;
 

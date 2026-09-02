@@ -16,3 +16,5 @@ export { logCheck } from "./log-check.js";
 export { portCheck } from "./port-check.js";
 export { secretsCheck } from "./secrets-check.js";
 export { storageCheck } from "./storage-check.js";
+export { managedInstallChecks, nodeRuntimeCheck } from "./managed-install-check.js";
+export { serviceHealthChecks } from "./service-health-check.js";

@@ -43,17 +43,18 @@ vi.mock("@/lib/router", () => ({
   useParams: () => ({}),
 }));
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
+/**
+ * Waits on the condition, not on a fixed number of turns. A hand-rolled retry
+ * loop is ample on an idle machine and not when the suite runs many workers in
+ * parallel: it gives up after N turns and reports a failure on behaviour that
+ * works. `vi.waitFor` retries against a time budget, so a loaded worker gets
+ * more turns instead.
+ *
+ * Same replacement as #11499 and #11521, which fixed the shorter-budget
+ * instances of this in the routing tests.
+ */
 async function waitForText(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await flushReact();
-  }
-  expect(container.textContent).toContain(text);
+  await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
 function renderGate(container: HTMLElement) {
@@ -114,9 +115,9 @@ describe("CloudAccessGate", () => {
     });
 
     const root = renderGate(container);
-    await waitForText(container, "No company access");
+    await waitForText(container, "No organization access");
 
-    expect(container.textContent).toContain("No company access");
+    expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
     unmountRoot(root);
@@ -140,7 +141,7 @@ describe("CloudAccessGate", () => {
     await waitForText(container, "Outlet content");
 
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("No company access");
+    expect(container.textContent).not.toContain("No organization access");
 
     unmountRoot(root);
   });
@@ -160,7 +161,7 @@ describe("CloudAccessGate", () => {
 
     expect(container.textContent).toContain("Finish setting up this Paperclip");
     expect(container.textContent).toContain("Sign in / Create account");
-    expect(container.textContent).toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(container.textContent).toContain("npx paperclipai auth bootstrap-ceo");
     expect(mockAccessApi.getCurrentBoardAccess).not.toHaveBeenCalled();
 
     unmountRoot(root);
@@ -240,5 +241,47 @@ describe("Skill Studio routes", () => {
     expect(detailIndexes).toHaveLength(2);
     expect(createIndexes[0]).toBeLessThan(detailIndexes[0]!);
     expect(createIndexes[1]).toBeLessThan(detailIndexes[1]!);
+  });
+});
+
+describe("Apps routes", () => {
+  it("uses one connector landing page and redirects retired browse, connections, and audit URLs", () => {
+    expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
+    expect(appSource).toContain('<Route path="apps/browse" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connections" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).not.toContain('import { Connections }');
+    expect(appSource).toContain('<Route path="apps/byo" element={<AppsConnect byoOnly />} />');
+    expect(appSource).toContain('path="apps/vercel-connect"');
+    expect(appSource).toContain('<AppsConnectEntryRoute credentialSource="vercel_connect" />');
+    expect(appSource).toContain('<AppsConnect credentialSource={credentialSource} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/gateways" element={<GatewaysList />} />');
+  });
+
+  it("redirects legacy Rules and Health links to the remaining developer surfaces", () => {
+    expect(appSource).toContain('if (tab === "runtime" || tab === "audit") return "/apps";');
+    expect(appSource).toContain('if (tab === "policies") return "/apps/advanced/profiles";');
+  });
+});
+
+describe("Retired settings routes", () => {
+  it("redirects the removed heartbeats page to the settings root instead of dropping the route", () => {
+    expect(appSource).toContain(
+      '<Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />',
+    );
+    expect(appSource).not.toContain("<InstanceSettings");
+    expect(appSource).not.toContain('"./pages/InstanceSettings"');
+  });
+});
+
+describe("Decisions routes", () => {
+  it("does not register decision-training views", () => {
+    expect(appSource).not.toContain('path="decisions/training"');
+    expect(appSource).not.toContain('path="decisions/training/:id"');
+    expect(appSource).not.toContain('path="training"');
+    expect(appSource).not.toContain('path="training/:id"');
   });
 });

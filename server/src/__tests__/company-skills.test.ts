@@ -366,6 +366,29 @@ describe("project workspace skill discovery", () => {
 
     expect(imported.description).toBe("First line second line");
   });
+  it("includes explicitly selected skills from non-standard folders", async () => {
+    const workspace = await makeTempDir("paperclip-skill-workspace-");
+    await writeSkillDir(path.join(workspace, "content", "specialists", "editorial"), "Editorial");
+
+    const discovered = await discoverProjectWorkspaceSkillDirectories({
+      projectId: "11111111-1111-1111-1111-111111111111",
+      projectName: "Repo",
+      workspaceId: "22222222-2222-2222-2222-222222222222",
+      workspaceName: "Main",
+      workspaceCwd: workspace,
+    }, ["content/specialists/editorial"]);
+
+    expect(discovered).toEqual([
+      {
+        skillDir: path.resolve(workspace, "content", "specialists", "editorial"),
+        directoryRoot: "content/specialists",
+        relativePath: "content/specialists/editorial",
+        inventoryMode: "full",
+      },
+    ]);
+  });
+
+
 });
 
 describe("missing local skill reconciliation", () => {

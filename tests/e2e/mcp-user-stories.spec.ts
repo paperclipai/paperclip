@@ -95,6 +95,7 @@ async function setScoutScript(
 ) {
   await json(await request.patch(`/api/agents/${scout.id}`, {
     data: {
+      adapterType: "process",
       adapterConfig: {
         command: process.execPath,
         args: ["--input-type=module", "-e", script],
@@ -287,17 +288,22 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
   test(`${storyById("US-1").id} ${storyById("US-1").title} @mcp-runnable @mcp-us1`, async ({ page, request }) => {
     const { seed, scout, mock, connectionId } = await seedConnectedFixture(request, "us1");
     try {
-      await page.goto(`/${seed.prefix}/apps/${connectionId}`);
-      await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
-      await screenshot(page, "US-1", "01-connected-app");
-
       await setScoutScript(request, scout, buildGatewayCallScript(connectionId, "sheets:list_rows"));
       const invoked = await invokeHeartbeat(request, scout.id);
       const run = await waitForRun(request, invoked.id);
-      expect(run.status, run.error ?? `heartbeat run ${run.id} did not succeed`).toBe("succeeded");
+      const failedLog = run.status === "succeeded"
+        ? null
+        : await json<{ content?: string }>(await request.get(`/api/heartbeat-runs/${run.id}/log?offset=0&limitBytes=65536`));
+      expect(
+        run.status,
+        [run.error ?? `heartbeat run ${run.id} did not succeed`, failedLog?.content].filter(Boolean).join("\n"),
+      ).toBe("succeeded");
       expect(mock.captures.some((capture) => capture.method === "tools/call" && capture.toolName === "sheets:list_rows")).toBe(true);
       await expectAuditEvent(request, seed.companyId, { connectionId, agentId: scout.id, search: "sheets:list_rows" });
 
+      await page.goto(`/${seed.prefix}/apps/${connectionId}`);
+      await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
+      await screenshot(page, "US-1", "01-connected-app");
       await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
       await screenshot(page, "US-1", "02-activity");
     } finally {
@@ -403,8 +409,8 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
 
     const health = await request.post(`/api/tool-connections/${connectionId}/health-check`);
     expect(health.status()).toBe(502);
-    await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+    await page.goto(`/${seed.prefix}/apps/connections`);
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
     await screenshot(page, "US-8", "01-needs-attention");
 
     const recovered = await startMockMcp();

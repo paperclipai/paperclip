@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "slug": "brex",
+  "name": "Brex",
+  "description": "Connect Brex's provider-hosted MCP server.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/brex.svg",
+    "darkLogoUrl": "/brands/apps/brex-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.brex.com/*"
+  ],
+  "docsUrl": "https://www.brex.com/support/using-brex-in-ai-apps",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.brex.com/mcp"
+      },
+      "guidanceMd": "Connect Brex in the browser. Brex early access and an administrator enabling the integration; financial actions require explicit approval.",
+      "riskTier": "S4",
+      "label": "Sign in with Brex",
+      "consoleLinks": {
+        "docs": "https://www.brex.com/support/using-brex-in-ai-apps"
+      },
+      "warnings": [
+        "Brex early access and an administrator enabling the integration; financial actions require explicit approval.",
+        "Financial or destructive actions must be explicitly approved before execution."
+      ]
+    }
+  ]
+}

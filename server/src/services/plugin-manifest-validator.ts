@@ -128,8 +128,13 @@ export function pluginManifestValidator(): PluginManifestValidator {
         };
       }
 
-      const details = result.error.errors.map((issue) => ({
-        path: issue.path,
+      const details = result.error.issues.map((issue) => ({
+        // Zod 4 types an issue path as `PropertyKey[]`, which can include a
+        // symbol. A manifest path only has string or number segments, so map a
+        // rare symbol segment to its string form for a stable message.
+        path: issue.path.map((segment) =>
+          typeof segment === "symbol" ? segment.toString() : segment,
+        ),
         message: issue.message,
       }));
 

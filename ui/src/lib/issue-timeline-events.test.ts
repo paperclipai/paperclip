@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityEvent } from "@paperclipai/shared";
-import { extractIssueTimelineEvents } from "./issue-timeline-events";
+import {
+  extractIssueTimelineEvents,
+  extractIssueWorkModeChanges,
+  workModeInEffectAt,
+} from "./issue-timeline-events";
 
 describe("extractIssueTimelineEvents", () => {
   it("extracts and sorts status and assignee changes from issue updates", () => {
@@ -289,5 +293,122 @@ describe("extractIssueTimelineEvents", () => {
     ] satisfies ActivityEvent[]);
 
     expect(events).toEqual([]);
+  });
+});
+
+describe("extractIssueWorkModeChanges", () => {
+  function workModeEvent(args: {
+    id: string;
+    createdAt: string;
+    details: Record<string, unknown>;
+  }): ActivityEvent {
+    return {
+      id: args.id,
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "local-board",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: "issue-1",
+      agentId: null,
+      runId: null,
+      createdAt: new Date(args.createdAt),
+      details: args.details,
+    } satisfies ActivityEvent;
+  }
+
+  it("extracts and sorts real work-mode switches", () => {
+    const changes = extractIssueWorkModeChanges([
+      workModeEvent({
+        id: "evt-2",
+        createdAt: "2026-03-31T12:05:00.000Z",
+        details: { workMode: "standard", _previous: { workMode: "ask" } },
+      }),
+      workModeEvent({
+        id: "evt-1",
+        createdAt: "2026-03-31T12:01:00.000Z",
+        details: { workMode: "ask", _previous: { workMode: "planning" } },
+      }),
+    ]);
+
+    expect(changes).toEqual([
+      {
+        id: "evt-1",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        from: "planning",
+        to: "ask",
+      },
+      {
+        id: "evt-2",
+        createdAt: new Date("2026-03-31T12:05:00.000Z"),
+        from: "ask",
+        to: "standard",
+      },
+    ]);
+  });
+
+  it("ignores no-op patches and unrelated updates", () => {
+    const changes = extractIssueWorkModeChanges([
+      // A PATCH resending the current mode records no _previous.workMode.
+      workModeEvent({
+        id: "evt-noop",
+        createdAt: "2026-03-31T12:01:00.000Z",
+        details: { workMode: "ask", _previous: undefined },
+      }),
+      workModeEvent({
+        id: "evt-other-field",
+        createdAt: "2026-03-31T12:02:00.000Z",
+        details: { workMode: "ask", _previous: { status: "todo" } },
+      }),
+      workModeEvent({
+        id: "evt-status-only",
+        createdAt: "2026-03-31T12:03:00.000Z",
+        details: { status: "done", _previous: { status: "in_progress" } },
+      }),
+    ]);
+
+    expect(changes).toEqual([]);
+  });
+});
+
+describe("workModeInEffectAt", () => {
+  const changes = [
+    {
+      id: "evt-1",
+      createdAt: "2026-03-31T12:10:00.000Z",
+      from: "standard",
+      to: "planning",
+    },
+    {
+      id: "evt-2",
+      createdAt: "2026-03-31T12:20:00.000Z",
+      from: "planning",
+      to: "ask",
+    },
+  ];
+
+  function at(iso: string) {
+    return new Date(iso).getTime();
+  }
+
+  it("uses the first change's `from` before any switch happened", () => {
+    expect(workModeInEffectAt(changes, at("2026-03-31T12:00:00.000Z"), "ask")).toBe("standard");
+  });
+
+  it("uses the last switch at or before the timestamp", () => {
+    expect(workModeInEffectAt(changes, at("2026-03-31T12:10:00.000Z"), "standard")).toBe("planning");
+    expect(workModeInEffectAt(changes, at("2026-03-31T12:15:00.000Z"), "standard")).toBe("planning");
+    expect(workModeInEffectAt(changes, at("2026-03-31T12:30:00.000Z"), "standard")).toBe("ask");
+  });
+
+  it("falls back to the issue's current mode without usable history", () => {
+    expect(workModeInEffectAt([], at("2026-03-31T12:00:00.000Z"), "planning")).toBe("planning");
+    expect(
+      workModeInEffectAt(
+        [{ id: "evt-x", createdAt: "2026-03-31T12:10:00.000Z", from: null, to: "bogus" }],
+        at("2026-03-31T12:00:00.000Z"),
+        "ask",
+      ),
+    ).toBe("ask");
   });
 });

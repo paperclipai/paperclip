@@ -17,6 +17,8 @@ export class ApiError extends Error {
 export interface RequestOptions {
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
+  /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
+  headers?: Record<string, string>;
 }
 
 function abortError(): DOMException {
@@ -134,6 +136,19 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   });
 }
 
+/**
+ * Stop later callers from joining the in-flight GET for `path`.
+ *
+ * Coalescing keys on the path alone, so a GET issued under one account's session
+ * can be joined by a caller that runs after the account changed — and handed the
+ * previous account's response. Detaching leaves that request to settle for the
+ * callers that asked for it, and makes the next call issue a fresh one. It does
+ * not abort, because those callers still want what they asked for.
+ */
+export function detachInflightGet(path: string): void {
+  inflightGets.delete(path);
+}
+
 /** Test-only: number of in-flight coalesced GET keys. */
 export function __inflightGetCount(): number {
   return inflightGets.size;
@@ -146,11 +161,31 @@ function isRequestOptions(value: unknown): value is RequestOptions {
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => coalescedGet<T>(path, options),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body, signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body,
+      signal: options?.signal,
+      // Never set Content-Type here — the browser sets multipart/form-data with
+      // the boundary. Extra headers (e.g. an async opt-in) may still ride along.
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+  /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
+  putRaw: <T>(path: string, body: Blob, options?: RequestOptions) =>
+    request<T>(path, {
+      method: "PUT",
+      body,
+      signal: options?.signal,
+      headers: { "Content-Type": "application/octet-stream", ...(options?.headers ?? {}) },
+    }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
   delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {

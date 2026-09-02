@@ -28,6 +28,40 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
+// The Claude `setup-token` login parser. It reads the interactive login output
+// and returns the authorization URL and the browser-code prompt, or the minted
+// OAuth token from the success record. Both functions fail closed and keep every
+// input byte out of each log and each thrown error.
+export {
+  parseSetupTokenPrompt,
+  parseSetupTokenCredential,
+  SETUP_TOKEN_PROMPT,
+  SETUP_TOKEN_AUTH_URLS,
+  SETUP_TOKEN_REDIRECT_URI,
+  SETUP_TOKEN_URL_QUERY_KEYS,
+  SETUP_TOKEN_PREFIX,
+  SETUP_TOKEN_BEFORE_ANCHOR,
+  SETUP_TOKEN_AFTER_ANCHOR,
+} from "./setup-token-parse.js";
+export type { SetupTokenPrompt } from "./setup-token-parse.js";
+// The Claude `setup-token` login runner. A server-side factory binds it to a
+// sandbox pseudo-terminal driver to drive the two-way login round-trip and to
+// deliver the minted token one time in memory.
+export {
+  runSetupTokenLogin,
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  CODE_SUBMISSION_TERMINATOR,
+  CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS,
+} from "./setup-token-runner.js";
+export type {
+  SetupTokenPtyDriver,
+  SetupTokenPromptSink,
+  SetupTokenCodeProvider,
+  SetupTokenCredentialSink,
+  SetupTokenOutcome,
+  SetupTokenLoginResult,
+  RunSetupTokenLoginOptions,
+} from "./setup-token-runner.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 

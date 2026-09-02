@@ -45,15 +45,34 @@ describe("redaction", () => {
   });
 
   it("redacts jwt-looking values even when key name is not sensitive", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const input = {
-      session: "aaa.bbb.ccc",
+      session: jwt,
+      opaque: "aaa.bbb.ccc",
       normal: "plain",
     };
 
     const result = sanitizeRecord(input);
 
     expect(result.session).toBe(REDACTED_EVENT_VALUE);
+    expect(result.opaque).toBe(REDACTED_EVENT_VALUE);
     expect(result.normal).toBe("plain");
+  });
+
+  it("preserves Paperclip protocol schema identifiers", () => {
+    expect(sanitizeRecord({
+      schema: "paperclip.question_set.v1",
+      nested: {
+        schema: "paperclip.question_response.v1",
+        runtimeSchema: "paperclip.runtime_request.v2",
+      },
+    })).toEqual({
+      schema: "paperclip.question_set.v1",
+      nested: {
+        schema: "paperclip.question_response.v1",
+        runtimeSchema: "paperclip.runtime_request.v2",
+      },
+    });
   });
 
   it("redacts payload objects while preserving null", () => {
@@ -61,6 +80,57 @@ describe("redaction", () => {
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({
       password: REDACTED_EVENT_VALUE,
       safe: "value",
+    });
+  });
+
+  it("preserves authorization decision reasons in audit payloads", () => {
+    expect(redactEventPayload({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: "Bearer secret",
+      surface: "issue.comment.create",
+    })).toEqual({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: REDACTED_EVENT_VALUE,
+      surface: "issue.comment.create",
+    });
+  });
+
+  /**
+   * A removal receipt (PAP-17119) has to show what it revoked, so a fixed set of
+   * count keys is exempt from the secret-key guard — but only while the value is
+   * a number. The second half of this test is the point: the same key carrying
+   * anything else is still blanked, so the exemption cannot be used to smuggle
+   * material out under a familiar name.
+   */
+  it("keeps numeric removal-receipt counts but still redacts non-numeric values on the same keys", () => {
+    expect(sanitizeRecord({
+      secretsRevoked: 2,
+      secretsRetainedShared: 0,
+      credentialRefsCleared: 3,
+      secretBindingsRemoved: 3,
+      tokenIssuanceHashesCleared: 1,
+      gatewayTokensRevoked: 0,
+      appProfile: "deleted",
+    })).toEqual({
+      secretsRevoked: 2,
+      secretsRetainedShared: 0,
+      credentialRefsCleared: 3,
+      secretBindingsRemoved: 3,
+      tokenIssuanceHashesCleared: 1,
+      gatewayTokensRevoked: 0,
+      appProfile: "deleted",
+    });
+
+    expect(sanitizeRecord({
+      secretsRevoked: "pasted-api-key-value",
+      secretBindingsRemoved: { name: "tool_app.abc.headers_authorization" },
+      tokenIssuanceHashesCleared: Number.NaN,
+      gatewayTokensRevoked: ["pcgw_live_token"],
+    })).toEqual({
+      secretsRevoked: REDACTED_EVENT_VALUE,
+      secretBindingsRemoved: REDACTED_EVENT_VALUE,
+      tokenIssuanceHashesCleared: REDACTED_EVENT_VALUE,
+      gatewayTokensRevoked: REDACTED_EVENT_VALUE,
     });
   });
 

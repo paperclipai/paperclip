@@ -26,10 +26,12 @@ export function ReviewQueueCard({
   connectionId,
   emptyState = "hidden",
   heading = "Waiting for your OK",
+  plain = false,
 }: {
   connectionId?: string;
   emptyState?: "hidden" | "reassure";
   heading?: string;
+  plain?: boolean;
 }) {
   const { selectedCompanyId } = useCompany();
 
@@ -51,7 +53,7 @@ export function ReviewQueueCard({
   if (items.length === 0) {
     if (emptyState === "hidden") return null;
     return (
-      <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">
+      <div className={plain ? "py-5 text-sm text-muted-foreground" : "rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground"}>
         Nothing is waiting for your OK right now.
       </div>
     );
@@ -68,14 +70,22 @@ export function ReviewQueueCard({
       </div>
       <div className="space-y-3">
         {items.map((item) => (
-          <ReviewRow key={item.request.id} companyId={selectedCompanyId} item={item} />
+          <ReviewRow key={item.request.id} companyId={selectedCompanyId} item={item} plain={plain} />
         ))}
       </div>
     </section>
   );
 }
 
-function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionRequestListItem }) {
+function ReviewRow({
+  companyId,
+  item,
+  plain,
+}: {
+  companyId: string;
+  item: ToolActionRequestListItem;
+  plain: boolean;
+}) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [resolving, setResolving] = useState<null | "allow" | "always" | "decline">(null);
@@ -140,7 +150,7 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
   const preview = item.request.previewMarkdown?.trim();
 
   return (
-    <div className="rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-4">
+    <div className={plain ? "py-3" : "rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-4"}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
         <span className="font-bold text-foreground">{actionLabel(item)}</span>
         {item.applicationName && (

@@ -245,10 +245,10 @@ This on-disk model is the reason the current implementation expects a persistent
 Paperclip should add CLI commands:
 
 - `pnpm paperclipai plugin list`
-- `pnpm paperclipai plugin install <package[@version]>`
-- `pnpm paperclipai plugin uninstall <plugin-id>`
-- `pnpm paperclipai plugin upgrade <plugin-id> [version]`
-- `pnpm paperclipai plugin doctor <plugin-id>`
+- `npx paperclipai plugin install <package[@version]>`
+- `npx paperclipai plugin uninstall <plugin-id>`
+- `npx paperclipai plugin upgrade <plugin-id> [version]`
+- `npx paperclipai plugin doctor <plugin-id>`
 
 These commands are instance-level operations.
 
@@ -395,6 +395,11 @@ Rules:
   - `projects` → `projects.managed`
   - `routines` → `routines.managed`
   - `skills` → `skills.managed`
+- an `environmentDrivers` entry with `kind: "sandbox_provider"` declares sandbox
+  capabilities through `sandboxCapabilities`. See the
+  [sandbox provider capability contract](./SANDBOX_PROVIDER_CAPABILITIES.md) for
+  the supported keys, the worker-method prerequisites, and the narrowing and
+  failure rules.
 
 ## 11. Agent Tools
 
@@ -1512,7 +1517,7 @@ When a plugin is uninstalled, the host must handle plugin-owned data explicitly.
 3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`) is retained for a configurable grace period (default: 30 days).
 4. During the grace period, the operator can reinstall the same plugin and recover its state.
 5. After the grace period, the host purges all plugin-owned data for the uninstalled plugin.
-6. The operator may force-purge immediately via CLI: `pnpm paperclipai plugin purge <plugin-id>`.
+6. The operator may force-purge immediately via CLI: `npx paperclipai plugin purge <plugin-id>`.
 
 ### 25.2 Upgrade Data Considerations
 
@@ -1676,7 +1681,7 @@ expect(data.syncedCount).toBeGreaterThan(0);
 
 For developing a plugin against a running Paperclip instance:
 
-- The operator installs the plugin from a local path: `pnpm paperclipai plugin install ./path/to/plugin`
+- The operator installs the plugin from a local path: `npx paperclipai plugin install ./path/to/plugin`
 - The host watches the plugin directory for changes and restarts the worker on rebuild.
 - `devUiUrl` in plugin config can point to a local Vite dev server for UI hot-reload.
 - The plugin settings page shows real-time logs from the worker for debugging.

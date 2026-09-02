@@ -147,6 +147,7 @@ function createExecutionWorkspace(): ExecutionWorkspace {
     strategyType: "git_worktree",
     name: "PAP-1634",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1634",
     repoUrl: null,
     baseRef: "main",

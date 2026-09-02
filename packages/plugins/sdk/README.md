@@ -15,7 +15,7 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 | Import | Purpose |
 |--------|--------|
 | `@paperclipai/plugin-sdk` | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers |
-| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, `useHostNavigation`, slot prop types |
+| `@paperclipai/plugin-sdk/ui` | UI entry: hooks, host navigation, HTTP-safe clipboard copy, shared components, and slot prop types |
 | `@paperclipai/plugin-sdk/ui/hooks` | Hooks only |
 | `@paperclipai/plugin-sdk/ui/types` | UI types and slot prop interfaces |
 | `@paperclipai/plugin-sdk/testing` | `createTestHarness` for unit/integration tests |
@@ -763,6 +763,16 @@ The SSE connection targets `GET /api/plugins/:pluginId/bridge/stream/:channel?co
 The host provides selected shared UI components through `@paperclipai/plugin-sdk/ui`.
 Plugins can also use normal React components, their own CSS, or small design
 primitives inside the plugin package.
+
+Use `copyTextToClipboard` for every plugin copy action. The host selects the
+modern Clipboard API in secure contexts and a compatible fallback in plain-HTTP
+deployments.
+
+```tsx
+import { copyTextToClipboard } from "@paperclipai/plugin-sdk/ui";
+
+await copyTextToClipboard("text to copy");
+```
 
 Use the shared components when the plugin needs to look and behave like a native
 Paperclip surface:

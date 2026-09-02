@@ -201,7 +201,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.parentId).toBe(seeded.issueId);
     expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
-    expect(reviews[0]?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
+    expect(reviews[0]?.assigneeAdapterOverrides).toBeNull();
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
@@ -503,6 +503,28 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("skips a long-active candidate while its assignee is paused and reviews it once unpaused", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, seeded.coderId));
+    const service = productivityReviewService(db);
+
+    const pausedResult = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(pausedResult.created).toBe(0);
+    expect(pausedResult.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, seeded.coderId));
+    const unpausedResult = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(unpausedResult.created).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {

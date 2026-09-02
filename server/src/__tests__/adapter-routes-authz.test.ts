@@ -249,8 +249,8 @@ describe.sequential("adapter management route authorization", () => {
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
     const [routes, middleware, registry] = await Promise.all([
-      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/adapters.js"),
+      import("../middleware/index.js"),
       vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
     ]);
     adapterRoutes = routes.adapterRoutes;
@@ -340,4 +340,68 @@ describe.sequential("adapter management route authorization", () => {
       expect(mocks.reloadExternalAdapter).not.toHaveBeenCalled();
     },
   );
+
+  describe("cloud-managed adapter code install floor", () => {
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it.each(["install", "reinstall"] as const)(
+      "floors adapter %s off for instance admins on cloud-managed instances",
+      async (routeName) => {
+        resetInstalledExternalAdapterState();
+        if (routeName !== "install") {
+          seedInstalledExternalAdapter();
+        }
+        const app = createApp(instanceAdmin);
+
+        const res = await sendMutatingRequest(app, routeName);
+
+        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "adapter_install_platform_managed" });
+        expect(mocks.execFile).not.toHaveBeenCalled();
+        expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe("operator-hidden adapter management floor", () => {
+    beforeEach(() => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.adapters";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    });
+
+    it.each(["install", "disable", "override", "delete", "reload", "reinstall"] as const)(
+      "floors adapter %s for instance admins when the operator hides the Adapters surface",
+      async (routeName) => {
+        resetInstalledExternalAdapterState();
+        if (routeName !== "install") {
+          seedInstalledExternalAdapter();
+        }
+        const app = createApp(instanceAdmin);
+
+        const res = await sendMutatingRequest(app, routeName);
+
+        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+        expect(mocks.execFile).not.toHaveBeenCalled();
+        expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
+        expect(mocks.reloadExternalAdapter).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps adapter reads open while the surface is hidden", async () => {
+      seedInstalledExternalAdapter();
+      const app = createApp(boardMember("admin"));
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/adapters"));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+  });
 });

@@ -43,6 +43,7 @@ interface TestContext {
 }
 
 interface IssueRunLockState {
+  companyId: string;
   assigneeAgentId: string | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
@@ -57,11 +58,64 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
 }
 
 /** Invoke a heartbeat run for an agent, returning the run ID. */
-async function invokeHeartbeat(board: APIRequestContext, agentId: string): Promise<string> {
-  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`);
+async function invokeHeartbeat(
+  board: APIRequestContext,
+  agentId: string,
+  issueId: string,
+): Promise<string> {
+  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`, {
+    data: {
+      reason: "issue_assigned",
+      payload: { issueId, taskId: issueId, taskKey: issueId },
+    },
+  });
   expect(res.ok()).toBe(true);
   const run = await res.json();
-  return run.id;
+  if (typeof run.id === "string" && run.id.length > 0) return run.id;
+
+  // A stage transition can already be replacing the previous executor's run
+  // with the participant's queued run. If the legacy invoke is skipped and
+  // that run has already released the issue lock, recover it from the agent's
+  // recent run receipts.
+  const deadline = Date.now() + 3_000;
+  do {
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    if (issueRunLock.assigneeAgentId !== agentId) {
+      // Negative authorization cases intentionally invoke a non-participant.
+      // Preserve the server rejection instead of waiting for a run that must
+      // never be assigned to that agent.
+      return issueRunLock.executionRunId ?? issueRunLock.checkoutRunId ?? "";
+    }
+    const candidates = new Set<string>([
+      run.executionRunId,
+      issueRunLock.executionRunId,
+      issueRunLock.checkoutRunId,
+    ].filter((candidate): candidate is string => Boolean(candidate)));
+    const recentRunsRes = await board.get(
+      `${BASE_URL}/api/companies/${issueRunLock.companyId}/heartbeat-runs?agentId=${agentId}&limit=20`,
+    );
+    if (recentRunsRes.ok()) {
+      const recentRuns = await recentRunsRes.json();
+      for (const recentRun of Array.isArray(recentRuns) ? recentRuns : []) {
+        if (typeof recentRun.id === "string") candidates.add(recentRun.id);
+      }
+    }
+    for (const candidate of candidates) {
+      const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidate}`);
+      if (!runRes.ok()) continue;
+      const candidateRun = await runRes.json();
+      const context = candidateRun.contextSnapshot ?? {};
+      if (
+        candidateRun.agentId === agentId &&
+        (context.issueId === issueId || context.taskId === issueId)
+      ) {
+        return candidate;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+
+  throw new Error(`No issue-bound heartbeat run became available for agent ${agentId}`);
 }
 
 async function getIssueRunLockState(board: APIRequestContext, issueId: string): Promise<IssueRunLockState> {
@@ -69,6 +123,7 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   expect(res.ok()).toBe(true);
   const issue = await res.json();
   return {
+    companyId: issue.companyId,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     checkoutRunId: issue.checkoutRunId ?? null,
     executionRunId: issue.executionRunId ?? null,
@@ -81,33 +136,71 @@ async function retryAgentPatchWithCurrentLockOnConflict(
   issueId: string,
   failedRes: Awaited<ReturnType<APIRequestContext["patch"]>>,
   patchData: Record<string, unknown>,
+  fallbackRunId: string,
 ) {
   if (failedRes.status() !== 409) return failedRes;
-  const issueRunLock = await getIssueRunLockState(board, issueId);
-  if (issueRunLock.assigneeAgentId !== agent.agentId) return failedRes;
+  let res = failedRes;
+  for (let attempt = 0; attempt < 8 && res.status() === 409; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, 50 * 2 ** attempt)));
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    if (issueRunLock.assigneeAgentId !== agent.agentId) return res;
 
-  const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
-  if (!lockedRunId) return failedRes;
-
-  const retryRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": lockedRunId },
-    data: patchData,
-  });
-  return retryRes.ok() ? retryRes : failedRes;
+    const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? fallbackRunId;
+    res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": lockedRunId },
+      data: patchData,
+    });
+  }
+  return res;
 }
 
-/** PATCH an issue as an agent with a fresh heartbeat run ID. */
+/**
+ * PATCH an issue as an agent, using a freshly invoked heartbeat run.
+ *
+ * Invoking a heartbeat starts a background run that races this PATCH for the
+ * issue's run-lock: the background run may check the issue out (flipping it to
+ * `in_progress` under its own run id) a moment before — or after — this PATCH
+ * lands, and the server answers the loser with a 409 ("Issue is checked out by
+ * another agent"). With `retries: 0` / `workers: 1` a single transient 409
+ * fails the whole shard, so we retry a run-lock 409 under the issue's *current*
+ * lock, bounded by escalating backoff to cover the race window.
+ *
+ * The retry is intentionally narrow so the suite's negative paths keep failing
+ * for the right reason:
+ *   - It only re-PATCHes while the issue is still assigned to the acting agent,
+ *     so a non-participant's genuine 409/403 rejection is returned untouched.
+ *   - It re-PATCHes under the winning run id (or the invoked run id once the
+ *     background run has released its lock), so a real validation error such as
+ *     the missing-comment 400 surfaces instead of a masking transient 409.
+ */
 async function agentPatch(
   board: APIRequestContext,
   agent: AgentAuth,
   issueId: string,
   data: Record<string, unknown>,
+  {
+    maxAttempts = 8,
+    backoffMs = 50,
+    maxBackoffMs = 500,
+  }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
-  const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
-    data,
-  });
+  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  const patchWith = (patchRunId: string) =>
+    agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": patchRunId },
+      data,
+    });
+
+  let res = await patchWith(runId);
+  for (let attempt = 1; attempt < maxAttempts && res.status() === 409; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(maxBackoffMs, backoffMs * 2 ** (attempt - 1))));
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    // A 409 on an issue no longer assigned to us is a genuine rejection, not a
+    // run-lock race — leave it for the caller to assert on.
+    if (issueRunLock.assigneeAgentId !== agent.agentId) break;
+    const retryRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? runId;
+    res = await patchWith(retryRunId);
+  }
   return res;
 }
 
@@ -119,7 +212,7 @@ async function agentCheckoutAndPatch(
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
+  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
   const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,
@@ -133,7 +226,14 @@ async function agentCheckoutAndPatch(
   });
   if (!checkoutRes.ok()) {
     if (checkoutRes.status() === 409) {
-      const res = await retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, checkoutRes, patchData);
+      const res = await retryAgentPatchWithCurrentLockOnConflict(
+        board,
+        agent,
+        issueId,
+        checkoutRes,
+        patchData,
+        runId,
+      );
       if (res.ok()) {
         return res;
       }
@@ -157,7 +257,23 @@ async function agentCheckoutAndPatch(
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,
   });
-  return retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, res, patchData);
+  const retried = await retryAgentPatchWithCurrentLockOnConflict(
+    board,
+    agent,
+    issueId,
+    res,
+    patchData,
+    runId,
+  );
+  if (retried.status() !== 409) return retried;
+
+  // A no-op process adapter can replace and release the executor's lock faster
+  // than an agent-authored retry can adopt it. This flow already permits a
+  // board fallback when checkout loses that race; apply the same fallback when
+  // the post-checkout PATCH exhausts its bounded lock retries.
+  const issueRunLock = await getIssueRunLockState(board, issueId);
+  if (issueRunLock.assigneeAgentId !== agent.agentId) return retried;
+  return board.patch(`${BASE_URL}/api/issues/${issueId}`, { data: patchData });
 }
 
 async function setupCompany(boardRequest: APIRequestContext): Promise<TestContext> {

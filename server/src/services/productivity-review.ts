@@ -16,10 +16,7 @@ import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import {
-  recoveryAssigneeAdapterOverrides,
-  withRecoveryModelProfileHint,
-} from "./recovery/model-profile-hint.js";
+import { withRecoveryContext } from "./recovery/status-only-context.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
@@ -44,6 +41,12 @@ export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review e
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
+// Evidence only reads these run fields; selecting the full row detoasts
+// result_json/context_snapshot for up to MAX_RUNS_FOR_STREAK runs per issue.
+type ProductivityRunSample = Pick<
+  HeartbeatRunRow,
+  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson"
+>;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
 type ProductivityReviewThresholds = {
@@ -74,7 +77,7 @@ type ProductivityReviewEvidence = {
   commentCountLastHour: number;
   commentCountLastSixHours: number;
   elapsedMs: number | null;
-  latestRuns: HeartbeatRunRow[];
+  latestRuns: ProductivityRunSample[];
   latestComments: Array<typeof issueComments.$inferSelect>;
   costCents: number;
   usageSamples: Array<{ runId: string; usageJson: Record<string, unknown> | null }>;
@@ -447,7 +450,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
     const latestRuns = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        livenessState: heartbeatRuns.livenessState,
+        createdAt: heartbeatRuns.createdAt,
+        nextAction: heartbeatRuns.nextAction,
+        usageJson: heartbeatRuns.usageJson,
+      })
       .from(heartbeatRuns)
       .where(
         and(
@@ -757,7 +768,6 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
@@ -803,14 +813,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
-        payload: withRecoveryModelProfileHint({
+        payload: withRecoveryContext({
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
         }, "status_only"),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
-        contextSnapshot: withRecoveryModelProfileHint({
+        contextSnapshot: withRecoveryContext({
           issueId: review.id,
           taskId: review.id,
           wakeReason: "issue_assigned",
@@ -879,6 +889,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
       const sourceAgent = await getAgent(candidate.assigneeAgentId);
       if (!sourceAgent || sourceAgent.companyId !== candidate.companyId) {
+        result.skipped += 1;
+        continue;
+      }
+      // A paused assignee cannot act on a review, so raising one only creates noise.
+      if (sourceAgent.status === "paused") {
         result.skipped += 1;
         continue;
       }

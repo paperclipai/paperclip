@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "slug": "planetscale",
+  "name": "PlanetScale",
+  "description": "Connect PlanetScale's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/planetscale.svg",
+    "darkLogoUrl": "/brands/apps/planetscale-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.pscale.dev/*"
+  ],
+  "docsUrl": "https://planetscale.com/docs/connect/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.pscale.dev/mcp/planetscale"
+      },
+      "guidanceMd": "Connect PlanetScale in the browser. A PlanetScale account; database and branch access are chosen during authorization.",
+      "riskTier": "S4",
+      "label": "Database access",
+      "consoleLinks": {
+        "docs": "https://planetscale.com/docs/connect/mcp"
+      },
+      "warnings": [
+        "A PlanetScale account; database and branch access are chosen during authorization."
+      ],
+      "tenantFields": [
+        {
+          "key": "project",
+          "label": "Project or database",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional project or database name",
+          "helperMd": "Records the intended database boundary; final access is selected during PlanetScale authorization."
+        },
+        {
+          "key": "branch",
+          "label": "Branch",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional branch name",
+          "helperMd": "Records the intended branch boundary; final access is selected during PlanetScale authorization."
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "database",
+        "branch"
+      ]
+    },
+    {
+      "key": "mcp-insights-only",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use query insights and schema recommendations without query execution tools.",
+      "defaults": {
+        "serverUrl": "https://mcp.pscale.dev/mcp/planetscale-insights-only"
+      },
+      "guidanceMd": "Connect PlanetScale in the browser. A PlanetScale account; database and branch access are chosen during authorization.",
+      "riskTier": "S4",
+      "label": "Insights only",
+      "consoleLinks": {
+        "docs": "https://planetscale.com/docs/connect/mcp"
+      },
+      "warnings": [
+        "A PlanetScale account; database and branch access are chosen during authorization."
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "database",
+        "branch"
+      ]
+    }
+  ]
+}

@@ -109,4 +109,19 @@ describe("issuesApi.list", () => {
       },
     );
   });
+
+  it("posts stalled review decisions to the dedicated endpoint", async () => {
+    await issuesApi.decideStalledReview("issue-1", {
+      action: "request_changes",
+      note: "Please cover the race condition.",
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/stalled-review-decision",
+      {
+        action: "request_changes",
+        note: "Please cover the race condition.",
+      },
+    );
+  });
 });

@@ -132,7 +132,7 @@ export interface SecretPickerProps {
   disabled?: boolean;
   onSelect: (secretId: string) => void;
   /** Open the create-secret popover, seeded with the current query. */
-  onCreateNew: (query: string) => void;
+  onCreateNew?: (query: string) => void;
   triggerClassName?: string;
   /** SearchableSelect auto-opens on focus; suppress for programmatic control. */
   disablePortal?: boolean;
@@ -317,21 +317,23 @@ export function SecretPicker({
           </span>
         );
       }}
-      createItem={{
-        render: (query) => (
-          <span className="flex items-center gap-1.5 text-sm">
-            <Plus className="size-3.5 shrink-0" />
-            {query.trim() ? (
-              <span>
-                Create secret <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
+      createItem={onCreateNew
+        ? {
+            render: (query) => (
+              <span className="flex items-center gap-1.5 text-sm">
+                <Plus className="size-3.5 shrink-0" />
+                {query.trim() ? (
+                  <span>
+                    Create secret <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
+                  </span>
+                ) : (
+                  <span>Create new secret…</span>
+                )}
               </span>
-            ) : (
-              <span>Create new secret…</span>
-            )}
-          </span>
-        ),
-        onSelect: (query) => onCreateNew(query),
-      }}
+            ),
+            onSelect: (query) => onCreateNew(query),
+          }
+        : undefined}
     />
   );
 }

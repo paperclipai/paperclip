@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
+import { instanceSettingsApi } from "../../api/instanceSettings";
 import { queryKeys } from "../../lib/queryKeys";
 import { resolveSkillSummaryText } from "../../lib/company-skill-summary";
 import { adapterLabels } from "../../components/agent-config-primitives";
 import { cn } from "../../lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -23,14 +25,46 @@ import {
 import { AgentSkillRow, type AgentSkillRowData } from "./AgentSkillRow";
 import { filterAgentSkills } from "./agent-skill-filter";
 import { buildAgentSkillSourceMeta } from "./agent-skill-source";
+import { AgentSkillReleasePicker, releaseShortLabel } from "./AgentSkillReleasePicker";
 
 const MATERIALIZATION_NOTE =
   "Enabled skills are materialized into the stable Paperclip-managed prompt bundle on the agent's next run.";
+
+/** Company skill key of the Paperclip core skill that carries beta releases. */
+const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/paperclip";
+
+/** Build the desired-skill sync payload, carrying any active version pins. */
+export function toDesiredSkillPayload(
+  keys: string[],
+  pins: Record<string, string>,
+  versionPinsEnabled = true,
+): Array<string | AgentDesiredSkillEntry> {
+  return keys.map((key) => (
+    versionPinsEnabled && pins[key] ? { key, versionId: pins[key]! } : key
+  ));
+}
+
+/** Extract the skill key from either payload shape (string or entry). */
+function desiredSkillKey(entry: string | AgentDesiredSkillEntry): string {
+  return typeof entry === "string" ? entry : entry.key;
+}
+
+/** Reduce desired entries to a key → versionId map for non-default pins only. */
+function pinsFromEntries(entries: AgentDesiredSkillEntry[] | undefined): Record<string, string> {
+  const pins: Record<string, string> = {};
+  for (const entry of entries ?? []) {
+    if (entry.versionId) pins[entry.key] = entry.versionId;
+  }
+  return pins;
+}
 
 export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
   const queryClient = useQueryClient();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  // key → pinned versionId; absence means the live default (no pin).
+  const [versionPins, setVersionPins] = useState<Record<string, string>>({});
+  const versionPinsRef = useRef<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [detectedOpen, setDetectedOpen] = useState(false);
   const lastSavedSkillsRef = useRef<string[]>([]);
@@ -52,21 +86,49 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     enabled: Boolean(companyId),
   });
 
+  // Beta skills experimental flag — gates the per-agent release picker entirely.
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const betaSkillsEnabled = experimentalSettings?.enableBetaSkills === true;
+
+  const paperclipCoreSkill = useMemo(
+    () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
+    [companySkills],
+  );
+
+  // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
+  // fetched when the flag is on and the skill is present in the library.
+  const { data: paperclipVersions } = useQuery({
+    queryKey: queryKeys.companySkills.versions(companyId ?? "", paperclipCoreSkill?.id ?? ""),
+    queryFn: () => companySkillsApi.versions(companyId!, paperclipCoreSkill!.id),
+    enabled: Boolean(companyId && betaSkillsEnabled && paperclipCoreSkill?.id),
+  });
+  const paperclipReleases = useMemo(
+    () => (paperclipVersions ?? []).filter((version) => version.releaseId != null),
+    [paperclipVersions],
+  );
+
   const syncSkills = useMutation({
-    mutationFn: (desiredSkills: string[]) => agentsApi.syncSkills(agent.id, desiredSkills, companyId),
+    mutationFn: (desiredSkills: Array<string | AgentDesiredSkillEntry>) =>
+      agentsApi.syncSkills(agent.id, desiredSkills, "replace", companyId),
     onSuccess: async (snapshot) => {
       queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
       lastSavedSkillsRef.current = snapshot.desiredSkills;
       setLastSavedSkills(snapshot.desiredSkills);
+      const nextPins = pinsFromEntries(snapshot.desiredSkillEntries);
+      versionPinsRef.current = nextPins;
+      setVersionPins(nextPins);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
       ]);
     },
     onError: (_error, attemptedDesiredSkills) => {
-      // Remember the payload that failed so the autosave effect stops retrying
-      // it until the user edits the draft again.
-      failedSkillDraftRef.current = attemptedDesiredSkills;
+      // Remember the (keyed) payload that failed so the autosave effect stops
+      // retrying it until the user edits the draft again.
+      failedSkillDraftRef.current = attemptedDesiredSkills.map(desiredSkillKey);
     },
   });
 
@@ -74,10 +136,21 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     setSkillDraft([]);
     setLastSavedSkills([]);
     lastSavedSkillsRef.current = [];
+    setVersionPins({});
+    versionPinsRef.current = {};
     hasHydratedSkillSnapshotRef.current = false;
     skipNextSkillAutosaveRef.current = true;
     failedSkillDraftRef.current = null;
   }, [agent.id]);
+
+  // Hydrate version pins from the persisted snapshot. Skipped while a save is in
+  // flight so an optimistic pin selection isn't reverted by stale query data.
+  useEffect(() => {
+    if (!skillSnapshot || syncSkills.isPending) return;
+    const nextPins = pinsFromEntries(skillSnapshot.desiredSkillEntries);
+    versionPinsRef.current = nextPins;
+    setVersionPins(nextPins);
+  }, [skillSnapshot, syncSkills.isPending]);
 
   useEffect(() => {
     if (!skillSnapshot) return;
@@ -121,12 +194,23 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           failedDraft: failedSkillDraftRef.current,
         })
       ) {
-        syncSkills.mutate(skillDraft);
+        syncSkills.mutate(toDesiredSkillPayload(
+          skillDraft,
+          versionPinsRef.current,
+          betaSkillsEnabled,
+        ));
       }
     }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.isError, syncSkills.mutate]);
+  }, [
+    betaSkillsEnabled,
+    skillDraft,
+    skillSnapshot,
+    syncSkills.isPending,
+    syncSkills.isError,
+    syncSkills.mutate,
+  ]);
 
   const companySkillByKey = useMemo(
     () => new Map((companySkills ?? []).map((skill) => [skill.key, skill])),
@@ -245,17 +329,68 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     );
   };
 
-  const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => (
-    <AgentSkillRow
-      key={row.key}
-      variant={variant}
-      data={row}
-      checked={variant === "enabled"}
-      disabled={unsupported}
-      disabledReason={unsupportedMessage}
-      onCheckedChange={(next) => toggleSkill(row.key, next)}
-    />
-  );
+  // Explicit release selection saves immediately (no autosave debounce), carrying
+  // the current draft so an in-flight toggle isn't dropped.
+  const handleReleaseChange = (key: string, versionId: string | null) => {
+    const nextPins = { ...versionPinsRef.current };
+    if (versionId) nextPins[key] = versionId;
+    else delete nextPins[key];
+    versionPinsRef.current = nextPins;
+    setVersionPins(nextPins);
+    syncSkills.mutate(toDesiredSkillPayload(skillDraft, nextPins));
+  };
+
+  // The release picker only applies to the enabled paperclip core skill while the
+  // beta-skills flag is on and seeded releases exist.
+  const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
+
+  const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    // Historical assignments stay interactive so the user can remove them.
+    // The server rejects new assignments and omits stale ones from native
+    // runtime context, so disabling an enabled row would only trap stale data.
+    const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
+      && variant === "available"
+      && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const rowDisabled = unsupported || legacyPaperclipBlocked;
+    const rowDisabledReason = legacyPaperclipBlocked
+      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      : unsupportedMessage;
+    const showReleasePicker =
+      releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const pinnedVersionId = versionPins[row.key] ?? null;
+    const pinnedRelease = pinnedVersionId
+      ? paperclipReleases.find((release) => release.id === pinnedVersionId) ?? null
+      : null;
+
+    return (
+      <AgentSkillRow
+        key={row.key}
+        variant={variant}
+        data={row}
+        checked={variant === "enabled"}
+        disabled={rowDisabled}
+        disabledReason={rowDisabledReason}
+        onCheckedChange={(next) => toggleSkill(row.key, next)}
+        badge={
+          showReleasePicker && pinnedRelease ? (
+            <Badge variant="secondary" className="text-(length:--text-nano)">
+              Beta · {releaseShortLabel(pinnedRelease)}
+            </Badge>
+          ) : undefined
+        }
+        accessory={
+          showReleasePicker ? (
+            <AgentSkillReleasePicker
+              releases={paperclipReleases}
+              value={pinnedVersionId}
+              disabled={rowDisabled || syncSkills.isPending}
+              onChange={(versionId) => handleReleaseChange(row.key, versionId)}
+            />
+          ) : undefined
+        }
+      />
+    );
+  };
 
   const libraryEmpty = libraryRows.length === 0;
 
@@ -327,7 +462,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               className="flex items-center justify-between gap-3 border-b border-amber-300/40 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 last:border-b-0 dark:border-amber-500/20 dark:bg-amber-950/20 dark:text-amber-200"
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium">{key}</span> is enabled but missing from the company library.
+                <span className="font-medium">{key}</span> is enabled but missing from the organization library.
               </span>
               <button
                 type="button"
@@ -366,7 +501,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                 {search
                   ? "No available skills match your search."
                   : libraryEmpty
-                    ? "Import skills into the company library to enable them here."
+                    ? "Import skills into the organization library to enable them here."
                     : "Every library skill is enabled on this agent."}
               </SectionEmpty>
             )}
@@ -479,9 +614,9 @@ function EmptyLibraryCard() {
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center">
       <Store className="h-8 w-8 text-muted-foreground/60" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No skills in the company library</p>
+        <p className="text-sm font-medium text-foreground">No skills in the organization library</p>
         <p className="text-xs text-muted-foreground">
-          Install skills to the company, then enable them on this agent.
+          Install skills to the organization, then enable them on this agent.
         </p>
       </div>
       <Button asChild variant="outline" size="sm">

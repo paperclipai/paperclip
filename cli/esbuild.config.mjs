@@ -6,6 +6,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledCliNpmDependencies } from "../scripts/cli-bundled-npm-dependencies.mjs";
@@ -53,12 +54,23 @@ for (const name of externalWorkspacePackages) {
   externals.add(name);
 }
 
+if (bundledCliNpmDependencies.has("embedded-postgres")) {
+  const requireFromDb = createRequire(resolve(repoRoot, "packages/db/package.json"));
+  const embeddedPostgresRoot = dirname(requireFromDb.resolve("embedded-postgres"));
+  const embeddedPostgresPackage = JSON.parse(
+    readFileSync(resolve(embeddedPostgresRoot, "..", "package.json"), "utf8"),
+  );
+  for (const name of Object.keys(embeddedPostgresPackage.optionalDependencies ?? {})) {
+    externals.add(name);
+  }
+}
+
 /** @type {import('esbuild').BuildOptions} */
 export default {
   entryPoints: ["src/index.ts"],
   bundle: true,
   platform: "node",
-  target: "node20",
+  target: "node24",
   format: "esm",
   outfile: "dist/index.js",
   banner: { js: "#!/usr/bin/env node" },

@@ -24,6 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -110,6 +111,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
 
   afterEach(async () => {
     capturedRuns.length = 0;
+    await instanceSettingsService(db).updateExperimental({ enableBetaSkills: false });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -228,6 +230,9 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       },
     ]);
 
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableBetaSkills: true });
+
     const heartbeat = heartbeatService(db);
     const firstRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
     expect(firstRun).not.toBeNull();
@@ -276,6 +281,49 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       sourceStatus: "available",
     });
     expect((await fs.stat(firstSkillFile)).mtime.toISOString()).toBe(oldMtime.toISOString());
+
+    await settings.updateExperimental({ enableBetaSkills: false });
+    const defaultRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    expect(defaultRun).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, defaultRun!.id))?.status).toBe("succeeded");
+    const defaultSkill = capturedRuns
+      .filter((run) => run.agentId === firstAgentId)
+      .at(-1)
+      ?.skills.find((entry) => entry.key === skillKey);
+    expect(defaultSkill).toMatchObject({
+      key: skillKey,
+      versionId: null,
+      currentVersionId: versionTwo.id,
+      sourceStatus: "available",
+    });
+    await expect(fs.readFile(path.join(defaultSkill!.source, "SKILL.md"), "utf8"))
+      .resolves.toContain("Version two.");
+    const storedPreference = await db
+      .select({ adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, firstAgentId))
+      .then((rows) => rows[0]?.adapterConfig);
+    expect(storedPreference).toMatchObject({
+      paperclipSkillSync: {
+        desiredSkills: [{ key: skillKey, versionId: versionOne.id }],
+      },
+    });
+
+    await settings.updateExperimental({ enableBetaSkills: true });
+    const restoredRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    expect(restoredRun).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, restoredRun!.id))?.status).toBe("succeeded");
+    const restoredSkill = capturedRuns
+      .filter((run) => run.agentId === firstAgentId)
+      .at(-1)
+      ?.skills.find((entry) => entry.key === skillKey);
+    expect(restoredSkill).toMatchObject({
+      versionId: versionOne.id,
+      currentVersionId: versionTwo.id,
+      sourceStatus: "available",
+    });
+    await expect(fs.readFile(path.join(restoredSkill!.source, "SKILL.md"), "utf8"))
+      .resolves.toContain("Version one.");
   });
 
   it("delivers installed connections without exposing gateway bearers in adapter config or logs", async () => {
@@ -363,12 +411,20 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     const captured = capturedRuns.find((entry) => entry.agentId === agentId);
     expect(captured?.mcpServers).toHaveLength(1);
     expect(captured?.mcpServers[0]).toMatchObject({
-      connectionId: installed!.id,
-      name: installed!.name,
+      connectionId: expect.stringMatching(/^assignment:[a-f0-9]{64}$/),
+      name: "paperclip-assigned",
       token: expect.stringMatching(/^pcgw_/),
-      url: expect.stringContaining("/api/tool-gateway/gateways/"),
+      url: expect.stringMatching(/\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
     });
-    expect(captured?.mcpServers.some((server) => server.connectionId === uninstalled!.id)).toBe(false);
+    const runtimeProfiles = await db.select().from(toolProfiles);
+    const runtimeProfile = runtimeProfiles.find((entry) =>
+      entry.profileKey.startsWith(`native:${agentId}:`)
+    );
+    expect(runtimeProfile).toBeDefined();
+    const runtimeEntries = await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, runtimeProfile!.id));
+    expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([installed!.id]);
+    expect(JSON.stringify(captured?.mcpServers)).not.toContain(uninstalled!.id);
     const bearer = captured?.mcpServers[0]?.token;
     expect(bearer).toMatch(/^pcgw_/);
     if (!bearer) throw new Error("Expected runtime MCP bearer");

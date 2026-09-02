@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import {
@@ -184,6 +184,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -265,6 +266,73 @@ function createJoinRequest(
   };
 }
 
+function createApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "approval-1",
+    companyId: "company-1",
+    type: "hire_agent",
+    requestedByAgentId: null,
+    requestedByUserId: "local-board",
+    status: "pending",
+    payload: { name: "New teammate" },
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  return {
+    id: "run-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    responsibleUserId: null,
+    invocationSource: "assignment",
+    triggerDetail: null,
+    status: "failed",
+    error: "boom",
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processGroupId: null,
+    processStartedAt: null,
+    lastOutputAt: null,
+    lastOutputSeq: 0,
+    lastOutputStream: null,
+    lastOutputBytes: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
+    contextSnapshot: null,
+    startedAt: new Date("2026-03-11T00:00:00.000Z"),
+    finishedAt: new Date("2026-03-11T00:01:00.000Z"),
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:01:00.000Z"),
+    ...overrides,
+  };
+}
+
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
@@ -342,6 +410,123 @@ describe("Inbox toolbar", () => {
     expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
 
     act(() => root.unmount());
+  });
+
+  it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.approvalsList.mockResolvedValue([createApproval()]);
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Hire Agent: New teammate");
+      expect(container.textContent).toContain("Failed run");
+      expect(container.textContent).toContain("Jordan Example");
+    });
+
+    const rowFor = (text: string) =>
+      [...container.querySelectorAll("[data-inbox-item]")]
+        .find((row) => row.textContent?.includes(text));
+
+    for (const text of ["Hire Agent: New teammate", "Failed run", "Jordan Example"]) {
+      const row = rowFor(text);
+      expect(row, `missing inbox row for ${text}`).toBeDefined();
+      expect(row?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+      const archiveButton = row?.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      expect(archiveButton?.className).toContain("opacity-0");
+      expect(archiveButton?.className).toContain("group-hover:opacity-100");
+      expect(row?.querySelector("[data-inbox-row-surface]")).not.toBeNull();
+    }
+
+    act(() => root.unmount());
+  });
+
+  it("restores folded and unfolded sub-tasks across remounts", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const storageKey = "paperclip:inbox:collapsed-parents:company-1";
+    localStorage.removeItem(storageKey);
+
+    const parent = createIssue({
+      id: "parent-issue",
+      identifier: "PAP-1001",
+      title: "Parent inbox task",
+    });
+    const child = createIssue({
+      id: "child-issue",
+      identifier: "PAP-1002",
+      parentId: parent.id,
+      title: "Nested inbox task",
+    });
+    apiMocks.issuesList.mockResolvedValue([parent, child]);
+
+    const mountInbox = async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(parent.title);
+      });
+      return root;
+    };
+    const parentToggle = () => {
+      const parentRow = Array.from(container.querySelectorAll("[data-inbox-item]"))
+        .find((row) => row.textContent?.includes(parent.title));
+      return parentRow?.querySelector<HTMLButtonElement>('button[data-slot="icon-button"]') ?? null;
+    };
+
+    let root = await mountInbox();
+    try {
+      expect(container.textContent).toContain(child.title);
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain(child.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([parent.id]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).not.toContain(child.title);
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(child.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).toContain(child.title);
+    } finally {
+      localStorage.removeItem(storageKey);
+      act(() => root.unmount());
+    }
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {
@@ -465,12 +650,14 @@ describe("Inbox toolbar", () => {
 
     const rows = container.querySelectorAll("[data-inbox-item]");
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
+    // The hover wash lives on the IssueRow root band (the overlay link's
+    // parent), not the overlay link itself.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
 
     // Nothing selected before hover — both rows show the hover-accent class.
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
     // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
     // state-selected band (which would swap to hover:bg-transparent). Coupling
@@ -482,9 +669,9 @@ describe("Inbox toolbar", () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
 
     act(() => {
       root.unmount();
@@ -528,16 +715,15 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const linkOf = (row: Element) => row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]");
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
     // The empty spacer that reserves the chevron column on every leaf row.
     // Excludes the tree-guide span (`.self-stretch`), which only renders on
     // nested rows.
     const hasLeadingSpacer = (row: Element) =>
-      !!linkOf(row)?.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
+      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
     // The reserved leading dot slot, present on read AND unread rows.
     const dotSlot = (row: Element) =>
-      linkOf(row)?.querySelector('[data-testid="issue-row-unread-slot"]') ?? null;
+      row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
@@ -579,12 +765,13 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
-    // The keyboard-selected row swaps to `hover:bg-transparent`; find its index.
+    // The keyboard-selected row swaps to `hover:bg-transparent` on its root
+    // band (the overlay link's parent, where the wash now lives); find its index.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
     const selectedRowIndex = () =>
       [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
-        linkOf(row)?.className.includes("hover:bg-transparent"),
+        bandOf(row)?.className.includes("hover:bg-transparent"),
       );
 
     try {
@@ -626,6 +813,107 @@ describe("Inbox toolbar", () => {
       expect(selectedRowIndex()).toBe(2);
     } finally {
       generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-3001",
+      title: "Pin row A",
+      lastActivityAt: new Date(base + 3000),
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-3002",
+      title: "Pin row B",
+      lastActivityAt: new Date(base + 2000),
+    });
+    const issueC = createIssue({
+      id: "issue-c",
+      identifier: "PAP-3003",
+      title: "Pin row C",
+      lastActivityAt: new Date(base + 1000),
+    });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Collapse each displayed row to its A/B/C identity so we can assert order.
+    const orderOf = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].flatMap((row) => {
+        const text = row.textContent ?? "";
+        if (text.includes("Pin row A")) return ["A"];
+        if (text.includes("Pin row B")) return ["B"];
+        if (text.includes("Pin row C")) return ["C"];
+        return [];
+      });
+
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    const setVisibility = (state: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    };
+    let nowValue = base + 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => nowValue);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // A poll makes row C the most-recently-active: the fresh sort is now [C, A, B].
+      apiMocks.issuesList.mockResolvedValue([
+        { ...issueA },
+        { ...issueB },
+        { ...issueC, lastActivityAt: new Date(base + 9000) },
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Pin row C");
+      });
+
+      // No attention boundary has fired, so the displayed order is held, not reshuffled.
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // The tab is hidden long enough to lose attention, then regains focus: that
+      // visibility boundary is a commit point, so the inbox adopts the fresh order.
+      await act(async () => {
+        setVisibility("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      nowValue += 31_000;
+      await act(async () => {
+        setVisibility("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await vi.waitFor(() => {
+        expect(orderOf()).toEqual(["C", "A", "B"]);
+      });
+    } finally {
+      nowSpy.mockRestore();
+      if (visibilityDescriptor) {
+        Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      } else {
+        setVisibility("visible");
+      }
       act(() => {
         root.unmount();
       });
@@ -812,51 +1100,7 @@ describe("FailedRunInboxRow", () => {
 
   it("suppresses accent hover styling when selected", () => {
     const root = createRoot(container);
-    const run = {
-      id: "run-1",
-      companyId: "company-1",
-      agentId: "agent-1",
-      responsibleUserId: null,
-      invocationSource: "assignment",
-      triggerDetail: null,
-      status: "failed",
-      error: "boom",
-      wakeupRequestId: null,
-      exitCode: null,
-      signal: null,
-      usageJson: null,
-      resultJson: null,
-      sessionIdBefore: null,
-      sessionIdAfter: null,
-      logStore: null,
-      logRef: null,
-      logBytes: null,
-      logSha256: null,
-      logCompressed: false,
-      lastOutputAt: null,
-      lastOutputSeq: 0,
-      lastOutputStream: null,
-      lastOutputBytes: null,
-      errorCode: null,
-      externalRunId: null,
-      processPid: null,
-      processGroupId: null,
-      processStartedAt: null,
-      retryOfRunId: null,
-      processLossRetryCount: 0,
-      livenessState: null,
-      livenessReason: null,
-      continuationAttempt: 0,
-      lastUsefulActionAt: null,
-      nextAction: null,
-      stdoutExcerpt: null,
-      stderrExcerpt: null,
-      contextSnapshot: null,
-      startedAt: new Date("2026-03-11T00:00:00.000Z"),
-      finishedAt: null,
-      createdAt: new Date("2026-03-11T00:00:00.000Z"),
-      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
-    } as const;
+    const run = createFailedRun();
 
     act(() => {
       root.render(

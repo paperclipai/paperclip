@@ -1,8 +1,21 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      {
+        find: /^@paperclipai\/paperclip-runner$/,
+        replacement: fileURLToPath(
+          new URL("../packages/paperclip-runner/src/index.ts", import.meta.url),
+        ),
+      },
+    ],
+  },
   test: {
     environment: "node",
+    include: ["src/**/*.test.ts"],
     // Each server suite boots + tears down its own embedded Postgres in
     // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) the
     // graceful shutdown can occasionally cross vitest's default 10s hookTimeout,
@@ -12,6 +25,15 @@ export default defineConfig({
     // mirrors it for the same reason.
     hookTimeout: 30000,
     teardownTimeout: 30000,
+    // The route/authz suites import very large modules (for example
+    // src/routes/issues.ts and its dependency graph). The first test in each
+    // file pays the one-time transform cost inside its own timeout budget. On
+    // the loaded serial shard (maxWorkers=1) that cost can cross vitest's
+    // default 5s testTimeout and fail the first test, which also lets its
+    // fire-and-forget wake leak into the next test. Give each test generous
+    // headroom; 15s is far above the observed module-load cost yet still
+    // catches a genuinely hung test well inside the 20 minute job limit.
+    testTimeout: 15000,
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,

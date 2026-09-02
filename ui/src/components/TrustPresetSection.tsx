@@ -185,7 +185,7 @@ export function TrustPresetSection({
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs text-muted-foreground">
-                      CE saves one containment boundary at a time. Saved policies include this company id.
+                      CE saves one containment boundary at a time. Saved policies include this organization id.
                     </p>
                     {boundaryTarget ? (
                       <Button

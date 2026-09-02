@@ -143,6 +143,25 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes the selected run detail after lifecycle events", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatQueries(
+      queryClient as never,
+      "company-1",
+      { runId: "run-1", agentId: "agent-1" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.runDetail("run-1"),
+    });
+  });
+
   it("applies heartbeat progress payloads directly to cached visible issue runs", () => {
     const cache = new Map<string, unknown>([
       [JSON.stringify(queryKeys.liveRuns("company-1")), [{ id: "run-1", currentStatusMessage: null }]],
@@ -650,6 +669,58 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("actively refreshes interactions materialized by a visible native status decision", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+          return {
+            id: "issue-1",
+            identifier: "PAP-759",
+            assigneeAgentId: "agent-1",
+          };
+        }
+        return undefined;
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.updated",
+        actorType: "system",
+        actorId: "native-status-committer",
+        details: {
+          identifier: "PAP-759",
+          source: "native_status_decision",
+          toStatus: "in_review",
+          reasonCode: "external_verification_required",
+          effectCount: 2,
+        },
+      },
+      { userId: null, agentId: null },
+      { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.interactions("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.interactions("issue-1"),
+      refetchType: "inactive",
+    });
+  });
+
   it("keeps visible issue comment updates inactive-only instead of active refetching", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
@@ -1088,8 +1159,10 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
 
 describe("applyRunLifecycleToCompanyLiveRuns", () => {
   function makeClient(initial: Array<{ id: string; status: string }>) {
+    const initialDetail = initial.find((run) => run.id === "run-1");
     const cache = new Map<string, unknown>([
       [JSON.stringify(queryKeys.liveRuns("company-1")), initial],
+      [JSON.stringify(queryKeys.runDetail("run-1")), initialDetail],
     ]);
     const client = {
       getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
@@ -1100,18 +1173,31 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
       },
     };
     const read = () => cache.get(JSON.stringify(queryKeys.liveRuns("company-1")));
-    return { client, read };
+    const readDetail = () => cache.get(JSON.stringify(queryKeys.runDetail("run-1")));
+    return { client, read, readDetail };
   }
 
   it("removes a run on a terminal status (patched, no refetch needed)", () => {
-    const { client, read } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
+    const { client, read, readDetail } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
     const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
       client as never,
       "company-1",
-      { runId: "run-1", status: "succeeded" },
+      {
+        runId: "run-1",
+        status: "succeeded",
+        finishedAt: "2026-07-24T10:00:00.000Z",
+        error: null,
+        errorCode: null,
+      },
     );
     expect(patched).toBe(true);
     expect(read()).toEqual([{ id: "run-2", status: "running" }]);
+    expect(readDetail()).toEqual(expect.objectContaining({
+      status: "succeeded",
+      finishedAt: "2026-07-24T10:00:00.000Z",
+      error: null,
+      errorCode: null,
+    }));
   });
 
   it("patches status in place for a run already in the list", () => {
@@ -1123,6 +1209,30 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
     );
     expect(patched).toBe(true);
     expect(read()).toEqual([{ id: "run-1", status: "running" }]);
+  });
+
+  it("patches the selected run detail when a queued run starts", () => {
+    const { client, readDetail } = makeClient([{ id: "run-1", status: "queued" }]);
+
+    __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      {
+        runId: "run-1",
+        status: "running",
+        startedAt: "2026-07-24T09:59:00.000Z",
+        error: null,
+        errorCode: null,
+      },
+    );
+
+    expect(readDetail()).toEqual(expect.objectContaining({
+      id: "run-1",
+      status: "running",
+      startedAt: "2026-07-24T09:59:00.000Z",
+      error: null,
+      errorCode: null,
+    }));
   });
 
   it("reports not-patched for a genuinely new run so the caller refetches", () => {

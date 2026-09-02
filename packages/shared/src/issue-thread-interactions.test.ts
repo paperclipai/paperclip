@@ -1,14 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
+  legacyIssueThreadInteractionResolverPolicyAlias,
+  normalizeIssueThreadInteractionResolverPolicy,
+} from "./constants.js";
+import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  paperclipQuestionSetPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestItemVerdictsResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("defines canonical resolver policies and normalizes compatibility aliases", () => {
+    expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
+      "anyone",
+      "not_creator",
+      "human_only",
+    ]);
+    expect(ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES).toEqual([
+      "board_or_agents",
+      "board_only",
+    ]);
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_or_agents")).toBe("anyone");
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_only")).toBe("human_only");
+    expect(normalizeIssueThreadInteractionResolverPolicy("not_creator")).toBe("not_creator");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("anyone")).toBe("board_or_agents");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("not_creator")).toBeNull();
+  });
+
+  it.each(["anyone", "not_creator", "human_only", "board_or_agents", "board_only"] as const)(
+    "accepts resolver policy input %s",
+    (resolverPolicy) => {
+      const parsed = createIssueThreadInteractionSchema.parse({
+        kind: "request_confirmation",
+        resolverPolicy,
+        payload: { version: 1, prompt: "Proceed?" },
+      });
+      expect(parsed.resolverPolicy).toBe(resolverPolicy);
+    },
+  );
+
   it("parses request_confirmation payloads with default no-wake continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
@@ -82,6 +119,40 @@ describe("issue thread interaction schemas", () => {
     expect(result.toolAction).toMatchObject({ version: 1, status: "executed" });
     expect(requestConfirmationPayloadSchema.parse({ version: 1, prompt: "Legacy confirmation?" }).toolAction)
       .toBeUndefined();
+  });
+
+  it("parses superseded confirmation results with a replacement pointer", () => {
+    const result = requestConfirmationResultSchema.parse({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(result).toEqual({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("accepts run-attributed agent item verdict results and rejects missing runs", () => {
+    const result = {
+      version: 1,
+      outcome: "resolved",
+      complete: true,
+      items: [{
+        id: "api",
+        verdict: "approve",
+        resolvedByAgentId: "11111111-1111-4111-8111-111111111111",
+        resolvedByRunId: "22222222-2222-4222-8222-222222222222",
+        resolvedAt: "2026-08-14T12:00:00.000Z",
+      }],
+    };
+    expect(requestItemVerdictsResultSchema.parse(result)).toMatchObject(result);
+    expect(() => requestItemVerdictsResultSchema.parse({
+      ...result,
+      items: [{ ...result.items[0], resolvedByRunId: undefined }],
+    })).toThrow("resolvedByRunId is required for an agent resolver");
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {
@@ -186,6 +257,44 @@ describe("issue thread interaction schemas", () => {
       expirationReason: "superseded_by_comment",
       commentId: "11111111-1111-4111-8111-111111111111",
     });
+  });
+
+  it("retains canonical runner question sets without narrowing their public bounds", () => {
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      title: "Runner input",
+      questions: [{
+        id: "deployment-color",
+        prompt: "Which deployment color should the runner use?",
+        required: true,
+        answerMode: "single_select" as const,
+        options: [{ id: "blue", label: "Blue" }],
+      }],
+    };
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "deployment-color",
+          prompt: "Which deployment color should the runner use?",
+          selectionMode: "single",
+          allowOther: false,
+          options: [{ id: "blue", label: "Blue" }],
+        }],
+        questionSet,
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+
+    expect(() => paperclipQuestionSetPayloadSchema.parse({
+      ...questionSet,
+      questions: [{ ...questionSet.questions[0], answerMode: "text", options: questionSet.questions[0].options }],
+    })).toThrow("text questions cannot define options");
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {

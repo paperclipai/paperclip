@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
 import {
@@ -23,6 +24,13 @@ function isRedactedSkillPolicyDenial(details: Record<string, unknown> | null) {
   return details?.code === "skill_policy_denied";
 }
 
+function readZodIssues(err: unknown): unknown[] | null {
+  if (err instanceof ZodError) return err.issues;
+  if (!err || typeof err !== "object" || (err as { name?: unknown }).name !== "ZodError") return null;
+  const issues = (err as { issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -40,6 +48,13 @@ function attachErrorContext(
   if (rawError) {
     (res as any).err = rawError;
   }
+}
+
+/** Report a server-side crash to every error sink. */
+function reportCrash(error: Error): void {
+  const tc = getTelemetryClient();
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
+  captureException(error);
 }
 
 function getPaperclipDb(req: Request): Db | null {
@@ -83,13 +98,18 @@ export function errorHandler(
       ? err.details as Record<string, unknown>
       : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
+    const workspaceRepairPreconditionFailure = details?.code === "workspace_repair_precondition_failed";
     const structuredConnectionError = new Set([
       "user_authorization_required",
+      "organization_authorization_required",
+      "grant_audience_denied",
       "grant_revoked",
       "needs_reauthorization",
       "installation_required",
       "connection_not_installed",
       "subject_not_permitted",
+      "standing_delegation_required",
+      "grant_owner_membership_inactive",
     ]).has(typeof details?.code === "string" ? details.code : "");
     recordResponsibleUserDenialFromHttpError(req, details);
     if (err.status >= 500) {
@@ -99,26 +119,32 @@ export function errorHandler(
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
         err,
       );
-      const tc = getTelemetryClient();
-      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
+      reportCrash(err);
     }
     res.status(err.status).json({
       error: err.message,
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
+      ...(workspaceRepairPreconditionFailure && typeof details?.reason === "string" ? { reason: details.reason } : {}),
+      ...(workspaceRepairPreconditionFailure && typeof details?.repairPhase === "string"
+        ? { repairPhase: details.repairPhase }
+        : {}),
       ...(typeof details?.remediation === "string" || (structuredConnectionError && details?.remediation && typeof details.remediation === "object")
         ? { remediation: details.remediation }
         : {}),
       ...(structuredConnectionError && details?.connection ? { connection: details.connection } : {}),
       ...(structuredConnectionError && details?.subject ? { subject: details.subject } : {}),
       ...(structuredConnectionError && typeof details?.grantId === "string" ? { grantId: details.grantId } : {}),
-      ...(!redactedSkillPolicyDenial && err.details ? { details: err.details } : {}),
+      ...(!redactedSkillPolicyDenial && !workspaceRepairPreconditionFailure && err.details
+        ? { details: err.details }
+        : {}),
     });
     return;
   }
 
-  if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+  const zodIssues = readZodIssues(err);
+  if (zodIssues) {
+    res.status(400).json({ error: "Validation error", details: zodIssues });
     return;
   }
 
@@ -132,8 +158,7 @@ export function errorHandler(
     rootError,
   );
 
-  const tc = getTelemetryClient();
-  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
+  reportCrash(rootError);
 
   res.status(500).json({
     error: "Internal server error",

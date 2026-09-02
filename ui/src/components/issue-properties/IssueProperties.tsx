@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { createPortal } from "react-dom";
+import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
-import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
+import {
+  deriveOriginatingActor,
+  isArtifactReviewDocumentKey,
+  type Issue,
+  type IssueLabel,
+} from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
@@ -10,8 +18,12 @@ import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
+import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
+import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
@@ -40,6 +52,7 @@ import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
 import { PriorityIcon } from "../PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
@@ -52,6 +65,9 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
+import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
 import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
@@ -82,6 +98,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
 import { Badge } from "@/components/ui/badge";
@@ -92,7 +109,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
   useEffect(() => () => clearTimeout(timerRef.current), []);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
@@ -136,6 +153,15 @@ interface IssuePropertiesProps {
   onRetryExternalObjects?: () => void;
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
+  documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
+  /** Render only the Properties body when a parent owns the side-panel tabs. */
+  sidePanelContentOnly?: boolean;
+}
+
+export interface IssuePropertiesDocumentDeepLink {
+  requestId: number;
+  tab: "plans" | "artifacts" | "document";
+  documentKey: string;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -154,15 +180,101 @@ export function IssueProperties({
   onRetryExternalObjects,
   onCheckMonitorNow,
   checkingMonitorNow = false,
+  documentDeepLink,
+  sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  // Managed-sandbox-only policy: the workspace folder is a host filesystem
+  // path, so the Folder row disappears. The Branch row above it stays. The gate
+  // fails closed whenever the policy is unknown — in flight and also on a failed
+  // read — because an unresolved policy reads as "not managed" and would show
+  // the folder the policy exists to hide.
+  const hideHostPaths =
+    experimentalSettings === undefined || experimentalSettings.enableManagedSandboxOnly === true;
+  // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
+  // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
+  // flag OFF — including while settings load — renders the chat-style tab
+  // shell. This pane is always task-scoped, so the flag alone is a sufficient
+  // gate.
+  const taskChatShellEnabled = experimentalSettings?.enableClassicTaskInterface !== true;
+  // When hosted by the resizable PropertiesPanel, the tab strip portals into
+  // the pane's header bar (left of the window controls). The slot only exists
+  // once the panel has committed, hence the effect; inline hosts (mobile sheet)
+  // keep the tab strip in place.
+  const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!taskChatShellEnabled || inline) {
+      setPaneHeaderSlot(null);
+      return;
+    }
+    setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
+  }, [taskChatShellEnabled, inline]);
+  // A Plan tab represents materialized plan content, not merely planning mode.
+  // Same query keys as the tab bodies, so these share their cached fetches.
+  const { data: paneTabPlanDocument } = useIssuePlanDocument(
+    taskChatShellEnabled ? issue.id : null,
+  );
+  const { data: paneTabAcceptedPlans } = useQuery({
+    queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
+    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabAttachments } = useQuery({
+    queryKey: queryKeys.issues.attachments(issue.id),
+    queryFn: () => issuesApi.listAttachments(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabWorkProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
+  // Proxy `artifact-review-*` documents surface only through their Work
+  // product row, so they must not summon the Plan or Documents surfaces.
+  const paneTabStandaloneDocuments = (paneTabDocuments ?? []).filter(
+    (doc) => !isArtifactReviewDocumentKey(doc.key),
+  );
+  const hasPlanTab =
+    Boolean(paneTabPlanDocument)
+    || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || paneTabStandaloneDocuments.length > 0;
+  // Artifacts covers the same three sources the tab body composes: work
+  // products, documents (redundant with the Plan tab, intentionally), and
+  // agent-created attachments. User comment uploads stay thread-only and
+  // no longer summon the tab.
+  const hasArtifactsTab =
+    (paneTabWorkProducts?.length ?? 0) > 0
+    || paneTabStandaloneDocuments.length > 0
+    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
+  const [paneTab, setPaneTab] = useState("properties");
+  // Once a plan document exists, surface it: switch the pane to the Plan tab so
+  // the write-up is exposed alongside the plan-approval card, instead of leaving
+  // the user on Properties. Only auto-switch until the user picks a tab by hand —
+  // after that their choice wins. Ref-guarded so it fires once per mount.
+  const paneTabUserChosenRef = useRef(false);
+  const handlePaneTabChange = useCallback((value: string) => {
+    paneTabUserChosenRef.current = true;
+    setPaneTab(value);
+  }, []);
+  useEffect(() => {
+    if (hasPlanTab && !paneTabUserChosenRef.current) {
+      setPaneTab("plans");
+    }
+  }, [hasPlanTab]);
+  useEffect(() => {
+    if (!documentDeepLink) return;
+    if (documentDeepLink.tab === "document") return;
+    paneTabUserChosenRef.current = true;
+    setPaneTab(documentDeepLink.tab);
+  }, [documentDeepLink]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -206,6 +318,7 @@ export function IssueProperties({
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+  const normalizedParentSearch = parentSearch.trim();
 
   useEffect(() => {
     setBlockedByExpanded(false);
@@ -266,6 +379,17 @@ export function IssueProperties({
       limit: ISSUE_BLOCKER_SEARCH_LIMIT,
     }),
     enabled: !!companyId && blockedByOpen && normalizedBlockedBySearch.length > 0,
+  });
+
+  const { data: searchedParentIssues, isFetching: isFetchingSearchedParentIssues } = useQuery({
+    queryKey: companyId
+      ? queryKeys.issues.search(companyId, normalizedParentSearch, undefined, ISSUE_BLOCKER_SEARCH_LIMIT)
+      : ["issues", "blocker-search", normalizedParentSearch, ISSUE_BLOCKER_SEARCH_LIMIT],
+    queryFn: () => issuesApi.list(companyId!, {
+      q: normalizedParentSearch,
+      limit: ISSUE_BLOCKER_SEARCH_LIMIT,
+    }),
+    enabled: !!companyId && parentOpen && normalizedParentSearch.length > 0,
   });
 
   const createLabel = useMutation({
@@ -440,12 +564,6 @@ export function IssueProperties({
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
-  const assigneeSupportsCheapLane = Boolean(
-    supportsAssigneeOverrides
-      && (assigneeAdapterType === "claude_local"
-        || assigneeAdapterType === "codex_local"
-        || assigneeAdapterType === "opencode_local"),
-  );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
@@ -464,17 +582,6 @@ export function IssueProperties({
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
-  const { data: assigneeCheapProfiles } = useQuery({
-    queryKey: companyId && assigneeAdapterType
-      ? queryKeys.agents.adapterModelProfiles(companyId, assigneeAdapterType)
-      : ["agents", "none", "adapter-model-profiles", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModelProfiles(companyId!, assigneeAdapterType!),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && assigneeSupportsCheapLane,
-  });
-  const assigneeCheapProfile = useMemo(
-    () => (assigneeCheapProfiles ?? []).find((profile) => profile.key === "cheap") ?? null,
-    [assigneeCheapProfiles],
-  );
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -526,21 +633,9 @@ export function IssueProperties({
       updateAssigneeAdapterOverrides(null);
       return;
     }
-    if (lane === "cheap") {
-      updateAssigneeAdapterOverrides(
-        compactRecord({
-          useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
-          modelProfile: "cheap",
-        }),
-      );
-      return;
-    }
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(assigneeOverrideAdapterConfig) ?? { adapterConfig: {} });
   };
   const assigneeOptionsTrigger = (() => {
-    if (assigneeOverrideLane === "cheap") {
-      return <span className="text-sm">Cheap model</span>;
-    }
     if (assigneeOverrideLane === "custom") {
       const details = [
         assigneeOverrideModel,
@@ -564,7 +659,7 @@ export function IssueProperties({
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>
         <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
-          {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+          {(["primary", "custom"] as const).map((lane) => (
             <button
               key={lane}
               type="button"
@@ -576,20 +671,10 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
+              {lane === "primary" ? "Primary" : "Override"}
             </button>
           ))}
         </div>
-        {assigneeOverrideLane === "cheap" ? (
-          <p className="text-xs text-muted-foreground">
-            Sends <code>modelProfile: "cheap"</code>{" "}
-            {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-              ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
-              : assigneeCheapProfile
-                ? <>· uses the agent&apos;s configured cheap profile</>
-                : <>· falls back to the primary model if no cheap profile is configured</>}
-          </p>
-        ) : null}
         {assigneeOverrideLane === "custom" ? (
           <p className="text-xs text-muted-foreground">
             Task-level model override — replaces the agent&apos;s primary model for this issue.
@@ -755,6 +840,10 @@ export function IssueProperties({
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm truncate min-w-0" title={approverLabel}>{approverLabel}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
+  // PAP-16506 P4: who may give the `in_review` verdict. Only an agent sets this,
+  // and only the two opt-in constraints are worth a row — the default (`null` ≡
+  // "anyone can approve") is what every issue already does, so it shows nothing.
+  const reviewPolicyBadge = issueReviewPolicyBadge(issue.reviewPolicy);
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
       return issue.executionState.currentStageType;
@@ -1817,22 +1906,22 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  const parentSearchActive = normalizedParentSearch.length > 0;
+  // When the user types, search on the server. The default list caps at 500 rows
+  // and sorts priority-first, so a medium-priority or low-priority match past that
+  // cap never enters the client list. A server query with `q` still finds it.
+  const parentSourceIssues = parentSearchActive ? searchedParentIssues : allIssues;
+  const parentOptions = (parentSourceIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
-    .filter((candidate) => {
-      if (!parentSearch.trim()) return true;
-      const query = parentSearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
     });
+  const parentOptionsLoading = parentOpen && (
+    parentSearchActive ? isFetchingSearchedParentIssues : isFetchingIssuePickerIssues
+  );
   const parentContent = (
     <>
       <input
@@ -1874,6 +1963,11 @@ export function IssueProperties({
             </span>
           </button>
         ))}
+        {parentOptionsLoading ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
+        ) : parentOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
+        ) : null}
       </div>
     </>
   );
@@ -1967,7 +2061,7 @@ export function IssueProperties({
     </button>
   );
 
-  return (
+  const propertiesBody = (
     <div>
       <PropertySection title="Triage" first>
         <PropertyRow label="Status">
@@ -1980,13 +2074,16 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => onUpdate({ priority })}
-            showLabel
-          />
-        </PropertyRow>
+        {/* PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI. Revive by flipping the flag. */}
+        {SHOW_TASK_PRIORITY_UI && (
+          <PropertyRow label="Priority">
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => onUpdate({ priority })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyPicker
           inline={inline}
@@ -2078,7 +2175,12 @@ export function IssueProperties({
           <div>
             <PropertyRow label="Blocked by" wrap>
               {visibleBlockedByRelations.map((relation) => (
-                <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+                <RemovableIssueReferencePill
+                  key={relation.id}
+                  issue={relation}
+                  onRemove={removeBlockedBy}
+                  isMobile={isMobile}
+                />
               ))}
               <ExpandRelationListButton
                 hiddenCount={hiddenBlockedByCount}
@@ -2096,7 +2198,12 @@ export function IssueProperties({
         ) : (
           <PropertyRow label="Blocked by" wrap>
             {visibleBlockedByRelations.map((relation) => (
-              <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+              <RemovableIssueReferencePill
+                key={relation.id}
+                issue={relation}
+                onRemove={removeBlockedBy}
+                isMobile={isMobile}
+              />
             ))}
             <ExpandRelationListButton
               hiddenCount={hiddenBlockedByCount}
@@ -2137,30 +2244,35 @@ export function IssueProperties({
           )}
         </PropertyRow>
 
-        <PropertyRow label="Sub-tasks" wrap>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {childIssues.length > 0
-              ? visibleChildIssues.map((child) => (
-                <IssueReferencePill key={child.id} issue={child} />
-              ))
-              : null}
-            <ExpandRelationListButton
-              hiddenCount={hiddenChildIssueCount}
-              expanded={subTasksExpanded}
-              onClick={() => setSubTasksExpanded((expanded) => !expanded)}
-            />
-            {onAddSubIssue ? (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                onClick={onAddSubIssue}
-              >
-                <Plus className="h-3 w-3" />
-                Add sub-task
-              </button>
-            ) : null}
-          </div>
-        </PropertyRow>
+        {/* Chat shell promotes sub-tasks to their own pane tab (the full tree),
+            so the slim pill row here would duplicate that home (PAP-496). Keep
+            the pill row only for the classic center-column layout. */}
+        {taskChatShellEnabled ? null : (
+          <PropertyRow label="Sub-tasks" wrap>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {childIssues.length > 0
+                ? visibleChildIssues.map((child) => (
+                  <IssueReferencePill key={child.id} issue={child} />
+                ))
+                : null}
+              <ExpandRelationListButton
+                hiddenCount={hiddenChildIssueCount}
+                expanded={subTasksExpanded}
+                onClick={() => setSubTasksExpanded((expanded) => !expanded)}
+              />
+              {onAddSubIssue ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  onClick={onAddSubIssue}
+                >
+                  <Plus className="h-3 w-3" />
+                  Add sub-task
+                </button>
+              ) : null}
+            </div>
+          </PropertyRow>
+        )}
 
         {relatedTasks.length > 0 ? (
           <PropertyRow label="Related tasks" wrap>
@@ -2186,6 +2298,16 @@ export function IssueProperties({
       </PropertySection>
 
       <PropertySection title="Execution">
+        {/* Read-only: agents set the policy, the board does not. */}
+        {reviewPolicyBadge ? (
+          <PropertyRow label="Approvals">
+            <PropertyChip title={reviewPolicyBadge.description}>
+              <reviewPolicyBadge.Icon className="shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 truncate">{reviewPolicyBadge.label}</span>
+            </PropertyChip>
+          </PropertyRow>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2257,32 +2379,30 @@ export function IssueProperties({
           {monitorContent}
         </PropertyPicker>
 
-        {taskWatchdogsEnabled ? (
-          <PropertyPicker
-            inline={inline}
-            label="Watchdog"
-            open={watchdogOpen}
-            onOpenChange={setWatchdogOpen}
-            triggerContent={watchdogTrigger}
-            triggerClassName="min-w-0 max-w-full"
-            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
-            extra={
-              watchdogIssueRef ? (
-                <Link
-                  to={`/issues/${watchdogIssueRef.id}`}
-                  className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                  title="Open watchdog task"
-                  aria-label="Open watchdog task"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ArrowUpRight className="h-3 w-3" />
-                </Link>
-              ) : undefined
-            }
-          >
-            {watchdogContent}
-          </PropertyPicker>
-        ) : null}
+        <PropertyPicker
+          inline={inline}
+          label="Watchdog"
+          open={watchdogOpen}
+          onOpenChange={setWatchdogOpen}
+          triggerContent={watchdogTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
+          extra={
+            watchdogIssueRef ? (
+              <Link
+                to={`/issues/${watchdogIssueRef.id}`}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                title="Open watchdog task"
+                aria-label="Open watchdog task"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            ) : undefined
+          }
+        >
+          {watchdogContent}
+        </PropertyPicker>
       </PropertySection>
 
       {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
@@ -2328,7 +2448,7 @@ export function IssueProperties({
               />
             </PropertyRow>
           )}
-          {issue.currentExecutionWorkspace?.cwd && (
+          {issue.currentExecutionWorkspace?.cwd && !hideHostPaths && (
             <PropertyRow label="Folder">
               <TruncatedCopyable
                 value={issue.currentExecutionWorkspace.cwd}
@@ -2444,5 +2564,92 @@ export function IssueProperties({
         <IssueCasesPanel issueId={issue.id} />
       </div>
     </div>
+  );
+
+  // Classic Task Interface ON: the legacy stacked pane, byte-for-byte.
+  if (!taskChatShellEnabled || sidePanelContentOnly) return propertiesBody;
+
+  // Chat-style with nothing to switch between: no tab strip — the header bar
+  // shows a plain title and the pane body is just the properties stack.
+  if (!hasPlanTab && !hasArtifactsTab) {
+    return (
+      <>
+        {paneHeaderSlot
+          ? createPortal(<span className="text-sm font-medium">Properties</span>, paneHeaderSlot)
+          : null}
+        {propertiesBody}
+      </>
+    );
+  }
+
+  // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
+  // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
+  // tab is unchanged. Panel hosts portal the strip into the pane header bar;
+  // portals keep React context, so the Tabs root still drives it.
+  // Fall back to Properties if the selected tab's content went away (or the
+  // selection was made on another issue).
+  const activePaneTab =
+    (paneTab === "plans" && !hasPlanTab)
+    || (paneTab === "artifacts" && !hasArtifactsTab)
+      ? "properties"
+      : paneTab;
+  // In the pane header the strip stretches to the bar's full height and the
+  // active underline drops to bottom-0, so it hugs the header's border line.
+  const paneTabTriggerClass = paneHeaderSlot
+    ? "h-full group-data-[orientation=horizontal]/tabs:after:bottom-0"
+    : undefined;
+  const tabStrip = (
+    <TabsList
+      variant="line"
+      className={
+        paneHeaderSlot
+          ? "items-stretch justify-start gap-1 p-0 group-data-[orientation=horizontal]/tabs:h-full"
+          : "w-full justify-start gap-1"
+      }
+    >
+      <TabsTrigger value="properties" className={paneTabTriggerClass}>
+        Properties
+      </TabsTrigger>
+      {hasPlanTab ? (
+        <TabsTrigger value="plans" className={paneTabTriggerClass}>
+          Plan
+        </TabsTrigger>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsTrigger value="artifacts" className={paneTabTriggerClass}>
+          Artifacts
+        </TabsTrigger>
+      ) : null}
+    </TabsList>
+  );
+  return (
+    <Tabs value={activePaneTab} onValueChange={handlePaneTabChange} className="flex min-h-0 flex-col gap-3">
+      {paneHeaderSlot
+        ? createPortal(
+            // Portals keep React context but break the DOM tree the Tailwind
+            // group-selectors need: the active-tab underline is styled via
+            // `group-data-[orientation=horizontal]/tabs:*`, so restore that
+            // ancestor here (display: contents keeps it out of layout).
+            <div className="group/tabs contents" data-orientation="horizontal">
+              {tabStrip}
+            </div>,
+            paneHeaderSlot,
+          )
+        : tabStrip}
+      <TabsContent value="properties">{propertiesBody}</TabsContent>
+      {hasPlanTab ? (
+        <TabsContent value="plans">
+          <IssuePropertiesPlansTab issue={issue} inline={inline} />
+        </TabsContent>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsContent value="artifacts">
+          <IssuePropertiesArtifactsTab
+            issue={issue}
+            documentDeepLink={documentDeepLink?.tab === "artifacts" ? documentDeepLink : null}
+          />
+        </TabsContent>
+      ) : null}
+    </Tabs>
   );
 }

@@ -1,12 +1,23 @@
 import type {
   Agent,
   AgentDesiredSkillEntry,
+  AgentSkillAssignmentMode,
   AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignalResponse,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionOwnerResponse,
+  ClaudeSetupTokenSessionResponse,
+  ClaudeSetupTokenSessionOwnerResponse,
+  ClaudeSetupTokenSessionPrompt,
+  ClaudeSetupTokenCompletionResponse,
+  ClaudeSetupTokenOverwrite,
+  ClaudeOAuthTokenStatusResponse,
+  SubmitBrowserCodeRequest,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -17,10 +28,6 @@ import type {
   ClearAgentErrorResponse,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
-import type {
-  AdapterModelProfileDefinition,
-  AdapterModelProfileKey,
-} from "@paperclipai/adapter-utils";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -36,9 +43,6 @@ export interface AdapterModel {
   id: string;
   label: string;
 }
-
-export type { AdapterModelProfileKey };
-export type AdapterModelProfile = AdapterModelProfileDefinition;
 
 export interface DetectedAdapterModel {
   model: string;
@@ -84,6 +88,7 @@ export interface AgentWakeRequest {
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
+  debug?: { providerTrace: "raw" };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -178,8 +183,12 @@ export const agentsApi = {
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   skills: (id: string, companyId?: string) =>
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
-  syncSkills: (id: string, desiredSkills: Array<string | AgentDesiredSkillEntry>, companyId?: string) =>
-    api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills }),
+  syncSkills: (
+    id: string,
+    desiredSkills: Array<string | AgentDesiredSkillEntry>,
+    mode: AgentSkillAssignmentMode,
+    companyId?: string,
+  ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode }),
   createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
@@ -207,10 +216,6 @@ export const agentsApi = {
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
-  adapterModelProfiles: (companyId: string, type: string) =>
-    api.get<AdapterModelProfile[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/model-profiles`,
-    ),
   testEnvironment: (
     companyId: string,
     type: string,
@@ -223,6 +228,12 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
+  getAdapterAuthSignal: (companyId: string, type: string, environmentId?: string | null) => {
+    const query = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : "";
+    return api.get<AdapterAuthSignalResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/auth-signal${query}`,
+    );
+  },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
   wakeup: (
@@ -232,6 +243,69 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  startAdapterAuthLogin: (
+    companyId: string,
+    type: string,
+    data: { environmentId: string; ttlSeconds?: number },
+  ) =>
+    api.post<AdapterAuthSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
+      data,
+    ),
+  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
+    api.post<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
+    ),
+  // The Claude submitted-browser-code login uses the company-and-environment
+  // setup-token routes. The route fixes the `claude_local` adapter. The start
+  // response carries the panel mode; the authorization URL rides only through the
+  // guarded prompt read. The completion response carries a non-secret
+  // `storedSessionId` claim and no token.
+  // Reads the stored Claude OAuth token status for the authenticated owner. A
+  // 200 carries only the secret id and the latest version; a 404 means the owner
+  // has no stored value (indistinguishable from a foreign value). The client
+  // applies the stored token first and captures the version for a later
+  // version-checked overwrite.
+  getClaudeOAuthTokenStatus: (companyId: string) =>
+    api.get<ClaudeOAuthTokenStatusResponse>(
+      `/companies/${encodeURIComponent(companyId)}/claude-oauth-token-status`,
+    ),
+  startClaudeSetupTokenLogin: (
+    companyId: string,
+    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite },
+  ) =>
+    api.post<ClaudeSetupTokenSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,
+      { adapterType: "claude_local", ...data },
+    ),
+  getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
+    api.get<ClaudeSetupTokenSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
+    api.get<ClaudeSetupTokenSessionPrompt>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/prompt`,
+    ),
+  submitClaudeSetupTokenBrowserCode: (companyId: string, sessionId: string, browserCode: string) =>
+    api.post<ClaudeSetupTokenSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/code`,
+      { browserCode } satisfies SubmitBrowserCodeRequest,
+    ),
+  completeClaudeSetupTokenLogin: (companyId: string, sessionId: string) =>
+    api.post<ClaudeSetupTokenCompletionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/completion`,
+      {},
+    ),
+  cancelClaudeSetupTokenLogin: (companyId: string, sessionId: string) =>
+    api.post<void>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
+    ),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };

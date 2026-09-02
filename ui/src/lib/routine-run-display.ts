@@ -31,8 +31,21 @@ export function dedupedTriggerLabel(
 }
 
 /**
+ * Human-readable labels for the reasons a scheduled run was skipped rather than
+ * dispatched. `failureReason` on a skipped run carries the machine reason; these
+ * turn it into a one-line "why" for the runs list.
+ */
+const SKIP_REASON_LABELS: Record<string, string> = {
+  no_external_activity: "Skipped — no activity since last run",
+  paused: "Skipped — routine paused",
+  worktree_execution_cutoff: "Skipped — worktree execution cutoff",
+};
+
+/**
  * Subtitle line for a run row (§3.6):
  * - failed runs show the failure reason ("why" without clicking through);
+ * - skipped runs show why the scheduled tick didn't dispatch (e.g. the activity
+ *   gate found the system settled);
  * - other runs show the inline resolved variable values (e.g. `customer="Acme"`).
  * Returns an empty string when there is nothing meaningful to show.
  */
@@ -42,6 +55,10 @@ export function runRowSubtitle(
 ): string {
   if (run.status === "failed") {
     return run.failureReason?.trim() || "Run failed";
+  }
+  if (run.status === "skipped") {
+    const reason = run.failureReason?.trim();
+    if (reason && SKIP_REASON_LABELS[reason]) return SKIP_REASON_LABELS[reason];
   }
   const payload = run.triggerPayload;
   if (!payload || typeof payload !== "object") return "";

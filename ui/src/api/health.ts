@@ -14,6 +14,14 @@ export type DevServerHealthStatus = {
   lastRestartAt: string | null;
 };
 
+export type CloudInstanceHealthStatus = {
+  managed: true;
+  managedBy: "paperclip-cloud";
+  stackSlug: string | null;
+  stackDisplayName?: string;
+  cloudBaseUrl: string | null;
+};
+
 export type HealthStatus = {
   status: "ok";
   version?: string;
@@ -27,6 +35,12 @@ export type HealthStatus = {
   };
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
+  cloud?: CloudInstanceHealthStatus;
+  /**
+   * Settings surfaces hidden by the hosting operator (keys from the shared
+   * settings-visibility registry). Absent when nothing is hidden.
+   */
+  hiddenSettings?: string[];
 };
 
 export const healthApi = {

@@ -15,6 +15,7 @@ import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
@@ -690,7 +691,7 @@ export function IssueDocumentsSection({
 
   const copyDocumentBody = useCallback(async (key: string, body: string) => {
     try {
-      await navigator.clipboard.writeText(body);
+      await copyTextToClipboard(body);
       setCopiedDocumentKey(key);
       if (copiedDocumentTimerRef.current) {
         clearTimeout(copiedDocumentTimerRef.current);

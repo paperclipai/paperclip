@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { CHROMELESS_DISPLAY_MODES, isChromelessDisplayMode } from "../lib/pwa-display-mode";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 function ControlButton({
   label,
@@ -71,12 +72,8 @@ export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
         await navigator.share({ title: document.title || "Paperclip", url });
         return;
       }
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
-        toastActions?.pushToast({ title: "Link copied", tone: "success" });
-        return;
-      }
-      toastActions?.pushToast({ title: "Sharing is unavailable", body: url, tone: "warn" });
+      await copyTextToClipboard(url);
+      toastActions?.pushToast({ title: "Link copied", tone: "success" });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       toastActions?.pushToast({ title: "Share failed", body: "Try opening the page in your browser.", tone: "error" });

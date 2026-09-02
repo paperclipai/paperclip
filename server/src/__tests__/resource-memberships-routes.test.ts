@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -8,6 +9,8 @@ import {
   agents,
   companies,
   createDb,
+  documentMemberships,
+  documents,
   projectMemberships,
   projects,
 } from "@paperclipai/db";
@@ -62,8 +65,10 @@ describeEmbeddedPostgres("resource membership routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(documentMemberships);
     await db.delete(projectMemberships);
     await db.delete(agentMemberships);
+    await db.delete(documents);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -82,6 +87,8 @@ describeEmbeddedPostgres("resource membership routes", () => {
     const agentId = randomUUID();
     const otherAgentId = randomUUID();
     const terminatedAgentId = randomUUID();
+    const documentId = randomUUID();
+    const otherDocumentId = randomUUID();
     await db.insert(companies).values([
       {
         id: companyId,
@@ -95,6 +102,10 @@ describeEmbeddedPostgres("resource membership routes", () => {
         issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false,
       },
+    ]);
+    await db.insert(documents).values([
+      { id: documentId, companyId, title: "Plan", latestBody: "Plan body", createdByUserId: "user-1" },
+      { id: otherDocumentId, companyId: otherCompanyId, title: "Other", latestBody: "Other body" },
     ]);
     await db.insert(projects).values([
       { id: projectId, companyId, name: "Growth", status: "in_progress" },
@@ -136,7 +147,17 @@ describeEmbeddedPostgres("resource membership routes", () => {
         permissions: {},
       },
     ]);
-    return { archivedProjectId, companyId, otherAgentId, otherProjectId, projectId, agentId, terminatedAgentId };
+    return {
+      archivedProjectId,
+      companyId,
+      documentId,
+      otherAgentId,
+      otherDocumentId,
+      otherProjectId,
+      projectId,
+      agentId,
+      terminatedAgentId,
+    };
   }
 
   it("defaults missing membership rows to joined", async () => {
@@ -151,8 +172,10 @@ describeEmbeddedPostgres("resource membership routes", () => {
       agentMemberships: {},
       starredProjectIds: [],
       starredAgentIds: [],
+      starredDocumentIds: [],
       projectStarredAt: {},
       agentStarredAt: {},
+      documentStarredAt: {},
       updatedAt: null,
     });
   });
@@ -400,5 +423,67 @@ describeEmbeddedPostgres("resource membership routes", () => {
         actor: boardActor(companyId),
       }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("stars and unstars documents idempotently and cascades on document deletion", async () => {
+    const { companyId, documentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: true }),
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: true }),
+    ]);
+    const list = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`);
+
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ resourceType: "document", resourceId: documentId, starredAt: expect.any(String) });
+    expect(second.status).toBe(200);
+    expect(second.body.starredAt).toBe(first.body.starredAt);
+    expect(list.body.starredDocumentIds).toEqual([documentId]);
+    expect(list.body.documentStarredAt[documentId]).toBe(first.body.starredAt);
+    await expect(db.select().from(documentMemberships)).resolves.toHaveLength(1);
+
+    const unstars = await Promise.all([
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: false }),
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: false }),
+    ]);
+    expect(unstars.map((response) => response.status)).toEqual([200, 200]);
+    await expect(db.select().from(documentMemberships)).resolves.toHaveLength(0);
+
+    await request(app)
+      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+      .send({ starred: true })
+      .expect(200);
+    await db.delete(documents).where(eq(documents.id, documentId));
+    await expect(db.select().from(documentMemberships)).resolves.toHaveLength(0);
+
+    const activity = await db.select().from(activityLog);
+    expect(activity.map((entry) => entry.action)).toEqual([
+      "resource_membership.starred",
+      "resource_membership.unstarred",
+      "resource_membership.starred",
+    ]);
+    expect(activity[0]).toMatchObject({ entityType: "document", entityId: documentId });
+  });
+
+  it("returns identical 404s for cross-company documents", async () => {
+    const { companyId, otherDocumentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+
+    const response = await request(app)
+      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${otherDocumentId}`)
+      .send({ starred: true });
+
+    expect(response.status).toBe(404);
+    expect(response.body.error).toBe("Document not found");
+    await expect(db.select().from(documentMemberships)).resolves.toHaveLength(0);
   });
 });

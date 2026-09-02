@@ -69,10 +69,13 @@ export function PropertyChip({
   children,
   className,
   style,
+  title,
 }: {
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
+  /** Tooltip override for chips whose children are not a bare string. */
+  title?: string;
 }) {
   return (
     <Badge
@@ -80,7 +83,7 @@ export function PropertyChip({
       // Badge chassis; keep this chip's truncation + normal weight + start alignment.
       className={cn("max-w-full min-w-0 justify-start truncate font-normal", className)}
       style={style}
-      title={typeof children === "string" ? children : undefined}
+      title={title ?? (typeof children === "string" ? children : undefined)}
     >
       {children}
     </Badge>

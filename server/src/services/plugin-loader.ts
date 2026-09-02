@@ -50,6 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,8 +119,43 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * Each first-party sandbox provider's documented credential fallback env
+ * var. Environment rows may omit `config.apiKey` (managed/platform-
+ * provisioned rows always do — see `managed-environments.ts`), in which
+ * case the provider reads its documented process env var. That fallback
+ * executes inside the plugin worker, whose environment is scrubbed, so
+ * the deployment-level var must be forwarded explicitly.
+ *
+ * Keyed by the installed npm package name and cross-checked against the
+ * manifest's declared driver key — but name and manifest are both
+ * plugin-authored, so neither is proof of identity on its own. The gate
+ * therefore also requires a trusted install origin: a registry install
+ * (`packagePath` null — the `@paperclipai` scope is project-controlled at
+ * the registry), or a local path inside the repo/bundled plugin catalog,
+ * which ships inside the release image and is as trusted as the server
+ * code itself. An operator-added local plugin directory can claim any
+ * name and driver key and still receives nothing.
+ */
+const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
+  string,
+  { driverKey: string; envVars: readonly string[] }
+> = {
+  "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
+  "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
+  "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
+  "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
+};
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
+  packageName?: string;
+  /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
+  packagePath?: string | null;
+  /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
+  trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -132,7 +168,22 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
+    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
+    : undefined;
+  const credentialKeys =
+    credentialEntry
+      && (input.manifest.environmentDrivers ?? []).some(
+        (driver) => driver.driverKey === credentialEntry.driverKey,
+      )
+      ? credentialEntry.envVars
+      : [];
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -360,6 +411,20 @@ export interface PluginLoadResult {
   };
 }
 
+export interface PluginLoadSingleOptions {
+  /**
+   * When false, activation failures are reported to the caller but do not
+   * transition the shared plugin row to `error`. Partially-registered local
+   * runtime state (worker process, scheduler/tool registrations) is still
+   * torn down in this process.
+   */
+  markErrorOnFailure?: boolean;
+}
+
+interface PluginActivateOptions {
+  markErrorOnFailure: boolean;
+}
+
 /**
  * Result of activating all ready plugins at server startup.
  */
@@ -540,7 +605,7 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §8.3 — Install Process
    */
-  loadSingle(pluginId: string): Promise<PluginLoadResult>;
+  loadSingle(pluginId: string, options?: PluginLoadSingleOptions): Promise<PluginLoadResult>;
 
   /**
    * Deactivate a single plugin — stop its worker and unregister all
@@ -1880,25 +1945,61 @@ export function pluginLoader(
       // Fetch all plugins in ready status, ordered by installOrder
       const readyPlugins = (await registry.listByStatus("ready")) as PluginRecord[];
 
-      if (readyPlugins.length === 0) {
+      // Retry plugins stranded in error status. An activation failure is often
+      // environmental — missing package dependencies, a stale build output, a
+      // module that moved under a pull — and the fix lands on disk without any
+      // write to the plugin row, so the row would otherwise stay dead until an
+      // operator flips it back by hand. One attempt per boot cannot crash-loop
+      // within a running process, and a failed attempt re-records the error
+      // through the normal markError path. The flip to ready must run BEFORE
+      // activation: the error status only legally transitions to ready or
+      // uninstalled, so a retry that failed while still in error status could
+      // not re-mark itself as errored.
+      const erroredPlugins = (await registry.listByStatus("error")) as PluginRecord[];
+      const retriedPlugins: PluginRecord[] = [];
+      for (const plugin of erroredPlugins) {
+        try {
+          const flipped = (await registry.updateStatus(plugin.id, { status: "ready" })) as PluginRecord | null;
+          if (flipped) retriedPlugins.push(flipped);
+        } catch (err) {
+          log.warn(
+            {
+              pluginId: plugin.id,
+              pluginKey: plugin.pluginKey,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "plugin-loader: could not queue errored plugin for a boot retry",
+          );
+        }
+      }
+      if (retriedPlugins.length > 0) {
+        log.info(
+          { count: retriedPlugins.length, pluginKeys: retriedPlugins.map((plugin) => plugin.pluginKey) },
+          "plugin-loader: retrying plugins that failed activation on a previous boot",
+        );
+      }
+
+      const pluginsToLoad = [...readyPlugins, ...retriedPlugins];
+
+      if (pluginsToLoad.length === 0) {
         log.info("plugin-loader: no ready plugins to load");
         return { total: 0, succeeded: 0, failed: 0, results: [] };
       }
 
       log.info(
-        { count: readyPlugins.length },
+        { count: pluginsToLoad.length },
         "plugin-loader: found ready plugins to load",
       );
 
       // Load plugins in parallel
       const results = await Promise.allSettled(
-        readyPlugins.map((plugin) => activatePlugin(plugin))
+        pluginsToLoad.map((plugin) => activatePlugin(plugin))
       );
 
       const loadResults = results.map((r, i) => {
         if (r.status === "fulfilled") return r.value;
         return {
-          plugin: readyPlugins[i]!,
+          plugin: pluginsToLoad[i]!,
           success: false,
           error: String(r.reason),
           registered: { worker: false, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
@@ -1910,7 +2011,7 @@ export function pluginLoader(
 
       log.info(
         {
-          total: readyPlugins.length,
+          total: pluginsToLoad.length,
           succeeded,
           failed,
         },
@@ -1918,7 +2019,7 @@ export function pluginLoader(
       );
 
       return {
-        total: readyPlugins.length,
+        total: pluginsToLoad.length,
         succeeded,
         failed,
         results: loadResults,
@@ -1937,9 +2038,10 @@ export function pluginLoader(
      * capabilities (tools, jobs, etc.).
      *
      * @param pluginId - The UUID of the plugin to load.
+     * @param options - Optional activation behavior overrides.
      * @returns A promise that resolves with the result of the activation.
      */
-    async loadSingle(pluginId: string): Promise<PluginLoadResult> {
+    async loadSingle(pluginId: string, options: PluginLoadSingleOptions = {}): Promise<PluginLoadResult> {
       if (!runtimeServices) {
         throw new Error(
           "Cannot loadSingle: no PluginRuntimeServices provided. " +
@@ -1975,7 +2077,9 @@ export function pluginLoader(
         );
       }
 
-      return activatePlugin(plugin);
+      return activatePlugin(plugin, {
+        markErrorOnFailure: options.markErrorOnFailure ?? true,
+      });
     },
 
     // -----------------------------------------------------------------------
@@ -1994,40 +2098,7 @@ export function pluginLoader(
         "plugin-loader: unloading single plugin",
       );
 
-      const {
-        workerManager,
-        eventBus,
-        jobScheduler,
-        toolDispatcher,
-      } = runtimeServices;
-
-      // 1. Unregister from job scheduler (cancels in-flight runs)
-      try {
-        await jobScheduler.unregisterPlugin(pluginId);
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to unregister from job scheduler (best-effort)",
-        );
-      }
-
-      // 2. Clear event subscriptions
-      eventBus.clearPlugin(pluginKey);
-
-      // 3. Unregister agent tools
-      toolDispatcher.unregisterPluginTools(pluginKey);
-
-      // 4. Stop the worker process
-      try {
-        if (workerManager.isRunning(pluginId)) {
-          await workerManager.stopWorker(pluginId);
-        }
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to stop worker during unload (best-effort)",
-        );
-      }
+      await teardownPluginRuntime(pluginId, pluginKey);
 
       log.info(
         { pluginId, pluginKey },
@@ -2061,6 +2132,58 @@ export function pluginLoader(
   };
 
   // -------------------------------------------------------------------------
+  // Internal: teardownPluginRuntime — shared by unloadSingle and activation
+  // failure cleanup
+  // -------------------------------------------------------------------------
+
+  /**
+   * Tear down a plugin's runtime state in this process: scheduler
+   * registration, event subscriptions, agent tools, and the worker process.
+   * Does not touch the plugin's database row.
+   */
+  async function teardownPluginRuntime(
+    pluginId: string,
+    pluginKey: string,
+  ): Promise<void> {
+    if (!runtimeServices) return;
+
+    const {
+      workerManager,
+      eventBus,
+      jobScheduler,
+      toolDispatcher,
+    } = runtimeServices;
+
+    // 1. Unregister from job scheduler (cancels in-flight runs)
+    try {
+      await jobScheduler.unregisterPlugin(pluginId);
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to unregister from job scheduler (best-effort)",
+      );
+    }
+
+    // 2. Clear event subscriptions
+    eventBus.clearPlugin(pluginKey);
+
+    // 3. Unregister agent tools
+    toolDispatcher.unregisterPluginTools(pluginKey);
+
+    // 4. Stop the worker process
+    try {
+      if (workerManager.isRunning(pluginId)) {
+        await workerManager.stopWorker(pluginId);
+      }
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to stop worker during unload (best-effort)",
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Internal: activatePlugin — shared logic for loadAll and loadSingle
   // -------------------------------------------------------------------------
 
@@ -2069,10 +2192,13 @@ export function pluginLoader(
    * sync jobs, register tools.
    *
    * This is the core orchestration logic shared by `loadAll()` and `loadSingle()`.
-   * Failures are caught and reported in the result; the plugin is marked as
-   * `error` in the database when activation fails.
+   * Failures are caught and reported in the result. By default the plugin is
+   * marked as `error` in the database when activation fails.
    */
-  async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
+  async function activatePlugin(
+    plugin: PluginRecord,
+    options: PluginActivateOptions = { markErrorOnFailure: true },
+  ): Promise<PluginLoadResult> {
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
     let activePlugin = plugin;
@@ -2183,7 +2309,12 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: buildPluginWorkerEnv({
+          manifest,
+          packageName: activePlugin.packageName,
+          packagePath: activePlugin.packagePath,
+          instanceInfo,
+        }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized
@@ -2351,18 +2482,38 @@ export function pluginLoader(
         "plugin-loader: failed to activate plugin",
       );
 
-      // Mark the plugin as errored in the database so it is not retried
-      // automatically on next startup without operator intervention.
-      try {
-        await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
-      } catch (markErr) {
-        log.error(
-          {
-            pluginId,
-            err: markErr instanceof Error ? markErr.message : String(markErr),
-          },
-          "plugin-loader: failed to mark plugin as error after activation failure",
-        );
+      if (options.markErrorOnFailure) {
+        // Mark the plugin as errored in the database. The running process
+        // leaves it inactive; the next boot's loadAll retries it once, and the
+        // lifecycle enable() path can revive it sooner by hand.
+        // markError also deactivates the plugin runtime in this process.
+        try {
+          await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
+        } catch (markErr) {
+          log.error(
+            {
+              pluginId,
+              err: markErr instanceof Error ? markErr.message : String(markErr),
+            },
+            "plugin-loader: failed to mark plugin as error after activation failure",
+          );
+        }
+      } else if (registered.worker) {
+        // The shared plugin row stays untouched, but this process spawned a
+        // worker before the failure — tear down the partially-registered
+        // runtime so a half-activated plugin does not linger locally.
+        try {
+          await teardownPluginRuntime(pluginId, pluginKey);
+        } catch (cleanupErr) {
+          log.warn(
+            {
+              pluginId,
+              pluginKey,
+              err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+            },
+            "plugin-loader: failed to tear down partially-activated plugin runtime",
+          );
+        }
       }
 
       return {

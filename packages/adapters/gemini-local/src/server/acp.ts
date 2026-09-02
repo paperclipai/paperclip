@@ -31,11 +31,12 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "20.0.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type GeminiExecutionEngine = "cli" | "acp";
 
@@ -149,12 +150,26 @@ function resolveGeminiSkillsHome(config: Record<string, unknown>): string {
  *
  * The seed never writes key bytes: the key is only read as a boolean signal to
  * decide whether to persist the auth-method selector. Gemini has no credential
- * copy-back, so no teardown hook.
+ * copy-back. The teardown hook therefore only syncs the sandbox workspace back to
+ * the host; it does not touch credentials.
  */
 async function prepareGeminiRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog, executionTarget } = input;
+  // Fail-open workspace sync-back for every exit path (mirrors the Gemini CLI
+  // lane's restore-hook finally and the Codex ACP seam's teardown). Gemini has no
+  // credential copy-back, so the teardown only syncs the sandbox workspace back to
+  // the host. A restore miss is logged and never fails the run.
+  const registerWorkspaceSyncBack = (
+    stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
+    });
   const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
   const stagedRuntime = await input.stage(
     geminiSkillsHome
@@ -168,8 +183,9 @@ async function prepareGeminiRemoteManagedHome(
   const managedRemoteHomeDir = stagedRuntime.runtimeRootDir;
   if (!managedRemoteHomeDir) {
     // No runtime root resolved — leave HOME as-is (host fallback) and skip the
-    // in-sandbox seed; nothing to remap onto.
-    return { stagedRuntime };
+    // in-sandbox seed; nothing to remap onto. The workspace still staged, so the
+    // sync-back teardown still applies.
+    return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
   }
   env.HOME = managedRemoteHomeDir;
 
@@ -222,7 +238,7 @@ async function prepareGeminiRemoteManagedHome(
     );
   }
 
-  return { stagedRuntime };
+  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
 function withGeminiAcpDefaults(options: GeminiAcpExecutorOptions): AcpxEngineExecutorOptions {

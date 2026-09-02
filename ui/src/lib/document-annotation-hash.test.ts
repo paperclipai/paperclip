@@ -35,6 +35,10 @@ describe("parseDocumentAnnotationHash", () => {
       commentId: null,
     });
   });
+
+  it("returns null for a malformed encoded document key", () => {
+    expect(parseDocumentAnnotationHash("#document-%E0%A4%A")).toBeNull();
+  });
 });
 
 describe("buildDocumentAnnotationHash", () => {

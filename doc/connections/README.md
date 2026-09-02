@@ -2,6 +2,16 @@
 
 Audience: internal engineers and product contributors working on integrations.
 
+Start here when adding a provider:
+[Connection authoring runbook](./CONNECTOR-PLAYBOOK.md). It is the canonical
+agent tutorial from provider research and protocol classification through
+manifest generation, branding, secrets, deterministic tests, real-account
+proof, and PR submission.
+
+Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
+[Gmail](./GMAIL.md), [PostHog](./POSTHOG.md). Optional credential custody:
+[Vercel Connect](./VERCEL-CONNECT.md).
+
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.
 
@@ -14,10 +24,14 @@ substrate on the PAP-10341 branch canonical:
   `tool_applications`, `tool_connections`, catalog entries, profiles, policy
   rules, action requests, gateway sessions, audit events, and runtime slots.
   Connections v1 is retired as an implementation path.
-- **D2: one vault, brokered projections.** Durable third-party credentials live
-  in `company_secrets` as secret refs. Adapter config, plugin config, harness
-  credential files, and run environments may receive only brokered or projected
-  credentials.
+- **D2: one credential authority per connection, brokered projections.** The
+  default is the Paperclip instance vault: durable third-party credentials live
+  in `company_secrets` as secret refs. A reviewed remote MCP method may instead
+  opt in to [Vercel Connect](./VERCEL-CONNECT.md), in which case Vercel is the
+  durable credential authority and Paperclip stores only the connector reference
+  and redacted grant metadata. A connection must never mix those two sources.
+  Adapter config, plugin config, harness credential files, and run environments
+  may receive only brokered or projected credentials.
 - **D3: the vocabulary and three-door IA are product law.** The default product
   doors are Apps, Connections, and Review. Protocol and operator-depth concepts
   live behind Developer or Advanced surfaces.
@@ -69,6 +83,66 @@ The agent should not hold a durable provider credential. It should hold a
 Paperclip run/session token; the server or broker resolves the connection,
 checks governance, invokes the provider, and writes audit.
 
+## Identity vs. connections
+
+Signing a user *in* and connecting a *resource* are different planes with
+different owners, different token profiles, and different homes. Do not merge
+them. This section is the public, connections-side statement of the identity
+model so connector implementers inherit the rule without depending on private
+identity-service documentation or re-deriving it.
+
+| Plane | Question | Lives where | Token profile |
+| --- | --- | --- | --- |
+| **P1. Sign-in methods** | *Who are you?* | `paperclip-id` (id.paperclip.ing → Account) | Minimal-scope provider tokens (`openid email profile`), used once to authenticate, encrypted at rest, never exported |
+| **P2. Connections (Apps)** | *What may your agents touch?* | Paperclip App instances (`tool_connections`), acquired via the **connect broker** for hosted + self-hosted | Rich-scope, long-lived resource tokens in the **instance's** encrypted vault; per-agent grants; risk-tier policy defaults |
+| **P3. Login with Paperclip** | *Who may authenticate against us?* | `paperclip-id` OIDC provider + DB-backed client registry | Our ES256 ID/access tokens issued *by* us to registered RPs (instances, the broker, future third parties) |
+
+Everything in `doc/connections/` — the [First-30 matrix](./FIRST-30-MATRIX.md),
+the [connection authoring runbook](./CONNECTOR-PLAYBOOK.md), and the connect-broker work —
+lives on **plane P2**. It never acquires, stores, or brokers a P1 sign-in token.
+
+### The standing rule (D7)
+
+Adopted as a standing rule (decision D7) with the identity-model plan. State it
+verbatim in any P2 design so the app-store work cannot drift into merging the
+planes:
+
+> Sign-in tokens are never reused as resource tokens; id.paperclip.ing never
+> stores resource tokens; no connections hub on the ID service.
+
+P2 tokens flow broker → instance vault as pass-through only; the id.paperclip.ing
+Account page therefore must **not** grow a "Connections" hub. The reasons to
+hold the planes apart (from the plan §3):
+
+- **Scope discipline.** Sign-in wants the narrowest grant; connections want
+  deliberately broad ones. One button that does both is how you grant repo
+  access just to log in.
+- **Blast radius.** id.paperclip.ing holding every customer's Vercel/Slack/GitHub
+  resource tokens would make it the single juiciest target in the fleet; the
+  broker is intentionally pass-through.
+- **Self-hosted symmetry.** Instances own their vaults, so self-hosters don't
+  depend on our uptime to *use* their own connections.
+- **Legibility.** Sign-in and connections answer different user questions, and
+  every product we benchmarked (Vercel, Railway, GitHub, Google) keeps them on
+  separate pages with separate names.
+
+The explicit Vercel Connect exception does not change D7 or merge P1 and P2.
+The operator chooses Vercel as the P2 credential authority for an individual
+connection. `id.paperclip.ing` is not involved, and neither sign-in tokens nor
+provider tokens pass through it. The deployment's Vercel access token or
+workload OIDC identity is bootstrap authority for that external vault, not a
+provider resource credential.
+
+### Naming alignment
+
+Use the surface-correct name for each plane; they intentionally differ:
+
+| Surface | Plane | Name to use |
+| --- | --- | --- |
+| Paperclip App instances | P2 | **"Connections"** |
+| id.paperclip.ing Account | P1 | **"Ways to sign in"** |
+| id.paperclip.ing admin | P3 | **"OIDC clients"** (until the app store productizes it) |
+
 ## Packaging Rule
 
 Default to a **catalog entry** when an integration can be described as metadata:
@@ -85,13 +159,24 @@ not own durable tokens.
 ## Canonical Docs
 
 - [Glossary](./GLOSSARY.md) defines product and internal terms.
+- [Identity vs. connections](#identity-vs-connections) is the public statement
+  of the P1/P2/P3 boundary and the D7 standing rule for connections work.
 - [Security threat model](./SECURITY-THREAT-MODEL.md) harvests the keeper from
   [PAP-2359](/PAP/issues/PAP-2359) and maps it onto Apps v2.
 - [First-30 matrix](./FIRST-30-MATRIX.md) harvests the keeper from
   [PAP-2432](/PAP/issues/PAP-2432) and is the source matrix for connector
   playbook work.
-- [Connector playbook](./CONNECTOR-PLAYBOOK.md) is the repeatable template for
-  adding a vendor as a catalog entry on Apps v2.
+- [Connecting any remote MCP server](./GENERIC-REMOTE-MCP.md) is the baseline:
+  how an operator connects a standards-compliant remote MCP endpoint with no
+  Paperclip code change, and how sign-in resolves a client.
+- [Connection authoring runbook](./CONNECTOR-PLAYBOOK.md) is the one
+  end-to-end, agent-executable guide for adding a vendor as a catalog entry on
+  Apps v2: research, connection-type selection, OAuth/API-key/generated-URL
+  setup, encrypted credential handling, branding, implementation, browser and
+  live-provider testing, verification, and PR submission.
+- [Vercel Connect operator guide](./VERCEL-CONNECT.md) documents the optional
+  external credential source, deployment flags, runtime resolution, recovery,
+  and smoke requirements.
 - [MCP access governance](../MCP-ACCESS-GOVERNANCE.md) remains the operator
   runbook for the current gateway, profile, policy, approval, runtime, and audit
   APIs.

@@ -6,11 +6,13 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
+import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
@@ -129,11 +131,13 @@ function describeEnvironment(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
 ): EnvironmentDescriptor {
-  const detail = environment.driver === "sandbox"
-    ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
-    : environment.driver === "local"
-      ? "Paperclip host"
-      : formatEnvironmentDriver(environment.driver);
+  const detail = isPlatformManagedEnvironment(environment)
+    ? "Managed by Paperclip"
+    : environment.driver === "sandbox"
+      ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
+      : environment.driver === "local"
+        ? "Paperclip host"
+        : formatEnvironmentDriver(environment.driver);
 
   return {
     label: environment.name,
@@ -197,6 +201,14 @@ export function Agents() {
   const [view, setView] = useState<"list" | "org">("org");
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -325,7 +337,7 @@ export function Agents() {
   }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select an organization to view agents." />;
   }
 
   if (isLoading) {
@@ -453,6 +465,7 @@ export function Agents() {
                   companyId={selectedCompanyId}
                   runLabel="Run Heartbeat"
                   showStatus={false}
+                  canRunWithProviderTrace={canUseProviderTrace}
                 />
               </div>
               <StarToggle

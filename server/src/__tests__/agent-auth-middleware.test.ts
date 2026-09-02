@@ -90,17 +90,20 @@ function createDbState(input: {
   return { db, activity };
 }
 
-function createApp(db: any) {
+function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = "authenticated") {
   const app = express();
   app.use(express.json());
   app.use(
     actorMiddleware(db, {
-      deploymentMode: "authenticated",
+      deploymentMode,
       resolveSession: async () => null,
     }),
   );
   app.get("/actor", (req, res) => {
     res.json(req.actor);
+  });
+  app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
+    res.json({ reachedGatewayProtocol: true, actorType: req.actor.type });
   });
   app.get("/companies/:companyId/protected", (req, res) => {
     assertCompanyAccess(req, req.params.companyId);
@@ -124,6 +127,7 @@ function craftAgentJwtWithoutResponsibleClaim(input: {
   companyId: string;
   adapterType: string;
   runId: string;
+  expiresInSeconds?: number;
 }) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
@@ -133,7 +137,7 @@ function craftAgentJwtWithoutResponsibleClaim(input: {
     adapter_type: input.adapterType,
     run_id: input.runId,
     iat: now,
-    exp: now + 3600,
+    exp: now + (input.expiresInSeconds ?? 3600),
     iss: "paperclip",
     aud: "paperclip-api",
   };
@@ -169,6 +173,117 @@ describe("agent auth middleware", () => {
     else process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = originalTtl;
     if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
     else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+  });
+
+  it("keeps header-less local requests as the implicit board actor with their run id", async () => {
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
+  });
+
+  it.each([
+    ["empty bearer token", "Bearer   ", "Empty bearer token"],
+    ["unverified token", "Bearer not-a-token", "Agent token did not verify"],
+  ])("rejects %s instead of retaining the implicit local-board actor", async (_label, authorization, error) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    let commentWrites = 0;
+    const app = createApp(db, "local_trusted");
+    app.post("/comments", (_req, res) => {
+      commentWrites += 1;
+      res.status(201).json({ ok: true });
+    });
+
+    const res = await request(app).post("/comments").set("Authorization", authorization).send({ body: "reply" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain(error);
+    expect(commentWrites).toBe(0);
+  });
+
+  it("leaves public MCP gateway bearers for the gateway protocol to validate", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const publicId = `gw_${"a".repeat(32)}`;
+
+    const res = await request(createApp(db, "local_trusted"))
+      .post(`/mcp/gateways/${publicId}`)
+      .set("Authorization", "Bearer pcgw_runtime_token")
+      .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ reachedGatewayProtocol: true });
+  });
+
+  it("does not bypass actor authentication for lookalike MCP gateway paths", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .post("/mcp/gateways/not-a-public-id")
+      .set("Authorization", "Bearer pcgw_runtime_token")
+      .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each([
+    ["terminated", "Agent is terminated"],
+    ["pending_approval", "Agent is pending approval"],
+  ])("rejects a %s agent JWT instead of retaining local-board", async (status, error) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId, status } });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-1");
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain(error);
+  });
+
+  it("rejects an agent JWT when the agent record belongs to another company", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId: randomUUID() } });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-1");
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("missing or belongs to another company");
+  });
+
+  it("reports an expired agent JWT specifically", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId } });
+    const token = craftAgentJwtWithoutResponsibleClaim({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      runId,
+      expiresInSeconds: -1,
+    });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Expired agent token");
   });
 
   it("uses the signed responsible_user_id claim and keeps the signed run id authoritative", async () => {

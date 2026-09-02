@@ -1,0 +1,9 @@
+{
+  "runId": "run_replay_interrupted",
+  "integrity": "complete",
+  "timelineCount": 6,
+  "duplicateEventIds": [],
+  "gaps": [],
+  "turnTerminalState": "interrupted",
+  "runTerminalState": "cancelled"
+}

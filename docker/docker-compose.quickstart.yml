@@ -11,6 +11,11 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Ceiling on processes. The image makes tini PID 1 so orphaned agent
+    # descendants are reaped instead of piling up as zombies; this is the
+    # backstop if something leaks anyway — the container hits its own limit and
+    # dies visibly rather than starving the host of pids.
+    pids_limit: 2048
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:

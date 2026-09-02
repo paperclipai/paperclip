@@ -1,0 +1,58 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "interrupted",
+  "steps": [
+    {
+      "kind": "event",
+      "event_type": "item.started",
+      "item_id": "item_local_runner_long_command",
+      "payload": { "kind": "command", "text": "fake long-running command" }
+    },
+    { "kind": "log", "stream": "stdout", "text": "waiting for interruption" },
+    { "kind": "await_interrupt" },
+    {
+      "kind": "event",
+      "event_type": "item.failed",
+      "item_id": "item_local_runner_long_command",
+      "payload": { "kind": "command", "message": "Interrupted by the operator." }
+    },
+    {
+      "kind": "result",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "yielded",
+        "summary": "The scripted turn was interrupted.",
+        "completionClaim": {
+          "contractRevision": "local_runner-contract-v1",
+          "objectiveSatisfied": false,
+          "criteria": [],
+          "remainingWork": [
+            { "description": "Start a replacement turn.", "blocksCompletion": true }
+          ]
+        },
+        "evidence": [],
+        "verification": [
+          { "commandOrCheck": "turn interruption", "status": "passed" }
+        ],
+        "attentionRequests": [],
+        "artifacts": [],
+        "continuation": {
+          "kind": "same_agent",
+          "summary": "A replacement turn can continue the session.",
+          "idempotencyKey": "local_runner-interrupted-continuation"
+        }
+      }
+    },
+    { "kind": "event", "event_type": "session.closed", "payload": {} },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "interrupted",
+        "runTerminalState": "cancelled",
+        "reportedWorkDisposition": "yielded"
+      }
+    },
+    { "kind": "exit", "code": 130 }
+  ]
+}

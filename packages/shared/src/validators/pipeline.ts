@@ -24,22 +24,22 @@ export const pipelineStageApproverSchema = z.object({
 
 export const pipelineStageOnEnterSchema = z.object({
   type: z.literal("run_routine"),
-  routineId: z.string().uuid(),
+  routineId: z.string().guid(),
   id: z.string().trim().min(1).max(200).optional(),
-  projectId: z.string().uuid().optional().nullable(),
-  projectWorkspaceId: z.string().uuid().optional().nullable(),
-  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  projectId: z.string().guid().optional().nullable(),
+  projectWorkspaceId: z.string().guid().optional().nullable(),
+  executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
 }).passthrough();
 
 export const pipelineStageAutomationSchema = z.object({
-  routineId: z.string().uuid().optional().nullable(),
-  assigneeAgentId: z.string().uuid().optional().nullable(),
+  routineId: z.string().guid().optional().nullable(),
+  assigneeAgentId: z.string().guid().optional().nullable(),
   instructionsBody: z.string().optional().nullable(),
-  projectId: z.string().uuid().optional().nullable(),
-  projectWorkspaceId: z.string().uuid().optional().nullable(),
-  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  projectId: z.string().guid().optional().nullable(),
+  projectWorkspaceId: z.string().guid().optional().nullable(),
+  executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
 }).passthrough();
@@ -52,7 +52,7 @@ export const pipelineStageCarryOverPolicySchema = z.object({
 });
 
 export const pipelineStageBreakdownSchema = z.object({
-  targetPipelineId: z.string().uuid(),
+  targetPipelineId: z.string().guid(),
   targetStageKey: z.string().trim().min(1).max(120),
   pieceNoun: z.string().trim().min(1).max(80).default("piece"),
   carryOverPolicy: pipelineStageCarryOverPolicySchema.optional(),
@@ -137,7 +137,7 @@ export const pipelineAutomationRetryCleanupOptionsSchema = z.object({
 
 export const pipelineAutomationRetryRequestSchema = z.object({
   scope: pipelineAutomationRetryScopeSchema,
-  targetStageId: z.string().uuid().nullable().optional(),
+  targetStageId: z.string().guid().nullable().optional(),
   expectedVersion: z.number().int().positive(),
   cleanup: pipelineAutomationRetryCleanupOptionsSchema.default({
     retireDirectChildren: true,

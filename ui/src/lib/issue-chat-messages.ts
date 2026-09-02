@@ -13,9 +13,12 @@ import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
+  shouldHideInteractionCard,
   type IssueThreadInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import { isLiveIssueRun } from "./liveIssueIds";
+import { findUIAdapter } from "../adapters/registry";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -33,10 +36,17 @@ export interface IssueChatComment extends IssueComment {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   followUpRequested?: boolean;
+  /** Causal conversation slot: the run that actually consumed this input. */
+  consumedByRunId?: string | null;
+  /** Same-turn PRP steering acknowledgement for this human input. */
+  steeredIntoRunId?: string | null;
+  conversationAnchorAt?: Date | string | null;
+  conversationAnchorSequence?: number;
 }
 
 export interface IssueChatLinkedRun {
   runId: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType?: string;
@@ -47,6 +57,8 @@ export interface IssueChatLinkedRun {
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  scheduledRetryAt?: string | null;
+  nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -62,7 +74,13 @@ export interface IssueChatTranscriptEntry {
     | "stderr"
     | "system"
     | "stdout"
-    | "diff";
+    | "diff"
+    | "provider_activity"
+    | "workspace_change"
+    | "workspace_file_reference"
+    | "runtime_request"
+    | "run_result"
+    | "run_terminal";
   ts: string;
   text?: string;
   delta?: boolean;
@@ -81,9 +99,28 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
+  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+  eventType?: string;
+  status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
+  title?: string;
+  summary?: string;
+  payload?: Record<string, unknown>;
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+
+// Adapters whose backends stream verbosely can declare a wider window via
+// their UI adapter module (transcriptPresentation.maxVisibleEntries); every
+// adapter without a declaration keeps the long-standing 30-entry window.
+// Resolved through the registry so shared code never branches on adapter
+// identities.
+function issueChatTranscriptMaxVisibleEntries(adapterType: string | null | undefined): number {
+  if (!adapterType) return ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES;
+  return (
+    findUIAdapter(adapterType)?.transcriptPresentation?.maxVisibleEntries ??
+    ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES
+  );
+}
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -258,7 +295,31 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
   });
 }
 
-function latestSameRunHandoffTimestamp(args: {
+function dedupeInteractionsById(
+  interactions: readonly IssueThreadInteraction[],
+): IssueThreadInteraction[] {
+  const byId = new Map<string, IssueThreadInteraction>();
+  for (const interaction of interactions) {
+    const previous = byId.get(interaction.id);
+    if (!previous) {
+      byId.set(interaction.id, interaction);
+      continue;
+    }
+    const previousUpdatedAt = toTimestamp(previous.updatedAt);
+    const nextUpdatedAt = toTimestamp(interaction.updatedAt);
+    if (
+      nextUpdatedAt > previousUpdatedAt
+      || (nextUpdatedAt === previousUpdatedAt
+        && previous.status === "pending"
+        && interaction.status !== "pending")
+    ) {
+      byId.set(interaction.id, interaction);
+    }
+  }
+  return [...byId.values()];
+}
+
+export function latestSameRunHandoffTimestamp(args: {
   interactionCreatedAtMs: number;
   sourceRunId: string;
   comments: readonly IssueChatComment[];
@@ -383,7 +444,15 @@ function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
   return entry.kind !== "init"
     && entry.kind !== "stderr"
     && entry.kind !== "stdout"
-    && entry.kind !== "system";
+    && entry.kind !== "system"
+    // The classic task interface intentionally remains unchanged. Structured
+    // PRP surfaces are rendered by TaskChatThread and remain available in run
+    // details when the classic interface is enabled.
+    && entry.kind !== "workspace_change"
+    && entry.kind !== "workspace_file_reference"
+    && entry.kind !== "runtime_request"
+    && entry.kind !== "run_result"
+    && entry.kind !== "run_terminal";
 }
 
 function compactIssueChatTranscript(
@@ -493,17 +562,27 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const isSystemNotice = comment.authorType === "system";
+  const isSystemAuthor = comment.authorType === "system";
+  // Presentation can route a comment to the system-notice renderer even when it
+  // is agent-authored (e.g. a recovery owner's short status update), letting it
+  // collapse like a system notice while keeping the real author's name/link.
+  // Comments without a presentation keep today's routing (graceful fallback for
+  // old data both directions).
+  const renderAsSystemNotice = isSystemAuthor || comment.presentation?.kind === "system_notice";
   const authorAgentId = effectiveCommentAuthorAgentId(comment);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, {
+    isSystemNotice: isSystemAuthor,
+  });
   const custom = {
-    kind: isSystemNotice ? "system_notice" : "comment",
+    kind: renderAsSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
     authorType: effectiveCommentAuthorType(comment),
     authorAgentId,
     authorUserId: comment.authorUserId,
+    // Responsible user this agent comment rode the authority of (the open cross-task write design (attribution)).
+    onBehalfOfUserId: comment.onBehalfOfUserId ?? null,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
     runId: effectiveCommentRunId(comment),
@@ -525,7 +604,7 @@ function createCommentMessage(args: {
   };
   const contentText = comment.deletedAt ? "" : comment.body;
 
-  if (isSystemNotice) {
+  if (renderAsSystemNotice) {
     const message: ThreadSystemMessage = {
       id: comment.id,
       role: "system",
@@ -669,6 +748,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_call" ||
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
+      entry.kind === "provider_activity" ||
       (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
     const isText = entry.kind === "assistant" && !!entry.text;
 
@@ -777,7 +857,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -845,6 +925,26 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       orderedParts.push({ type: "text", text: entry.text });
       continue;
     }
+    if (entry.kind === "provider_activity") {
+      const toolCallId = `provider-activity-${index}`;
+      const args = normalizeToolArgs({
+        family: entry.family ?? "provider_notice",
+        eventType: entry.eventType ?? "provider.notice.recorded",
+        status: entry.status ?? "informational",
+        title: entry.title ?? "Provider activity",
+        summary: entry.summary ?? "",
+        payload: entry.payload ?? {},
+      });
+      orderedParts.push({
+        type: "tool-call",
+        toolCallId,
+        toolName: "paperclip_provider_activity",
+        args,
+        argsText: "",
+        ...(entry.status === "running" ? {} : { result: { status: entry.status ?? "informational" } }),
+      });
+      continue;
+    }
     if (entry.kind === "thinking" && entry.text) {
       orderedParts.push({ type: "reasoning", text: entry.text });
       continue;
@@ -873,13 +973,17 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "tool_result") {
       const toolCallId = entry.toolUseId || `tool-result-${index}`;
       const existing = toolParts.get(toolCallId);
+      const existingResult = typeof existing?.result === "string" ? existing.result : "";
+      const result = entry.delta
+        ? `${existingResult}${entry.content ?? ""}`
+        : (entry.content || existingResult);
       const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: existing?.toolName || entry.toolName || "tool",
         args: existing?.args ?? {},
         argsText: existing?.argsText ?? "",
-        result: entry.content ?? "",
+        result,
         isError: entry.isError === true,
       };
       if (existing) {
@@ -944,13 +1048,15 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
 function normalizeLiveRuns(
   liveRuns: readonly LiveRunForIssue[],
   activeRun: ActiveRunForIssue | null | undefined,
-  issueId?: string,
+  issueId: string | undefined,
+  issueStatus: string | null | undefined,
 ) {
   const deduped = new Map<string, LiveRunForIssue>();
   for (const run of liveRuns) {
+    if (!isLiveIssueRun(run, issueStatus)) continue;
     deduped.set(run.id, run);
   }
-  if (activeRun) {
+  if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
     deduped.set(activeRun.id, {
       id: activeRun.id,
       status: activeRun.status,
@@ -992,7 +1098,7 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
@@ -1046,6 +1152,7 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  issueStatus?: string | null;
 }) {
   const {
     comments,
@@ -1063,6 +1170,7 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    issueStatus,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -1075,7 +1183,16 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const interaction of sortByCreated(interactions)) {
+  // A live-event cache patch and the polling response can briefly contain the
+  // same interaction. Collapse by id before constructing messages, preferring
+  // the newest/terminal snapshot so a resolved connection card updates in its
+  // existing thread slot instead of flashing a duplicate beside itself.
+  for (const interaction of sortByCreated(dedupeInteractionsById(interactions))) {
+    // A card IssueThreadInteractionCard never renders — a degenerate
+    // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
+    // stale sibling superseded by a newer question (PAP-437) — is skipped here so
+    // it leaves no empty message slot in the thread (PAP-424, plan from PAP-420).
+    if (shouldHideInteractionCard(interaction)) continue;
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({
@@ -1129,7 +1246,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId)) {
+  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

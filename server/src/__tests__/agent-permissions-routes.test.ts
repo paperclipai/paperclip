@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -41,11 +42,13 @@ const baseAgent = {
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getConfigRevision: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
   update: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -232,25 +235,6 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
   };
 }
 
-async function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
-  const [{ errorHandler }, { agentRoutes }] = await Promise.all([
-    import("../middleware/index.js") as Promise<typeof import("../middleware/index.js")>,
-    import("../routes/agents.js") as Promise<typeof import("../routes/agents.js")>,
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = {
-      ...actor,
-      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
-    };
-    next();
-  });
-  app.use("/api", agentRoutes(createDbStub(dbOptions) as any));
-  app.use(errorHandler);
-  return app;
-}
-
 async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
@@ -279,38 +263,40 @@ async function requestApp(
 }
 
 describe.sequential("agent permission routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ errorHandler }, { agentRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    ]);
+    return { errorHandler, agentRoutes };
+  });
+
+  function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
+    const { errorHandler, agentRoutes } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        ...actor,
+        companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      };
+      next();
+    });
+    app.use("/api", agentRoutes(createDbStub(dbOptions) as any));
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/agent-instructions.js");
-    vi.doUnmock("../services/agents.js");
-    vi.doUnmock("../services/approvals.js");
-    vi.doUnmock("../services/budgets.js");
-    vi.doUnmock("../services/company-skills.js");
-    vi.doUnmock("../services/heartbeat.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/instance-settings.js");
-    vi.doUnmock("../services/issue-approvals.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/secrets.js");
-    vi.doUnmock("../services/environments.js");
-    vi.doUnmock("../services/workspace-operations.js");
-    vi.doUnmock("../adapters/index.js");
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("@paperclipai/adapter-opencode-local/server");
-    registerModuleMocks();
     vi.resetAllMocks();
     mockAgentService.getById.mockReset();
+    mockAgentService.getConfigRevision.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -350,6 +336,7 @@ describe.sequential("agent permission routes", () => {
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAgentService.getConfigRevision.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -447,9 +434,7 @@ describe.sequential("agent permission routes", () => {
         env: { PAPERCLIP_API_KEY: "secret-test-key" },
       },
       runtimeConfig: {
-        modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
-        },
+        heartbeat: { enabled: false },
       },
     });
 
@@ -469,9 +454,7 @@ describe.sequential("agent permission routes", () => {
       env: { PAPERCLIP_API_KEY: "secret-test-key" },
     });
     expect(res.body.runtimeConfig).toMatchObject({
-      modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
-      },
+      heartbeat: { enabled: false },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
@@ -520,6 +503,129 @@ describe.sequential("agent permission routes", () => {
       .send({ title: "Compromised" }));
 
     expect(res.status).toBe(403);
+  });
+
+  it("requires instance administration to enable agent-scoped raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { debug: { providerTrace: "raw" } } }));
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows instance administrators to enable agent-scoped raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { debug: { providerTrace: "raw" } } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ["direct creation", `/api/companies/${companyId}/agents`],
+    ["hire creation", `/api/companies/${companyId}/agent-hires`],
+  ])("requires instance administration for raw provider traces during %s", async (_label, path) => {
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(path)
+      .send({
+        name: "Trace attempt",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      }));
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows instance administrators to create and hire with raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const body = {
+      name: "Trace capture agent",
+      adapterType: "process",
+      runtimeConfig: { debug: { providerTrace: "raw" } },
+    };
+
+    const createResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send(body),
+    );
+    const hireResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agent-hires`)
+        .send(body),
+    );
+
+    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(201);
+    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin rollback into raw provider trace capture", async () => {
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      afterConfig: {
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const response = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(
+        `/api/agents/${agentId}/config-revisions/33333333-3333-4333-8333-333333333333/rollback`,
+      ),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
   });
 
   it("blocks api key creation for authenticated company members without agent admin permission", async () => {
@@ -581,165 +687,6 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("blocks agent-authenticated self-updates that set cheap-profile host-executed workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      source: "agent_key",
-      runId: "run-1",
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                workspaceStrategy: {
-                  type: "git_worktree",
-                  provisionCommand: "touch /tmp/paperclip-rce",
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("host-executed workspace commands");
-    expect(res.body.error).toContain(
-      "runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.provisionCommand",
-    );
-    expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("allows board updates that set cheap-profile workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const runtimeConfig = {
-      modelProfiles: {
-        cheap: {
-          adapterConfig: {
-            workspaceStrategy: {
-              type: "git_worktree",
-              provisionCommand: "bash ./scripts/provision-worktree.sh",
-            },
-          },
-        },
-      },
-    };
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({ runtimeConfig }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({ runtimeConfig }),
-      expect.anything(),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      action: "agent.updated",
-    }));
-  });
-
-  it("normalizes cheap-profile env bindings through the adapter config secret pipeline", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => ({
-      ...config,
-      env: {
-        API_TOKEN: {
-          type: "secret_ref",
-          secretId: "33333333-3333-4333-8333-333333333333",
-          version: "latest",
-        },
-      },
-    }));
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        model: "gpt-5.3-codex-spark",
-        env: expect.any(Object),
-      }),
-      { strictMode: false, adapterType: "codex_local" },
-    );
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      expect.anything(),
-    );
   });
 
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
@@ -864,6 +811,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -972,7 +920,7 @@ describe.sequential("agent permission routes", () => {
       .send({
         name: "Builder",
         role: "engineer",
-        adapterType: "process",
+        adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {
           heartbeat: {
@@ -993,6 +941,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1028,6 +977,7 @@ describe.sequential("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1065,6 +1015,7 @@ describe.sequential("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1082,7 +1033,7 @@ describe.sequential("agent permission routes", () => {
       .send({
         name: "Builder",
         role: "engineer",
-        adapterType: "process",
+        adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {
           heartbeat: {
@@ -1103,6 +1054,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1326,6 +1278,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1411,6 +1364,7 @@ describe.sequential("agent permission routes", () => {
           adapterType: adapterCase.adapterType,
           defaultEnvironmentId: environmentId,
         }),
+        { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
     });
   }

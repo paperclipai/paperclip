@@ -22,6 +22,16 @@ We are intentionally not shipping the UI for this yet. The runtime code remains 
 - seeded worktree instances can keep local-encrypted secrets working
 - seeded worktree instances can rebind same-repo project workspace paths onto the current git worktree
 
+## Shared workspace concurrency policy
+
+Projects and individual issues can set `sharedWorkspaceConcurrency` in their execution workspace policy/settings:
+
+- `auto` (the default when absent): allow concurrent shared-workspace runs on `local` and `ssh` environments, and serialize runs on `sandbox` and `plugin` environments. An instance forced to Kubernetes always serializes in `auto` mode.
+- `serialize`: defer a run while another live run holds the same project workspace, using the `workspace_busy` retry path.
+- `allow`: dispatch alongside a live holder on every environment.
+
+Issue settings override the project policy, which overrides the default `auto`. When concurrency is allowed and a live holder exists, Paperclip adds the holder run and issue to the dispatched task context so agents can coordinate concurrent mutations through commits. The setting is optional JSON policy data, so existing databases require no migration.
+
 ## Hidden UI entrypoints
 
 These are the current user-facing UI surfaces for the feature, now intentionally disabled:

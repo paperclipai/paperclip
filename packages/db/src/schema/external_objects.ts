@@ -44,6 +44,8 @@ export const externalObjects = pgTable(
     lastChangedAt: timestamp("last_changed_at", { withTimezone: true }),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
     nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true }),
+    refreshStartedAt: timestamp("refresh_started_at", { withTimezone: true }),
+    refreshToken: uuid("refresh_token"),
     lastErrorCode: text("last_error_code"),
     lastErrorMessage: text("last_error_message"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

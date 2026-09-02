@@ -1,0 +1,13 @@
+{
+  "schema": "paperclip.prp.fixture.v1", "fixtureVersion": 1, "protocolVersion": 2,
+  "name": "Unsupported required version", "description": "A fixture that requires PRP v2 must fail closed in a PRP v1 consumer.",
+  "identity": { "schema": "paperclip.prp.identity.v1", "companyId": "company_replay", "issueId": "issue_replay_v2", "runId": "run_replay_v2", "environmentLeaseId": "lease_replay_v2", "runnerInstanceId": "runner_replay", "normalizedSessionId": "session_replay_v2", "driverSessionId": "driver_replay_v2" },
+  "capabilities": { "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "future", "version": "2.0.0" }, "steer": true, "interrupt": true, "resume": true, "runtimeRequests": true, "structuredResult": true, "typedEvents": true },
+  "commands": [{ "schema": "paperclip.prp.command.v1", "commandId": "command_v2_prepare", "controllerSeq": 1, "type": "run.prepare", "issuedAt": "2026-08-07T13:00:00.000Z", "payload": {} }],
+  "events": [
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_v2_01", "sourceSeq": 1, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_v2", "normalizedSessionId": "session_replay_v2", "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T13:00:00.010Z", "payload": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "This result requires PRP v2.", "completionClaim": { "contractRevision": "replay-contract-v2", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] } },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_v2_02", "sourceSeq": 2, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_v2", "normalizedSessionId": "session_replay_v2", "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T13:00:00.020Z", "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done" } }
+  ],
+  "requests": [],
+  "result": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "This result requires PRP v2.", "completionClaim": { "contractRevision": "replay-contract-v2", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+}

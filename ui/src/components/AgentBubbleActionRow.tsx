@@ -5,6 +5,7 @@ import type {
 } from "@paperclipai/shared";
 import { cn, formatShortDate } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -37,6 +38,36 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
   const then = new Date(date).getTime();
   if (Date.now() - then < WEEK_MS) return timeAgo(date);
   return formatShortDate(date);
+}
+
+/**
+ * Copy-to-clipboard icon button shared by every agent-bubble footer — the
+ * conference-room {@link AgentBubbleActionRow} and the redesigned task thread's
+ * {@link TaskChatBubbleActions} (PAP-413). Single-sourced so both footers keep
+ * identical sizing, radius, and the "copied ✓" feedback affordance rather than
+ * re-declaring the same button markup on each surface.
+ */
+export function BubbleCopyButton({ copyText }: { copyText: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title="Copy message"
+      aria-label="Copy message"
+      onClick={() => {
+        void copyTextToClipboard(copyText)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          })
+          .catch(() => {});
+      }}
+    >
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  );
 }
 
 /**
@@ -78,24 +109,9 @@ export function AgentBubbleActionRow({
   menuItems?: ReactNode;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-
   return (
     <div className={cn("mt-2 flex items-center gap-1", className)}>
-      <button
-        type="button"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        title="Copy message"
-        aria-label="Copy message"
-        onClick={() => {
-          void navigator.clipboard.writeText(copyText).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          });
-        }}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <BubbleCopyButton copyText={copyText} />
       {feedback ? (
         <IssueChatFeedbackButtons
           activeVote={feedback.activeVote}
@@ -134,7 +150,7 @@ export function AgentBubbleActionRow({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void navigator.clipboard.writeText(copyText);
+              void copyTextToClipboard(copyText).catch(() => {});
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
@@ -325,7 +341,7 @@ export function IssueChatFeedbackButtons({
               <span className="font-medium text-foreground">Don't allow</span> to keep this vote
               and future votes local.
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>You can change this later in Settings &gt; General.</p>
             {termsUrl ? (
               <a
                 href={termsUrl}

@@ -17,26 +17,36 @@ const SANDBOX_ALLOWED_TOOLS =
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
   "TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write";
 
+function shouldUseAllowedTools(input: { targetIsRemote: boolean; localProcessUid?: number | null }): boolean {
+  // Claude Code refuses `--dangerously-skip-permissions` when the process runs
+  // as root. Use the same explicit allowlist that remote targets use so local
+  // Docker/root probes and executions fail safe instead of hard-failing before
+  // auth/runtime validation can complete.
+  return input.targetIsRemote || input.localProcessUid === 0;
+}
+
 export function buildClaudeProbePermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsRemote: boolean;
+  localProcessUid?: number | null;
 }): string[] {
   if (!input.dangerouslySkipPermissions) return [];
-  // For remote targets, mirror the execution path: pass `--allowedTools`
-  // with the curated allowlist instead of dropping the flag entirely. The
-  // hello probe is a one-shot prompt that should never trigger a tool, but
-  // if a future probe prompt does, we don't want Claude CLI to stall on an
-  // interactive permission prompt that no human can answer.
-  if (input.targetIsRemote) return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
+  // For remote targets and local root processes, mirror the execution path:
+  // pass `--allowedTools` with the curated allowlist instead of dropping the
+  // flag entirely. The hello probe is a one-shot prompt that should never
+  // trigger a tool, but if a future probe prompt does, we don't want Claude CLI
+  // to stall on an interactive permission prompt that no human can answer.
+  if (shouldUseAllowedTools(input)) return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
   return ["--dangerously-skip-permissions"];
 }
 
 export function buildClaudeExecutionPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsRemote: boolean;
+  localProcessUid?: number | null;
 }): string[] {
   if (!input.dangerouslySkipPermissions) return [];
-  if (input.targetIsRemote) {
+  if (shouldUseAllowedTools(input)) {
     return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
   }
   return ["--dangerously-skip-permissions"];

@@ -91,6 +91,25 @@ describe("ExternalObjectPill", () => {
     expect(html).not.toContain("×");
   });
 
+  it("labels detected GitHub pull requests without fetched status as not refreshed", () => {
+    const html = renderToStaticMarkup(
+      <ExternalObjectPill
+        object={{
+          providerKey: "github",
+          objectType: "pull_request",
+          statusCategory: "unknown",
+          liveness: "unknown",
+          displayTitle: "acme/web#241",
+          url: "https://github.com/acme/web/pull/241",
+        }}
+      />,
+    );
+
+    expect(html).toContain("PR 241 - Not yet refreshed");
+    expect(html).toContain('aria-label="GitHub pull request — Not yet refreshed: acme/web#241"');
+    expect(html).not.toContain("Not yet resolved");
+  });
+
   it("uses the object link label, provider icon, and visible status when supplied", () => {
     const html = renderToStaticMarkup(
       <ExternalObjectPill

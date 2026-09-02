@@ -11,6 +11,23 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableServerInfoDebugView).toBe(false);
   });
 
+  it("defaults Paperclip developer mode off and accepts explicit patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enablePaperclipDeveloperMode: true }),
+    ).toEqual({ enablePaperclipDeveloperMode: true });
+  });
+
+  it("strips retired watchdog and liveness auto-recovery settings", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableTaskWatchdogs: false,
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 24,
+      }),
+    ).toEqual({});
+  });
+
   it("defaults workspace branch repair settings on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
@@ -22,6 +39,29 @@ describe("instance experimental settings validators", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableGoalsSidebarLink).toBe(false);
+  });
+
+  it("defaults the sandbox duplex bridge kill switch off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableSandboxDuplexBridge).toBe(false);
+  });
+
+  it("accepts an explicit sandbox duplex bridge kill switch value", () => {
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true })
+        .enableSandboxDuplexBridge,
+    ).toBe(true);
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: false })
+        .enableSandboxDuplexBridge,
+    ).toBe(false);
+  });
+
+  it("accepts the sandbox duplex bridge kill switch in a patch", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true }),
+    ).toEqual({ enableSandboxDuplexBridge: true });
   });
 
   it("defaults worktree run execution off", () => {
@@ -48,6 +88,12 @@ describe("instance experimental settings validators", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableBuiltInAgents).toBe(false);
+  });
+
+  it("defaults beta skills off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableBetaSkills).toBe(false);
   });
 
   it("defaults apps off", () => {

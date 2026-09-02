@@ -1,0 +1,53 @@
+[package]
+name = "paperclip-runner-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+aws-config.workspace = true
+aws-sdk-bedrockagentcore.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-sts.workspace = true
+aws-smithy-types.workspace = true
+aws-types.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+jsonschema.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+reqwest.workspace = true
+rustix.workspace = true
+sha1.workspace = true
+tungstenite.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "conformance-tracer"
+path = "src/bin/conformance-tracer.rs"
+
+[[bin]]
+name = "paperclip-runnerd"
+path = "src/bin/paperclip-runnerd.rs"
+
+[[bin]]
+name = "fake-harness"
+path = "src/bin/fake-harness.rs"
+
+[[bin]]
+name = "fake-codex-app-server"
+path = "src/bin/fake-codex-app-server.rs"
+
+[[bin]]
+name = "fake-acpx-sidecar"
+path = "src/bin/fake-acpx-sidecar.rs"

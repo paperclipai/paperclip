@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "wix",
+  "name": "Wix",
+  "description": "Connect Wix's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/wix.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.wix.com/*"
+  ],
+  "docsUrl": "https://www.wix.com/studio/developers/mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.wix.com/mcp"
+      },
+      "guidanceMd": "Connect Wix in the browser. A Wix account with access to the relevant sites.",
+      "riskTier": "S3",
+      "label": "Sign in with Wix",
+      "consoleLinks": {
+        "docs": "https://www.wix.com/studio/developers/mcp-server"
+      },
+      "warnings": [
+        "A Wix account with access to the relevant sites."
+      ]
+    }
+  ]
+}

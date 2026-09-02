@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -1102,4 +1102,56 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
   });
+});
+
+describe.sequential("operator-hidden plugin management floor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.plugins";
+  });
+  afterEach(() => {
+    delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+  });
+
+  const instanceAdmin = () => boardActor({ isInstanceAdmin: true, userId: "instance-admin" });
+
+  it("floors plugin lifecycle and config writes for instance admins", async () => {
+    const { app, loader } = await createApp(instanceAdmin());
+    readyPlugin();
+
+    const attempts: Array<[string, request.Test]> = [
+      ["install", request(app).post("/api/plugins/install").send({ packageName: "@paperclipai/plugin-modal" })],
+      ["uninstall", request(app).delete(`/api/plugins/${pluginId}`)],
+      ["enable", request(app).post(`/api/plugins/${pluginId}/enable`)],
+      ["disable", request(app).post(`/api/plugins/${pluginId}/disable`).send({})],
+      ["upgrade", request(app).post(`/api/plugins/${pluginId}/upgrade`).send({})],
+      ["config", request(app).post(`/api/plugins/${pluginId}/config`).send({ config: {} })],
+      ["config test", request(app).post(`/api/plugins/${pluginId}/config/test`).send({ config: {} })],
+      [
+        "local folder",
+        request(app)
+          .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/data`)
+          .send({ path: "/tmp/folder" }),
+      ],
+    ];
+    for (const [name, attempt] of attempts) {
+      const res = await attempt;
+      expect(res.status, `${name}: ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.details, name).toMatchObject({ code: "settings_operator_managed" });
+    }
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+    expect(mockLifecycle.enable).not.toHaveBeenCalled();
+    expect(mockLifecycle.disable).not.toHaveBeenCalled();
+    expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
+    expect(mockLifecycle.unload).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  });
+
+  it("keeps plugin reads open while the surface is hidden", async () => {
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get("/api/plugins/examples");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }, 20_000);
 });

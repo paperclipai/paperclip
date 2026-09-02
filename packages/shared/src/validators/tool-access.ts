@@ -30,18 +30,51 @@ import {
   TOOL_RUNTIME_KINDS,
   TOOL_RUNTIME_SLOT_STATUSES,
 } from "../constants.js";
+import {
+  checkMcpRemoteHeaderName,
+  checkMcpRemoteHeaderValue,
+  mcpRemoteHeaderNameFromConfigPath,
+  mcpRemoteHeaderRejectionMessage,
+} from "../mcp-remote-headers.js";
 import { jsonSchemaSchema } from "./plugin.js";
+import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
-export const connectionGrantKindSchema = z.enum(["workspace", "user"]);
+export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
+export const vercelConnectCredentialSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  connectorId: z.string().trim().min(1).max(255),
+  connectorUid: z.string().trim().min(1).max(255),
+  service: z.string().trim().min(1).max(255),
+  connectorType: z.string().trim().min(1).max(255),
+  principalMode: z.enum(["app", "user"]),
+  headerName: z.string().trim().min(1).max(160),
+  headerPrefix: z.string().max(120).nullable().optional(),
+  scopes: z.array(z.string().trim().min(1).max(500)).max(50),
+}).strict();
+export const vercelConnectGrantSummarySchema = z.object({
+  provider: z.literal("vercel_connect"),
+  subjectType: z.enum(["app", "user"]),
+  installationId: z.string().trim().min(1).max(255).optional(),
+  tenantId: z.string().trim().min(1).max(255).optional(),
+  tokenId: z.string().trim().min(1).max(255).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+  lastVerifiedAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
+export const connectionGrantKindSchema = z.enum(["organization", "user"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
+export const createConnectionGrantDelegationSchema = z.object({
+  agentId: z.string().guid(),
+});
+export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
-export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
+export const toolCredentialPlacementSchema = z.enum(["header", "env", "url"]);
 export const toolConnectionKindSchema = z.enum(TOOL_CONNECTION_KINDS);
 export const toolConnectionHealthStatusSchema = z.enum(TOOL_CONNECTION_HEALTH_STATUSES);
 export const toolCatalogEntryKindSchema = z.enum(TOOL_CATALOG_ENTRY_KINDS);
@@ -91,7 +124,7 @@ function rejectSensitiveConfigKeys(value: unknown, ctx: z.RefinementCtx, path: A
 }
 
 export const toolCredentialSecretRefSchema = z.object({
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
   configPath: z.string().trim().min(1).max(200),
   required: z.boolean().optional(),
@@ -104,7 +137,7 @@ export const toolCredentialSecretRefSchema = z.object({
 
 export const mcpConnectionCredentialRefSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
   placement: toolCredentialPlacementSchema,
   key: z.string().trim().min(1).max(160),
@@ -118,7 +151,7 @@ export const toolRedactedValueSummarySchema = z.object({
   sizeBytes: z.number().int().min(0).optional().nullable(),
   sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional().nullable(),
   redactedFields: z.array(z.string().trim().min(1).max(200)).default([]).optional(),
-  artifactId: z.string().uuid().optional().nullable(),
+  artifactId: z.string().guid().optional().nullable(),
 });
 
 export const createToolApplicationSchema = z.object({
@@ -127,8 +160,8 @@ export const createToolApplicationSchema = z.object({
   description: z.string().max(4000).optional().nullable(),
   type: toolApplicationTypeSchema,
   status: toolApplicationStatusSchema.optional(),
-  pluginId: z.string().uuid().optional().nullable(),
-  ownerAgentId: z.string().uuid().optional().nullable(),
+  pluginId: z.string().guid().optional().nullable(),
+  ownerAgentId: z.string().guid().optional().nullable(),
   ownerUserId: z.string().optional().nullable(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
@@ -143,11 +176,12 @@ export const updateToolApplicationSchema = createToolApplicationSchema.partial()
 export type UpdateToolApplication = z.infer<typeof updateToolApplicationSchema>;
 
 export const createToolConnectionSchema = z.object({
-  applicationId: z.string().uuid().optional(),
+  applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
+  credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
   ownership: toolConnectionOwnershipSchema.default("customer"),
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
@@ -160,7 +194,7 @@ export const createToolConnectionSchema = z.object({
 
 export type CreateToolConnection = z.infer<typeof createToolConnectionSchema>;
 
-export const updateToolConnectionSchema = createToolConnectionSchema.omit({ applicationId: true }).partial().refine(
+export const updateToolConnectionSchema = objectWithoutDefaults(createToolConnectionSchema.omit({ applicationId: true })).partial().refine(
   (value) => Object.keys(value).length > 0,
   { message: "At least one tool connection field is required" },
 );
@@ -168,29 +202,39 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
 
 export const connectionGrantSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  connectionId: z.string().uuid(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  connectionId: z.string().guid(),
   kind: connectionGrantKindSchema,
   subjectUserId: z.string().nullable(),
   providerTenant: z.object({
     name: z.string().trim().min(1).max(200).optional(),
     externalId: z.string().trim().min(1).max(400).optional(),
+    oauth: z.object({
+      strategy: z.string().trim().min(1).max(100).optional(),
+      accessTokenExpiresAt: z.string().datetime().optional(),
+      scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      tokenType: z.string().trim().min(1).max(100).optional(),
+    }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
+  externalCredential: vercelConnectGrantSummarySchema.nullable().optional(),
   status: connectionGrantStatusSchema,
   isDefault: z.boolean(),
-  createdByAgentId: z.string().uuid().nullable(),
+  createdByAgentId: z.string().guid().nullable(),
   createdByUserId: z.string().nullable(),
   revokedAt: z.coerce.date().nullable(),
-  revokedByAgentId: z.string().uuid().nullable(),
+  revokedByAgentId: z.string().guid().nullable(),
   revokedByUserId: z.string().nullable(),
   lastUsedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
   if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; workspace grants must not have one" });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
+  }
+  if (grant.externalCredential && grant.credentialSecretRefs.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialSecretRefs"], message: "External grants cannot also contain Paperclip secret references" });
   }
 });
 
@@ -202,6 +246,18 @@ export const putToolConnectionInstallsSchema = z.object({
 }).strict();
 
 export type PutToolConnectionInstalls = z.infer<typeof putToolConnectionInstallsSchema>;
+
+/**
+ * Audience replacement for an organization grant (PAP-17835). An empty array is
+ * the canonical encoding of "all organization members" — the UI never exposes
+ * "empty list" as the mental model, so the wire format carries the emptiness and
+ * the copy layer translates it.
+ */
+export const replaceConnectionGrantMembersSchema = z.object({
+  memberUserIds: z.array(z.string().trim().min(1).max(500)).max(1000),
+}).strict();
+
+export type ReplaceConnectionGrantMembersInput = z.infer<typeof replaceConnectionGrantMembersSchema>;
 
 export const connectionTokenIssuancePathSchema = z.enum(CONNECTION_TOKEN_ISSUANCE_PATHS);
 
@@ -219,7 +275,7 @@ export const connectionTokenRequestSchema = z.object({
   subject: connectionTokenSubjectSchema.optional().default({ type: "app" }),
   scope: connectionTokenScopeSchema.optional(),
   requestedTtlSeconds: z.number().int().positive().max(86_400).optional(),
-  grantId: z.string().uuid().optional(),
+  grantId: z.string().guid().optional(),
 }).strict();
 
 export const startConnectionAuthorizationSchema = z.object({
@@ -258,16 +314,130 @@ export const disableToolStdioCommandTemplateSchema = z.object({
 
 export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCommandTemplateSchema>;
 
+/**
+ * How an operator says a generic remote MCP endpoint authenticates (PAP-17087).
+ *
+ * `auto` is the default and the only value the simple path sends: Paperclip
+ * probes the endpoint and branches on what it finds. The rest are the explicit
+ * choices behind "Advanced authentication", where the operator already knows.
+ */
+export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
+
+export const genericMcpAuthModeSchema = z.enum(GENERIC_MCP_AUTH_MODES);
+
+export type GenericMcpAuthMode = z.infer<typeof genericMcpAuthModeSchema>;
+
+/**
+ * A preregistered OAuth client an operator pasted in because the authorization
+ * server supports neither CIMD nor dynamic registration. The secret is write-only:
+ * it becomes a Paperclip secret ref and is never read back.
+ */
+export const genericMcpOAuthClientSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096),
+  clientSecret: z.string().min(1).max(16384).optional(),
+}).strict();
+
+export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
+
+/**
+ * Reject `headers.*` credential paths whose header name Paperclip refuses to
+ * send, and any value that could split the outbound request. This runs at the
+ * API boundary so both the guided wizard and normalized paste-config go through
+ * exactly one gate; the service re-checks when it projects the headers.
+ */
+function rejectUnsafeHeaderCredentials(
+  credentialValues: Record<string, string>,
+  ctx: z.RefinementCtx,
+  path: (string | number)[],
+) {
+  for (const [configPath, value] of Object.entries(credentialValues)) {
+    const headerName = mcpRemoteHeaderNameFromConfigPath(configPath);
+    if (configPath.startsWith("headers.") && !headerName) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: "Header names cannot be blank.",
+      });
+      continue;
+    }
+    if (!headerName) continue;
+    const nameCheck = checkMcpRemoteHeaderName(headerName);
+    if (!nameCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, nameCheck.reason!),
+      });
+      continue;
+    }
+    const valueCheck = checkMcpRemoteHeaderValue(value);
+    if (!valueCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, valueCheck.reason!),
+      });
+    }
+  }
+}
+
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
+  connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
-  applicationId: z.string().uuid().optional(),
+  applicationId: z.string().guid().optional(),
+  /** Pending connection request this setup should resolve after authorization. */
+  interactionId: z.string().uuid().optional(),
+  /** Exact draft to continue after an interrupted setup. */
+  resumeConnectionId: z.string().guid().optional(),
+  authMode: genericMcpAuthModeSchema.optional(),
+  oauthClient: genericMcpOAuthClientSchema.optional(),
+  credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
+  vercelConnect: z.object({ connector: z.string().trim().min(1).max(255) }).strict().optional(),
+  /**
+   * Which identity this credential becomes (PAP-17835). `user` means "Just me":
+   * the credential is committed to the caller's own personal grant and never to
+   * the connection row's shared secret refs or the default organization grant.
+   * Omitted keeps the historical shared-credential behaviour.
+   */
+  grantKind: connectionGrantKindSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
+  if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
+  if (value.authMode && value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["authMode"],
+      message: "Authentication mode selection applies to a pasted URL, not a gallery app",
+    });
+  }
+  if (value.resumeConnectionId && !value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["resumeConnectionId"],
+      message: "Only gallery app setup can resume a draft connection",
+    });
+  }
+  const source = value.credentialSource ?? "paperclip_vault";
+  if (source === "vercel_connect") {
+    if (!value.vercelConnect) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "A Vercel connector UID is required" });
+    }
+    if (value.credentialValues && Object.keys(value.credentialValues).length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialValues"], message: "Vercel-backed connections cannot include provider credentials" });
+    }
+    if (value.oauthClient) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient"], message: "Vercel-backed connections cannot include OAuth client credentials" });
+    }
+  } else if (value.vercelConnect) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vercelConnect"], message: "Vercel connector metadata requires the vercel_connect credential source" });
+  }
 }).refine(
-  (value) => Boolean(value.galleryKey) !== Boolean(value.link),
-  { message: "Provide exactly one of galleryKey or link" },
+  (value) => Boolean(value.galleryKey) || Boolean(value.link),
+  { message: "Provide a galleryKey or link" },
 );
 
 export type ConnectToolApp = z.infer<typeof connectToolAppSchema>;
@@ -279,19 +449,38 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
-  enabledCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
-  askFirstCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
+  enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
+  askFirstCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
+  reviewedCatalogEntryIds: z.array(z.string().guid()).max(500).optional(),
   access: z.union([
     z.literal("all_agents"),
-    z.object({ agentIds: z.array(z.string().uuid()).min(1).max(250) }),
+    z.object({ agentIds: z.array(z.string().guid()).min(1).max(250) }),
   ]),
 });
 
 export type FinishToolApp = z.infer<typeof finishToolAppSchema>;
 
+/**
+ * Legacy promotion boundary retained for connection-intent flows. Interactive
+ * app setup chooses identity before OAuth and writes the token directly to that
+ * credential scope.
+ */
+export const finalizeOAuthAccessSchema = z.object({
+  grantKind: connectionGrantKindSchema,
+}).strict();
+
+export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
+
+export const startToolOAuthSchema = z.object({
+  asCurrentUser: z.boolean().optional(),
+  interactionId: z.string().uuid().optional(),
+}).strict().default({});
+
+export type StartToolOAuth = z.infer<typeof startToolOAuthSchema>;
+
 export const upsertToolCatalogEntrySchema = z.object({
-  applicationId: z.string().uuid(),
-  connectionId: z.string().uuid(),
+  applicationId: z.string().guid(),
+  connectionId: z.string().guid(),
   entryKind: toolCatalogEntryKindSchema.default("tool"),
   toolName: z.string().trim().min(1).max(240),
   title: z.string().trim().max(240).optional().nullable(),
@@ -321,7 +510,7 @@ export const createToolProfileSchema = z.object({
 
 export type CreateToolProfile = z.infer<typeof createToolProfileSchema>;
 
-export const updateToolProfileSchema = createToolProfileSchema.partial().refine(
+export const updateToolProfileSchema = objectWithoutDefaults(createToolProfileSchema).partial().refine(
   (value) => Object.keys(value).length > 0,
   { message: "At least one tool profile field is required" },
 );
@@ -329,12 +518,12 @@ export const updateToolProfileSchema = createToolProfileSchema.partial().refine(
 export type UpdateToolProfile = z.infer<typeof updateToolProfileSchema>;
 
 export const createToolProfileEntrySchema = z.object({
-  profileId: z.string().uuid(),
+  profileId: z.string().guid(),
   selectorType: toolProfileEntrySelectorTypeSchema,
   effect: toolProfileEntryEffectSchema.default("include"),
-  applicationId: z.string().uuid().optional().nullable(),
-  connectionId: z.string().uuid().optional().nullable(),
-  catalogEntryId: z.string().uuid().optional().nullable(),
+  applicationId: z.string().guid().optional().nullable(),
+  connectionId: z.string().guid().optional().nullable(),
+  catalogEntryId: z.string().guid().optional().nullable(),
   toolName: z.string().trim().min(1).max(240).optional().nullable(),
   riskLevel: toolRiskLevelSchema.optional().nullable(),
   conditions: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -346,7 +535,7 @@ export const createToolProfileEntryForProfileSchema = createToolProfileEntrySche
 
 export type CreateToolProfileEntryForProfile = z.infer<typeof createToolProfileEntryForProfileSchema>;
 
-export const updateToolProfileEntrySchema = createToolProfileEntryForProfileSchema.partial().refine(
+export const updateToolProfileEntrySchema = objectWithoutDefaults(createToolProfileEntryForProfileSchema).partial().refine(
   (value) => Object.keys(value).length > 0,
   { message: "At least one tool profile entry field is required" },
 );
@@ -366,7 +555,7 @@ export const duplicateToolProfileSchema = z.object({
 
 export type DuplicateToolProfile = z.infer<typeof duplicateToolProfileSchema>;
 
-export const updateToolProfileWithEntriesSchema = createToolProfileSchema.partial().extend({
+export const updateToolProfileWithEntriesSchema = objectWithoutDefaults(createToolProfileSchema).partial().extend({
   entries: z.array(createToolProfileEntryForProfileSchema).max(250).optional(),
 }).refine(
   (value) => Object.keys(value).length > 0,
@@ -377,7 +566,7 @@ export type UpdateToolProfileWithEntries = z.infer<typeof updateToolProfileWithE
 
 export const reviewToolProfileNewToolsSchema = z.object({
   decisions: z.array(z.object({
-    catalogEntryId: z.string().uuid(),
+    catalogEntryId: z.string().guid(),
     decision: z.enum(["allow", "keep_blocked"]),
   })).min(1).max(250),
 });
@@ -386,13 +575,13 @@ export type ReviewToolProfileNewTools = z.infer<typeof reviewToolProfileNewTools
 
 export const deleteToolProfileSchema = z.object({
   force: z.boolean().default(false),
-  reassignToProfileId: z.string().uuid().optional(),
-}).default({});
+  reassignToProfileId: z.string().guid().optional(),
+}).prefault({});
 
 export type DeleteToolProfile = z.infer<typeof deleteToolProfileSchema>;
 
 export const createToolProfileBindingSchema = z.object({
-  profileId: z.string().uuid(),
+  profileId: z.string().guid(),
   targetType: toolProfileBindingTargetTypeSchema,
   targetId: z.string().trim().min(1).max(200),
   priority: z.number().int().min(0).max(10000).default(100),
@@ -422,14 +611,14 @@ export const toolMcpGatewayAuthConfigSchema = z.object({
     defaultTtlSeconds: z.number().int().positive().max(31_536_000).nullable().default(7_776_000),
     requireFiniteExpiry: z.boolean().default(true),
     longLivedTokenRequiresOverride: z.boolean().default(true),
-  }).default({}),
+  }).prefault({}),
   oauth: z.object({
     enabled: z.literal(false).default(false),
     reservedFor: z.literal("v1_5").default("v1_5"),
     protectedResourceMetadataPath: z.string().trim().max(240).optional().nullable(),
     dynamicClientRegistration: z.literal(false).optional(),
     authorizationCodePkce: z.literal(false).optional(),
-  }).default({}),
+  }).prefault({}),
 });
 
 export const toolMcpGatewayHeaderPolicySchema = z.object({
@@ -437,7 +626,7 @@ export const toolMcpGatewayHeaderPolicySchema = z.object({
   callerPassthrough: z.object({
     enabled: z.boolean().default(false),
     allowedHeaders: z.array(headerNameSchema).max(50).default([]),
-  }).default({}),
+  }).prefault({}),
   staticHeaders: z.array(z.object({
     name: headerNameSchema,
     valueRef: z.string().trim().max(240).optional().nullable(),
@@ -446,11 +635,11 @@ export const toolMcpGatewayHeaderPolicySchema = z.object({
   generatedMetadata: z.object({
     enabled: z.boolean().default(false),
     allowedHeaders: z.array(headerNameSchema).max(20).default([]),
-  }).default({}),
+  }).prefault({}),
   responseHeaders: z.object({
     forwardMcpRequiredHeaders: z.boolean().default(true),
     forwardSafeCacheHeaders: z.boolean().default(true),
-  }).default({}),
+  }).prefault({}),
 });
 
 export const toolMcpGatewayMetadataPolicySchema = z.object({
@@ -475,14 +664,14 @@ export const createToolMcpGatewaySchema = z.object({
   slug: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
   displaySlug: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
   description: z.string().max(4000).optional().nullable(),
-  profileId: z.string().uuid(),
+  profileId: z.string().guid(),
   defaultProfileMode: toolMcpGatewayDefaultProfileModeSchema.default("gateway_only").optional(),
   contextScopeType: toolMcpGatewayContextScopeTypeSchema.default("none").optional(),
   contextScopeId: z.string().trim().min(1).max(200).optional().nullable(),
-  agentId: z.string().uuid().optional().nullable(),
-  projectId: z.string().uuid().optional().nullable(),
-  issueId: z.string().uuid().optional().nullable(),
-  approvalIssueId: z.string().uuid().optional().nullable(),
+  agentId: z.string().guid().optional().nullable(),
+  projectId: z.string().guid().optional().nullable(),
+  issueId: z.string().guid().optional().nullable(),
+  approvalIssueId: z.string().guid().optional().nullable(),
   authConfig: toolMcpGatewayAuthConfigSchema.optional(),
   headerPolicy: toolMcpGatewayHeaderPolicySchema.optional(),
   metadataPolicy: toolMcpGatewayMetadataPolicySchema.optional(),
@@ -492,7 +681,7 @@ export const createToolMcpGatewaySchema = z.object({
 
 export type CreateToolMcpGateway = z.infer<typeof createToolMcpGatewaySchema>;
 
-export const updateToolMcpGatewaySchema = createToolMcpGatewaySchema
+export const updateToolMcpGatewaySchema = objectWithoutDefaults(createToolMcpGatewaySchema)
   .partial()
   .extend({ status: toolMcpGatewayStatusSchema.optional() })
   .refine((value) => Object.keys(value).length > 0, { message: "At least one gateway field is required" });
@@ -504,7 +693,7 @@ export const createToolMcpGatewayTokenSchema = z.object({
   subjectType: toolMcpGatewayTokenSubjectTypeSchema.default("gateway_client").optional(),
   subjectId: z.string().trim().min(1).max(240).optional().nullable(),
   clientLabel: z.string().trim().min(1).max(160),
-  ownerNote: z.string().trim().min(1).max(1000),
+  ownerNote: z.string().trim().max(1000).default(""),
   allowedActions: z.array(toolMcpGatewayTokenActionSchema).min(1).max(TOOL_MCP_GATEWAY_TOKEN_ACTIONS.length).default(["tools/list", "tools/call"]).optional(),
   expiresAt: z.coerce.date().optional().nullable(),
   expiryOverrideReason: z.string().trim().min(1).max(1000).optional().nullable(),
@@ -553,29 +742,29 @@ const timeWindowConditionSchema = z.object({
 const actorConditionSchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
   actorTypes: z.array(z.enum(["agent", "user", "system", "plugin"])).max(20).optional(),
-  agentId: z.string().uuid().optional(),
-  agentIds: z.array(z.string().uuid()).max(100).optional(),
+  agentId: z.string().guid().optional(),
+  agentIds: z.array(z.string().guid()).max(100).optional(),
 }).strict();
 
 const contextConditionSchema = z.object({
-  projectId: z.string().uuid().optional(),
-  projectIds: z.array(z.string().uuid()).max(100).optional(),
-  routineId: z.string().uuid().optional(),
-  routineIds: z.array(z.string().uuid()).max(100).optional(),
-  issueId: z.string().uuid().optional(),
-  issueIds: z.array(z.string().uuid()).max(100).optional(),
+  projectId: z.string().guid().optional(),
+  projectIds: z.array(z.string().guid()).max(100).optional(),
+  routineId: z.string().guid().optional(),
+  routineIds: z.array(z.string().guid()).max(100).optional(),
+  issueId: z.string().guid().optional(),
+  issueIds: z.array(z.string().guid()).max(100).optional(),
   requireIssue: z.boolean().optional(),
   requireProject: z.boolean().optional(),
   requireRoutine: z.boolean().optional(),
 }).strict();
 
 const credentialScopeConditionSchema = z.object({
-  applicationId: z.string().uuid().optional(),
-  applicationIds: z.array(z.string().uuid()).max(100).optional(),
-  connectionId: z.string().uuid().optional(),
-  connectionIds: z.array(z.string().uuid()).max(100).optional(),
-  catalogEntryId: z.string().uuid().optional(),
-  catalogEntryIds: z.array(z.string().uuid()).max(100).optional(),
+  applicationId: z.string().guid().optional(),
+  applicationIds: z.array(z.string().guid()).max(100).optional(),
+  connectionId: z.string().guid().optional(),
+  connectionIds: z.array(z.string().guid()).max(100).optional(),
+  catalogEntryId: z.string().guid().optional(),
+  catalogEntryIds: z.array(z.string().guid()).max(100).optional(),
   applicationKey: z.string().trim().min(1).max(160).optional(),
   applicationKeys: z.array(z.string().trim().min(1).max(160)).max(100).optional(),
   providerType: z.string().trim().min(1).max(160).optional(),
@@ -621,7 +810,7 @@ export const createToolPolicySchema = z.object({
 
 export type CreateToolPolicy = z.infer<typeof createToolPolicySchema>;
 
-export const updateToolPolicySchema = createToolPolicySchema.partial().refine(
+export const updateToolPolicySchema = objectWithoutDefaults(createToolPolicySchema).partial().refine(
   (value) => Object.keys(value).length > 0,
   { message: "At least one tool policy field is required" },
 );
@@ -629,7 +818,7 @@ export const updateToolPolicySchema = createToolPolicySchema.partial().refine(
 export type UpdateToolPolicy = z.infer<typeof updateToolPolicySchema>;
 
 export const reorderToolPoliciesSchema = z.object({
-  policyIds: z.array(z.string().uuid()).min(1).max(500),
+  policyIds: z.array(z.string().guid()).min(1).max(500),
 });
 
 export type ReorderToolPolicies = z.infer<typeof reorderToolPoliciesSchema>;
@@ -642,11 +831,11 @@ export type DuplicateToolPolicy = z.infer<typeof duplicateToolPolicySchema>;
 
 export const createToolInvocationSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(300).optional().nullable(),
-  issueId: z.string().uuid().optional().nullable(),
-  runId: z.string().uuid().optional().nullable(),
-  applicationId: z.string().uuid().optional().nullable(),
-  connectionId: z.string().uuid().optional().nullable(),
-  catalogEntryId: z.string().uuid().optional().nullable(),
+  issueId: z.string().guid().optional().nullable(),
+  runId: z.string().guid().optional().nullable(),
+  applicationId: z.string().guid().optional().nullable(),
+  connectionId: z.string().guid().optional().nullable(),
+  catalogEntryId: z.string().guid().optional().nullable(),
   toolName: z.string().trim().min(1).max(240),
   argumentsHash: z.string().trim().max(128).optional().nullable(),
   argumentsSummary: toolRedactedValueSummarySchema.optional().nullable(),
@@ -655,8 +844,8 @@ export const createToolInvocationSchema = z.object({
 export type CreateToolInvocation = z.infer<typeof createToolInvocationSchema>;
 
 export const createToolActionRequestSchema = z.object({
-  invocationId: z.string().uuid(),
-  issueId: z.string().uuid().optional().nullable(),
+  invocationId: z.string().guid(),
+  issueId: z.string().guid().optional().nullable(),
   canonicalArgumentsHash: z.string().trim().min(1).max(128),
   canonicalArgumentsSummary: toolRedactedValueSummarySchema,
   signedArguments: z.string().trim().max(4096).optional().nullable(),
@@ -667,7 +856,7 @@ export const createToolActionRequestSchema = z.object({
 export type CreateToolActionRequest = z.infer<typeof createToolActionRequestSchema>;
 
 export const toolConnectionTestCallSchema = z.object({
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   toolName: z.string().trim().min(1).max(240),
   parameters: z.unknown().optional(),
 });
@@ -682,31 +871,31 @@ export type ImportMcpJson = z.infer<typeof importMcpJsonSchema>;
 
 export const toolAccessSelectorSchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
-  agentId: z.string().uuid().optional(),
-  agentIds: z.array(z.string().uuid()).optional(),
-  projectId: z.string().uuid().optional(),
-  projectIds: z.array(z.string().uuid()).optional(),
-  routineId: z.string().uuid().optional(),
-  routineIds: z.array(z.string().uuid()).optional(),
-  issueId: z.string().uuid().optional(),
-  issueIds: z.array(z.string().uuid()).optional(),
-  gatewayId: z.string().uuid().optional(),
-  gatewayIds: z.array(z.string().uuid()).optional(),
+  agentId: z.string().guid().optional(),
+  agentIds: z.array(z.string().guid()).optional(),
+  projectId: z.string().guid().optional(),
+  projectIds: z.array(z.string().guid()).optional(),
+  routineId: z.string().guid().optional(),
+  routineIds: z.array(z.string().guid()).optional(),
+  issueId: z.string().guid().optional(),
+  issueIds: z.array(z.string().guid()).optional(),
+  gatewayId: z.string().guid().optional(),
+  gatewayIds: z.array(z.string().guid()).optional(),
   gatewayPublicId: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
   gatewayPublicIds: z.array(z.string().trim().min(1).max(120).regex(safeKeyPattern)).optional(),
-  gatewayTokenId: z.string().uuid().optional(),
-  gatewayTokenIds: z.array(z.string().uuid()).optional(),
+  gatewayTokenId: z.string().guid().optional(),
+  gatewayTokenIds: z.array(z.string().guid()).optional(),
   clientSubjectType: toolMcpGatewayTokenSubjectTypeSchema.optional(),
   clientSubjectTypes: z.array(toolMcpGatewayTokenSubjectTypeSchema).optional(),
   clientName: z.string().trim().min(1).max(160).optional(),
   clientNames: z.array(z.string().trim().min(1).max(160)).optional(),
   externalClient: z.boolean().optional(),
-  applicationId: z.string().uuid().optional(),
-  applicationIds: z.array(z.string().uuid()).optional(),
-  connectionId: z.string().uuid().optional(),
-  connectionIds: z.array(z.string().uuid()).optional(),
-  catalogEntryId: z.string().uuid().optional(),
-  catalogEntryIds: z.array(z.string().uuid()).optional(),
+  applicationId: z.string().guid().optional(),
+  applicationIds: z.array(z.string().guid()).optional(),
+  connectionId: z.string().guid().optional(),
+  connectionIds: z.array(z.string().guid()).optional(),
+  catalogEntryId: z.string().guid().optional(),
+  catalogEntryIds: z.array(z.string().guid()).optional(),
   toolName: z.string().trim().min(1).max(240).optional(),
   toolNames: z.array(z.string().trim().min(1).max(240)).optional(),
   riskLevel: toolRiskLevelSchema.optional(),
@@ -779,29 +968,29 @@ export const revokeToolTrustRuleSchema = z.object({
 export type RevokeToolTrustRule = z.infer<typeof revokeToolTrustRuleSchema>;
 
 export const toolPolicyTestRequestSchema = z.object({
-  companyId: z.string().uuid(),
+  companyId: z.string().guid(),
   actor: z.object({
     actorType: z.enum(["agent", "user", "system", "plugin"]),
     actorId: z.string().trim().min(1).max(240),
-    agentId: z.string().uuid().optional().nullable(),
+    agentId: z.string().guid().optional().nullable(),
   }),
   runContext: z.object({
-    heartbeatRunId: z.string().uuid().optional().nullable(),
-    issueId: z.string().uuid().optional().nullable(),
-    projectId: z.string().uuid().optional().nullable(),
-    routineId: z.string().uuid().optional().nullable(),
-    gatewayId: z.string().uuid().optional().nullable(),
+    heartbeatRunId: z.string().guid().optional().nullable(),
+    issueId: z.string().guid().optional().nullable(),
+    projectId: z.string().guid().optional().nullable(),
+    routineId: z.string().guid().optional().nullable(),
+    gatewayId: z.string().guid().optional().nullable(),
     gatewayPublicId: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional().nullable(),
-    gatewayTokenId: z.string().uuid().optional().nullable(),
+    gatewayTokenId: z.string().guid().optional().nullable(),
     clientSubjectType: toolMcpGatewayTokenSubjectTypeSchema.optional().nullable(),
     clientSubjectId: z.string().trim().min(1).max(240).optional().nullable(),
     clientName: z.string().trim().min(1).max(160).optional().nullable(),
     externalClient: z.boolean().optional().nullable(),
   }).optional().nullable(),
   request: z.object({
-    applicationId: z.string().uuid().optional().nullable(),
-    connectionId: z.string().uuid().optional().nullable(),
-    catalogEntryId: z.string().uuid().optional().nullable(),
+    applicationId: z.string().guid().optional().nullable(),
+    connectionId: z.string().guid().optional().nullable(),
+    catalogEntryId: z.string().guid().optional().nullable(),
     toolName: z.string().trim().min(1).max(240),
     arguments: z.unknown().optional(),
     idempotencyKey: z.string().trim().min(1).max(512).optional().nullable(),

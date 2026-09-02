@@ -49,6 +49,28 @@ describe("runRowSubtitle", () => {
       runRowSubtitle({ status: "succeeded", failureReason: null, triggerPayload: null }, variables),
     ).toBe("");
   });
+
+  it("labels an activity-gated skip", () => {
+    const subtitle = runRowSubtitle(
+      { status: "skipped", failureReason: "no_external_activity", triggerPayload: null },
+      variables,
+    );
+    expect(subtitle).toBe("Skipped — no activity since last run");
+  });
+
+  it("labels other known skip reasons", () => {
+    expect(
+      runRowSubtitle({ status: "skipped", failureReason: "paused", triggerPayload: null }, variables),
+    ).toBe("Skipped — routine paused");
+  });
+
+  it("falls back to variable values for a skip with no known reason", () => {
+    const subtitle = runRowSubtitle(
+      { status: "skipped", failureReason: null, triggerPayload: { customer: "Acme" } },
+      variables,
+    );
+    expect(subtitle).toBe('customer="Acme"');
+  });
 });
 
 describe("dedupedTriggerLabel", () => {

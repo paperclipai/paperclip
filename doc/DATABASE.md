@@ -113,7 +113,18 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections, use a direct or session-pooled connection for Paperclip until runtime pooling support is documented in this guide. Do not edit database client source files as part of deployment setup.
+If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
+
+### Client tuning (optional)
+
+All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+
+```sh
+DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
+DATABASE_POOL_MAX=25                 # connection pool size; default: 10
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: keep open
+DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+```
 
 ### Push the schema
 
@@ -156,6 +167,14 @@ When authoring migrations or one-time backfills:
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
+## Migration snapshots
+
+`drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
+
+- Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
+- Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
@@ -176,6 +195,59 @@ Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `s
 - Deleting a training example deletes only that example and does not mutate the source issue.
 
 This policy makes training exports self-describing while keeping the decision record usable after a comment deletion without retaining content the author removed.
+
+## Decision queues and triage provenance
+
+The decisions desk stores queue membership, decide-by/snooze state, and retention state in `decision_queues`, `decision_queue_items`, `decision_triage`, and `decision_retention`. These sidecars use the stable attention identity `(source_kind, source_id)` so all attention source kinds can participate without copying source titles, bodies, projects, or other visibility-sensitive data.
+
+`decision_triage_events` is append-only history for queue and triage changes. Current rows and history both carry server-derived user/agent, heartbeat run, API-key, and responsible-user attribution where applicable. Queue reads must resolve and authorize their source rows at read time; a sidecar row is never a visibility grant.
+
+Triage writes serialize on the company and attention-source identity so concurrent partial updates preserve both fields and produce monotonic history versions.
+
+`decision_retention` tracks the last observed source `activityAt`, Keep, reversible archive provenance, and monotonic source/archive versions. `decision_archive_notification_outbox` has a unique key over company, source identity, archive version, and immutable origin agent so repeated sweeps cannot enqueue duplicate notifications; delivery claims are retryable and coalesced per agent.
+
+## Native runner persistence
+
+Native runner state is additive to the existing heartbeat tables. Every existing
+`heartbeat_runs` row defaults to `runtime_mode = 'legacy'`; adding these columns
+does not select the native runtime or start a runner process. Native execution can
+record its resolved runtime profile, provider session, driver, completion
+contract, durable event cursor, and finalization phase on the run when a later
+rollout explicitly selects it.
+
+`completion_contracts`, `native_run_results`, `native_run_finalizations`,
+`work_assessments`, `status_decisions`, and `status_decision_effects` form the
+append-oriented evidence and status-decision chain. Unique fingerprints,
+versions, ordinals, and idempotency keys make retries deterministic. Composite
+foreign keys bind every contract, result, assessment, decision, effect, and
+finalization to one company, issue, and run. The database rejects mixed-owner
+evidence even when every referenced ID exists. Native source identities on
+`heartbeat_run_events` are nullable so legacy events remain readable without
+rewriting historical rows. Per-run native source identifiers are unique, while
+the existing legacy sequence behavior remains unchanged. The hidden native
+coordinator serializes on its bound `heartbeat_runs` row, allocates
+`next_event_seq`, and commits a validated PRP event before the transport sends
+its cumulative ACK. Byte-equivalent source retries return the existing cursor;
+gaps and conflicting replays fail closed. Accepted structured results enter the
+finalization ledger, whose retry time and owner lease are checked under a row
+lock. None of these writes selects a runtime or changes a legacy run's execution
+path.
+
+Issue `status_version` advances only when `status` changes. The JavaScript backup
+path includes user-defined functions and triggers so a restored database keeps
+that invariant. Removing or disabling a future native rollout flag must not
+delete these records; persisted experimental runs remain available for recovery
+and inspection.
+
+## Question-response delivery receipts
+
+`issue_question_response_deliveries` is the retry-safe, content-free outbox for
+answered `ask_user_questions` interactions. Its unique interaction and correlation
+indexes enforce one causal delivery per response. It records source and target
+run/turn ids, payload digest, attempt/acknowledgement state, and one of `steered`,
+`coalesced`, or `wake_fallback`; answer content remains only in
+`issue_thread_interactions.result`. Deleting the interaction cascades its receipt,
+while deleting a referenced run clears that run pointer without deleting history.
 
 ## Plugin database namespaces
 
@@ -246,7 +318,7 @@ pnpm paperclipai configure --section secrets
 Inline secret migration command:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply

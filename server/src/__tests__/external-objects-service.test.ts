@@ -529,6 +529,207 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("coalesces automatic and manual refreshes for the same object", async () => {
+    const { companyId, issueId } = await createIssue();
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => {
+      markResolverStarted = resolve;
+    });
+    let finishResolver!: () => void;
+    const resolverCanFinish = new Promise<void>((resolve) => {
+      finishResolver = resolve;
+    });
+    const resolve = vi.fn(async () => {
+      markResolverStarted();
+      await resolverCanFinish;
+      return {
+        ok: true as const,
+        snapshot: {
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          statusKey: "open",
+          statusLabel: "Open",
+          ttlSeconds: 300,
+        },
+      };
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    const dueRefresh = svc.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    await resolverStarted;
+    const manualRefresh = svc.refreshObject(object.id, { companyId, force: true });
+    finishResolver();
+
+    const [dueResults, manualResult] = await Promise.all([dueRefresh, manualRefresh]);
+
+    expect(dueResults).toHaveLength(1);
+    expect(dueResults[0]?.refreshed).toBe(true);
+    expect(manualResult.refreshed).toBe(true);
+    expect(manualResult.object.statusLabel).toBe("Open");
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents duplicate refreshes across service instances", async () => {
+    const { companyId, issueId } = await createIssue();
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => {
+      markResolverStarted = resolve;
+    });
+    let finishResolver!: () => void;
+    const resolverCanFinish = new Promise<void>((resolve) => {
+      finishResolver = resolve;
+    });
+    const resolve = vi.fn(async () => {
+      markResolverStarted();
+      await resolverCanFinish;
+      return {
+        ok: true as const,
+        snapshot: {
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          statusKey: "open",
+          statusLabel: "Open",
+          ttlSeconds: 300,
+        },
+      };
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const scheduledService = externalObjectService(db, { resolvers: [resolver], github: false });
+    const manualService = externalObjectService(db, { resolvers: [resolver], github: false });
+    await scheduledService.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    const dueRefresh = scheduledService.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    await resolverStarted;
+    const manualRefresh = await manualService.refreshObject(object.id, { companyId, force: true });
+    finishResolver();
+    const dueResults = await dueRefresh;
+
+    expect(dueResults).toHaveLength(1);
+    expect(dueResults[0]?.refreshed).toBe(true);
+    expect(manualRefresh.refreshed).toBe(false);
+    expect(manualRefresh.reason).toBe("refresh_in_progress");
+    expect(manualRefresh.object).not.toHaveProperty("refreshToken");
+    expect(resolve).toHaveBeenCalledTimes(1);
+    await expect(
+      db.select().from(externalObjects).then((rows) => rows[0]?.refreshStartedAt ?? null),
+    ).resolves.toBeNull();
+  });
+
+  it("does not let a stale refresh overwrite a replacement claimant", async () => {
+    const { companyId, issueId } = await createIssue();
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => {
+      markResolverStarted = resolve;
+    });
+    let finishResolver!: () => void;
+    const resolverCanFinish = new Promise<void>((resolve) => {
+      finishResolver = resolve;
+    });
+    const slowResolve = vi.fn(async () => {
+      markResolverStarted();
+      await resolverCanFinish;
+      return {
+        ok: true as const,
+        snapshot: {
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          statusKey: "open",
+          statusLabel: "Open",
+          ttlSeconds: 300,
+        },
+      };
+    });
+    const replacementResolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "closed" as const,
+        statusTone: "muted" as const,
+        statusKey: "closed",
+        statusLabel: "Closed",
+        ttlSeconds: 300,
+      },
+    }));
+    const scheduledService = externalObjectService(db, {
+      resolvers: [{ providerKey: "url", objectType: "link", resolve: slowResolve }],
+      github: false,
+    });
+    const replacementService = externalObjectService(db, {
+      resolvers: [{ providerKey: "url", objectType: "link", resolve: replacementResolve }],
+      github: false,
+    });
+    await scheduledService.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    const claimedAt = new Date(Date.now() + 1_000);
+
+    const dueRefresh = scheduledService.refreshDueObjects(companyId, 50, claimedAt);
+    await resolverStarted;
+    const replacementResult = await replacementService.refreshObject(object.id, {
+      companyId,
+      force: true,
+      now: new Date(claimedAt.getTime() + 301_000),
+    });
+    finishResolver();
+    const dueResults = await dueRefresh;
+    const finalObject = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    expect(replacementResult.refreshed).toBe(true);
+    expect(dueResults[0]).toMatchObject({ refreshed: false, reason: "refresh_superseded" });
+    expect(finalObject.statusLabel).toBe("Closed");
+    expect(finalObject.refreshStartedAt).toBeNull();
+    expect(finalObject.refreshToken).toBeNull();
+    expect(slowResolve).toHaveBeenCalledTimes(1);
+    expect(replacementResolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes due objects for active companies only", async () => {
+    const active = await createIssue();
+    const paused = await createIssue();
+    await db
+      .update(companies)
+      .set({ status: "paused" })
+      .where(eq(companies.id, paused.companyId));
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "open" as const,
+        statusTone: "info" as const,
+        statusKey: "open",
+        statusLabel: "Open",
+        ttlSeconds: 300,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(active.issueId);
+    await svc.syncIssue(paused.issueId);
+
+    const result = await svc.refreshDueObjectsForActiveCompanies(50, new Date(Date.now() + 1_000));
+
+    expect(result).toEqual({ companies: 1, checked: 1, refreshed: 1 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    const rows = await db.select().from(externalObjects);
+    const activeObject = rows.find((row) => row.companyId === active.companyId);
+    const pausedObject = rows.find((row) => row.companyId === paused.companyId);
+    expect(activeObject?.statusLabel).toBe("Open");
+    expect(pausedObject?.statusLabel).toBeNull();
+  });
+
   it("removes comment mentions when a synced comment is hard-deleted", async () => {
     const { companyId, issueId } = await createIssue();
     const commentId = randomUUID();

@@ -86,10 +86,13 @@ describe("StatusIcon", () => {
     expect(html).toContain("Blocked · review stalled on PAP-2279");
   });
 
-  it("keeps the onChange picker working with the glyph", () => {
+  it("uses an accessible native button for the icon-only picker trigger", () => {
     const html = renderToStaticMarkup(<StatusIcon status="todo" onChange={() => {}} />);
     expect(html).toContain('viewBox="0 0 24 24"');
+    expect(html).toContain('<button type="button"');
+    expect(html).toContain('aria-label="Change status (current: Todo)"');
   });
+
 });
 
 describe("StatusIcon — glyph size (PAP-243a)", () => {

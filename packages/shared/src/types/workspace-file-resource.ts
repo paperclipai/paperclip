@@ -117,3 +117,33 @@ export interface WorkspaceFileListResponse {
   scannedCount: number;
   truncated: boolean;
 }
+
+export interface WorkspaceFileAvailabilityQuery {
+  path: string;
+  workspace?: WorkspaceFileSelector;
+  projectId?: string;
+  workspaceId?: string;
+}
+
+export interface NormalizedWorkspaceFileAvailabilityQuery {
+  path: string;
+  workspace: WorkspaceFileSelector;
+  projectId: string | null;
+  workspaceId: string | null;
+}
+
+export interface WorkspaceFileAvailabilityRequest {
+  queries: WorkspaceFileAvailabilityQuery[];
+}
+
+export interface WorkspaceFileAvailabilityResult {
+  query: NormalizedWorkspaceFileAvailabilityQuery;
+  openable: boolean;
+  unavailableReason?: string | null;
+  resource: ResolvedWorkspaceResource | null;
+}
+
+export interface WorkspaceFileAvailabilityResponse {
+  kind: "workspace_file_availability";
+  results: WorkspaceFileAvailabilityResult[];
+}

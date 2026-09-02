@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-06-10
+Date: 2026-08-18
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -69,6 +69,18 @@ This is the right state for:
 - waiting on a human decision
 - waiting on an external dependency or system when Paperclip does not own a scheduled re-check
 - work that automatic recovery could not safely continue
+
+Entering `blocked` requires a routable waiting path. An issue may transition into `blocked` only with at least one of:
+
+- first-class blockers (`blockedByIssueIds`)
+- a pending issue-thread interaction or linked approval that names the responder
+- a structured unblock descriptor naming `{owner, action}`, where `owner` is an agent id, user id, or the board, and `action` is the concrete step that unblocks the issue
+
+When a structured unblock descriptor is the waiting path, Paperclip immediately notifies the named owner: an agent owner gets a wake, a user or board owner gets an inbox notification. Prose-only blocked — free-text that names an owner or action in a comment without any of the paths above — routes to nobody. It is rejected at the API or auto-classified as `needs_attention` with a board notification, never silently accepted as a healthy waiting state.
+
+A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
+
+This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default.
 
 ### `in_review`
 
@@ -140,6 +152,8 @@ Pre-dispatch configuration validation is a distinct gate that runs after ownersh
 
 A configuration-incomplete result is a gate outcome, not a runtime failure. It is one of the active gates that a checkout-time or dispatch-time check can surface instead of starting a run, and it leaves the issue in an explicit waiting state that names the missing binding. Surfacing the blocker keeps the issue healthy under the liveness contract while preventing a run that is guaranteed to fail once it cannot resolve its required secret/env bindings. A dispatched-then-failed run is the wrong shape for missing configuration: the missing binding is a known pre-dispatch condition, so the control plane must surface it as a configuration-incomplete blocker rather than letting the run start and then fail.
 
+An unresolved workspace base ref is another configuration-incomplete condition. A `git_worktree` workspace bases a fresh worktree on a configured base ref. Paperclip first fetches a remote-only ref before dispatch: it maps an unqualified name (for example `fix/foo`) or a remote-tracking name (for example `origin/fix/foo`) to `origin/<branch>`, runs the authenticated fetch, and re-checks the commit. A ref that resolves lets work continue on the resolved commit. A ref that is still unresolvable after the fetch produces a configuration-incomplete blocker that names the requested ref, rather than a dispatched-then-failed run. Because the adapter never started, Paperclip queues no missing-comment retry. The recovery action dedupes by the canonical remote ref (`origin/<branch>`), not the operator spelling. Two equivalent spellings of one remote branch, for example `fix/foo` and `origin/fix/foo`, share one recovery identity, so a repeated failure reuses the active action and does not reset the attempt count or post a second notice. A different remote branch is a distinct blocker. Paperclip resolves the prior recovery action, creates a new action for the new ref, and notifies the operator with the new ref instead of overwriting the active action of the prior ref.
+
 ## 6. Parent/Sub-Issue vs Blockers
 
 Paperclip uses two different relationships for different jobs.
@@ -173,13 +187,33 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
-## 7. Accepted-Plan Decomposition
+### Child→Parent Reporting
 
-An accepted plan confirmation is permission to decompose one specific accepted plan revision into child issues.
+Run-scoped write authorization is subtree-scoped: a run may mutate its checked-out issue and that issue's descendants. Delegated child work still has to report upward, so the platform provides exactly three canonical report channels. Nothing else crosses the boundary.
 
-This complements the existing accepted-plan continuation rule: once a plan is accepted, the source issue may create child implementation issues, but it must not start implementation work on the source issue itself during that continuation.
+1. **Completion signal (always on).** When a child that blocks its parent reaches `done`, the `issue_blockers_resolved` wake engages the parent's assignee, who can read the child thread. Completion needs no report comment: the child's own thread is the deliverable record, and relaying `done` as prose would duplicate the first-class wake.
+2. **Direct-parent report comment (trust-gated).** The write boundary widens exactly one hop upward: a run checked out on a child issue may POST comments on the child's **direct parent** — comments only (no status, field, assignment, or document writes), the direct parent only (never grandparents or siblings, never lateral). This is gated per trust preset: **on** for `standard`, **off by default** for `low_trust_review` and other review-contained presets, whose input is untrusted content (diffs, external tickets) and whose report comment would be a prompt-injection carrier into higher-trust context.
+3. **Stop-only relay (fallback where the report comment is off).** For presets with direct-parent commenting disabled, the platform delivers a system-attributed relay comment to the direct parent when the child transitions into `blocked` or `cancelled` — never on `done` or `in_review`. Stopping is the event the parent must hear about; completion already has the first-class signal above. A relay is a comment, not a disposition transition, so it can never trigger another relay (depth-1 by construction), and relays dedupe per (child, target status) so status flapping cannot spam the parent.
 
-Paperclip must treat accepted-plan decomposition as an exact-once control-plane primitive, not as a free-floating wake that any later run may interpret again.
+### Review Delegation
+
+Review tasks — security reviews, code reviews, QA verdicts — must instruct the delegate to post findings on **their own review issue** and mark it `done`. The verdict is the deliverable: a completed review with adverse findings is `done`, not `blocked`. The parent's owner is engaged by `issue_blockers_resolved` (plus the direct-parent report comment where the reviewer's preset allows it) and owns any follow-up fixes.
+
+Never instruct a low-trust delegate to comment on the parent issue. That instruction is guaranteed to be denied at the authorization boundary, and a reviewer that converts the denial into a `blocked` disposition with a prose-only owner strands the whole tree indefinitely.
+
+### The Courier Pattern (Lateral Coordination)
+
+The direct-parent report comment intentionally does not open lateral comment access: no writes into sibling subtrees or other agents' boundaries. The sanctioned lateral channel is the **courier pattern**: create a new issue assigned to the target agent that carries the complete instructions and context in its description (company-scoped issue-CREATE is permitted from any run). The courier issue wakes the target agent through normal assignment, keeps the coordination auditable, and avoids widening comment access into another agent's boundary. Because the target agent's run may not be able to read your issues, the courier description must be self-contained — do not rely on links back into your own subtree for essential instructions.
+
+## 7. Accepted-Plan Execution and Optional Decomposition
+
+An accepted plan confirmation authorizes execution of one specific accepted plan revision. Acceptance does not choose the issue topology. A `planning` source transitions atomically to `standard`; a source that is already `standard` stays `standard`. The continuation starts a fresh default-execution session on that same issue and carries the accepted document id, revision id/number, and approved Markdown.
+
+The default is to implement on the source issue. The run-scoped `paperclip-converting-plans-to-tasks` guidance decides whether a minimum child graph is justified by an ownership, parallelism, dependency, review, or lifecycle boundary. A child must not be created merely because a plan was accepted, and the source must not be blocked merely because children exist.
+
+`create_task` and `set_dependencies` are ordinary authorized `standard`-run capabilities. `create_task` creates a standard child under the active issue, with durable idempotency scoped by source issue and caller key; blocker-free children start `todo`, children with unresolved blockers start `blocked`, and only assigned dependency-ready children wake. `set_dependencies` changes the active source issue's first-class blockers and is used only when the source genuinely waits for delegated results.
+
+The accepted-plan decomposition API and records remain as an optional compatibility surface. When that API is explicitly used, Paperclip treats it as an exact-once control-plane primitive, not as the runner's ordinary child-creation binding.
 
 ### Exact-once fingerprint
 
@@ -192,11 +226,11 @@ Where:
 - `sourceIssueId` is the issue whose `plan` document revision was accepted
 - `acceptedPlanRevisionId` is the accepted `plan` document revision
 
-This is the product contract because the accepted revision is the thing being authorized for decomposition. Re-accepting, re-waking, or re-reading the same accepted revision must not authorize a second child tree. A later accepted revision on the same source issue is a new fingerprint and may produce a different decomposition result.
+For the compatibility decomposition API, this remains the product contract because the accepted revision is the thing being decomposed. Re-accepting, re-waking, or re-reading the same accepted revision must not authorize a second child tree through that API. A later accepted revision on the same source issue is a new fingerprint and may produce a different decomposition result.
 
 An implementation may also store the accepted interaction id, acceptance run id, or other evidence, but those values must collapse onto the same uniqueness guarantee. They must not allow a second decomposition claim for the same `(sourceIssueId, acceptedPlanRevisionId)` pair.
 
-### Durable claim and durable result
+### Durable compatibility claim and result
 
 Before creating child issues, the first decomposition attempt must create or reuse a durable record for the fingerprint.
 
@@ -215,7 +249,7 @@ Paperclip does not need to mandate a specific storage shape in this document. Th
 
 If a run creates some children and then dies, retries must continue from the same fingerprint and reuse the already-recorded partial result. They must not restart decomposition as if nothing happened.
 
-### Parent live path while decomposition is in flight
+### Source live path while optional decomposition is in flight
 
 While decomposition for an accepted fingerprint is incomplete, the source issue must expose an explicit live path for that same fingerprint.
 
@@ -228,18 +262,18 @@ The accepted interaction by itself is only evidence that the plan was approved. 
 
 If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
 
-Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§9.2, "Deliberate wait is not a lost run").
+When the source retains implementation, integration, or verification responsibility and genuinely must wait for children, it must hold a first-class blocker path rather than relying on `parentId` rollup. If it can continue independently, it stays open without child blockers. If its sole deliverable was planning and all remaining work is fully delegated, it may finish after verifying the graph.
 
 ### Concurrent and repeat attempts
 
-Every later run that encounters the same accepted-plan fingerprint must consult the durable claim/result before creating children.
+Every later caller of the compatibility decomposition API for the same accepted-plan fingerprint must consult the durable claim/result before creating children.
 
 - If no claim exists, the run may atomically create the claim and become the decomposition owner.
 - If a claim exists and is `in_flight`, the later run must reuse that claim. It may resume the same decomposition if it is the valid continuation owner, or it may exit after observing that another run already owns the work.
 - If a claim exists and is `completed`, the later run must reuse the recorded child result and must not create new sibling issues.
 - If the prior attempt ended after partial child creation, the retry must continue under the same fingerprint and preserve the already-created child ids.
 
-Concurrent accepted-plan runs are therefore idempotent relative to the fingerprint. Creating multiple child trees for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
+Concurrent compatibility decomposition attempts are therefore idempotent relative to the fingerprint. Creating multiple child trees through that API for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
 
 ## 8. Non-Terminal Issue Liveness Contract
 
@@ -344,6 +378,12 @@ Workspace incoherence feeds into the same non-terminal liveness and stranded ass
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
+### ACP startup handshake bound
+
+An adapter-backed live path also requires that the ACP startup handshake itself cannot hang forever. The engine bounds the handshake with a fixed startup deadline and a poll of the duplex control-channel disposition. Either condition ends the handshake and reports a closed, typed code, so the issue can reach a settled disposition instead of staying `in_progress` with no observable next action.
+
+The handshake failure code is distinct from a session-identity mismatch. A timeout or a duplex-channel loss during startup must not be reported as the same code as a failed session resume, because the two need different operator responses.
+
 ### Explicit recovery actions
 
 An explicit recovery action is a typed liveness repair path for a source issue. It is the recovery primitive; the action can be rendered directly on the source issue or backed by a separate recovery issue when the repair needs its own work item.
@@ -358,6 +398,8 @@ A valid recovery action must name:
 - the resolution outcome when closed, such as restored, delegated, false positive, blocked, escalated, or cancelled
 
 A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
+
+Recovery-action ownership and source-task ownership are separate contracts. Assigning a manager or board owner to a recovery action authorizes that owner to repair or route the recovery action; it does not write that owner into the source issue's `assigneeAgentId`. Automatic retry and escalation preserve the source assignee. Reassignment requires an explicit source-task decision or a policy-defined serious-failure path, with the normal company, authorization, budget, checkout, active-run-lock, governed-action, and activity-log checks.
 
 Use an issue-backed recovery action only when the recovery is genuinely independent work or when source-scoped handling would be unsafe or unclear. Examples include:
 
@@ -485,9 +527,14 @@ Example:
 Recovery rule:
 
 - if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, Paperclip queues one automatic assignment recovery wake
-- if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
+- if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates a board-owned recovery action without changing the source assignee or waking a substitute agent; the visible comment is evidence, not the recovery path by itself
 
 This is a dispatch recovery, not a continuation recovery.
+
+Recovery hand-back is covered by the same liveness guarantee:
+
+- an `issue_recovery_action_restored` wake requested while the resolving recovery run is still active is persisted as a follow-up and dispatched only after that run exits, so it cannot be coalesced into the run that requested it
+- if that follow-up is nevertheless lost, the stranded-work backstop treats an assigned `todo` issue with a resolved `handed_back` recovery action from during or after its latest successful run as stranded and queues the bounded assignment recovery wake; the successful resolving run is not, by itself, evidence that the handed-back source work is live
 
 ### 9.2 Stranded assigned `in_progress`
 
@@ -501,7 +548,7 @@ Example:
 Recovery rule:
 
 - Paperclip queues one automatic continuation wake
-- if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
+- if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates a board-owned recovery action without changing the source assignee or waking a substitute agent; the visible comment is evidence, not the recovery path by itself
 
 This is an active-work continuity recovery.
 
@@ -514,17 +561,23 @@ A continuation that the staleness gate cancelled with `issue_continuation_waitin
 Recovery rule for a parked-for-review continuation:
 
 - if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
-- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+- if the issue has no current typed waiting target and the original owner is invokable, Paperclip classifies it as `deliberate_wait_without_target` and gives that owner five normal-model disposition-repair attempts: immediate, then after 60, 120, 240, and 480 seconds, with up to 10 percent jitter on delayed attempts
+- before every attempt, Paperclip revalidates unresolved blockers and children, interactions, linked approvals, monitors, execution stages, queued wakes, active runs, work products, owner invokability, and budget or governance gates. Any real live or waiting path suppresses the retry
+- the retry bound is keyed by an idempotent durable source-state fingerprint. Comments, repeated parked summaries, and equivalent prose do not reset it. Durable changes such as source status or assignee changes, dependency or interaction changes, approval or execution-policy changes, monitor changes, or work-product changes may create a new fingerprint
+- on upgrade, consecutive historical `issue_continuation_waiting_on_review` cancellations for the same accepted interaction and still-unchanged durable source state seed this same counter. Five applicable pre-upgrade parks therefore exhaust the ceiling immediately; the absence of a historical `deliberate_wait_without_target` recovery-action row does not grant five new attempts
+- the action persists the unchanged fingerprint, source-attempt count, due time, source owner, and return owner. Startup and periodic reconciliation reuse that state, fold the action when a current typed wait appears, and reschedule or escalate an expired attempt that has no live scheduled run. Idempotency keys prevent a restart from creating duplicate wakes or scheduled runs
+- after five attempts with the same fingerprint, Paperclip opens one board-owned source-scoped recovery action. The source assignee remains unchanged, no manager/creator/executive substitute is woken, and the board chooses whether to repair, retry the original owner, explicitly reassign, or resolve
+- a recovery action is a healthy wait only while its owner has a live run, queued wake, scheduled retry, typed wait, or explicit board escalation. Source liveness and every blocker-chain projection use that same nested result
 
 An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
 
 This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
 
-### 9.3 Recovery model-profile lane
+### 9.3 Recovery work classes
 
-Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
+Status-only operational recovery can update task liveness, clear bad status, record a disposition, or ask for human or manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`. The recovery work class does not select or change the agent model.
 
-Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
+Automatic retries that can continue source work use the agent's configured model. This includes failed source-work retries, process-loss retries, transient or scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, task documents, plans, work products, or attachments. When status-only recovery determines that actual work remains, it must hand back to a worker run before source work or persistent deliverable updates resume.
 
 ## 10. Startup and Periodic Reconciliation
 
@@ -535,10 +588,32 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
-4. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
+4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
 5. reconcile productivity reviews
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
+
+### Issue-thread interaction resolution
+
+Every issue-thread interaction kind inherits resolver policy `anyone` when the
+creator omits a policy. `anyone` includes the creator agent and creating run.
+Callers opt into independent review with `not_creator` or human resolution with
+`human_only`; a named addressee and company cap may narrow the effective audience.
+The legacy input aliases `board_or_agents` and `board_only` normalize to `anyone`
+and `human_only` for new writes.
+
+Resolver policy is snapshotted with explicit/inherited provenance and an effective
+source (`requested`, `company_cap`, or `governed_action`). Existing ambiguous
+legacy rows are marked `legacy_inherited_restriction` and retain their old
+restriction: `board_or_agents` becomes `not_creator`, not `anyone`, while
+`board_only` becomes `human_only`. Pending cards are never silently widened.
+
+Resolution is exact-once and requires issue access in the same company. Agent
+resolution also requires valid run attribution and remains subject to low-trust
+and task-bridge containment. Target freshness and supersession are checked before
+the outcome commits. Resolution records an answer; every continuation, task
+creation, tool/provider call, execution-policy transition, spend, deployment, or
+other effect independently re-runs its own authorization and approval gates.
 
 ## 11. Task Watchdog for Issue Trees
 
@@ -588,24 +663,33 @@ When the source issue is non-terminal and has no other live path, the product sh
 
 ### Watchdog authority during execution
 
-The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or beyond the allowed mutation and interaction list.
+The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or widen an interaction's ordinary effective audience.
 
 Watchdogs must not create visible probe issues, comments, or throwaway tasks to discover capability boundaries. They should rely on the wake capability metadata and explicit API denials, then record any denied operation as evidence in the reusable watchdog issue.
 
 The watchdog should verify stopped leaves against comments, documents, work products, tests, screenshots, blockers, review state, and run context. It should not accept "I could not" or "waiting for approval" as sufficient by itself.
 
-When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
+When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an interaction that its ordinary agent audience permits. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
 
-### Eligible interaction decisions
+### Atomic recovery batch
 
-A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
+Restoration is often more than one write — reopen the dead-end leaf **and** explain it on the parent. A watchdog run may submit a small atomic recovery batch: at most 3 mutations from the allowed-mutation list, validated against the stop fingerprint the run observed. The server applies the batch all-or-nothing and aborts the remainder if the subtree fingerprint changed mid-batch because work went live concurrently.
 
-- the interaction is pending, targeted at the current `plan` document revision for an included subtree issue, and explicitly marked as a plan-approval confirmation
-- accepting it authorizes only decomposition or task-level continuation inside the watched subtree
-- the plan is not asking for board-only governance, spend, hiring, security, deployment, secret, destructive data, legal/compliance, cross-company, or other sensitive approval
-- no newer durable source activity or policy reserves the decision for a human, CTO, Security, or the board
+This preserves the stale-guard's purpose — never keep mutating a subtree that just went live under the watchdog's feet — while removing the failure mode where spending the only permitted write on an informational comment forfeits the state-restoring mutation the recovery actually needed.
 
-The watchdog cannot resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, execution-policy decisions unless it is the typed participant outside watchdog capacity, or document comments written as freeform approval.
+### Interaction decisions
+
+A task watchdog is an ordinary agent for interaction resolution. Its watchdog
+context provides no special audience, plan-purpose marker, or kind allowlist, and
+it is not a categorical denial. The normal evaluator checks the effective policy,
+named addressee, company and issue scope, run attribution, low-trust/task-bridge
+containment, target freshness, and exact-once state.
+
+This does not give a watchdog downstream authority. Linked/formal approvals remain
+separate, execution-policy decisions still require the typed participant, and an
+accepted interaction cannot authorize spend, hiring, secrets, deployment,
+destructive data changes, cross-company work, or any mutation the watchdog scope
+otherwise forbids.
 
 ### Completion and fingerprint updates
 
@@ -618,6 +702,20 @@ The watchdog's reviewed fingerprint should update only after the watchdog issue 
 
 If the watchdog moved work forward, Paperclip should not mark the old fingerprint as permanently acceptable just because the watchdog issue completed. The next scan should observe the changed subtree state and either suppress because work is live or compute a new stopped fingerprint later.
 
+### Restoration verification and escalation
+
+A reviewed fingerprint suppresses re-fire only when the watchdog's recorded disposition was "this stopped state is legitimate." A **"live path restored"** disposition does not earn permanent suppression; it arms a bounded verification instead.
+
+The stop fingerprint must be computed from durable subtree state such that a restoration which changes nothing observable is detectable as a failed restoration. In particular, activity on intermediate (non-leaf) nodes — comments, wakes delivered to an intermediate issue's assignee, runs that end without mutating any stopped leaf — must feed the fingerprint or the attempt lineage; a fingerprint derived from stopped leaves alone makes a failed intermediate-node restoration byte-identical to a reviewed-and-acceptable stop, which silences the watchdog forever.
+
+Verification and escalation semantics:
+
+- if, after a "live path restored" disposition, the subtree is observed stopped again with a fingerprint equal to the one the watchdog claimed to have fixed, the restoration failed and the watchdog re-fires with an incremented attempt count
+- attempt lineage is durable watchdog state: attempt number, the fingerprint each attempt claimed to fix, and the restoration actions taken
+- after N attempts (N = 2–3) on the same fingerprint lineage, the platform stops re-firing and escalates to a human — the watchdog owner or a board notification — carrying the attempt history
+
+This bounds both failure modes: a failed restoration retries instead of going silent (liveness), and the attempt bound plus human escalation prevents an infinite fire loop (no runaway watchdog). Legitimate stops still suppress exactly as before.
+
 Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
 
 ## 12. Silent Active-Run Watchdog
@@ -627,27 +725,26 @@ An active run can still be unhealthy even when its process is `running`. Papercl
 The recovery service owns this contract:
 
 - classify active-run output silence as `ok`, `suspicious`, `critical`, `snoozed`, or `not_applicable`
-- collect bounded evidence from run logs, recent run events, child issues, and blockers
-- preserve redaction and truncation before evidence is written to issue descriptions
-- create at most one open watchdog recovery action per run; issue-backed implementations use `stale_active_run_evaluation` issues
-- honor active snooze decisions before creating more review work
+- honor active snooze and continue decisions on the run
+- permanently suppress the signal for a run after a `dismissed_false_positive` decision
 - build the `outputSilence` summary shown by live-run and active-run API responses
+- retain links to open legacy `stale_active_run_evaluation` issues without refreshing or changing them
 
-Suspicious silence creates a medium-priority watchdog recovery action for the selected recovery owner. Critical silence raises that recovery action to high priority and, when issue-backed evaluation is needed for correctness, blocks the source issue on the explicit evaluation task without cancelling the active process.
+Suspicious and critical silence are informational board UI signals. They do not create an issue or recovery action. They do not comment on or block the source issue. They do not change an assignment, wake an agent, cancel the active process, or change the run. The board uses the existing run controls when it decides that intervention is necessary.
 
-Watchdog decisions are explicit operator/recovery-owner decisions:
+Watchdog decisions are explicit board decisions stored against the run:
 
-- `snooze` records an operator-chosen future quiet-until time and suppresses scan-created review work during that window
+- `snooze` records an operator-chosen future quiet-until time and hides the signal during that window
 - `continue` records that the current evidence is acceptable, does not cancel or mutate the active run, and sets a 30-minute default re-arm window before the watchdog evaluates the still-silent run again
-- `dismissed_false_positive` records why the review was not actionable
+- `dismissed_false_positive` records why the signal was not actionable and suppresses it permanently for that run
 
-Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence; if the run remains silent after the re-arm window, the periodic watchdog scan can create or update review work again.
+Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence. If the run remains silent after the re-arm window, the UI signal appears again.
 
-The board can record watchdog decisions. The assigned owner of an issue-backed watchdog evaluation can also record them. Other agents cannot.
+The signal reappears in the UI after a snooze or continue window expires. No review work is created when it reappears. The board can record decisions without an evaluation issue. For compatibility, the assigned owner of an open legacy evaluation issue can also record a decision that is bound to that issue and run. Other agents cannot.
 
 ### Source-aware watchdog folding
 
-Active-run watchdog work is source-aware. Before the watchdog creates, refreshes, escalates, or blocks on reviewer work, it must re-read the linked source issue and decide whether the watchdog signal is still about productive source work or only about stale run/process bookkeeping.
+The active-run cleanup scan is source-aware. It re-reads the linked source issue and decides whether a still-running handle represents productive source work or stale run/process bookkeeping. It does not create reviewer work.
 
 Fold watchdog work when all of these are true:
 
@@ -656,17 +753,17 @@ Fold watchdog work when all of these are true:
 - durable source activity from the same run proves the source issue reached that terminal disposition after the stale-run or output-silence evidence point
 - there is no independent evidence that the still-running or detached process is doing harmful work, still owns external cleanup that needs an operator decision, or needs a separate security/ownership review
 
-Folding means resolving or cancelling the watchdog recovery action or issue-backed evaluation through the explicit recovery lifecycle. It must preserve the run id, source issue, detected silence or detached-process evidence, terminal source activity, decision reason, and best-effort process cleanup result. It must be idempotent for the `(companyId, runId, sourceIssueId)` signal and must not recursively recover the watchdog evaluation issue itself.
+Folding means finalizing the stale run and resolving any legacy watchdog recovery action or issue-backed evaluation through the explicit recovery lifecycle. It must preserve the run id, source issue, detected silence or detached-process evidence, terminal source activity, decision reason, and best-effort process cleanup result. It must be idempotent for the `(companyId, runId, sourceIssueId)` signal and must not recursively recover a watchdog evaluation issue itself.
 
-Do not fold watchdog work only because the run is quiet. The watchdog must still create or continue reviewer work when:
+Do not fold a run only because it is quiet. Keep the informational signal visible when:
 
 - the source issue is still `todo` or `in_progress`, because productive work may still be happening or stuck
 - the source issue remains `in_progress` after a successful run with no valid disposition, because the successful-run handoff path owns that bounded correction
 - the run terminated or disappeared while the source issue remains `in_progress` without a live path, because stranded assigned recovery owns that continuity repair
 - the source issue is terminal but there is no durable same-run terminal activity after the stale evidence point
-- there is independent evidence that the process may still be mutating external state, leaking resources, crossing company or ownership boundaries, or otherwise needs operator review
+- there is independent evidence that the process may still be mutating external state, leaking resources, crossing company or ownership boundaries, or otherwise needs an operator decision
 
-In the normal non-terminal case, critical silence can still create issue-backed evaluation work and block the source issue when blocking is necessary for correctness. In the source-resolved case, a completed source issue should not acquire a new manager review or blocker merely because an old run handle stayed active; only real unresolved work should block work.
+In the normal non-terminal case, critical silence remains a UI signal and does not block the source issue. In the source-resolved case, a completed source issue does not acquire a new review or blocker merely because an old run handle stayed active. Only real unresolved work should block work.
 
 This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, long active duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
 
@@ -696,13 +793,14 @@ Examples:
 
 - automatic stranded-work retry was already exhausted
 - a dependency graph has an invalid/uninvokable owner, unassigned blocker, or invalid review participant
-- an active run is silent past the watchdog threshold
 
-The recovery action stays source-scoped by default. The source issue should show the recovery owner, cause, evidence, next action, and wake or monitor policy in its own thread/detail surface.
+The recovery action stays source-scoped by default. Stranded-task escalation is board-owned and records the cause, evidence, next action, source and return owner, `routingPolicy: board_escalation_no_takeover_v1`, and wake or monitor policy in the source thread/detail surface.
+
+The board owns the recovery decision, not the source deliverable. Automatic recovery must preserve both source assignee fields. Only an explicit operator decision or applicable serious-failure policy may transfer the deliverable.
+
+An upgrade may encounter an already-active agent-owned recovery action. Paperclip keeps that record readable and resolvable for compatibility, but periodic reconciliation does not enqueue another takeover wake from it.
 
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
-
-Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery actions automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
 
 ### Human Escalation
 
@@ -710,7 +808,7 @@ Human escalation is required when the next safe action depends on board judgment
 
 Examples:
 
-- all candidate recovery owners are paused, terminated, pending approval, or budget-blocked
+- the original owner is paused, terminated, pending approval, or budget-blocked
 - the issue is human-owned rather than agent-owned
 - the run is intentionally quiet but needs an operator decision before cancellation or continuation
 
@@ -729,8 +827,8 @@ Paperclip still does not:
 The recovery model is intentionally conservative:
 
 - preserve ownership
-- retry once when the control plane lost execution continuity
-- open an explicit recovery action when the system can identify a bounded recovery owner/action
+- use the cause-specific bound when the control plane lost execution continuity; deliberate waits without a target use five fingerprinted original-owner disposition repairs
+- open a board-owned recovery action when the original-owner bound is exhausted or unsafe
 - escalate visibly when the system cannot safely keep going
 
 ## 15. Practical Interpretation
