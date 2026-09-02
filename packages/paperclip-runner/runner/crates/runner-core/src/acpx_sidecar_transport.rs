@@ -11,7 +11,9 @@ use crate::generated_acpx_sidecar_contract::{
     GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
 use crate::local_runner::LocalRunnerError;
-use crate::process_supervisor::{BoundedLogBuffer, ProcessOutput, SupervisedProcess};
+use crate::process_supervisor::{
+    BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
+};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -23,13 +25,16 @@ const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub struct AcpxSidecarTransportConfig {
     pub command: PathBuf,
     pub args: Vec<String>,
+    pub verified_launch: Option<VerifiedProcessLaunch>,
     pub request_timeout: Duration,
     pub shutdown_grace: Duration,
 }
 
 impl AcpxSidecarTransportConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if !self.command.is_absolute() || !self.command.is_file() {
+        if !self.command.is_absolute()
+            || (self.verified_launch.is_none() && !self.command.is_file())
+        {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar command must be an existing absolute file",
             ));
@@ -124,13 +129,22 @@ impl AcpxSidecarTransport {
         environment_keys: &[&str],
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
-        let process = SupervisedProcess::spawn_with_environment_keys(
-            &config.command,
-            &config.args,
-            config.shutdown_grace,
-            ACPX_SIDECAR_MAX_FRAME_BYTES,
-            environment_keys,
-        )?;
+        let process = if let Some(launch) = config.verified_launch.as_ref() {
+            SupervisedProcess::spawn_verified_with_environment_keys(
+                launch,
+                config.shutdown_grace,
+                ACPX_SIDECAR_MAX_FRAME_BYTES,
+                environment_keys,
+            )?
+        } else {
+            SupervisedProcess::spawn_with_environment_keys(
+                &config.command,
+                &config.args,
+                config.shutdown_grace,
+                ACPX_SIDECAR_MAX_FRAME_BYTES,
+                environment_keys,
+            )?
+        };
         Ok(Self {
             process,
             request_timeout: config.request_timeout,

@@ -27,6 +27,7 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  runnerdLaunchProfileInternals,
   resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
@@ -39,6 +40,48 @@ import {
 it("defaults runnerd ACPX permissions to approve reads", () => {
   expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
   expect(resolveRunnerdAcpxPermissionMode("deny-all")).toBe("deny-all");
+});
+
+it("rejects caller-selected local ACPX artifacts even when they are self-hashed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paperclip-acpx-authority-"));
+  const command = join(directory, "node");
+  const sidecar = join(directory, "sidecar.js");
+  await writeFile(command, "caller-selected command", { mode: 0o700 });
+  await writeFile(sidecar, "caller-selected sidecar", { mode: 0o600 });
+  const digest = (value: string) =>
+    `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  try {
+    expect(() =>
+      runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(
+        {
+          providerNodeCommand: command,
+          providerNodeCommandSha256: digest("caller-selected command"),
+          acpxSidecarPath: sidecar,
+          acpxSidecarSha256: digest("caller-selected sidecar"),
+        },
+        command,
+        sidecar,
+      ),
+    ).toThrow("ACPX local launch must use build-owned artifacts");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
+  expect(() =>
+    runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(
+      {
+        runnerFilesystemRoot: "/runner",
+        providerNodeCommand: "/provider-pack/node",
+        providerNodeCommandSha256: `sha256:${"a".repeat(64)}`,
+        acpxSidecarPath: "/provider-pack/acpx-sidecar.js",
+        acpxSidecarSha256: `sha256:${"b".repeat(64)}`,
+      },
+      "/provider-pack/node",
+      "/provider-pack/acpx-sidecar.js",
+    ),
+  ).toThrow("omitted its provider-pack authority");
 });
 
 it("adds Codex-style turn updates only when collaboration instructions are enabled", () => {
@@ -94,7 +137,6 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     hasRuntimeContext: true,
   });
   expect(environment).toMatchObject({
-    PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/isolated/session/opencode",
     PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
@@ -108,6 +150,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
   expect(environment.DATABASE_URL).toBeUndefined();
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(environment.NODE_OPTIONS).toBeUndefined();
+  expect(environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
 
   const defaultPermissionEnvironment =
     createCapabilityRunnerdProviderEnvironment({

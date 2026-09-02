@@ -1,35 +1,39 @@
-use std::collections::{HashSet, VecDeque};
-use std::fs::{self, DirBuilder};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(unix)]
-use std::fs::File;
-#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(test)]
+use sha2::{Digest, Sha256};
 
 use crate::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+#[cfg(test)]
+use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{
-    create_private_temporary_file, open_private_regular_file, verify_private_directory, Command,
-    CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError, EventPriority,
-    PolledEvent,
+    create_private_temporary_file, open_private_regular_file, verify_private_directory,
+    AcpxLaunchProfile, Command, CommandExecution, CommandExecutor, DurableRunnerConfig,
+    DurableRunnerError, EventPriority, PolledEvent,
 };
+use crate::process_supervisor::{VerifiedProcessArgument, VerifiedProcessLaunch};
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedToolSet, ToolResult, TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
+use crate::qualified_launch::verify_launch_artifact;
 
 pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
-const ACPX_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.acpx-provider-state.v1";
+const ACPX_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.acpx-provider-state.v2";
 const MAX_PROVIDER_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PENDING_EVENTS: usize = 8_320;
 const MAX_EVENTS_PER_POLL: usize = 128;
@@ -150,15 +154,12 @@ impl AcpxProviderDescriptor {
         &self,
         tool_set: AuthorizedToolSet,
         expected_identity: Option<AcpxProviderSessionIdentity>,
+        launch_profile: Option<&AcpxLaunchProfile>,
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
+        let transport = self.verified_transport(launch_profile)?;
         Ok(AcpxProviderSessionConfig {
-            transport: AcpxSidecarTransportConfig {
-                command: self.sidecar_command.clone(),
-                args: self.sidecar_args.clone(),
-                request_timeout: Duration::from_secs(30),
-                shutdown_grace: Duration::from_secs(2),
-            },
+            transport,
             agent: self.agent.clone(),
             model: self.model.clone(),
             run_id: self.run_id.clone(),
@@ -171,6 +172,69 @@ impl AcpxProviderDescriptor {
             system_instructions: self.instructions.clone(),
             tool_set,
             expected_identity,
+        })
+    }
+
+    fn verified_transport(
+        &self,
+        launch_profile: Option<&AcpxLaunchProfile>,
+    ) -> Result<AcpxSidecarTransportConfig, DurableRunnerError> {
+        let launch_profile = launch_profile.ok_or_else(|| {
+            DurableRunnerError::invalid(
+                "ACPX runner startup omitted its qualified sidecar launch profile",
+            )
+        })?;
+        if self.sidecar_command != launch_profile.command
+            || self.sidecar_args != launch_profile.args
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX descriptor sidecar launch does not match the runner-owned qualified profile",
+            ));
+        }
+
+        let mut verified = HashMap::new();
+        for artifact in &launch_profile.artifacts {
+            if verified.contains_key(&artifact.path) {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX runner launch profile repeats an artifact path",
+                ));
+            }
+            let snapshot = verify_launch_artifact(artifact, "ACPX")?;
+            verified.insert(artifact.path.clone(), snapshot);
+        }
+        let command = verified
+            .get(&launch_profile.command)
+            .cloned()
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "ACPX runner launch profile does not authenticate its command",
+                )
+            })?;
+        let verified_args = launch_profile
+            .args
+            .iter()
+            .map(|argument| {
+                let path = Path::new(argument);
+                if !path.is_absolute() {
+                    return Ok(VerifiedProcessArgument::Literal(argument.clone()));
+                }
+                verified
+                    .get(path)
+                    .cloned()
+                    .map(VerifiedProcessArgument::Artifact)
+                    .ok_or_else(|| {
+                        DurableRunnerError::invalid(
+                            "ACPX runner launch profile does not authenticate an absolute argument",
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AcpxSidecarTransportConfig {
+            command: launch_profile.command.clone(),
+            args: launch_profile.args.clone(),
+            verified_launch: Some(VerifiedProcessLaunch::new(command, verified_args)),
+            request_timeout: Duration::from_secs(30),
+            shutdown_grace: Duration::from_secs(2),
         })
     }
 
@@ -199,6 +263,7 @@ impl AcpxProviderDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AcpxDurableState {
     schema: String,
+    launch_profile_digest: String,
     lifecycle: String,
     descriptor: AcpxProviderDescriptor,
     tool_set: AuthorizedToolSet,
@@ -215,9 +280,14 @@ struct AcpxDurableState {
 }
 
 impl AcpxDurableState {
-    fn new(descriptor: AcpxProviderDescriptor, tool_set: AuthorizedToolSet) -> Self {
+    fn new(
+        descriptor: AcpxProviderDescriptor,
+        tool_set: AuthorizedToolSet,
+        launch_profile_digest: String,
+    ) -> Self {
         Self {
             schema: ACPX_PROVIDER_STATE_SCHEMA.to_owned(),
+            launch_profile_digest,
             lifecycle: "prepared".to_owned(),
             descriptor,
             tool_set,
@@ -229,10 +299,21 @@ impl AcpxDurableState {
         }
     }
 
-    fn validate(&self, context: &AcpxEventProjectionContext) -> Result<(), DurableRunnerError> {
+    fn validate(
+        &self,
+        context: &AcpxEventProjectionContext,
+        expected_launch_profile_digest: &str,
+    ) -> Result<(), DurableRunnerError> {
         self.descriptor.validate(context)?;
+        if self.launch_profile_digest != expected_launch_profile_digest {
+            return Err(DurableRunnerError::invalid(
+                "ACPX durable launch profile digest does not match runner startup",
+            ));
+        }
         let mut ids = HashSet::new();
         if self.schema != ACPX_PROVIDER_STATE_SCHEMA
+            || self.launch_profile_digest.len() != 71
+            || !self.launch_profile_digest.starts_with("sha256:")
             || !matches!(
                 self.lifecycle.as_str(),
                 "prepared"
@@ -303,6 +384,8 @@ pub struct AcpxCommandExecutor {
     state: Option<AcpxDurableState>,
     session: Option<AcpxProviderSession>,
     restore_checked: bool,
+    restore_error: Option<DurableRunnerError>,
+    launch_profile: Option<AcpxLaunchProfile>,
 }
 
 impl AcpxCommandExecutor {
@@ -318,6 +401,8 @@ impl AcpxCommandExecutor {
             state: None,
             session: None,
             restore_checked: false,
+            restore_error: None,
+            launch_profile: config.acpx_launch_profile.clone(),
         }
     }
 
@@ -325,11 +410,37 @@ impl AcpxCommandExecutor {
         self.state_dir.join(ACPX_PROVIDER_STATE_FILE)
     }
 
+    fn launch_profile_digest(&self) -> Result<String, DurableRunnerError> {
+        self.launch_profile
+            .as_ref()
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "ACPX runner startup omitted its qualified sidecar launch profile",
+                )
+            })?
+            .canonical_digest()
+    }
+
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
         if self.restore_checked {
             return Ok(());
         }
-        self.restore_checked = true;
+        if let Some(error) = self.restore_error.as_ref() {
+            return Err(error.clone());
+        }
+        match self.restore_once() {
+            Ok(()) => {
+                self.restore_checked = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.restore_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
         let path = self.state_path();
         let mut file = match open_private_regular_file(&path) {
             Ok(file) => file,
@@ -360,7 +471,8 @@ impl AcpxCommandExecutor {
         let state: AcpxDurableState = serde_json::from_slice(&bytes).map_err(|error| {
             DurableRunnerError::invalid(format!("ACPX provider state is malformed: {error}"))
         })?;
-        state.validate(&self.context)?;
+        let launch_profile_digest = self.launch_profile_digest()?;
+        state.validate(&self.context, &launch_profile_digest)?;
         self.state = Some(state);
         self.restore_session_if_needed()
     }
@@ -380,12 +492,7 @@ impl AcpxCommandExecutor {
         }
         let unsafe_active = matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active");
         let previous_turn = state.active_turn_id.clone();
-        let session = self.start_session(true)?;
         if unsafe_active {
-            let mut session = session;
-            let shutdown_failed = session
-                .shutdown("fail-closed durable recovery of an active ACPX turn")
-                .is_err();
             let state = self
                 .state
                 .as_mut()
@@ -401,7 +508,7 @@ impl AcpxCommandExecutor {
                     "status": "failed",
                     "providerTerminalObserved": false,
                     "code": "acpx_active_turn_recovery_closed",
-                    "providerShutdownFailed": shutdown_failed,
+                    "providerShutdownFailed": false,
                 }),
             })?;
             state.push(NormalizedProviderEvent {
@@ -417,6 +524,7 @@ impl AcpxCommandExecutor {
             self.save_state()?;
             return Ok(());
         }
+        let session = self.start_session(true)?;
         let identity = session.identity().clone();
         let process_id = session.process_id();
         let state = self
@@ -439,9 +547,11 @@ impl AcpxCommandExecutor {
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         let expected = recovering.then(|| state.identity.clone()).flatten();
-        let config = state
-            .descriptor
-            .session_config(state.tool_set.clone(), expected)?;
+        let config = state.descriptor.session_config(
+            state.tool_set.clone(),
+            expected,
+            self.launch_profile.as_ref(),
+        )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
         })?;
@@ -459,7 +569,8 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))?;
-        state.validate(&self.context)?;
+        let launch_profile_digest = self.launch_profile_digest()?;
+        state.validate(&self.context, &launch_profile_digest)?;
         secure_directory(&self.state_dir, "provider state")?;
         let path = self.state_path();
         let bytes = serde_json::to_vec_pretty(state).map_err(|error| {
@@ -505,6 +616,7 @@ impl AcpxCommandExecutor {
         })?;
         descriptor.validate(&self.context)?;
         let tool_set = authorized_tool_set(payload)?;
+        let launch_profile_digest = self.launch_profile_digest()?;
         if let Some(state) = self.state.as_ref() {
             if state.descriptor != descriptor || state.tool_set != tool_set {
                 return Err(DurableRunnerError::invalid(
@@ -517,7 +629,11 @@ impl AcpxCommandExecutor {
                 ));
             }
         } else {
-            self.state = Some(AcpxDurableState::new(descriptor, tool_set));
+            self.state = Some(AcpxDurableState::new(
+                descriptor,
+                tool_set,
+                launch_profile_digest,
+            ));
             self.save_state()?;
         }
         Ok(CommandExecution::result(json!({
@@ -1014,6 +1130,66 @@ fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRunnerError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-acpx-backend-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    fn write_artifact(path: &Path, contents: &[u8], executable: bool) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }),
+        )
+        .unwrap();
+    }
+
+    fn artifact(path: &Path) -> QualifiedLaunchArtifact {
+        QualifiedLaunchArtifact {
+            path: path.to_owned(),
+            sha256: format!("sha256:{:x}", Sha256::digest(fs::read(path).unwrap())),
+        }
+    }
+
+    fn test_config(
+        state_dir: &Path,
+        launch_profile: Option<AcpxLaunchProfile>,
+    ) -> DurableRunnerConfig {
+        DurableRunnerConfig {
+            connect_url: "ws://127.0.0.1/runner".to_owned(),
+            ca_bundle_path: None,
+            state_dir: state_dir.to_owned(),
+            runner_instance_id: "runner-1".to_owned(),
+            environment_lease_id: "lease-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            item_id: "item-1".to_owned(),
+            runner_version: "0.0.0".to_owned(),
+            runner_digest: "sha256:test".to_owned(),
+            acpx_launch_profile: launch_profile,
+            opencode_launch_profile: None,
+            max_outbox_bytes: 1024 * 1024,
+            p0_reserve_bytes: 64 * 1024,
+            max_frame_bytes: 1024 * 1024,
+            reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
+            max_runtime: Duration::from_secs(60),
+        }
+    }
 
     fn context() -> AcpxEventProjectionContext {
         AcpxEventProjectionContext {
@@ -1085,5 +1261,186 @@ mod tests {
         pi["agent"] = json!("pi");
         let pi: AcpxProviderDescriptor = serde_json::from_value(pi).unwrap();
         assert!(pi.validate(&context()).is_err());
+    }
+
+    #[test]
+    fn binds_sidecar_paths_arguments_and_contents_to_the_runner_profile() {
+        let directory = temporary_directory("launch-binding");
+        let command = directory.join("node");
+        let sidecar = directory.join("sidecar.js");
+        write_artifact(&command, b"qualified node", true);
+        write_artifact(&sidecar, b"qualified sidecar", false);
+        let args = vec![sidecar.to_string_lossy().into_owned()];
+        let profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: args.clone(),
+            artifacts: vec![artifact(&command), artifact(&sidecar)],
+        };
+        let mut value = descriptor("codex");
+        value["sidecarCommand"] = json!(command);
+        value["sidecarArgs"] = json!(args);
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        let transport = descriptor.verified_transport(Some(&profile)).unwrap();
+        assert_eq!(transport.command, profile.command);
+        assert_eq!(transport.args[0], sidecar.to_string_lossy());
+        assert!(transport.verified_launch.is_some());
+
+        let mut drifted_path = descriptor.clone();
+        drifted_path.sidecar_command = directory.join("other-node");
+        assert!(drifted_path.verified_transport(Some(&profile)).is_err());
+        let mut drifted_args = descriptor.clone();
+        drifted_args.sidecar_args.push("--untrusted".to_owned());
+        assert!(drifted_args.verified_transport(Some(&profile)).is_err());
+
+        write_artifact(&sidecar, b"modified sidecar", false);
+        assert!(descriptor.verified_transport(Some(&profile)).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_launch_artifacts() {
+        use std::os::unix::fs::symlink;
+
+        let directory = temporary_directory("launch-symlink");
+        let command = directory.join("node");
+        let command_link = directory.join("node-link");
+        write_artifact(&command, b"qualified node", true);
+        symlink(&command, &command_link).unwrap();
+        let profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command_link.clone(),
+            args: Vec::new(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: command_link.clone(),
+                sha256: artifact(&command).sha256,
+            }],
+        };
+        let mut value = descriptor("codex");
+        value["sidecarCommand"] = json!(command_link);
+        value["sidecarArgs"] = json!([]);
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        assert!(descriptor.verified_transport(Some(&profile)).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_turn_recovery_closes_without_starting_the_provider() {
+        let directory = temporary_directory("active-recovery");
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = directory.join("provider-started");
+        let command = directory.join("sidecar");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+            true,
+        );
+        let launch_profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: Vec::new(),
+            artifacts: vec![artifact(&command)],
+        };
+        let mut value = descriptor("codex");
+        value["sidecarCommand"] = json!(command);
+        value["sidecarArgs"] = json!([]);
+        value["runtimeDirectory"] = json!(runtime);
+        value["cwd"] = json!(workspace);
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: descriptor.model.clone(),
+            effective_model: descriptor.model.clone(),
+            permission_mode: Some(descriptor.permission_mode),
+        };
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let launch_profile_digest = launch_profile.canonical_digest().unwrap();
+        let mut state = AcpxDurableState::new(descriptor, tool_set, launch_profile_digest);
+        state.lifecycle = "turn_active".to_owned();
+        state.identity = Some(identity);
+        state.active_turn_id = Some("turn-1".to_owned());
+        let config = test_config(&directory, Some(launch_profile));
+        let mut original = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        original.state = Some(state);
+        original.save_state().unwrap();
+        drop(original);
+
+        let mut drifted_config = config.clone();
+        drifted_config
+            .acpx_launch_profile
+            .as_mut()
+            .unwrap()
+            .authority_digest = format!("sha256:{}", "e".repeat(64));
+        let mut drifted = AcpxCommandExecutor::with_runner_config(&directory, &drifted_config);
+        let drift_error = drifted
+            .execute(&Command {
+                schema: "paperclip.prp.command.v1".to_owned(),
+                command_id: "command-drift".to_owned(),
+                controller_seq: 1,
+                command_type: "session.snapshot".to_owned(),
+                issued_at: "2026-09-01T00:00:00.000Z".to_owned(),
+                deadline_at: None,
+                precondition: None,
+                payload: json!({}),
+            })
+            .unwrap_err();
+        assert!(drift_error
+            .to_string()
+            .contains("launch profile digest does not match runner startup"));
+        let retry_error = drifted
+            .execute(&Command {
+                schema: "paperclip.prp.command.v1".to_owned(),
+                command_id: "command-drift-retry".to_owned(),
+                controller_seq: 2,
+                command_type: "session.snapshot".to_owned(),
+                issued_at: "2026-09-01T00:00:01.000Z".to_owned(),
+                deadline_at: None,
+                precondition: None,
+                payload: json!({}),
+            })
+            .unwrap_err();
+        assert!(retry_error
+            .to_string()
+            .contains("launch profile digest does not match runner startup"));
+        assert!(!marker.exists());
+
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let snapshot = recovered
+            .execute(&Command {
+                schema: "paperclip.prp.command.v1".to_owned(),
+                command_id: "command-1".to_owned(),
+                controller_seq: 1,
+                command_type: "session.snapshot".to_owned(),
+                issued_at: "2026-09-01T00:00:00.000Z".to_owned(),
+                deadline_at: None,
+                precondition: None,
+                payload: json!({}),
+            })
+            .unwrap();
+        assert_eq!(snapshot.result["status"], "closed");
+        assert!(!marker.exists());
+        let events = recovered.poll_events().unwrap();
+        assert_eq!(events[0].event_type, "turn.failed");
+        assert_eq!(events[1].event_type, "run.terminal");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

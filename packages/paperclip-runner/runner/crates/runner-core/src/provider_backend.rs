@@ -10,6 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::codex_provider::{
     CodexProvider, CodexProviderConfig, CodexProviderEvent, RejectedAcceptedTurn,
@@ -18,7 +19,7 @@ use crate::codex_provider::{
 use crate::durable::{
     create_private_temporary_file, current_unix_ms, open_private_regular_file, sanitize_value,
     verify_private_directory, Command, CommandExecution, CommandExecutor, DurableRunnerConfig,
-    DurableRunnerError, EventPriority, PolledEvent,
+    DurableRunnerError, EventPriority, OpenCodeLaunchProfile, PolledEvent,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -357,6 +358,8 @@ struct CodexProviderState {
     lifecycle: String,
     config: CodexProviderConfig,
     #[serde(default)]
+    opencode_launch_profile_digest: Option<String>,
+    #[serde(default)]
     completion_contract: Option<CompletionContractBinding>,
     #[serde(default)]
     tool_bridge: ProviderToolBridge,
@@ -445,6 +448,7 @@ impl CodexProviderState {
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
             lifecycle: "prepared".to_owned(),
             config,
+            opencode_launch_profile_digest: None,
             completion_contract,
             tool_bridge,
             thread_id,
@@ -828,6 +832,8 @@ pub struct CodexCommandExecutor {
     provider: Option<CodexProvider>,
     event_identity: Option<ProviderEventIdentity>,
     restore_checked: bool,
+    restore_error: Option<DurableRunnerError>,
+    opencode_launch_profile: Option<OpenCodeLaunchProfile>,
 }
 
 impl CodexCommandExecutor {
@@ -838,13 +844,47 @@ impl CodexCommandExecutor {
             provider: None,
             event_identity: None,
             restore_checked: false,
+            restore_error: None,
+            opencode_launch_profile: None,
         }
     }
 
     pub fn with_runner_config(state_dir: impl Into<PathBuf>, config: &DurableRunnerConfig) -> Self {
         let mut executor = Self::new(state_dir);
         executor.event_identity = Some(ProviderEventIdentity::from_config(config));
+        executor.opencode_launch_profile = config.opencode_launch_profile.clone();
         executor
+    }
+
+    fn bind_opencode_launch_profile(
+        &self,
+        config: &CodexProviderConfig,
+    ) -> Result<Option<String>, DurableRunnerError> {
+        if config.provider != "opencode" {
+            return Ok(None);
+        }
+        let profile = self.opencode_launch_profile.as_ref().ok_or_else(|| {
+            DurableRunnerError::invalid(
+                "OpenCode runner startup omitted its qualified launch profile",
+            )
+        })?;
+        let proxy_script = profile.proxy_script.path.to_string_lossy();
+        if config.command != profile.command.path
+            || config.args.as_slice() != [proxy_script.as_ref()]
+        {
+            return Err(DurableRunnerError::invalid(
+                "OpenCode run.prepare launch does not match the runner-owned qualified profile",
+            ));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"paperclip.runner.opencode-launch-profile.v1\0");
+        for artifact in [&profile.command, &profile.proxy_script, &profile.executable] {
+            digest.update(artifact.path.to_string_lossy().as_bytes());
+            digest.update(b"\0");
+            digest.update(artifact.sha256.as_bytes());
+            digest.update(b"\0");
+        }
+        Ok(Some(format!("sha256:{:x}", digest.finalize())))
     }
 
     fn state_path(&self) -> PathBuf {
@@ -855,7 +895,22 @@ impl CodexCommandExecutor {
         if self.restore_checked {
             return Ok(());
         }
-        self.restore_checked = true;
+        if let Some(error) = self.restore_error.as_ref() {
+            return Err(error.clone());
+        }
+        match self.restore_once() {
+            Ok(()) => {
+                self.restore_checked = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.restore_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
         let path = self.state_path();
         let mut file = match open_private_regular_file(&path) {
             Ok(file) => file,
@@ -887,6 +942,12 @@ impl CodexCommandExecutor {
             ))
         })?;
         state.validate()?;
+        let expected_launch_profile_digest = self.bind_opencode_launch_profile(&state.config)?;
+        if state.opencode_launch_profile_digest != expected_launch_profile_digest {
+            return Err(DurableRunnerError::invalid(
+                "OpenCode runner launch profile changed across durable recovery",
+            ));
+        }
         self.state = Some(state);
         self.restore_provider_if_needed()
     }
@@ -939,6 +1000,7 @@ impl CodexCommandExecutor {
             state.tool_bridge.authorized_tools().cloned(),
             Some(&thread_id),
             process_generation,
+            self.opencode_launch_profile.as_ref(),
         )
         .map_err(|error| {
             DurableRunnerError::invalid(format!(
@@ -1257,12 +1319,18 @@ impl CodexCommandExecutor {
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         let provider_name = config.provider.clone();
         let driver = config.driver.clone();
+        let opencode_launch_profile_digest = self.bind_opencode_launch_profile(&config)?;
         let completion_contract = completion_contract(payload)?;
         let tool_set = authorized_tool_set(payload)?;
         if let Some(state) = self.state.as_mut() {
             if state.config != config || state.completion_contract != completion_contract {
                 return Err(DurableRunnerError::invalid(
                     "Codex provider or completion contract changed across the durable run",
+                ));
+            }
+            if state.opencode_launch_profile_digest != opencode_launch_profile_digest {
+                return Err(DurableRunnerError::invalid(
+                    "OpenCode runner launch profile changed across the durable run",
                 ));
             }
             if state.lifecycle == "closed" {
@@ -1292,11 +1360,9 @@ impl CodexCommandExecutor {
             tool_bridge.prepare(tool_set).map_err(|error| {
                 DurableRunnerError::invalid(format!("run.prepare tool contract rejected: {error}"))
             })?;
-            self.state = Some(CodexProviderState::new(
-                config,
-                completion_contract,
-                tool_bridge,
-            ));
+            let mut state = CodexProviderState::new(config, completion_contract, tool_bridge);
+            state.opencode_launch_profile_digest = opencode_launch_profile_digest;
+            self.state = Some(state);
             self.save_state()?;
         }
         Ok(CommandExecution::result(json!({
@@ -1328,6 +1394,7 @@ impl CodexCommandExecutor {
                 state.tool_bridge.authorized_tools().cloned(),
                 state.thread_id.as_deref(),
                 process_generation,
+                self.opencode_launch_profile.as_ref(),
             )
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
@@ -2740,6 +2807,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
             },
+            opencode_launch_profile_digest: None,
             completion_contract: None,
             tool_bridge: ProviderToolBridge::default(),
             thread_id: Some("thread-1".to_owned()),

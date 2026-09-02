@@ -298,17 +298,36 @@ describe("remote provider pack manifest", () => {
       .update("\n")
       .update(payload.distDigest)
       .digest("hex")}`;
-    await writeFile(
-      join(root, "provider-pack.json"),
-      JSON.stringify({
+    const writeManifest = async () =>
+      writeFile(
+        join(root, "provider-pack.json"),
+        JSON.stringify({
         schema: "paperclip-runner/remote-provider-pack/v1",
         digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
         payload,
-      }),
-    );
+        }),
+      );
+    await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.17",
     );
+    for (const [artifactName, substituteName] of [
+      ["nodeCommand", "productionLock"],
+      ["opencodeExecutable", "opencodeCommand"],
+      ["opencodeProxy", "acpxSidecar"],
+      ["acpxSidecar", "opencodeProxy"],
+    ] as const) {
+      const original = payload.artifacts[artifactName];
+      payload.artifacts[artifactName] = {
+        ...payload.artifacts[substituteName],
+      };
+      await writeManifest();
+      expect(() => readRemoteProviderPackManifest(root)).toThrow(
+        /path must be/,
+      );
+      payload.artifacts[artifactName] = original;
+    }
+    await writeManifest();
     await writeFile(
       join(root, "dist", "cli", "opencode-app-server-proxy.js"),
       "tampered\n",

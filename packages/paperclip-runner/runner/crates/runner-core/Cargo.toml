@@ -26,6 +26,7 @@ rustls.workspace = true
 rustls-native-certs.workspace = true
 rustls-pemfile.workspace = true
 reqwest.workspace = true
+rustix.workspace = true
 sha1.workspace = true
 tungstenite.workspace = true
 tokio.workspace = true

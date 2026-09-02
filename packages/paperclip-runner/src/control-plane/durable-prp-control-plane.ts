@@ -1883,7 +1883,6 @@ const runnerExplicitProviderEnvironmentKeys = [
   "AWS_CONTAINER_CREDENTIALS_FULL_URI",
   "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
   "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-  "PAPERCLIP_OPENCODE_COMMAND",
   "PAPERCLIP_OPENCODE_PERMISSION_MODE",
   "PAPERCLIP_OPENCODE_RUNTIME_DIR",
   "PAPERCLIP_RUNNER_INSTANCE_ID",
@@ -1939,6 +1938,21 @@ export function spawnRunner(options: {
   runnerBinaryPath?: string;
   runnerVersion: string;
   runnerDigest: string;
+  acpxLaunchProfile?: {
+    authorityDigest: string;
+    command: string;
+    commandSha256: string;
+    sidecarScript: string;
+    sidecarScriptSha256: string;
+  };
+  opencodeLaunchProfile?: {
+    command: string;
+    commandSha256: string;
+    proxyScript: string;
+    proxyScriptSha256: string;
+    executable: string;
+    executableSha256: string;
+  };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
 }): RunnerProcessHandle {
@@ -1982,6 +1996,36 @@ export function spawnRunner(options: {
     options.runnerVersion,
     "--runner-digest",
     options.runnerDigest,
+    ...(options.acpxLaunchProfile
+      ? [
+          "--acpx-launch-authority-digest",
+          options.acpxLaunchProfile.authorityDigest,
+          "--acpx-sidecar-command",
+          options.acpxLaunchProfile.command,
+          "--acpx-sidecar-command-sha256",
+          options.acpxLaunchProfile.commandSha256,
+          "--acpx-sidecar-script",
+          options.acpxLaunchProfile.sidecarScript,
+          "--acpx-sidecar-script-sha256",
+          options.acpxLaunchProfile.sidecarScriptSha256,
+        ]
+      : []),
+    ...(options.opencodeLaunchProfile
+      ? [
+          "--opencode-proxy-command",
+          options.opencodeLaunchProfile.command,
+          "--opencode-proxy-command-sha256",
+          options.opencodeLaunchProfile.commandSha256,
+          "--opencode-proxy-script",
+          options.opencodeLaunchProfile.proxyScript,
+          "--opencode-proxy-script-sha256",
+          options.opencodeLaunchProfile.proxyScriptSha256,
+          "--opencode-executable",
+          options.opencodeLaunchProfile.executable,
+          "--opencode-executable-sha256",
+          options.opencodeLaunchProfile.executableSha256,
+        ]
+      : []),
     "--fake-harness",
     fakeHarnessBinary,
     "--fake-harness-script",

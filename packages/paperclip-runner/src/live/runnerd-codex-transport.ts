@@ -247,8 +247,14 @@ export interface CapabilityRunnerdCodexTransportOptions {
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  acpxSidecarSha256?: string;
   /** Node executable in the runner filesystem; required for remote JS providers. */
   providerNodeCommand?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  providerNodeCommandSha256?: string;
+  /** Digest of the build-owned provider-pack manifest that authorized remote artifacts. */
+  providerPackAuthorityDigest?: string;
   acpxRuntimeDirectory?: string;
   managedProfile?: {
     profileId: string;
@@ -288,7 +294,11 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Controller-visible Codex home used only to seed the isolated runner home. */
   sourceCodexHome?: string | null;
   opencodeCommand?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  opencodeCommandSha256?: string;
   opencodeProxyPath?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  opencodeProxySha256?: string;
   opencodeRuntimeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
   closeGraceMs?: number;
@@ -804,6 +814,112 @@ function approvedRunnerArtifact(
   };
 }
 
+function acpxRunnerLaunchProfile(
+  options: CapabilityRunnerdCodexTransportOptions,
+  command: string,
+  sidecarScript: string,
+): {
+  authorityDigest: string;
+  command: string;
+  commandSha256: string;
+  sidecarScript: string;
+  sidecarScriptSha256: string;
+} {
+  const localDigest = (path: string) =>
+    `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  if (!options.runnerFilesystemRoot) {
+    const buildCommand = process.execPath;
+    const buildSidecar = fileURLToPath(
+      new URL("../cli/acpx-runtime-sidecar.js", import.meta.url),
+    );
+    if (
+      options.providerNodeCommand !== undefined ||
+      options.providerNodeCommandSha256 !== undefined ||
+      options.acpxSidecarPath !== undefined ||
+      options.acpxSidecarSha256 !== undefined ||
+      options.providerPackAuthorityDigest !== undefined ||
+      command !== buildCommand ||
+      sidecarScript !== buildSidecar
+    ) {
+      throw new Error(
+        "runner_local_provider_artifact_incompatible: ACPX local launch must use build-owned artifacts",
+      );
+    }
+    const commandSha256 = localDigest(buildCommand);
+    const sidecarScriptSha256 = localDigest(buildSidecar);
+    return {
+      authorityDigest: commandDigest({
+        schema: "paperclip.runner.local-acpx-authority.v1",
+        commandSha256,
+        sidecarScriptSha256,
+      }),
+      command: buildCommand,
+      commandSha256,
+      sidecarScript: buildSidecar,
+      sidecarScriptSha256,
+    };
+  }
+  const commandSha256 = options.providerNodeCommandSha256;
+  const sidecarScriptSha256 = options.acpxSidecarSha256;
+  const authorityDigest = options.providerPackAuthorityDigest;
+  if (!commandSha256 || !sidecarScriptSha256 || !authorityDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
+    );
+  }
+  return {
+    authorityDigest,
+    command,
+    commandSha256,
+    sidecarScript,
+    sidecarScriptSha256,
+  };
+}
+
+function opencodeRunnerLaunchProfile(
+  options: CapabilityRunnerdCodexTransportOptions,
+  command: string,
+  proxyScript: string,
+  executable: string,
+): {
+  command: string;
+  commandSha256: string;
+  proxyScript: string;
+  proxyScriptSha256: string;
+  executable: string;
+  executableSha256: string;
+} {
+  const localDigest = (path: string) =>
+    `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const usesLocalBuildOwnedDefaults =
+    !options.runnerFilesystemRoot &&
+    options.providerNodeCommand === undefined &&
+    options.opencodeProxyPath === undefined &&
+    options.opencodeCommand === undefined;
+  const commandSha256 =
+    options.providerNodeCommandSha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(command) : null);
+  const proxyScriptSha256 =
+    options.opencodeProxySha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(proxyScript) : null);
+  const executableSha256 =
+    options.opencodeCommandSha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(executable) : null);
+  if (!commandSha256 || !proxyScriptSha256 || !executableSha256) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: OpenCode launch profile omitted verified artifact digests",
+    );
+  }
+  return {
+    command,
+    commandSha256,
+    proxyScript,
+    proxyScriptSha256,
+    executable,
+    executableSha256,
+  };
+}
+
 function authorizedToolSet(
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
@@ -869,7 +985,6 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   if (input.provider === "opencode") {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
-      PAPERCLIP_OPENCODE_COMMAND: input.options.opencodeCommand ?? "opencode",
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
         input.options.opencodePermissionMode ?? "ask",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
@@ -1527,6 +1642,28 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
+    const opencodeExecutable =
+      provider === "opencode"
+        ? (this.options.opencodeCommand ??
+          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        : null;
+    const runnerAcpxLaunchProfile =
+      provider === "acpx"
+        ? acpxRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            acpxSidecarPath,
+          )
+        : undefined;
+    const runnerOpenCodeLaunchProfile =
+      provider === "opencode"
+        ? opencodeRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            opencodeProxyPath,
+            opencodeExecutable!,
+          )
+        : undefined;
     if (
       this.options.runnerFilesystemRoot
       && (provider === "opencode" || provider === "acpx")
@@ -1535,7 +1672,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ["provider Node", providerNodeCommand],
         ["OpenCode proxy", opencodeProxyPath],
         ["ACPX sidecar", acpxSidecarPath],
-        ["OpenCode executable", this.options.opencodeCommand ?? "opencode"],
+        ["OpenCode executable", opencodeExecutable ?? "opencode"],
       ] as const;
       for (const [label, candidate] of providerPaths) {
         if (
@@ -1757,6 +1894,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
       runnerDigest: runnerArtifact.digest,
+      acpxLaunchProfile: runnerAcpxLaunchProfile,
+      opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
       environment: withRunnerdProviderTrace(
         createCapabilityRunnerdProviderEnvironment({
           provider,
@@ -1888,6 +2027,38 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
       });
     }
+    const opencodeProxyPath =
+      this.options.opencodeProxyPath ??
+      fileURLToPath(
+        new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
+      );
+    const acpxSidecarPath =
+      this.options.acpxSidecarPath ??
+      fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
+    const providerNodeCommand =
+      this.options.providerNodeCommand ?? process.execPath;
+    const opencodeExecutable =
+      provider === "opencode"
+        ? (this.options.opencodeCommand ??
+          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        : null;
+    const runnerAcpxLaunchProfile =
+      provider === "acpx"
+        ? acpxRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            acpxSidecarPath,
+          )
+        : undefined;
+    const runnerOpenCodeLaunchProfile =
+      provider === "opencode"
+        ? opencodeRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            opencodeProxyPath,
+            opencodeExecutable!,
+          )
+        : undefined;
     const core = new DurablePrpControlPlane({
       stateDirectory: controlPlaneDirectory,
       identity,
@@ -1943,6 +2114,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
       runnerDigest: runnerArtifact.digest,
+      acpxLaunchProfile: runnerAcpxLaunchProfile,
+      opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
       environment: withRunnerdProviderTrace(
         createCapabilityRunnerdProviderEnvironment({
           provider,
@@ -2619,3 +2792,7 @@ export function createCapabilityRunnerdCodexTransport(
 
 export const createRunnerdCodexTransport =
   createCapabilityRunnerdCodexTransport;
+
+export const runnerdLaunchProfileInternals = Object.freeze({
+  acpxRunnerLaunchProfile,
+});

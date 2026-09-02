@@ -73,6 +73,13 @@ export interface OpenCodeServerDriverOptions {
   taskEnvelope?: CodexTaskEnvelope;
   runnerInstanceId?: string;
   command?: string;
+  /** Inherited runner-owned executable descriptor duplicated into the child. */
+  commandFd?: number;
+  /** Runner-owned executable path lifecycle used only by the macOS proxy. */
+  commandLifecycle?: {
+    beforeSpawn(): void;
+    afterSpawn(): void;
+  };
   runtimeDirectory: string;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
@@ -1364,12 +1371,26 @@ async function startRuntime(input: {
     OPENCODE_SERVER_PASSWORD: password,
   });
   const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
+  const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "ignore", "pipe"];
+  if (input.options.commandFd !== undefined) {
+    while (stdio.length <= input.options.commandFd) stdio.push("ignore");
+    stdio[input.options.commandFd] = input.options.commandFd;
+  }
+  input.options.commandLifecycle?.beforeSpawn();
   const child = spawn(input.options.command ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: input.cwd,
     env: environment,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio,
     detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
   });
+  if (child.pid !== undefined) {
+    try {
+      input.options.commandLifecycle?.afterSpawn();
+    } catch (error) {
+      child.kill("SIGKILL");
+      throw error;
+    }
+  }
   let diagnostics = "";
   child.stderr?.on("data", (chunk) => {
     const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));

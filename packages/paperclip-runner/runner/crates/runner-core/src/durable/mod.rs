@@ -7,6 +7,8 @@ use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
+
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{run_durable_runner, CommandExecution, CommandExecutor, PolledEvent};
@@ -96,6 +98,74 @@ pub fn capture_bootstrap_ticket() -> Result<Option<BootstrapTicket>, DurableRunn
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QualifiedLaunchArtifact {
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcpxLaunchProfile {
+    pub authority_digest: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    pub artifacts: Vec<QualifiedLaunchArtifact>,
+}
+
+impl AcpxLaunchProfile {
+    pub fn canonical_digest(&self) -> Result<String, DurableRunnerError> {
+        fn update(hasher: &mut Sha256, value: &[u8]) {
+            hasher.update((value.len() as u64).to_be_bytes());
+            hasher.update(value);
+        }
+
+        let mut artifacts = self.artifacts.iter().collect::<Vec<_>>();
+        artifacts.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut digest = Sha256::new();
+        update(&mut digest, b"paperclip.runner.acpx-launch-profile.v1");
+        update(&mut digest, self.authority_digest.as_bytes());
+        update(
+            &mut digest,
+            self.command
+                .to_str()
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "ACPX launch profile command path must be valid UTF-8",
+                    )
+                })?
+                .as_bytes(),
+        );
+        update(&mut digest, &(self.args.len() as u64).to_be_bytes());
+        for argument in &self.args {
+            update(&mut digest, argument.as_bytes());
+        }
+        update(&mut digest, &(artifacts.len() as u64).to_be_bytes());
+        for artifact in artifacts {
+            update(
+                &mut digest,
+                artifact
+                    .path
+                    .to_str()
+                    .ok_or_else(|| {
+                        DurableRunnerError::invalid(
+                            "ACPX launch artifact paths must be valid UTF-8",
+                        )
+                    })?
+                    .as_bytes(),
+            );
+            update(&mut digest, artifact.sha256.as_bytes());
+        }
+        Ok(format!("sha256:{:x}", digest.finalize()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenCodeLaunchProfile {
+    pub command: QualifiedLaunchArtifact,
+    pub proxy_script: QualifiedLaunchArtifact,
+    pub executable: QualifiedLaunchArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerConfig {
     pub connect_url: String,
     pub ca_bundle_path: Option<PathBuf>,
@@ -108,6 +178,8 @@ pub struct DurableRunnerConfig {
     pub item_id: String,
     pub runner_version: String,
     pub runner_digest: String,
+    pub acpx_launch_profile: Option<AcpxLaunchProfile>,
+    pub opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     pub max_outbox_bytes: usize,
     pub p0_reserve_bytes: usize,
     pub max_frame_bytes: usize,
@@ -184,6 +256,67 @@ impl DurableRunnerConfig {
                 "durable runner max runtime must not exceed seven days",
             ));
         }
+        if let Some(profile) = self.acpx_launch_profile.as_ref() {
+            if profile.authority_digest.len() != 71
+                || !profile.authority_digest.starts_with("sha256:")
+                || !profile.authority_digest[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || !profile.command.is_absolute()
+                || profile.command.to_str().is_none()
+                || profile.args.len() > 32
+                || profile.args.iter().any(|argument| {
+                    argument.is_empty() || argument.len() > 4_096 || argument.contains('\0')
+                })
+                || profile.artifacts.is_empty()
+                || profile.artifacts.len() > 8
+                || profile.artifacts.iter().any(|artifact| {
+                    !artifact.path.is_absolute()
+                        || artifact.path.to_str().is_none()
+                        || artifact.sha256.len() != 71
+                        || !artifact.sha256.starts_with("sha256:")
+                        || !artifact.sha256[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                || !profile
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.path == profile.command)
+                || profile
+                    .artifacts
+                    .iter()
+                    .enumerate()
+                    .any(|(index, artifact)| {
+                        profile.artifacts[..index]
+                            .iter()
+                            .any(|prior| prior.path == artifact.path)
+                    })
+            {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX runner launch profile is malformed",
+                ));
+            }
+        }
+        if let Some(profile) = self.opencode_launch_profile.as_ref() {
+            let artifacts = [&profile.command, &profile.proxy_script, &profile.executable];
+            if artifacts.iter().any(|artifact| {
+                !artifact.path.is_absolute()
+                    || artifact.path.to_str().is_none()
+                    || artifact.sha256.len() != 71
+                    || !artifact.sha256.starts_with("sha256:")
+                    || !artifact.sha256[7..]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            }) || profile.command.path == profile.proxy_script.path
+                || profile.command.path == profile.executable.path
+                || profile.proxy_script.path == profile.executable.path
+            {
+                return Err(DurableRunnerError::invalid(
+                    "OpenCode runner launch profile is malformed",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -205,6 +338,8 @@ mod tests {
             item_id: "item-1".to_owned(),
             runner_version: "1.0.0".to_owned(),
             runner_digest: "sha256:digest".to_owned(),
+            acpx_launch_profile: None,
+            opencode_launch_profile: None,
             max_outbox_bytes: 1024 * 1024,
             p0_reserve_bytes: 64 * 1024,
             max_frame_bytes: 64 * 1024,

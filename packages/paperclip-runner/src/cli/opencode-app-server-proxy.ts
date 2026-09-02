@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 import type { HarnessRuntimeRequestResolution, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
@@ -18,6 +17,10 @@ import {
   openCodeProxyCollaborationModes,
 } from "./opencode-proxy-collaboration-mode.js";
 import { parseOpenCodeProxyPermissionMode } from "./opencode-proxy-permission-mode.js";
+import {
+  trustedOpenCodeLaunchBinding,
+  withoutAmbientOpenCodeCommand,
+} from "./opencode-proxy-command.js";
 
 type RpcMessage = { id?: string | number; method?: string; params?: unknown; result?: unknown; error?: unknown };
 
@@ -31,16 +34,7 @@ let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
 const announcedTurnIds = new Set<string>();
-
-function openCodeCommand(): string {
-  const configured = process.env.PAPERCLIP_OPENCODE_COMMAND?.trim();
-  if (configured && configured !== "opencode") return configured;
-  try {
-    return createRequire(import.meta.url).resolve("opencode-ai/bin/opencode.exe");
-  } catch {
-    return configured || "opencode";
-  }
-}
+const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 
 function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -82,9 +76,11 @@ async function open(params: Record<string, unknown>, resume: boolean): Promise<R
     permissionMode: parseOpenCodeProxyPermissionMode(
       process.env.PAPERCLIP_OPENCODE_PERMISSION_MODE,
     ),
-    command: openCodeCommand(),
+    command: launchBinding.command,
+    commandFd: launchBinding.commandFd,
+    commandLifecycle: launchBinding.commandLifecycle,
     runtimeDirectory: runtimeDirectory(),
-    environment: process.env,
+    environment: withoutAmbientOpenCodeCommand(process.env),
     runnerInstanceId: process.env.PAPERCLIP_RUNNER_INSTANCE_ID ?? "paperclip-runnerd-opencode",
     taskEnvelope: openCodeProxyTaskEnvelope(params),
     systemInstructions: text(params.baseInstructions, "Complete only the supplied task."),
