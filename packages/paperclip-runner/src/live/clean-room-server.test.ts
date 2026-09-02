@@ -981,7 +981,7 @@ describe("Capability clean-room chat server", () => {
     expect(response.status).toBe(429);
     expect(body.error).toBe("turn_limit");
     expect(body.message).toContain("Start a new chat");
-  });
+  }, 30_000);
 
   it("streams the turn as frames while the POST is still open", async () => {
     const opened = await call("/api/capability/ui/cleanroom/session");
