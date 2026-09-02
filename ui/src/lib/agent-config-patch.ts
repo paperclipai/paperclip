@@ -9,6 +9,7 @@ export interface AgentConfigOverlay {
   heartbeat: Record<string, unknown>;
   debug: Record<string, unknown>;
   runtime: Record<string, unknown>;
+  literalRedactedConfigPaths?: string[][];
 }
 
 export function omitUndefinedEntries(value: Record<string, unknown>) {
@@ -81,7 +82,7 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (patch.adapterConfig !== undefined || patch.runtimeConfig !== undefined) {
     patch.preserveRedactedConfigValues = true;
-    const literalPaths: string[][] = [];
+    const literalPaths: string[][] = [...(overlay.literalRedactedConfigPaths ?? [])];
     const existingAdapterConfig = (agent.adapterConfig ?? {}) as Record<string, unknown>;
     for (const [key, value] of Object.entries(overlay.adapterConfig)) {
       if (value === REDACTED_CONFIG_VALUE && existingAdapterConfig[key] === REDACTED_CONFIG_VALUE) {
@@ -101,7 +102,11 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
         literalPaths.push(["runtimeConfig", "debug", key]);
       }
     }
-    if (literalPaths.length > 0) patch.literalRedactedConfigPaths = literalPaths;
+    if (literalPaths.length > 0) {
+      patch.literalRedactedConfigPaths = [
+        ...new Map(literalPaths.map((path) => [JSON.stringify(path), path])).values(),
+      ];
+    }
   }
 
   return patch;

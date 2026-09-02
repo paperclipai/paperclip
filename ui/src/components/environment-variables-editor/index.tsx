@@ -143,6 +143,8 @@ export interface EnvironmentVariablesEditorHandle {
    * action reads parent state. Returns the promoted value when a draft existed.
    */
   flushPendingDraft: () => Record<string, EnvBinding> | null;
+  /** Names whose bindings differ from the committed editor baseline. */
+  getChangedNames: () => string[];
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -288,7 +290,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return draftValue ?? {};
   }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
 
-  useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
+  useImperativeHandle(ref, () => ({
+    flushPendingDraft,
+    getChangedNames: () => [...changeSummary.added, ...changeSummary.changed],
+  }), [changeSummary, flushPendingDraft]);
 
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");

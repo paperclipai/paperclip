@@ -170,6 +170,28 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("carries explicit nested literal-marker paths from structured editors", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      env: { TOKEN: { type: "plain", value: "***REDACTED***" } },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: {
+          env: { TOKEN: { type: "plain", value: "***REDACTED***" } },
+        },
+        literalRedactedConfigPaths: [["adapterConfig", "env", "TOKEN", "value"]],
+      }),
+    );
+
+    expect(patch).toMatchObject({
+      literalRedactedConfigPaths: [["adapterConfig", "env", "TOKEN", "value"]],
+      preserveRedactedConfigValues: true,
+    });
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A
