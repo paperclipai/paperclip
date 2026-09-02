@@ -62,7 +62,7 @@ echo "ℹ️  agents in DB: $AGENTS"
 
 echo "=== DB migrations ==="
 docker exec paperclip-postgres psql -U paperclip -d paperclip -t -A -c \
-  "SELECT count(*)||' migrations applied (max id '||max(id)||')' FROM __drizzle_migrations;" 2>/dev/null \
-  || echo "ℹ️  __drizzle_migrations table not queryable"
+  "SELECT count(*)||' migrations applied (max id '||max(id)||')' FROM drizzle.__drizzle_migrations;" 2>/dev/null \
+  || echo "ℹ️  drizzle.__drizzle_migrations table not queryable"
 
 exit $FAIL
