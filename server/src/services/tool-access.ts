@@ -13,6 +13,7 @@ import {
   companyMemberships,
   companySecretBindings,
   companySecrets,
+  principalPermissionGrants,
   userSecretDefinitions,
   heartbeatRuns,
   issues,
@@ -10817,7 +10818,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Keep callback persistence serialized with membership suspension, role
       // downgrade, and removal. Once this row is locked, authority cannot be
       // revoked between the live check and the shared credential/grant writes.
-      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      const [membership] = await tx.select({
+        id: companyMemberships.id,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, connection.companyId),
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, organizationActorUserId),
@@ -10826,6 +10830,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       )).limit(1).for("update");
       if (!membership) {
         throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
+      }
+      const roleCanManage = membership.membershipRole === "owner" || membership.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage ? [] : await tx.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, connection.companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, organizationActorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1).for("update");
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
       }
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };

@@ -1250,7 +1250,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
     const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
     const pendingConnectionIntent = await isConnectionIntent(pendingState.interactionId);
-    if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
+    if (!pendingState.subjectUserId) {
+      if (!await isToolConnectionManagerQuiet(req, pendingConnection.companyId)) {
+        throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
+      }
+    } else if (pendingState.subjectUserId === req.actor.userId) {
       await assertToolConnectionAccess(req, pendingConnection);
     } else {
       await assertToolConnectionConfigureAccess(req, pendingConnection);
