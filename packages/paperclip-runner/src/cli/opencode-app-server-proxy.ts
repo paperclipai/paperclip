@@ -21,6 +21,7 @@ import {
   trustedOpenCodeLaunchBinding,
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
+import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
 
 type RpcMessage = { id?: string | number; method?: string; params?: unknown; result?: unknown; error?: unknown };
 
@@ -35,6 +36,7 @@ let activeModel = "";
 let activeTurnId: string | null = null;
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
+const usageLedger = new OpenCodeProxyUsageLedger();
 
 function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -173,18 +175,15 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
         },
       });
       if (payload.kind === "usage") {
-        const usage = record(payload.usage);
-        const cache = record(usage.cache);
+        const usage = usageLedger.update({
+          turnId: text(event.turnId),
+          messageId: text(payload.usageMessageId),
+          usage: payload.usage,
+        });
         send({ method: "thread/tokenUsage/updated", params: {
           threadId: opened.ids().driverSessionId,
           turnId: event.turnId,
-          tokenUsage: { total: {
-            inputTokens: usage.inputTokens ?? usage.input ?? 0,
-            outputTokens: usage.outputTokens ?? usage.output ?? 0,
-            cachedInputTokens: usage.cachedInputTokens ?? cache.read ?? 0,
-            reasoningTokens: usage.reasoningTokens ?? usage.reasoning ?? 0,
-            costUsd: usage.costUsd ?? usage.cost ?? null,
-          } },
+          tokenUsage: usage,
         } });
       }
     } else if (event.eventType === "run.result.proposed") {
@@ -217,8 +216,14 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
           resolution: record(controllerResponse.resolution) as HarnessRuntimeRequestResolution,
         });
       })().catch((error) => failProxy(error));
+    } else if (event.eventType === "run.attached") {
+      // OpenCode can retain one provider session across governed runs. Usage
+      // totals are run-scoped, so a new attachment must not inherit the prior
+      // run's completed-turn ledger.
+      usageLedger.reset();
     } else if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) {
       const status = event.eventType.slice("turn.".length);
+      if (typeof event.turnId === "string") usageLedger.completeTurn(event.turnId);
       send({ method: "turn/completed", params: { threadId: opened.ids().driverSessionId, turnId: event.turnId, turn: { id: event.turnId, status } } });
       activeTurnId = null;
     } else if (event.eventType === "harness.diagnostic") {

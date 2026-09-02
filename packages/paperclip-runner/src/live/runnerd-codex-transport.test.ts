@@ -429,6 +429,7 @@ it("rehydrates normalized usage with the opened driver binding", () => {
         turnId: "durable-turn-1",
         cumulative: { inputTokens: 10 },
         runDelta: { inputTokens: 3 },
+        runDeltaAvailable: true,
       },
       "opened-thread-1",
       "active-turn-1",
@@ -437,6 +438,7 @@ it("rehydrates normalized usage with the opened driver binding", () => {
     providerSessionId: "backend-session-1",
     threadId: "opened-thread-1",
     turnId: "active-turn-1",
+    runDeltaAvailable: true,
     tokenUsage: {
       total: { inputTokens: 10 },
       runDelta: { inputTokens: 3 },

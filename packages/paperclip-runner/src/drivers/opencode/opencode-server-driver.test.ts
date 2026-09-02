@@ -124,9 +124,13 @@ describe("OpenCodeServerDriver", () => {
       providerPhase: "final_answer",
       text: "done [guide](guide.md)",
     });
-    expect(events.filter(
+    const usageEvents = events.filter(
       (event) => event.eventType === "item.completed" && event.payload.kind === "usage",
-    )).toHaveLength(1);
+    );
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]?.payload).toMatchObject({
+      usageMessageId: expect.any(String),
+    });
     expect(events.find((event) => event.eventType === "workspace.change.updated")?.payload)
       .toMatchObject({ schema: "paperclip.workspace.diff.v1", source: "harness_reported", totals: { files: 1 } });
     expect(events.find((event) => event.eventType === "workspace.diff.recorded")?.payload)

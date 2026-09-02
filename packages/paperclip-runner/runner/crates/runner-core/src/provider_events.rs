@@ -1192,4 +1192,37 @@ mod tests {
         assert_eq!(second[0].payload["runDeltaAvailable"], false);
         assert_eq!(second[0].payload["cumulative"]["inputTokens"], 20);
     }
+
+    #[test]
+    fn preserves_proxy_shaped_current_run_usage_as_an_explicit_delta() {
+        let usage = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {
+                "total": {
+                    "inputTokens": 24,
+                    "outputTokens": 14,
+                    "cachedInputTokens": 3,
+                    "requests": 3,
+                    "providerCostUsd": 0.021
+                },
+                "last": {
+                    "inputTokens": 7,
+                    // The OpenCode proxy folds reasoning into output because
+                    // PRP v1 has no separate reasoning field.
+                    "outputTokens": 4,
+                    "cachedInputTokens": 1,
+                    "requests": 1,
+                    "providerCostUsd": 0.004
+                }
+            }}),
+        );
+
+        assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+        assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 24);
+        assert_eq!(usage[0].payload["cumulative"]["outputTokens"], 14);
+        assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.021);
+        assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 7);
+        assert_eq!(usage[0].payload["runDelta"]["outputTokens"], 4);
+        assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.004);
+    }
 }

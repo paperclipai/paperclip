@@ -720,6 +720,11 @@ export async function executeLiveRunnerWorkflow(input: {
       `costUsd ${costUsd} exceeds budget ${input.candidate.budget.maxCostUsd}`,
     ),
     check(
+      "candidate-budget-stop",
+      budgetFailure === null,
+      budgetFailure?.message ?? "candidate budget remained available",
+    ),
+    check(
       "semantic-disposition",
       cancellationExpected ||
         calls.includes("finish_task") ||
@@ -782,7 +787,10 @@ export async function executeLiveRunnerWorkflow(input: {
     caseId: input.evalCase.id,
     candidateId: input.candidate.id,
     provider: input.candidate.provider,
-    classification: checksPassed ? "completed" : "candidate_failure",
+    classification:
+      checksPassed && budgetFailure === null
+        ? "completed"
+        : "candidate_failure",
     base,
     lifecycle: {
       checks: lifecycleChecks,

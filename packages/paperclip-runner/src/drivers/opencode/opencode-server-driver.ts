@@ -1054,7 +1054,11 @@ class OpenCodeHarnessSession implements HarnessSession {
           && this.#messageUsageFingerprints.get(messageId) !== usageFingerprint
         ) {
           this.#messageUsageFingerprints.set(messageId, usageFingerprint);
-          this.#emit("item.completed", { kind: "usage", usage: this.#usage }, { turnId, itemId: `${turnId}:usage` });
+          this.#emit(
+            "item.completed",
+            { kind: "usage", usage: this.#usage, usageMessageId: messageId },
+            { turnId, itemId: `${turnId}:usage` },
+          );
         }
       }
       return;

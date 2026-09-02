@@ -1,5 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+type MockTurnEvent =
+  | {
+      seq: number;
+      at: string;
+      turnId: string;
+      kind: "usage";
+      usage: {
+        providerRequests: number;
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens: number;
+        reasoningTokens: number;
+        costNanodollars: number;
+      };
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string;
+      kind: "activity";
+      reason: string;
+    };
+
 const liveSessionMocks = vi.hoisted(() => ({
   shutdown: vi.fn(),
   createOptions: [] as Array<{
@@ -8,22 +31,7 @@ const liveSessionMocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   snapshot: vi.fn(),
   interrupt: vi.fn(),
-  turnListener: null as
-    | null
-    | ((event: {
-        seq: number;
-        at: string;
-        turnId: string;
-        kind: "usage";
-        usage: {
-          providerRequests: number;
-          inputTokens: number;
-          outputTokens: number;
-          cachedInputTokens: number;
-          reasoningTokens: number;
-          costNanodollars: number;
-        };
-      }) => void),
+  turnListener: null as null | ((event: MockTurnEvent) => void),
 }));
 
 vi.mock("../live/live-session.js", () => ({
@@ -372,5 +380,135 @@ describe("live workflow executor infrastructure failures", () => {
         retryable: false,
       },
     });
+  });
+
+  it("keeps an exact-cap provider-terminal race classified as a budget failure", async () => {
+    const emptySnapshot = {
+      sessionId: "session-exact-cap-race",
+      authority: {},
+      mockState: JSON.stringify({ tasks: [] }),
+      transcript: [],
+      evidence: [],
+      authorizationRecords: [],
+      attempts: [],
+      usageLedger: [],
+      stateHistory: [],
+      workspaceDiffs: [],
+    };
+    const completedSnapshot = {
+      ...emptySnapshot,
+      mockState: JSON.stringify({ tasks: [{ id: "task-1", status: "done" }] }),
+      transcript: [
+        {
+          role: "assistant",
+          text: "The requested work is complete.",
+        },
+      ],
+      evidence: [
+        {
+          id: "call-finish-task",
+          kind: "tool_call",
+          data: { operationId: "finish_task" },
+        },
+        {
+          id: "result-finish-task",
+          kind: "tool_result",
+          data: { operationId: "finish_task", result: { ok: true } },
+        },
+      ],
+      attempts: [{ attemptId: "attempt-exact-cap-race", status: "succeeded" }],
+      usageLedger: [
+        {
+          receiptId: "usage-exact-cap-race",
+          attemptId: "attempt-exact-cap-race",
+          providerResponseId: "response-exact-cap-race",
+          turnId: "turn-exact-cap-race",
+          providerCalls: 1,
+          providerRequests: 1,
+          inputTokens: 70,
+          outputTokens: 20,
+          cachedInputTokens: 0,
+          reasoningTokens: 10,
+          costNanodollars: 10_000_000,
+          observedAt: "2026-09-01T00:00:00.000Z",
+        },
+      ],
+      stateHistory: [{ revision: 1 }, { revision: 2 }],
+    };
+    let providerCompleted = false;
+    liveSessionMocks.snapshot.mockImplementation(() =>
+      providerCompleted ? completedSnapshot : emptySnapshot,
+    );
+    liveSessionMocks.sendMessage.mockImplementationOnce(async () => {
+      liveSessionMocks.turnListener?.({
+        seq: 1,
+        at: "2026-09-01T00:00:00.000Z",
+        turnId: "turn-exact-cap-race",
+        kind: "activity",
+        reason: "turn_started",
+      });
+      liveSessionMocks.turnListener?.({
+        seq: 2,
+        at: "2026-09-01T00:00:00.001Z",
+        turnId: "turn-exact-cap-race",
+        kind: "usage",
+        usage: {
+          providerRequests: 1,
+          inputTokens: 70,
+          outputTokens: 20,
+          cachedInputTokens: 0,
+          reasoningTokens: 10,
+          costNanodollars: 10_000_000,
+        },
+      });
+      // The terminal wins the race with the best-effort interrupt, but the
+      // already-observed exact-cap stop remains authoritative for scoring.
+      providerCompleted = true;
+      return { status: "completed", turnId: "turn-exact-cap-race" };
+    });
+    const source = RUNNER_LIVE_CANDIDATE_SLOTS[0]!.candidates[0]!;
+    const candidate = {
+      ...source,
+      budget: {
+        ...source.budget,
+        maxTotalTokens: 100,
+        maxCostUsd: 0.01,
+      },
+    };
+    const entry: RunnerLiveScheduleEntry = {
+      executionId: "candidate-exact-cap-race",
+      caseId: "final-response",
+      candidateId: candidate.id,
+      slotId: candidate.slotId,
+      repetition: 1,
+      providerTrace: "raw",
+      budget: candidate.budget,
+    };
+
+    const observation = await executeLiveRunnerWorkflow({
+      entry,
+      candidate,
+      evalCase: runnerWorkflowCase(entry.caseId),
+    });
+
+    expect(liveSessionMocks.interrupt).toHaveBeenCalledTimes(1);
+    expect(observation).toMatchObject({
+      classification: "candidate_failure",
+      metrics: { totalTokens: 100, costUsd: 0.01 },
+      failure: {
+        code: "candidate_budget_reached",
+        category: "candidate",
+        retryable: false,
+      },
+    });
+    expect(observation.lifecycle.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "terminal-authority", passed: true }),
+        expect.objectContaining({ id: "token-budget", passed: true }),
+        expect.objectContaining({ id: "cost-budget", passed: true }),
+        expect.objectContaining({ id: "candidate-budget-stop", passed: false }),
+        expect.objectContaining({ id: "semantic-disposition", passed: true }),
+      ]),
+    );
   });
 });
