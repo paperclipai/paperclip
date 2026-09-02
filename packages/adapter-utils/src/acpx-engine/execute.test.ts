@@ -38,6 +38,7 @@ import {
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
+import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1182,6 +1183,26 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const codexHome = path.join(root, "codex-home");
+    const operational = {
+      ...await createSkill(skillRoot, "paperclip"),
+      key: "paperclipai/paperclip/paperclip",
+    };
+
+    await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [operational],
+      paperclipSkillSync: { desiredSkills: [] },
+    });
+
+    expect(await pathExists(path.join(codexHome, "skills", operational.runtimeName, "SKILL.md"))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
@@ -1569,6 +1590,37 @@ describe("shared ACPX engine runtime behavior", () => {
       const signature = await referencedSourceContentSignature(localPath, { kind: "failed", reason: "git status timed out" });
 
       expect(signature).toBe("unreadable:git status timed out");
+    });
+
+    it("never leaks a raw absolute path into the signature, even when the underlying scan embedded one", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "does-not-exist");
+
+      // A raw toplevel string that makes `localPath` a non-descendant, carrying
+      // a sensitive absolute path — exactly the shape a caught Git diagnostic
+      // could embed. `resolveReferencedSourceIgnore` is the single choke point
+      // that must reduce it to the fixed category before the signature (which
+      // embeds `reason` verbatim as `unreadable:${reason}`) ever sees it.
+      const sensitivePath = "/home/alice/project";
+      let ignoreResolution;
+      try {
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${sensitivePath}\n`, stderr: "" };
+          }
+          return { stdout: "", stderr: "" };
+        });
+        ignoreResolution = await resolveReferencedSourceIgnore(localPath);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+      expect(ignoreResolution.kind).toBe("failed");
+
+      const signature = await referencedSourceContentSignature(localPath, ignoreResolution);
+
+      expect(signature).toBe("unreadable:git-toplevel-not-descendant");
+      expect(signature).not.toContain(sensitivePath);
+      expect(signature).not.toContain(localPath);
     });
 
     it("skips a Git-ignored file (exact match) so its content never affects the signature", async () => {
@@ -6055,5 +6107,65 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(fake.markOrderlyCompletion).toHaveBeenCalledTimes(1);
     fake.emitLoss("provider_exit");
     expect(fake.readDisposition().failed).toBe(false);
+  });
+
+  it("releases the runtime locally and places no remote close call once the duplex channel is lost", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    let closeCalls = 0;
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
+    // A close call with no deadline of its own would hang forever on a dead
+    // channel. The test times out if the teardown still places the call.
+    runtime.close = () => {
+      closeCalls += 1;
+      return new Promise(() => {});
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(closeCalls).toBe(0);
+  });
+
+  it("skips the remote close when the channel loses during the awaited turn-error finalization, after the settlement snapshot", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    let closeCalls = 0;
+    // The event stream errors out (a `turnFinalize` "error" input, not a
+    // "terminal" one), so the settlement snapshot never inspects the bridge
+    // disposition and always sets `skipRemoteClose: false`. Order the channel
+    // loss inside the event stream, right before it throws, so the loss
+    // latches strictly after that snapshot and before the end-session step
+    // reaches its remote-close boundary.
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          fake.emitLoss("provider_exit");
+          throw new Error("turn upstream boom");
+        })(),
+        result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      // A close call with no deadline of its own would hang forever on a dead
+      // channel. The test fails on a nonzero call count instead of timing out.
+      close: () => {
+        closeCalls += 1;
+        return new Promise(() => {});
+      },
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    // The end-session step re-read the disposition at the remote-close
+    // boundary and saw the loss the settlement snapshot missed, so it
+    // released the runtime locally and placed no remote close call.
+    expect(closeCalls).toBe(0);
   });
 });

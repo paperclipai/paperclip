@@ -54,7 +54,7 @@
     "smoke:mcp-fixtures": "node scripts/smoke/mcp-fixture-harness.mjs",
     "smoke:pipelines-tutorial": "./scripts/smoke/pipelines-tutorial-smoke.sh",
     "smoke:terminal-bench-loop-skill": "node scripts/smoke/terminal-bench-loop-skill-smoke.mjs",
-    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/release-registry-versions.test.mjs scripts/link-plugin-dev-sdk.test.js scripts/acpx-patch-packaging.test.mjs scripts/service-onboard-smoke.test.mjs",
+    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/release-registry-versions.test.mjs scripts/link-plugin-dev-sdk.test.js scripts/acpx-patch-packaging.test.mjs scripts/service-onboard-smoke.test.mjs scripts/docker-onboard-smoke.test.mjs",
     "storybook-visual:baseline": "node scripts/storybook-visual-baseline.mjs",
     "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
@@ -88,17 +88,7 @@
     "overrides": {
       "rollup": ">=4.59.0",
       "react": "^19.2.8",
-      "react-dom": "^19.2.8",
-      "lexical": "0.49.0",
-      "@lexical/clipboard": "0.49.0",
-      "@lexical/link": "0.49.0",
-      "@lexical/list": "0.49.0",
-      "@lexical/markdown": "0.49.0",
-      "@lexical/plain-text": "0.49.0",
-      "@lexical/react": "0.49.0",
-      "@lexical/rich-text": "0.49.0",
-      "@lexical/selection": "0.49.0",
-      "@lexical/utils": "0.49.0"
+      "react-dom": "^19.2.8"
     }
   }
 }

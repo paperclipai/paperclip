@@ -467,7 +467,9 @@ describe("Layout", () => {
     expect(selectorText).toContain("export");
     expect(selectorText).toContain("import");
     expect(selectorText).toContain("members");
-    expect(selectorText).toContain("invites");
+    // Invites live on a tab of the Members page now, so the selector no
+    // longer carries a standalone entry for them.
+    expect(selectorText).not.toContain("invites");
     expect(selectorText).toContain("secrets");
     expect(selectorText).toContain("profile");
     expect(selectorText).toContain("environments");

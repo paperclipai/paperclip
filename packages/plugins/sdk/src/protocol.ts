@@ -725,8 +725,17 @@ export interface PluginSyncFileMapping {
   kind: "file" | "directory";
   /**
    * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
-   * When set, providers MUST create the target with this mode with no
-   * world-readable window (create-with-mode or chmod-before-bytes, never after).
+   * The target MUST carry this mode when the transfer completes.
+   *
+   * For a transfer to a host target, providers MUST apply the mode with no
+   * world-readable window: create the target with the mode, or apply the mode
+   * before the bytes arrive at the target path. A host file sits outside the
+   * sandbox boundary, so an open window shows the bytes to other host
+   * processes.
+   *
+   * For a transfer to a sandbox target, providers MAY apply the mode after
+   * they write the bytes. The sandbox is the trust boundary, so a short window
+   * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
   /** Glob patterns to exclude when `kind` is `"directory"`. */

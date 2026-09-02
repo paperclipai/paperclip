@@ -41,27 +41,27 @@ test.describe("Onboarding wizard", () => {
     // The wizard may open on a launcher card or directly on the capsule
     // wizard; the front door (step 0) requires a click into the create path.
     const startBtn = page.getByRole("button", {
-      name: /Start Onboarding|New Company|Add Agent/,
+      name: /Start Onboarding|New Organization|Add Agent/,
     });
     if (await startBtn.count()) {
       await startBtn.first().click();
     }
-    const createCard = page.getByRole("button", { name: /Build a new company/ });
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
     if (await createCard.count()) {
       await createCard.first().click();
     }
 
     // Step 1 — Name your organization.
     await expect(
-      page.getByRole("heading", { name: "Name your organization" }),
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
-    await page.getByRole("button", { name: /^Next/ }).click();
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
+    await page.getByRole("button", { name: /^Continue/ }).click();
 
     // Step 1's "Next" now creates the company and goes straight to the agent.
     // The mission step used to sit between them and do the creating; onboarding
     // no longer asks for the mission, which is collected later in the app.
-    await page.waitForSelector("#onboarding-agent-role", {
+    await page.waitForSelector("#onboarding-agent-name", {
       timeout: 30_000,
     });
 

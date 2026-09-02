@@ -21,7 +21,15 @@ SMOKE_READY_TIMEOUT_SECONDS="${SMOKE_READY_TIMEOUT_SECONDS:-90}"
 SMOKE_ADMIN_NAME="${SMOKE_ADMIN_NAME:-Smoke Admin}"
 SMOKE_ADMIN_EMAIL="${SMOKE_ADMIN_EMAIL:-smoke-admin@paperclip.local}"
 SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
-CONTAINER_NAME="${IMAGE_NAME//[^a-zA-Z0-9_.-]/-}"
+# Overridable so a caller can fix the name before this script runs. CI needs
+# that: a name it only learns from this script's output is a name it does not
+# have when this script fails, which is precisely when its diagnostics steps
+# need one.
+CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-$IMAGE_NAME}"
+CONTAINER_NAME="${CONTAINER_NAME//[^a-zA-Z0-9_.-]/-}"
+# Where the container's logs are written before it is torn down. See
+# `dump_container_logs`.
+SMOKE_LOG_FILE="${SMOKE_LOG_FILE:-${TMPDIR:-/tmp}/${CONTAINER_NAME}.log}"
 LOG_PID=""
 COOKIE_JAR=""
 TMP_DIR=""
@@ -29,12 +37,46 @@ PRESERVE_CONTAINER_ON_EXIT="false"
 
 mkdir -p "$DATA_DIR"
 
+# Start from an empty dump. `dump_container_logs` only writes when there is a
+# container to read, so a run that fails before one exists — a failed build, a
+# port already bound — would otherwise leave the previous run's file in place,
+# and that file would be read as this run's diagnostics. Truncated rather than
+# removed, so the path is present and writable from here on.
+if [[ -n "$SMOKE_LOG_FILE" ]]; then
+  mkdir -p "$(dirname "$SMOKE_LOG_FILE")" >/dev/null 2>&1 || true
+  : >"$SMOKE_LOG_FILE" 2>/dev/null || true
+fi
+
+# Copy the container's logs out while there is still a container to read them
+# from.
+#
+# This runs on every failure path — the image failing to serve, health never
+# coming up, bootstrap rejecting the admin — which is exactly when the logs are
+# the only account of what went wrong, and exactly when they used to be
+# destroyed unread: `docker run` passed `--rm`, so the container and its logs
+# went away with the stop below (and, for a container that crashed on its own,
+# the moment its process exited). `--rm` is gone for that reason; removal is
+# this script's job now, and it happens after the dump.
+dump_container_logs() {
+  if [[ -z "$SMOKE_LOG_FILE" ]]; then
+    return 0
+  fi
+  if ! docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$SMOKE_LOG_FILE")" >/dev/null 2>&1 || return 0
+  docker logs "$CONTAINER_NAME" >"$SMOKE_LOG_FILE" 2>&1 || true
+}
+
 cleanup() {
   if [[ -n "$LOG_PID" ]]; then
     kill "$LOG_PID" >/dev/null 2>&1 || true
   fi
+  # Before the teardown below, never after it.
+  dump_container_logs
   if [[ "$PRESERVE_CONTAINER_ON_EXIT" != "true" ]]; then
     docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
@@ -85,6 +127,7 @@ write_metadata_file() {
     printf 'SMOKE_ADMIN_EMAIL=%q\n' "$SMOKE_ADMIN_EMAIL"
     printf 'SMOKE_ADMIN_PASSWORD=%q\n' "$SMOKE_ADMIN_PASSWORD"
     printf 'SMOKE_CONTAINER_NAME=%q\n' "$CONTAINER_NAME"
+    printf 'SMOKE_LOG_FILE=%q\n' "$SMOKE_LOG_FILE"
     printf 'SMOKE_DATA_DIR=%q\n' "$DATA_DIR"
     printf 'SMOKE_IMAGE_NAME=%q\n' "$IMAGE_NAME"
     printf 'SMOKE_PAPERCLIPAI_VERSION=%q\n' "$PAPERCLIPAI_VERSION"
@@ -260,6 +303,8 @@ echo "    Public URL: $PAPERCLIP_PUBLIC_URL"
 echo "    Smoke auto-bootstrap: $SMOKE_AUTO_BOOTSTRAP"
 echo "    Detached mode: $SMOKE_DETACH"
 echo "    Data dir: $DATA_DIR"
+echo "    Container name: $CONTAINER_NAME"
+echo "    Container log dump: $SMOKE_LOG_FILE"
 echo "    Deployment: $PAPERCLIP_DEPLOYMENT_MODE/$PAPERCLIP_DEPLOYMENT_EXPOSURE"
 if [[ "$SMOKE_DETACH" != "true" ]]; then
   echo "    Live output: onboard banner and server logs stream in this terminal (Ctrl+C to stop)"
@@ -267,7 +312,11 @@ fi
 
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-docker run -d --rm \
+# No `--rm`. A container that removes itself takes its logs with it the instant
+# it exits, which is the one moment they are worth reading; the cleanup above
+# removes it instead, after dumping them. The `docker rm -f` just above covers
+# a container left behind by a previous run.
+docker run -d \
   --name "$CONTAINER_NAME" \
   -p "$HOST_PORT:3100" \
   -e HOST=0.0.0.0 \

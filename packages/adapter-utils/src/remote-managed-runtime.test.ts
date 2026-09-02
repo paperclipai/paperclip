@@ -26,6 +26,8 @@ vi.mock("./ssh.js", () => ({
 }));
 
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
+import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 
 describe("remote managed runtime", () => {
   const cleanupDirs: string[] = [];
@@ -261,5 +263,63 @@ describe("remote managed runtime", () => {
     // bytes are sent for it — while the healthy project still stages.
     expect(Object.keys(prepared.additionalSourceDirs)).toEqual(["healthy"]);
     expect(syncDirectoryToSsh).not.toHaveBeenCalledWith(expect.objectContaining({ localDir: failedDir }));
+  });
+
+  it("never leaks a raw absolute path into the remote per-project staging warning", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-redact-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const failedDir = path.join(rootDir, "referenced-failed");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(failedDir, { recursive: true });
+
+    // A raw toplevel string that makes `failedDir` a non-descendant, carrying
+    // a sensitive absolute path — exactly the shape a caught Git diagnostic
+    // could embed. `resolveReferencedSourceIgnore` is the single choke point
+    // that must reduce it to the fixed category before anything downstream
+    // (here, the remote lane's warning) ever sees it.
+    const sensitivePath = "/srv/alice/project";
+    let ignoreResolution;
+    try {
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.toplevel") {
+          return { stdout: `${sensitivePath}\n`, stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      });
+      ignoreResolution = await resolveReferencedSourceIgnore(failedDir);
+    } finally {
+      setExpensiveWorkspaceGitExecutor(null);
+    }
+    expect(ignoreResolution.kind).toBe("failed");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await prepareRemoteManagedRuntime({
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/app",
+          remoteCwd: "/app",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "KNOWN HOSTS",
+          strictHostKeyChecking: true,
+        },
+        runId: "run-redact",
+        adapterKey: "codex",
+        workspaceLocalDir: workspaceDir,
+        workspaceRemoteDir: "/app",
+        syncWorkspace: false,
+        additionalSources: [{ localPath: failedDir, projectId: "failed", ignoreResolution }],
+      });
+
+      const warnedText = warnSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(warnedText).toContain("failed");
+      expect(warnedText).not.toContain(sensitivePath);
+      expect(warnedText).not.toContain(failedDir);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

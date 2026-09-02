@@ -697,7 +697,7 @@ async function readLocalPackageZip(file: File): Promise<{
   files: Record<string, CompanyPortabilityFileEntry>;
 }> {
   if (!/\.zip$/i.test(file.name)) {
-    throw new Error("Select a .zip company package.");
+    throw new Error("Select a .zip organization package.");
   }
   const archive = await readZipArchive(await file.arrayBuffer());
   if (Object.keys(archive.files).length === 0) {
@@ -1273,7 +1273,7 @@ export function CompanyImport() {
         pushToast({
           tone: "success",
           title: "Import completed",
-          body: "Open the company to view it.",
+          body: "Open the organization to view it.",
         });
         return;
       }
@@ -1643,7 +1643,7 @@ export function CompanyImport() {
           <p className="text-xs text-muted-foreground mt-1">
             {importOutcome.companyName
               ? <>The import finished and <span className="font-medium text-foreground">{importOutcome.companyName}</span> is ready. Its detailed summary is no longer available.</>
-              : "The import finished and your company is ready. Its detailed summary is no longer available, but the company has been added — select it from the company switcher to view it."}
+              : "The import finished and your organization is ready. Its detailed summary is no longer available, but the organization has been added — select it from the organization switcher to view it."}
           </p>
           {importOutcome.pausedAutomations ? (
             <p className="text-xs text-muted-foreground mt-1">
@@ -1661,7 +1661,7 @@ export function CompanyImport() {
               // immediately visible (same reason as the full-outcome CTA).
               onClick={() => window.location.assign(importOutcome.dashboardPath!)}
             >
-              Open company dashboard
+              Open organization dashboard
             </Button>
           </div>
         ) : null}
@@ -1809,7 +1809,7 @@ export function CompanyImport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Download} message="Select a company to import into." />;
+    return <EmptyState icon={Download} message="Select an organization to import into." />;
   }
 
   return (
@@ -1906,7 +1906,7 @@ export function CompanyImport() {
           </Field>
         )}
 
-        <Field label="Target" hint="Import into this company or create a new one.">
+        <Field label="Target" hint="Import into this organization or create a new one.">
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
@@ -1916,7 +1916,7 @@ export function CompanyImport() {
               resetImportFlowState();
             }}
           >
-            <option value="new">Create new company</option>
+            <option value="new">Create new organization</option>
             <option value="existing">
               Existing company: {selectedCompany?.name}
             </option>
@@ -1925,7 +1925,7 @@ export function CompanyImport() {
 
         {targetMode === "new" && (
           <Field
-            label="New company name"
+            label="New organization name"
             hint="Optional override. Leave blank to use the package name."
           >
             <input
@@ -1936,14 +1936,14 @@ export function CompanyImport() {
                 setNewCompanyName(e.target.value);
                 resetMutationState();
               }}
-              placeholder="Imported Company"
+              placeholder="Imported Organization"
             />
           </Field>
         )}
 
         <Field
           label="Collision strategy"
-          hint="Board imports can rename, skip, or replace matching company content."
+          hint="Board imports can rename, skip, or replace matching organization content."
         >
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"

@@ -6,13 +6,19 @@ import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
+import {
+  resetLocalGitIndexToHead,
+  runLocalGit,
+  setExpensiveWorkspaceGitExecutor,
+  WORKSPACE_GIT_SCAN_SATURATED_CODE,
+} from "./git-workspace-sync.js";
 
 import {
   assertSyncOperationsConfined,
   escapeTarExcludeLiteral,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
+  REFERENCED_SOURCE_IGNORE_FAILURE_REASONS,
   resolveReferencedSourceIgnore,
   type PreparedSandboxManagedRuntime,
   type ReferencedSourceIgnoreResolution,
@@ -1001,6 +1007,65 @@ describe("sandbox managed runtime", () => {
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
+  });
+
+  it("excludes an anchor-workspace ignored file whose name has leading and trailing whitespace from the staged tree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-ignored-whitespace-"));
+    cleanupDirs.push(rootDir);
+    const workspaceLocalDir = path.join(rootDir, "workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await initGitRepo(workspaceLocalDir);
+
+    // A double-wildcard pattern avoids the separate rule that Git trims an
+    // unescaped trailing space in a .gitignore PATTERN itself; the padding
+    // under test lives in the matched FILE name, proving the anchor `splitNul`
+    // parser keeps it instead of trimming it away and missing the exclude.
+    const ignoredName = " ignored padded ";
+    await writeFile(path.join(workspaceLocalDir, ".gitignore"), "*ignored*padded*\n", "utf8");
+    await writeFile(path.join(workspaceLocalDir, ignoredName), "TOKEN=abc\n", "utf8");
+    await writeFile(path.join(workspaceLocalDir, "kept.txt"), "kept\n", "utf8");
+
+    const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
+        await writeFile(remotePath, buffer);
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    attachFallbackSyncIn(client);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir,
+    });
+
+    const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
+    expect(workspaceUpload).toBeDefined();
+    const members = await listTarMembers(rootDir, "ignored-whitespace-workspace-upload.tar", workspaceUpload!.bytes);
+    expect(members).not.toContain(ignoredName);
+    expect(members).toContain("kept.txt");
   });
 
   it("builds workspace/asset tarballs without a './' self-entry (so untar does not chmod/utime an unowned target dir)", async () => {
@@ -2460,8 +2525,272 @@ describe("sandbox managed runtime", () => {
 
       const resolution = await resolveReferencedSourceIgnore(repo);
 
-      expect(resolution.kind).toBe("failed");
-      expect((resolution as { reason: string }).reason.length).toBeGreaterThan(0);
+      // The reason is the fixed category, never the caught error's own message
+      // (which would embed `repo`, an absolute host path).
+      expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed });
+    });
+
+    // Nadia's required probes: none of these three example absolute paths —
+    // an ordinary POSIX path, a home directory, and a Windows path — may ever
+    // reach `reason`, however they arrive (a caught Git error, or a raw
+    // toplevel string that makes `localPath` a non-descendant).
+    const SENSITIVE_PATH_PROBES = ["/srv/alice/project", "/home/alice/project", "C:\\Users\\alice\\project"];
+
+    for (const sensitivePath of SENSITIVE_PATH_PROBES) {
+      it(`redacts a caught Git error embedding ${sensitivePath} to the fixed category`, async () => {
+        const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-redact-caught-"));
+        cleanupDirs.push(rootDir);
+        const repo = path.join(rootDir, "repo");
+        await initGitRepo(repo);
+        try {
+          setExpensiveWorkspaceGitExecutor(async (input) => {
+            if (input.operation === "referenced_source.ignored_files") {
+              throw Object.assign(
+                new Error(`fatal: unable to read tree object for ${sensitivePath}, pid 4242`),
+                { stderr: `fatal: unable to read tree object for ${sensitivePath}, pid 4242` },
+              );
+            }
+            return await runLocalGit(input.localDir, [...input.args], {
+              timeout: input.timeout,
+              maxBuffer: input.maxBuffer,
+              env: input.env,
+            });
+          });
+
+          const resolution = await resolveReferencedSourceIgnore(repo);
+
+          expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed });
+        } finally {
+          setExpensiveWorkspaceGitExecutor(null);
+        }
+      });
+
+      it(`redacts a non-descendant toplevel embedding ${sensitivePath} to the fixed category`, async () => {
+        const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-redact-nondescendant-"));
+        cleanupDirs.push(rootDir);
+        const localPath = path.join(rootDir, "referenced");
+        await mkdir(localPath, { recursive: true });
+        try {
+          // A toplevel string with no relation to `localPath` — the resolver
+          // must treat it as a non-descendant and fail closed with the fixed
+          // category, never a message built from `sensitivePath` or `localPath`.
+          setExpensiveWorkspaceGitExecutor(async (input) => {
+            if (input.operation === "referenced_source.toplevel") {
+              return { stdout: `${sensitivePath}\n`, stderr: "" };
+            }
+            return { stdout: "", stderr: "" };
+          });
+
+          const resolution = await resolveReferencedSourceIgnore(localPath);
+
+          expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.toplevelNotDescendant });
+        } finally {
+          setExpensiveWorkspaceGitExecutor(null);
+        }
+      });
+    }
+
+    it("fails closed with a fixed category when the parsed ignored-entry count exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-bound-count-"));
+      cleanupDirs.push(rootDir);
+      const repo = path.join(rootDir, "repo");
+      await initGitRepo(repo);
+      const overLimitCount = 10_001;
+      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `!! entry-${index}`).join("\0")}\0`;
+      try {
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.ignored_files") {
+            return { stdout: syntheticIgnored, stderr: "" };
+          }
+          return await runLocalGit(input.localDir, [...input.args], {
+            timeout: input.timeout,
+            maxBuffer: input.maxBuffer,
+            env: input.env,
+          });
+        });
+
+        const resolution = await resolveReferencedSourceIgnore(repo);
+
+        expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.limitExceeded });
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+    });
+
+    it("fails closed with a fixed category when the total UTF-8 byte size of ignored paths exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-bound-bytes-"));
+      cleanupDirs.push(rootDir);
+      const repo = path.join(rootDir, "repo");
+      await initGitRepo(repo);
+      // One entry alone exceeds the 2 MiB bound, well under the entry-count bound.
+      const hugeEntry = "a".repeat(3 * 1024 * 1024);
+      const syntheticIgnored = `!! ${hugeEntry}\0`;
+      try {
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.ignored_files") {
+            return { stdout: syntheticIgnored, stderr: "" };
+          }
+          return await runLocalGit(input.localDir, [...input.args], {
+            timeout: input.timeout,
+            maxBuffer: input.maxBuffer,
+            env: input.env,
+          });
+        });
+
+        const resolution = await resolveReferencedSourceIgnore(repo);
+
+        expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.limitExceeded });
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+    });
+
+    it("stages no bytes for either a count-breach or a byte-breach project, and stages a healthy sibling", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-bound-staging-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const healthyDir = path.join(rootDir, "referenced-healthy");
+      const countBreachDir = path.join(rootDir, "referenced-count-breach");
+      const byteBreachDir = path.join(rootDir, "referenced-byte-breach");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(healthyDir, { recursive: true });
+      await mkdir(countBreachDir, { recursive: true });
+      await mkdir(byteBreachDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+      await writeFile(path.join(healthyDir, "notes.md"), "healthy\n", "utf8");
+      await writeFile(path.join(countBreachDir, "should-never-ship.txt"), "must not stage\n", "utf8");
+      await writeFile(path.join(byteBreachDir, "should-never-ship.txt"), "must not stage\n", "utf8");
+
+      const countBreachReason = { kind: "failed" as const, reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.limitExceeded };
+      const byteBreachReason = { kind: "failed" as const, reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.limitExceeded };
+
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000 },
+        adapterKey: "test-adapter",
+        workspaceLocalDir: localWorkspaceDir,
+        additionalSources: [
+          { localPath: healthyDir, projectId: "healthy", ignoreResolution: { kind: "other" } },
+          { localPath: countBreachDir, projectId: "count-breach", ignoreResolution: countBreachReason },
+          { localPath: byteBreachDir, projectId: "byte-breach", ignoreResolution: byteBreachReason },
+        ],
+      });
+
+      expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["healthy"]);
+      expect(prepared.additionalSourceFailures.map((failure) => failure.projectId).sort()).toEqual([
+        "byte-breach",
+        "count-breach",
+      ]);
+      const runtimeRootDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "test-adapter");
+      await expect(readFile(path.join(runtimeRootDir, "project-count-breach", "should-never-ship.txt"), "utf8")).rejects
+        .toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(runtimeRootDir, "project-byte-breach", "should-never-ship.txt"), "utf8")).rejects
+        .toMatchObject({ code: "ENOENT" });
+    });
+
+    describe("saturation retry", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+        setExpensiveWorkspaceGitExecutor(null);
+      });
+
+      function throwSaturated(): never {
+        throw Object.assign(
+          new Error("Changed files are temporarily unavailable because the Git scan queue is full"),
+          { code: WORKSPACE_GIT_SCAN_SATURATED_CODE },
+        );
+      }
+
+      // Every case here synthesizes BOTH scan operations at the executor seam
+      // instead of spawning real `git` — the property under test is the
+      // retry's own timing and attempt count, and a fake-timer-driven test
+      // must not also depend on a real child process's independent, real-time
+      // completion. `toplevel` need not exist on disk: `resolveReferencedSourceIgnore`
+      // falls back to a plain string compare when `fs.realpath` fails, and the
+      // fixture path is used unchanged on both sides of that compare.
+      const repo = "/fixture/referenced-project";
+
+      it("retries a saturated scan up to two times and succeeds on the third attempt", async () => {
+        let ignoredCallCount = 0;
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${repo}\n`, stderr: "" };
+          }
+          ignoredCallCount += 1;
+          if (ignoredCallCount <= 2) throwSaturated();
+          return { stdout: "", stderr: "" };
+        });
+
+        vi.useFakeTimers();
+        const resolutionPromise = resolveReferencedSourceIgnore(repo);
+        // Bounded backoff: none before attempt 1, 1 s before attempt 2, 2 s
+        // before attempt 3.
+        await vi.advanceTimersByTimeAsync(1_000);
+        await vi.advanceTimersByTimeAsync(2_000);
+        const resolution = await resolutionPromise;
+
+        expect(resolution).toEqual({ kind: "git", ignoredPaths: [] });
+        expect(ignoredCallCount).toBe(3);
+      });
+
+      it("fails closed after three saturated attempts, with no further Git invocation", async () => {
+        let ignoredCallCount = 0;
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${repo}\n`, stderr: "" };
+          }
+          ignoredCallCount += 1;
+          throwSaturated();
+        });
+
+        vi.useFakeTimers();
+        const resolutionPromise = resolveReferencedSourceIgnore(repo);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await vi.advanceTimersByTimeAsync(2_000);
+        const resolution = await resolutionPromise;
+
+        expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed });
+        // Three total attempts (the first plus two retries) — no fourth,
+        // unscheduled invocation past the retry budget.
+        expect(ignoredCallCount).toBe(3);
+      });
+
+      it("makes exactly one attempt and fails closed on a timeout, never retrying it", async () => {
+        let ignoredCallCount = 0;
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${repo}\n`, stderr: "" };
+          }
+          ignoredCallCount += 1;
+          throw Object.assign(new Error("Workspace Git scan timed out after 8000ms"), {
+            code: "workspace_git_scan_timeout",
+          });
+        });
+
+        const resolution = await resolveReferencedSourceIgnore(repo);
+
+        expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed });
+        expect(ignoredCallCount).toBe(1);
+      });
+
+      it("makes exactly one attempt and fails closed on an output-limit breach, never retrying it", async () => {
+        let ignoredCallCount = 0;
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${repo}\n`, stderr: "" };
+          }
+          ignoredCallCount += 1;
+          throw Object.assign(new Error("Workspace Git scan exceeded its output limit"), {
+            code: "workspace_git_scan_output_limit",
+          });
+        });
+
+        const resolution = await resolveReferencedSourceIgnore(repo);
+
+        expect(resolution).toEqual({ kind: "failed", reason: REFERENCED_SOURCE_IGNORE_FAILURE_REASONS.scanFailed });
+        expect(ignoredCallCount).toBe(1);
+      });
     });
   });
 

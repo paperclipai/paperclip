@@ -48,30 +48,31 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto("/onboarding");
-  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
+  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Organization|Add Agent/ });
   if (await startBtn.count()) await startBtn.first().click();
 
-  const createCard = page.getByRole("button", { name: /Build a new company/ });
+  const createCard = page.getByRole("button", { name: /Build a new organization/ });
   if (await createCard.count()) await createCard.first().click();
 
-  await expect(page.getByRole("heading", { name: "Name your organization" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
   // Naming the company creates it and goes straight to the agent step.
 
-  // The lead is no longer pre-named. Choosing a role fills the name from the
-  // role's label, which is also what gates "Next".
-  await page.waitForSelector("#onboarding-agent-role", { timeout: 30_000 });
-  await page.locator("#onboarding-agent-role").click();
-  await page.getByRole("option", { name: "CEO", exact: true }).click();
-  await expect(page.locator("#onboarding-agent-name")).toHaveValue(AGENT_NAME);
+  // The agent step asks for a name and nothing else; the name is what gates
+  // "Next", and the hire is filed under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
+  // The review step names the agent rather than the step.
+  await expect(
+    page.getByRole("heading", { name: "Let's get started..." }),
+  ).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
   // The wizard now drops the user straight onto the first task's detail page,
   // and must not bounce through the dashboard (PAP-404).

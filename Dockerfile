@@ -166,5 +166,66 @@ RUN set -eu; \
     test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
   done
 
+# The hosted image variant ships selected optional peer packages
+# pre-installed. A managed tenant then needs no separate install step.
+# The self-hosted image stays on the opt-in contract: it never runs this
+# stage, so a package like `@sentry/node` stays a true optional peer
+# dependency. A self-hosted operator installs it by hand (see
+# doc/observability.md).
+#
+# CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages to install.
+# The value is a space-separated list, the same shape as
+# CLOUD_BUNDLED_PLUGINS above. The stage reads each package's version
+# from the `peerDependencies` block of `server/package.json` at build
+# time, so the version has one committed home.
+#
+# The stage fails the build in three cases:
+# - the argument is empty
+# - server/package.json declares no version for a named package
+# - the named package is not an optional peer
+#
+# This check keeps the argument limited to packages the server already
+# treats as optional.
+#
+# The install happens in its own isolated directory, not inside
+# `server`'s own workspace install. The self-hosted target above never
+# gains these packages this way. The directory sits under `/app`, not
+# `server/`, and `--ignore-workspace` below excludes it from the pnpm
+# workspace. From that directory, pnpm still finds the `packageManager`
+# pin in the repo's own `package.json` by walking up — the same pnpm
+# version the rest of the build uses.
+#
+# The install writes no lock file (`--no-lockfile`, the same flag the
+# `cloud-plugins` stage above uses). Two builds of the same commit can
+# therefore install different transitive versions of a named package.
+# Three facts make this an accepted trade-off:
+# - the `cloud-plugins` stage above already has the same property, with
+#   the same flag
+# - the direct version of each named package comes from one exact,
+#   single-sourced place: the `peerDependencies` block of
+#   `server/package.json`
+# - an automated check asserts the installed direct version after every
+#   build, so a transitive drift that breaks the package still fails the
+#   build
+FROM build AS cloud-server-deps
+WORKDIR /app/.cloud-server-deps
+ARG CLOUD_BUNDLED_SERVER_DEPS="@sentry/node"
+RUN set -eu; \
+  test -n "$CLOUD_BUNDLED_SERVER_DEPS" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS is empty; name at least one optional peer package to install" >&2; exit 1; }; \
+  echo '{"name":"paperclip-cloud-server-deps","private":true}' > package.json; \
+  specifiers=""; \
+  for name in $CLOUD_BUNDLED_SERVER_DEPS; do \
+    version="$(node -e "const pkg=require('/app/server/package.json'); const name=process.argv[1]; const version=(pkg.peerDependencies||{})[name]; if(!version){console.error('ERROR: server/package.json declares no peerDependencies version for '+JSON.stringify(name));process.exit(1);} const meta=(pkg.peerDependenciesMeta||{})[name]; if(!meta||meta.optional!==true){console.error('ERROR: '+JSON.stringify(name)+' is not declared as an optional peer dependency in server/package.json; CLOUD_BUNDLED_SERVER_DEPS may name only optional peer packages');process.exit(1);} process.stdout.write(version);" "$name")"; \
+    test -n "$version" || { echo "ERROR: could not resolve a version for '$name'" >&2; exit 1; }; \
+    specifiers="$specifiers ${name}@${version}"; \
+  done; \
+  test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
+  pnpm add --ignore-workspace --no-lockfile $specifiers
+
 FROM production AS cloud
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
+# Land the isolated install inside the server's own `node_modules`, the
+# directory Node's module resolution walks up to from `/app/server` for
+# both a CommonJS `require.resolve` and an ECMAScript `import` — an entry
+# on `NODE_PATH` would satisfy only the first and silently fail the second.
+COPY --chown=node:node --from=cloud-server-deps /app/.cloud-server-deps/node_modules /app/server/node_modules

@@ -161,18 +161,24 @@ describe("plugin worker manager duplex aggregate byte ledger", () => {
     expect(telemetry.underflows).toBe(0);
   });
 
-  it("fails closed and retains nothing when a buffered reservation would pass the ceiling", async () => {
+  it("fails closed and retains nothing when a write reservation would pass the ceiling", async () => {
     const telemetry = countingTelemetry();
-    // A four-byte ceiling. One five-byte chunk cannot fit.
+    // A four-byte ceiling. A serialized host-to-worker write frame cannot fit.
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 4, telemetry });
     const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
     try {
       await handle.start();
-      await handle.openDuplexChannel(
-        // No listener attaches, so "hello" tries to buffer. Its five raw bytes pass
-        // the four-byte ceiling, so the reservation rejects and the route ends.
-        duplexOpenInput({ data: [{ chunk: "hello" }] }),
-      );
+      // Open with no scripted data, so the fixture sends only the open reply.
+      // The route is bound and live by the time this line resolves.
+      const session = await handle.openDuplexChannel(duplexOpenInput({}));
+      // The write happens strictly after the bind, so the rejection is a genuine
+      // post-bind event, never a frame that races the open reply. The host makes
+      // two reservations for this write. The one raw payload byte fits the
+      // ceiling, so the pending-write reservation succeeds. The host then meters
+      // the serialized frame just before the stdin write. That frame is much
+      // larger than four bytes, so the transport reservation rejects, the host
+      // writes nothing, and the route ends fail-closed.
+      session.write(new TextEncoder().encode("a"));
       await vi.waitFor(() => {
         expect(telemetry.rejections).toBeGreaterThanOrEqual(1);
         expect(ledger.bytesInUse).toBe(0);

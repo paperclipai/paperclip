@@ -1096,14 +1096,13 @@ function toInviteSummaryResponse(
     | string
     | {
       name: string | null;
-      brandColor: string | null;
       logoUrl: string | null;
     }
     | null = null,
   authPublicBaseUrl?: string
 ) {
   const companyInfo = typeof company === "string"
-    ? { name: company, brandColor: null, logoUrl: null }
+    ? { name: company, logoUrl: null }
     : company;
   const baseUrl = resolveBaseUrl(req, authPublicBaseUrl);
   const invitePath = `/invite/${token}`;
@@ -1116,7 +1115,6 @@ function toInviteSummaryResponse(
     companyId: invite.companyId,
     companyName: companyInfo?.name ?? null,
     companyLogoUrl: companyInfo?.logoUrl ?? null,
-    companyBrandColor: companyInfo?.brandColor ?? null,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     humanRole: extractInviteHumanRole(invite),
@@ -3196,17 +3194,15 @@ export function accessRoutes(
     inviteToken: string | null = null,
   ): Promise<{
     name: string | null;
-    brandColor: string | null;
     logoAssetId: string | null;
     logoUrl: string | null;
   }> {
     if (!companyId) {
-      return { name: null, brandColor: null, logoAssetId: null, logoUrl: null };
+      return { name: null, logoAssetId: null, logoUrl: null };
     }
     const company = await db
       .select({
         name: companies.name,
-        brandColor: companies.brandColor,
         logoAssetId: companyLogos.assetId,
       })
       .from(companies)
@@ -3238,7 +3234,6 @@ export function accessRoutes(
 
     return {
       name: company?.name ?? null,
-      brandColor: company?.brandColor ?? null,
       logoAssetId: company?.logoAssetId ?? null,
       logoUrl,
     };

@@ -143,11 +143,11 @@ type RunOutputSilenceCopy = {
 
 const RUN_OUTPUT_SILENCE_COPY: Partial<Record<RunOutputSilenceLevel, RunOutputSilenceCopy>> = {
   suspicious: {
-    label: "Silence watch",
+    label: "Output silence",
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   critical: {
-    label: "Stale run",
+    label: "Critical silence",
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
   },
   snoozed: {
@@ -609,7 +609,7 @@ export function IssueRunLedgerContent({
         >
           <p className="font-medium">
             {latestSilentRun.outputSilence.level === "critical"
-              ? "Stale-run watchdog alert"
+              ? "Critical output silence"
               : "Output silence watchdog warning"}
           </p>
           <p className="mt-1">
@@ -628,6 +628,11 @@ export function IssueRunLedgerContent({
                 {" "}for recovery context.
               </>
             ) : null}
+          </p>
+          <p className="mt-1">
+            {latestSilentRun.outputSilence.evaluationIssueIdentifier
+              ? "This signal is informational. Paperclip did not create new delegated recovery work."
+              : "This signal is informational. Paperclip did not create or assign a recovery task."}
           </p>
           {onWatchdogDecision && canRecordWatchdogDecisions ? (
             <div className="mt-2 flex flex-wrap gap-1.5">

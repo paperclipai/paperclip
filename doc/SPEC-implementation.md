@@ -139,10 +139,8 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `issue_counter` int not null
 - `budget_monthly_cents` int not null default 0
 - `spent_monthly_cents` int not null default 0
-- `attachment_max_bytes` int not null
 - `require_board_approval_for_new_agents` boolean not null default false
 - feedback sharing consent fields
-- branding fields such as `brand_color`
 
 Invariant: every business record belongs to exactly one company.
 
@@ -521,6 +519,8 @@ V1 non-terminal liveness rule:
 - recovery-action ownership is separate from source-task ownership: automatic repair and board escalation preserve both source assignee fields; reassignment requires an explicit board decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: bounded continuity and disposition repair may retry only the original agent; provider-quota failures create/reuse a scheduled wait-recovery monitor; every other exhausted or unsafe path creates/reuses a board-owned recovery action with `routingPolicy: board_escalation_no_takeover_v1` and no substitute-agent wake
 - legacy active agent-owned recovery actions remain readable, resolvable, and API-compatible after upgrade, but reconciliation does not enqueue another takeover wake for them
+- active-run output silence is an informational board UI signal at one hour (`suspicious`) and four hours (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
+- board snooze and continue decisions suppress the run signal until their stored re-arm time; a false-positive decision suppresses it permanently for that run; open legacy evaluation issues remain readable and manually resolvable without automatic refresh
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 

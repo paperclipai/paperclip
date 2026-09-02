@@ -580,7 +580,7 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
-4. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
+4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
 5. reconcile productivity reviews
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
@@ -717,27 +717,26 @@ An active run can still be unhealthy even when its process is `running`. Papercl
 The recovery service owns this contract:
 
 - classify active-run output silence as `ok`, `suspicious`, `critical`, `snoozed`, or `not_applicable`
-- collect bounded evidence from run logs, recent run events, child issues, and blockers
-- preserve redaction and truncation before evidence is written to issue descriptions
-- create at most one open watchdog recovery action per run; issue-backed implementations use `stale_active_run_evaluation` issues
-- honor active snooze decisions before creating more review work
+- honor active snooze and continue decisions on the run
+- permanently suppress the signal for a run after a `dismissed_false_positive` decision
 - build the `outputSilence` summary shown by live-run and active-run API responses
+- retain links to open legacy `stale_active_run_evaluation` issues without refreshing or changing them
 
-Suspicious silence creates a medium-priority watchdog recovery action for the selected recovery owner. Critical silence raises that recovery action to high priority and, when issue-backed evaluation is needed for correctness, blocks the source issue on the explicit evaluation task without cancelling the active process.
+Suspicious and critical silence are informational board UI signals. They do not create an issue or recovery action. They do not comment on or block the source issue. They do not change an assignment, wake an agent, cancel the active process, or change the run. The board uses the existing run controls when it decides that intervention is necessary.
 
-Watchdog decisions are explicit operator/recovery-owner decisions:
+Watchdog decisions are explicit board decisions stored against the run:
 
-- `snooze` records an operator-chosen future quiet-until time and suppresses scan-created review work during that window
+- `snooze` records an operator-chosen future quiet-until time and hides the signal during that window
 - `continue` records that the current evidence is acceptable, does not cancel or mutate the active run, and sets a 30-minute default re-arm window before the watchdog evaluates the still-silent run again
-- `dismissed_false_positive` records why the review was not actionable
+- `dismissed_false_positive` records why the signal was not actionable and suppresses it permanently for that run
 
-Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence; if the run remains silent after the re-arm window, the periodic watchdog scan can create or update review work again.
+Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence. If the run remains silent after the re-arm window, the UI signal appears again.
 
-The board can record watchdog decisions. The assigned owner of an issue-backed watchdog evaluation can also record them. Other agents cannot.
+The signal reappears in the UI after a snooze or continue window expires. No review work is created when it reappears. The board can record decisions without an evaluation issue. For compatibility, the assigned owner of an open legacy evaluation issue can also record a decision that is bound to that issue and run. Other agents cannot.
 
 ### Source-aware watchdog folding
 
-Active-run watchdog work is source-aware. Before the watchdog creates, refreshes, escalates, or blocks on reviewer work, it must re-read the linked source issue and decide whether the watchdog signal is still about productive source work or only about stale run/process bookkeeping.
+The active-run cleanup scan is source-aware. It re-reads the linked source issue and decides whether a still-running handle represents productive source work or stale run/process bookkeeping. It does not create reviewer work.
 
 Fold watchdog work when all of these are true:
 
@@ -746,17 +745,17 @@ Fold watchdog work when all of these are true:
 - durable source activity from the same run proves the source issue reached that terminal disposition after the stale-run or output-silence evidence point
 - there is no independent evidence that the still-running or detached process is doing harmful work, still owns external cleanup that needs an operator decision, or needs a separate security/ownership review
 
-Folding means resolving or cancelling the watchdog recovery action or issue-backed evaluation through the explicit recovery lifecycle. It must preserve the run id, source issue, detected silence or detached-process evidence, terminal source activity, decision reason, and best-effort process cleanup result. It must be idempotent for the `(companyId, runId, sourceIssueId)` signal and must not recursively recover the watchdog evaluation issue itself.
+Folding means finalizing the stale run and resolving any legacy watchdog recovery action or issue-backed evaluation through the explicit recovery lifecycle. It must preserve the run id, source issue, detected silence or detached-process evidence, terminal source activity, decision reason, and best-effort process cleanup result. It must be idempotent for the `(companyId, runId, sourceIssueId)` signal and must not recursively recover a watchdog evaluation issue itself.
 
-Do not fold watchdog work only because the run is quiet. The watchdog must still create or continue reviewer work when:
+Do not fold a run only because it is quiet. Keep the informational signal visible when:
 
 - the source issue is still `todo` or `in_progress`, because productive work may still be happening or stuck
 - the source issue remains `in_progress` after a successful run with no valid disposition, because the successful-run handoff path owns that bounded correction
 - the run terminated or disappeared while the source issue remains `in_progress` without a live path, because stranded assigned recovery owns that continuity repair
 - the source issue is terminal but there is no durable same-run terminal activity after the stale evidence point
-- there is independent evidence that the process may still be mutating external state, leaking resources, crossing company or ownership boundaries, or otherwise needs operator review
+- there is independent evidence that the process may still be mutating external state, leaking resources, crossing company or ownership boundaries, or otherwise needs an operator decision
 
-In the normal non-terminal case, critical silence can still create issue-backed evaluation work and block the source issue when blocking is necessary for correctness. In the source-resolved case, a completed source issue should not acquire a new manager review or blocker merely because an old run handle stayed active; only real unresolved work should block work.
+In the normal non-terminal case, critical silence remains a UI signal and does not block the source issue. In the source-resolved case, a completed source issue does not acquire a new review or blocker merely because an old run handle stayed active. Only real unresolved work should block work.
 
 This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, long active duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
 
@@ -786,7 +785,6 @@ Examples:
 
 - automatic stranded-work retry was already exhausted
 - a dependency graph has an invalid/uninvokable owner, unassigned blocker, or invalid review participant
-- an active run is silent past the watchdog threshold
 
 The recovery action stays source-scoped by default. Stranded-task escalation is board-owned and records the cause, evidence, next action, source and return owner, `routingPolicy: board_escalation_no_takeover_v1`, and wake or monitor policy in the source thread/detail surface.
 

@@ -19,7 +19,7 @@ export function AppsReview() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: "Review" },
     ]);
@@ -27,7 +27,7 @@ export function AppsReview() {
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to review approvals.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to review approvals.</div>;
   }
 
   return (

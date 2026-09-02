@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sanitizeAssetNamespace } from "@paperclipai/shared";
 import { ProfileSettings } from "./ProfileSettings";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -121,6 +122,63 @@ describe("ProfileSettings", () => {
     await flushReact();
 
     expect(mockAssetsApi.uploadImage).toHaveBeenCalledWith("company-1", file, "profiles/user-1");
+    expect(mockAuthApi.updateProfile).toHaveBeenCalledWith({
+      name: "Jane Example",
+      image: "/api/assets/asset-1/content",
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uploads an avatar for a user id that comes from an identity provider", async () => {
+    const userId = "oidc:example|jane.example@example.com";
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId },
+      user: {
+        id: userId,
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: "https://example.com/jane.png",
+      },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProfileSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const avatarInput = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(avatarInput).not.toBeNull();
+
+    const file = new File(["avatar"], "avatar.png", { type: "image/png" });
+    Object.defineProperty(avatarInput, "files", {
+      configurable: true,
+      value: [file],
+    });
+
+    await act(async () => {
+      avatarInput?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    const namespace = `profiles/${userId}`;
+    expect(mockAssetsApi.uploadImage).toHaveBeenCalledWith("company-1", file, namespace);
+    // The namespace goes to the API without a change, so the avatar arrives
+    // under the identity of the user.
+    expect(sanitizeAssetNamespace(namespace)).toBe(namespace);
     expect(mockAuthApi.updateProfile).toHaveBeenCalledWith({
       name: "Jane Example",
       image: "/api/assets/asset-1/content",

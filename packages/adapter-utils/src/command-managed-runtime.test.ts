@@ -748,7 +748,7 @@ describe("command managed runtime", () => {
     expect(execTimeouts).toEqual([runTimeoutMs, syncClientTimeoutMs]);
   });
 
-  it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
+  it("fallback syncIn writes a mode-constrained file directly to its target and then applies the mode", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-mode-"));
     cleanupDirs.push(rootDir);
     const sourceFile = path.join(rootDir, "source.txt");
@@ -766,67 +766,19 @@ describe("command managed runtime", () => {
     ]);
 
     expect(await readFile(targetFile, "utf8")).toBe("payload\n");
+    // The write goes straight to the target path. No staging name and no
+    // rename step exist between the write and the chmod.
     const scripts = calls.map((call) => (call.args ?? []).join(" "));
-    expect(scripts).toHaveLength(5);
-    expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[0]).toContain(".paperclip-upload.");
-    expect(scripts[1]).toContain("rm -rf");
-    expect(scripts[1]).toContain(".paperclip-upload.");
-    expect(scripts[2]).toContain("chmod 640");
-    expect(scripts[2]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[3]).toContain("mv -f");
-    expect(scripts[3]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[3]).toContain(targetFile);
-    expect(scripts[4]).toContain("rm -rf");
-    expect(scripts[4]).toContain(targetFile + ".paperclip-syncin.");
+    expect(scripts.some((script) => script.includes(".paperclip-syncin."))).toBe(false);
+    expect(scripts.some((script) => script.includes("mv -f") && script.includes(".paperclip-syncin."))).toBe(
+      false,
+    );
+    const chmodScript = scripts.find((script) => script.includes("chmod 640"));
+    expect(chmodScript).toBeDefined();
+    expect(chmodScript).toContain(targetFile);
   });
 
-  it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-cleanup-"));
-    cleanupDirs.push(rootDir);
-    const sourceFile = path.join(rootDir, "source.txt");
-    const targetFile = path.join(rootDir, "target.txt");
-    await writeFile(sourceFile, "payload\n", "utf8");
-
-    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
-    const delegatedExecute = runner.execute.bind(runner);
-    runner.execute = async (input) => {
-      const script = (input.args ?? []).join(" ");
-      if (script.includes("chmod 600")) {
-        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          stdout: "",
-          stderr: "chmod failed",
-          pid: null,
-          startedAt: new Date().toISOString(),
-        };
-      }
-      return await delegatedExecute(input);
-    };
-    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
-
-    await expect(
-      client.syncIn!([
-        {
-          operationId: "op-cleanup",
-          files: [{ sourcePath: sourceFile, targetPath: targetFile, kind: "file", mode: 0o600 }],
-        },
-      ]),
-    ).rejects.toThrow(/chmod failed/);
-
-    const chmodCall = calls.find((call) => (call.args ?? []).join(" ").includes("chmod 600"));
-    expect(chmodCall).toBeDefined();
-    const stagedPath = (chmodCall?.args ?? []).join(" ").match(/chmod 600 '([^']+)'/)?.[1];
-    expect(stagedPath).toBeDefined();
-    await expect(readFile(stagedPath!, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect(calls.some((call) => (call.args ?? []).join(" ").includes(`rm -rf '${stagedPath}'`))).toBe(true);
-    await expect(readFile(targetFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("test_post_upload_commands_execute_verbatim_not_rewritten (C1 opaque)", async () => {
+  it("post-upload commands execute verbatim and are never rewritten", async () => {
     // The provider/client treats each command as opaque: it is executed VERBATIM,
     // never concatenated with asset keys / paths or otherwise rewritten.
     const executed: string[] = [];
@@ -850,7 +802,7 @@ describe("command managed runtime", () => {
     expect(executed).toContain(verbatim);
   });
 
-  it("test_post_upload_command_cwd_escaping_target_root_is_rejected (C2)", async () => {
+  it("post-upload command cwd that escapes the target root is rejected", async () => {
     // A `cwd` that escapes the operation's target root — via `..` or an absolute
     // path outside the target — is rejected BEFORE any handoff (no execute).
     let executeCalls = 0;
@@ -904,7 +856,7 @@ describe("command managed runtime", () => {
     expect(executeCalls).toBe(0);
   });
 
-  it("test_fallback_syncIn_aborts_and_rejects_on_first_nonzero_exit (C4 fail-fast)", async () => {
+  it("fallback syncIn aborts on the first non-zero exit", async () => {
     // The first non-zero post-upload command aborts the operation: syncIn rejects,
     // the remaining commands do NOT run, and there is no silent partial fallback.
     const executed: string[] = [];

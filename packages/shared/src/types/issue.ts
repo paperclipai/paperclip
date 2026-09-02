@@ -1112,12 +1112,60 @@ export interface AskUserQuestionsQuestion {
   options: AskUserQuestionsQuestionOption[];
 }
 
+/**
+ * Provider-neutral presentation retained when a live harness question has to
+ * fall back to the durable issue interaction lifecycle. This intentionally
+ * mirrors `paperclip.question_set.v1` without making the shared package depend
+ * on a particular runner implementation.
+ */
+export interface PaperclipQuestionSetOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface PaperclipQuestionSetQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  helpText?: string;
+  required: boolean;
+  answerMode: "single_select" | "multi_select" | "text";
+  options?: PaperclipQuestionSetOption[];
+  customAnswer?: {
+    enabled: true;
+    label?: string;
+    placeholder?: string;
+  };
+  textValidation?: {
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    inputType?: "text" | "number" | "integer";
+    minimum?: number;
+    maximum?: number;
+  };
+}
+
+export interface PaperclipQuestionSetPayload {
+  schema: "paperclip.question_set.v1";
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+  questions: PaperclipQuestionSetQuestion[];
+}
+
 export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
+  /** Exact presentation for a recovered harness request. */
+  questionSet?: PaperclipQuestionSetPayload;
+  /** Correlates a recovered interaction with the live runtime request it replaces. */
+  runtimeRequestId?: string | null;
 }
 
 export interface AskUserQuestionsAnswer {

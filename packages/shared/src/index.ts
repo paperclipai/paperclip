@@ -279,8 +279,6 @@ export {
 } from "./humanize-connection.js";
 export {
   COMPANY_STATUSES,
-  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
   BIND_MODES,
@@ -1067,6 +1065,9 @@ export type {
   SuggestTasksResult,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsQuestion,
+  PaperclipQuestionSetOption,
+  PaperclipQuestionSetQuestion,
+  PaperclipQuestionSetPayload,
   AskUserQuestionsPayload,
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
@@ -2142,7 +2143,10 @@ export {
   createCostEventSchema,
   createFinanceEventSchema,
   updateBudgetSchema,
+  ASSET_NAMESPACE_MAX_LENGTH,
+  ASSET_NAMESPACE_RULE,
   createAssetImageMetadataSchema,
+  sanitizeAssetNamespace,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,
@@ -2500,6 +2504,7 @@ export {
 } from "./feature-catalog.js";
 export {
   HIDEABLE_COMPANY_PAGES,
+  HIDEABLE_COMPANY_SECTIONS,
   HIDEABLE_GENERAL_SECTIONS,
   HIDEABLE_INSTANCE_PAGES,
   HIDEABLE_SETTING_KEYS,
@@ -2507,17 +2512,29 @@ export {
   UI_ONLY_GENERAL_SECTIONS,
   experimentalSettingKey,
   hidesCompanyPage,
+  hidesCompanySection,
   hidesExperimentalSetting,
   hidesGeneralSection,
   hidesInstancePage,
   parseHiddenSettingsList,
   type HideableCompanyPage,
+  type HideableCompanySection,
   type HideableExperimentalSetting,
   type HideableGeneralSection,
   type HideableInstancePage,
   type HideableSettingKey,
   type ParsedHiddenSettings,
 } from "./settings-visibility.js";
+export {
+  DEFAULTABLE_GENERAL_SETTINGS,
+  SETTING_DEFAULTS_ENV_KEY,
+  applyOperatorGeneralDefaults,
+  parseSettingDefaults,
+  stripOperatorGeneralEchoes,
+  type DefaultableGeneralSetting,
+  type OperatorSettingDefaults,
+  type ParsedSettingDefaults,
+} from "./setting-defaults.js";
 
 // --- Runtime exposure (opt-in Tailscale HTTPS for managed branch runtimes) ---
 // PAP-17049 plan, PAP-17050 threat-model verdict. Contract shared across DB,

@@ -50,9 +50,9 @@ const RESOLVER_POLICY_LABELS: Record<IssueThreadInteractionCanonicalResolverPoli
  */
 const RESOLVER_POLICY_EFFECTS: Record<IssueThreadInteractionCanonicalResolverPolicy, string> = {
   anyone:
-    "Anyone in the company can respond — the board or any agent, including the one that asked.",
+    "Anyone in the organization can respond — the board or any agent, including the one that asked.",
   not_creator:
-    "Anyone in the company except the agent that created the card, and its run. Use this when the answer has to come from someone else.",
+    "Anyone in the organization except the agent that created the card, and its run. Use this when the answer has to come from someone else.",
   human_only: "Only a person on the board can respond. Agents are turned away.",
 };
 
@@ -184,8 +184,8 @@ export function describeResolverAudience({
     : hasAddressee
       ? `Only ${addressee} or a person on the board can respond.`
       : policy === "not_creator"
-        ? `Anyone in the company except ${creator} can respond.`
-        : "Anyone in the company can respond — the board or any agent, including the one that asked.";
+        ? `Anyone in the organization except ${creator} can respond.`
+        : "Anyone in the organization can respond — the board or any agent, including the one that asked.";
 
   // Same fact, fewer words: a collapsed row has to answer "is this mine to
   // decide?" in one glance, next to the buttons that act on the answer.
@@ -207,7 +207,7 @@ export function describeResolverAudience({
   const narrowedNote = source === "governed_action"
     ? "This card runs a governed action, so it stays human-only whatever audience was requested."
     : source === "company_cap"
-      ? `Company interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
+      ? `Organization interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
       : provenance === "legacy_inherited_restriction"
         ? "Created before Anyone became the default, so it stays restricted. A new card would be open."
         : null;

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, MailPlus } from "lucide-react";
+import { Check, Copy, ExternalLink } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
@@ -16,8 +15,8 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along.",
-    gets: "View-only company membership.",
+    description: "Can view organization work and follow along.",
+    gets: "View-only organization membership.",
   },
   {
     value: "operator",
@@ -34,7 +33,7 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership management.",
+    description: "Full organization access, including membership management.",
     gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
@@ -46,9 +45,9 @@ function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof 
   return "id" in value && "state" in value && "createdAt" in value;
 }
 
-export function CompanyInvites() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
-  const { setBreadcrumbs } = useBreadcrumbs();
+/** The Invites tab of the Members page (extracted from the former standalone Invites page). */
+export function InvitesSection() {
+  const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
@@ -87,14 +86,6 @@ export function CompanyInvites() {
   async function copyInviteUrl(url: string) {
     return copyText(url, "The invite URL is selected. Copy it manually from the field.", selectLatestInviteUrl);
   }
-
-  useEffect(() => {
-    setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Invites" },
-    ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
 
   const inviteHistoryQueryKey = queryKeys.access.invites(selectedCompanyId ?? "", "all", INVITE_HISTORY_PAGE_SIZE);
   const invitesQuery = useInfiniteQuery({
@@ -160,7 +151,7 @@ export function CompanyInvites() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage invites.</div>;
   }
 
   if (invitesQuery.isLoading) {
@@ -170,7 +161,7 @@ export function CompanyInvites() {
   if (invitesQuery.error) {
     const message =
       invitesQuery.error instanceof ApiError && invitesQuery.error.status === 403
-        ? "You do not have permission to manage company invites."
+        ? "You do not have permission to manage organization invites."
         : invitesQuery.error instanceof Error
           ? invitesQuery.error.message
           : "Failed to load invites.";
@@ -179,15 +170,10 @@ export function CompanyInvites() {
 
   return (
     <div className="max-w-6xl space-y-8">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <MailPlus className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Invites</h1>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Invite people to request access to this company. New invite links are copied to your clipboard when they are generated.
-        </p>
-      </div>
+      <p className="max-w-3xl text-sm text-muted-foreground">
+        Invite people to request access to this organization. New invite links are copied to your clipboard when they are
+        generated.
+      </p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
@@ -311,7 +297,7 @@ export function CompanyInvites() {
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this company yet.
+            No invites have been created for this organization yet.
           </div>
         ) : (
           <div className="border-t border-border">

@@ -34,7 +34,6 @@ export const HIDEABLE_INSTANCE_PAGES = [
   "instance.profile",
   "instance.environments",
   "instance.access",
-  "instance.heartbeats",
   "instance.experimental",
   "instance.plugins",
   "instance.adapters",
@@ -57,6 +56,19 @@ export const HIDEABLE_COMPANY_PAGES = [
 ] as const;
 
 export type HideableCompanyPage = (typeof HIDEABLE_COMPANY_PAGES)[number];
+
+/**
+ * Sub-surfaces of company settings pages that can be hidden individually.
+ * UI-visibility keys only: the backing APIs stay live for agents and
+ * integrations. Hiding the whole page (`company.secrets`) already removes
+ * everything inside it; these keys hide one tab while the page stays up.
+ */
+export const HIDEABLE_COMPANY_SECTIONS = [
+  "company.secrets.vaults",
+  "company.secrets.proposals",
+] as const;
+
+export type HideableCompanySection = (typeof HIDEABLE_COMPANY_SECTIONS)[number];
 
 /**
  * Sections of Instance → General that can be hidden. Field-backed sections
@@ -90,6 +102,7 @@ export function experimentalSettingKey(key: InstanceFeatureKey): HideableExperim
 export type HideableSettingKey =
   | HideableInstancePage
   | HideableCompanyPage
+  | HideableCompanySection
   | HideableGeneralSection
   | HideableExperimentalSetting;
 
@@ -97,6 +110,7 @@ export type HideableSettingKey =
 export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
   ...HIDEABLE_INSTANCE_PAGES,
   ...HIDEABLE_COMPANY_PAGES,
+  ...HIDEABLE_COMPANY_SECTIONS,
   ...HIDEABLE_GENERAL_SECTIONS,
   ...INSTANCE_FEATURE_KEYS.map(experimentalSettingKey),
 ];
@@ -143,6 +157,13 @@ export function hidesCompanyPage(
   page: HideableCompanyPage,
 ): boolean {
   return hidden.has(page);
+}
+
+export function hidesCompanySection(
+  hidden: ReadonlySet<string>,
+  section: HideableCompanySection,
+): boolean {
+  return hidden.has(section);
 }
 
 export function hidesGeneralSection(

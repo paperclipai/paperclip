@@ -352,7 +352,7 @@ export function Timeline() {
     return (
       <>
         <RequestCollapsedSidebar />
-        <EmptyState icon={GanttChartSquare} message="Select a company to view its work timeline." />
+        <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
       </>
     );
   }

@@ -967,7 +967,7 @@ export const humanOnlyRequestConfirmationInteraction =
   createRequestConfirmationInteraction({
     id: "interaction-confirmation-human-only",
     title: "Approve the customer-facing announcement",
-    summary: "Reserved for a human on the board because it commits the company publicly.",
+    summary: "Reserved for a human on the board because it commits the organization publicly.",
     requestedResolverPolicy: "human_only",
   });
 
@@ -976,7 +976,7 @@ export const companyCappedRequestConfirmationInteraction =
   createRequestConfirmationInteraction({
     id: "interaction-confirmation-company-capped",
     title: "Confirm the data retention change",
-    summary: "Asked for an open audience; the company caps this kind at a human decision.",
+    summary: "Asked for an open audience; the organization caps this kind at a human decision.",
     requestedResolverPolicy: "anyone",
     effectiveResolverPolicy: "human_only",
     effectiveResolverPolicySource: "company_cap",

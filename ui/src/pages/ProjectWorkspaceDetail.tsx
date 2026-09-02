@@ -19,6 +19,7 @@ import {
 } from "../components/WorkspaceRuntimeControls";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 
@@ -255,6 +256,7 @@ export function ProjectWorkspaceDetail() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
@@ -532,19 +534,27 @@ export function ProjectWorkspaceDetail() {
                 </select>
               </Field>
 
-              <div className="grid gap-4 md:grid-cols-(--gtc-13)">
-                <Field label="Local path">
-                  <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
-                    value={form.cwd}
-                    onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                    placeholder="/absolute/path/to/workspace"
-                  />
-                </Field>
-                <div className="flex items-end">
-                  <ChoosePathButton />
+              {/*
+                The local path is an absolute path on the execution host. Under
+                the managed-sandbox-only policy every agent runs in the
+                platform-managed environment, so neither the field nor the
+                folder picker renders; the server refuses a cwd write anyway.
+              */}
+              {!hideHostPaths && (
+                <div className="grid gap-4 md:grid-cols-(--gtc-13)">
+                  <Field label="Local path">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.cwd}
+                      onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
+                      placeholder="/absolute/path/to/workspace"
+                    />
+                  </Field>
+                  <div className="flex items-end">
+                    <ChoosePathButton />
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Repo URL">
@@ -676,9 +686,11 @@ export function ProjectWorkspaceDetail() {
             <DetailRow label="Workspace ID">
               <span className="break-all font-mono text-xs">{workspace.id}</span>
             </DetailRow>
-            <DetailRow label="Local path">
-              <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
-            </DetailRow>
+            {hideHostPaths ? null : (
+              <DetailRow label="Local path">
+                <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
+              </DetailRow>
+            )}
             <DetailRow label="Repo">
               {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
                 <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">

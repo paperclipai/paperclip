@@ -806,9 +806,9 @@ describe("EnvironmentVariablesEditor", () => {
     pointerClick(sourceButton!);
     settleFakeTimers();
     const secretItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
-      el.textContent?.includes("Company secret"),
+      el.textContent?.includes("Organization secret"),
     );
-    expect(secretItem, "Company secret menu item should be present").toBeTruthy();
+    expect(secretItem, "Organization secret menu item should be present").toBeTruthy();
     pointerClick(secretItem!);
     settleFakeTimers();
     // The store popover is open (heading rendered) and stays open — it must not

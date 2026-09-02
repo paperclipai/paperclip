@@ -293,14 +293,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Welcome to Paperclip. Set up your first organization and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message="Create or select an organization to view the dashboard." />
     );
   }
 
@@ -333,13 +333,13 @@ export function Dashboard() {
             </Button>
           }
         >
-          Agents from a company import arrive paused as a safety default. Resume them so assigned tasks can start.
+          Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start.
         </InlineBanner>
       ) : pausedBanner?.kind === "all-paused" ? (
         <InlineBanner
           tone="warning"
           icon={PauseCircle}
-          title="All agents in this company are paused — nothing will run."
+          title="All agents in this organization are paused — nothing will run."
           actions={
             <Button variant="ghost" size="sm" asChild>
               <Link to="/agents">Review agents</Link>

@@ -1299,7 +1299,7 @@ function TeamInstallerDialog({
                 <p className="font-medium">Install failed</p>
                 <p className="mt-0.5 text-xs">{applyError}</p>
                 <p className="mt-1 text-xs opacity-80">
-                  Partial state is not rolled back. Review the company activity log before retrying.
+                  Partial state is not rolled back. Review the organization activity log before retrying.
                 </p>
               </div>
             </div>
@@ -1407,7 +1407,7 @@ export function StepTargetManager({
         className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2.5 text-sm text-blue-700 dark:text-blue-300"
         id="target-manager-help"
       >
-        This team&apos;s root agents need a manager in your company. Pick the agent who will become
+        This team&apos;s root agents need a manager in your organization. Pick the agent who will become
         their parent. Internal team hierarchy is preserved.
       </div>
 
@@ -1461,7 +1461,7 @@ export function StepTargetManager({
             checked={fullCompany}
             onChange={(e) => onToggleFullCompany(e.target.checked)}
           />
-          Use this team as a full-company package (no target manager)
+          Use this team as a full-organization package (no target manager)
         </label>
       )}
     </div>
@@ -1998,7 +1998,7 @@ export function ApplySuccess({
         <p className="text-base font-semibold">Team installed</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        {team.name} was imported into your company. Imported entities are stamped with catalog provenance.
+        {team.name} was imported into your organization. Imported entities are stamped with catalog provenance.
       </p>
       {result && (
         <ul className="divide-y divide-border/60 rounded-md border border-border px-3">
@@ -2299,7 +2299,7 @@ export function TeamCatalog() {
   if (!selectedCompanyId) {
     return (
       <div className="p-8">
-        <EmptyState icon={Users2} message="Select a company to browse the team catalog." />
+        <EmptyState icon={Users2} message="Select an organization to browse the team catalog." />
       </div>
     );
   }

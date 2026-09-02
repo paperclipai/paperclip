@@ -714,7 +714,7 @@ describe("CompanyImport", () => {
     // Config edits while the import is in flight must not detach it from
     // the UI: the progress panel keeps reporting it until it settles.
     const midFlightNameInput = container.querySelector<HTMLInputElement>(
-      'input[placeholder="Imported Company"]',
+      'input[placeholder="Imported Organization"]',
     );
     expect(midFlightNameInput).toBeTruthy();
     await act(async () => {
@@ -738,7 +738,7 @@ describe("CompanyImport", () => {
 
     // The new-company name feeds the request payload too: editing it clears
     // the stale error panel without discarding the rendered preview.
-    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Imported Company"]');
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Imported Organization"]');
     expect(nameInput).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -950,7 +950,7 @@ describe("CompanyImport", () => {
     await renderPageAndImport();
 
     expect(container.textContent).toContain("Import completed");
-    expect(container.textContent).toContain("select it from the company switcher");
+    expect(container.textContent).toContain("select it from the organization switcher");
     // No readable company, so no dashboard CTA — the switcher guidance stands in.
     expect(container.querySelector('[data-testid="import-expired-open-company"]')).toBeNull();
   });

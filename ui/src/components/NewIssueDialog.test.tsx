@@ -27,7 +27,6 @@ const companyState = vi.hoisted(() => ({
       id: "company-1",
       name: "Paperclip",
       status: "active",
-      brandColor: "#123456",
       issuePrefix: "PAP",
     },
   ],
@@ -36,7 +35,6 @@ const companyState = vi.hoisted(() => ({
     id: "company-1",
     name: "Paperclip",
     status: "active",
-    brandColor: "#123456",
     issuePrefix: "PAP",
   },
 }));
@@ -570,7 +568,7 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => {
       expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
     });
-    expect(container.textContent).toContain("arrived paused from a company import");
+    expect(container.textContent).toContain("arrived paused from an organization import");
 
     act(() => root.unmount());
   });
@@ -1472,7 +1470,6 @@ describe("NewIssueDialog", () => {
           id: "company-1",
           name: "Acme Labs",
           status: "active",
-          brandColor: "#123456",
           issuePrefix: "OPS",
         },
       ];
@@ -1480,7 +1477,6 @@ describe("NewIssueDialog", () => {
         id: "company-1",
         name: "Acme Labs",
         status: "active",
-        brandColor: "#123456",
         issuePrefix: "OPS",
       };
 

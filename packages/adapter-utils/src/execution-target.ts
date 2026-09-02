@@ -1596,6 +1596,12 @@ const PROCESS_SESSION_REMOTE_SCRIPT = "paperclip-process-session-remote.mjs";
 // hash-skip gate thrashing when a run switches output mode.
 const PROCESS_SESSION_REMOTE_STREAM_SCRIPT = "paperclip-process-session-remote-stream.mjs";
 const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
+// The bounded budget `stop()` waits for the wrapper's `shutdownAck` event
+// before it removes `sessionDir` unconditionally. The wrapper writes the
+// acknowledgement right after it arms its own kill timer, well before its
+// child actually exits, so this budget only needs to cover message delivery,
+// not the child's full shutdown.
+const DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS = 3_000;
 
 function jsonLine(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
@@ -1792,10 +1798,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       args: shellCommandArgs(
         [
           `mkdir -p ${shellQuote(stdinDir)} ${shellQuote(eventsDir)}`,
+          // I3: no numeric process identifier anywhere. Background the
+          // wrapper and let it go; do not capture `$!`.
           `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
             `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
             `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
-          "printf '%s\\n' \"$!\"",
         ].join("\n"),
       ),
       cwd: target.remoteCwd,
@@ -1841,6 +1848,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   }> = [];
   const token = createSandboxCallbackBridgeToken(18);
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-proxy-"));
+  // `stop()` waits on this promise, bounded, for the wrapper's `shutdownAck`
+  // event. `deliverRemoteEvent` resolves it below and never forwards the
+  // event further: it is a host-internal control ack, not part of the ACP
+  // output stream. An event under `sessionDir` is untrusted telemetry: an
+  // `exit` or `error` event is never treated as proof of shutdown, because
+  // any process running under the sandbox can write one. Only `shutdownAck`
+  // counts, and `stop()` also gives itself a dedicated reader for it below,
+  // so a late `shutdownAck` still lands even after the long-lived poll has
+  // stopped re-arming.
+  let signalShutdownAcknowledged: () => void = () => {};
+  const shutdownAcknowledged = new Promise<void>((resolve) => {
+    signalShutdownAcknowledged = resolve;
+  });
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
@@ -1856,6 +1876,10 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   };
 
   const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (event.type === "shutdownAck") {
+      signalShutdownAcknowledged();
+      return;
+    }
     if (socket) {
       writeRemoteEventToSocket(event);
       return;
@@ -1966,6 +1990,10 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const poll = async () => {
     if (stopping) return;
     try {
+      // Read every file this tick fetched before this loop decides whether to
+      // keep polling. A `shutdownAck` can land in the same batch right after
+      // an `exit` event; deliver it too, so this tick never drops an
+      // already-fetched (and already-removed-from-disk) event.
       const events = await readRemoteJsonFiles({ client, dir: eventsDir });
       for (const event of events) {
         const parsed = JSON.parse(event.body) as {
@@ -1977,7 +2005,6 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           message?: string;
         };
         deliverRemoteEvent(parsed);
-        if (parsed.type === "exit" || parsed.type === "error") return;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2130,6 +2157,43 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     schedulePoll();
   }
 
+  // `stop()` cannot rely on the long-lived poll above to observe a late
+  // `shutdownAck`: that poll stops re-arming as soon as it forwards a
+  // terminal `exit`/`error` event, and `stop()` itself sets `stopping` on
+  // its own first line. A normal completion's `shutdownAck` file, written a
+  // moment after `exit`, can then land on disk after nobody reads the events
+  // directory any more. Give `stop()` its own bounded reader that looks only
+  // for `shutdownAck` and ignores every other event type, so the wait below
+  // shortens on the wrapper's own proof of shutdown -- never on an `exit` or
+  // `error` event, which any process running under `sessionDir` can forge.
+  let stopReadingForShutdownAck = false;
+  const readShutdownAckUntil = (deadlineEpochMs: number) => {
+    if (stopReadingForShutdownAck) return;
+    void (async () => {
+      try {
+        const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+        if (stopReadingForShutdownAck) return;
+        for (const event of events) {
+          try {
+            const parsed = JSON.parse(event.body) as { type?: string };
+            if (parsed.type === "shutdownAck") {
+              signalShutdownAcknowledged();
+              return;
+            }
+          } catch {
+            // Not readable JSON yet. It is not a `shutdownAck`; ignore it.
+          }
+        }
+      } catch {
+        // Best-effort: a read failure here is not proof of anything.
+      }
+      if (!stopReadingForShutdownAck && Date.now() < deadlineEpochMs) {
+        const timer = setTimeout(() => readShutdownAckUntil(deadlineEpochMs), 100);
+        timer.unref?.();
+      }
+    })();
+  };
+
   return {
     agentCommand,
     stop: async () => {
@@ -2155,6 +2219,53 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       );
       stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
       await stdinEndWrite.catch(() => undefined);
+      // The `shutdown` control message tells the wrapper to terminate itself
+      // and its own child (I3: no operating-system signal and no process
+      // identifier cross this boundary — only a file-queue message does).
+      // Chain it onto the same per-session write order as `stdinEnd`, so its
+      // file never lands before the earlier one.
+      const shutdownPath = path.posix.join(
+        stdinDir,
+        `${String(stdinSeq + 2).padStart(12, "0")}.json`,
+      );
+      const shutdownWrite = stdinWriteChain.then(() =>
+        client.writeTextFile(shutdownPath, jsonLine({ type: "shutdown" })),
+      );
+      stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
+      await shutdownWrite.catch(() => undefined);
+      // Wait a bounded budget for a hint that the wrapper stopped: only the
+      // `shutdownAck` event counts; an `exit` or `error` event is untrusted
+      // telemetry from inside the sandbox and never shortens this wait or
+      // suppresses the warning below. `shutdownAck` itself is ALSO an
+      // untrusted hint, not proof: any process that shares the sandbox can
+      // write the same event under this session's event directory. It can
+      // only shorten this wait and suppress the warning below; it never
+      // gates, shortens, or replaces the unconditional removal further down.
+      // What actually makes the wrapper's own termination deterministic is
+      // the wrapper-side session-identity latch, not this event.
+      let acknowledgedInTime = false;
+      readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+      await Promise.race([
+        shutdownAcknowledged.then(() => {
+          acknowledgedInTime = true;
+        }),
+        new Promise<void>((resolve) => {
+          const budgetTimer = setTimeout(resolve, DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+          budgetTimer.unref?.();
+        }),
+      ]);
+      stopReadingForShutdownAck = true;
+      if (!acknowledgedInTime) {
+        await onLog(
+          "stderr",
+          `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
+        ).catch(() => undefined);
+      }
+      // Unconditional: this removal runs whether or not the wrapper
+      // acknowledged, and whether or not any event (real or forged) arrived
+      // under `sessionDir`. `stop()` runs during run teardown and must stay
+      // non-fatal, so every step above is best-effort and this step never
+      // throws.
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
@@ -2244,11 +2355,349 @@ const stdinParseRetries = new Map();
 let stdinExpectedSeq = 1;
 let stdinGapRetries = 0;
 
+// The bounded grace period between the SIGTERM and the SIGKILL a terminate()
+// call sends. A test can override it through the environment, so a stubborn
+// child does not force a slow test.
+const terminateGraceMs = (() => {
+  const raw = Number.parseInt(process.env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS || "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3000;
+})();
+
+// I2: terminate() is the only function in this wrapper that calls
+// child.kill(). No child event handler and no sibling callback calls it.
+// terminate() is idempotent: a second call, or a first call after the child
+// already exited on its own, does nothing beyond what already ran.
+async function terminate() {
+  if (terminated) return;
+  terminated = true;
+  shuttingDown = true;
+  stdinClosed = true;
+  child.stdin.end();
+  // A \`false\` return means the child's process handle is already gone (the
+  // child exited before this call ran). ChildProcess#kill() is handle-scoped:
+  // once Node clears the handle at reap, the method call above sends no
+  // signal and never falls back to a stored process identifier (I3). Treat
+  // \`false\` as a no-op and do not retry through a numeric identifier.
+  const sentTerm = child.kill("SIGTERM");
+  if (sentTerm) {
+    killTimer = setTimeout(() => {
+      // Escalate on the same handle only (I2): the grace period expired, so
+      // send SIGKILL through the same child handle, never a numeric
+      // identifier and never a process-group signal.
+      child.kill("SIGKILL");
+    }, terminateGraceMs);
+    killTimer.unref?.();
+  }
+  // This event is an untrusted latency hint, not proof. Any process that can
+  // reach this session's event directory can write the same event type. It
+  // can only shorten the host's shutdown wait and suppress the host's
+  // timeout warning; it is never evidence that this wrapper's lifecycle
+  // completed, and the host's cleanup never depends on it. The identity
+  // latch below is what makes this wrapper's own termination deterministic.
+  await writeEvent({ type: "shutdownAck" });
+}
+
+// A sandbox peer can delete sessionDir and stdinDir, then recreate a
+// directory at the same pathname. A pathname does not prove identity: any
+// process that shares the sandbox can write it. So this wrapper captures the
+// OS-level identity of both paths once at startup, before the first poll
+// cycle, and checks it on every later cycle.
+//
+// The identity is the device number, the inode number, AND the inode's own
+// creation time. The device/inode pair alone is not enough: a filesystem can
+// reissue the exact inode number a just-removed directory held to the very
+// next directory created at the same path, with no attacker action needed
+// beyond the recreate the finding already describes. The creation time does
+// not have this gap: it is set fresh on every inode allocation, even when the
+// allocator reissues an old inode number, so a recreated directory always
+// carries a different creation time. The creation time alone is not enough
+// either, on a filesystem or kernel too old to report it, so this wrapper
+// keeps the device/inode pair as a second signal rather than relying on
+// either alone. Ordinary use of stdinDir (the host writing and this wrapper
+// deleting individual stdin files) changes that directory's OWN change time,
+// but never its creation time, so the creation time is safe to latch on
+// without producing a false positive on every stdin message.
+//
+// A filesystem or kernel that cannot report a real creation time does not
+// always report a value of zero. Node fails in one of two ways, and both are
+// grounded, not assumed: on Linux, when the statx() call finds no creation
+// time support, the kernel leaves the field unset and Node reports 0. On a
+// platform whose stat() call has no creation-time field at all, Node copies
+// the change time into the creation time instead. A 0 value fails open (any
+// recreated directory then matches on birthtimeMs alone), and a change-time
+// copy fails closed but far too often (it would move on every stdin file
+// this wrapper deletes). captureSessionIdentity() below proves the value is
+// usable before it trusts it, and fails closed on both known fallbacks.
+let sessionDirIdentity = null;
+let stdinDirIdentity = null;
+// The latch. Once set, it never clears. This replaces a counter that a
+// successful read reset to zero: an attacker who recreated the directory
+// before the counter reached its threshold kept the wrapper polling forever.
+// A latch has no threshold to race and no reset path.
+let identityLost = false;
+
+async function statPathIdentity(candidatePath) {
+  const stats = await fs.lstat(candidatePath);
+  if (stats.isSymbolicLink()) {
+    const error = new Error("Refusing a symbolic link on a process session control path.");
+    error.code = "EPAPERCLIP_SYMLINK";
+    throw error;
+  }
+  if (!stats.isDirectory()) {
+    const error = new Error("A process session control path is not a directory.");
+    error.code = "ENOTDIR";
+    throw error;
+  }
+  return { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs };
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
+}
+
+async function latchAndTerminate() {
+  if (identityLost) return;
+  identityLost = true;
+  await terminate();
+}
+
+function isUsableBirthtimeMs(value) {
+  return typeof value === "number" && Number.isFinite(value) && value !== 0;
+}
+
+let probeSeq = 0;
+
+// A probe file name that pollStdin() can never read as a stdin message: it
+// does not end in ".json", so the ".json" filter in pollStdin() skips it if
+// a poll cycle ever lists the directory during the probe's short window.
+function nextProbeFileName() {
+  probeSeq += 1;
+  return ".paperclip-birthtime-probe-" + process.pid + "-" + probeSeq;
+}
+
+// Proves a directory's reported birthtimeMs is a real creation time, not a
+// change-time copy. Creating and removing a file inside a directory changes
+// that directory's OWN change time but never its true creation time, so a
+// birthtimeMs that moves across the probe is a change-time copy. Returns
+// null when the value is proven real. Returns a stderr-ready reason string
+// on any failure (a detected copy, or a probe that cannot run at all, for
+// example a permission error or a pre-created probe path): either way the
+// caller must not trust the value.
+//
+// The open uses the "wx" flag: exclusive create, fail if the path exists.
+// A sandbox peer cannot pre-create the probe path as a symbolic link and
+// have this call follow it, because "wx" fails closed on an existing path
+// instead of following a link to it.
+//
+// Cleanup checks identity, not only ownership of the initial create. This
+// wrapper reads the probe file's identity, (dev, ino, ctimeMs), off the open
+// file descriptor itself (fstat), not off the path, so a peer that swaps the
+// path in the short gap after create cannot poison the identity this
+// wrapper trusts as its own. Right before removal, this wrapper reads the
+// path's identity again and removes it only when that identity still
+// matches. A same-sandbox peer that deletes the probe file and creates its
+// own entry at the same path in between leaves a different identity behind,
+// so this wrapper leaves that entry untouched instead of removing it. This
+// covers a peer's replacement file, a peer's replacement directory, and a
+// peer's replacement symbolic link alike, because all three change the
+// identity this wrapper reads back. The identity check includes ctimeMs,
+// not only (dev, ino): a filesystem can hand this call's freed inode number
+// straight back out to a peer's very next create at the same path, so
+// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
+// on every create, so a peer's replacement carries a different one even when
+// the inode number repeats. Node's filesystem API has no call that removes a
+// path only when its identity still matches an earlier read as one atomic
+// step, so a gap remains between this wrapper's final identity read and the
+// removal call itself. A peer that wins this gap can put any entry at the
+// probe path before the removal call runs. This can include a pre-existing
+// file the peer renames into place, not only a file the peer creates fresh.
+// The removal call then removes whatever entry sits at the probe path at
+// that moment. Two bounds still hold on that removal. The path always
+// stays under dirPath. If the entry is a symbolic link, the removal call
+// removes the link itself instead of following it to a different target.
+// A non-recursive removal call also fails if the entry is a directory.
+async function birthtimeSurvivesProbe(dirPath) {
+  let before;
+  try {
+    before = (await fs.lstat(dirPath)).birthtimeMs;
+  } catch {
+    return "its reported creation time could not be read";
+  }
+  const probePath = path.posix.join(dirPath, nextProbeFileName());
+  let handle;
+  try {
+    handle = await fs.open(probePath, "wx");
+  } catch {
+    return "its probe file could not be created exclusively (the path may already exist)";
+  }
+  // fstat on the open handle names the exact inode this call just created.
+  // A path-based lstat here instead would be racy against a peer that swaps
+  // the path in the gap between the create above and the stat: fstat has no
+  // such gap, because a file descriptor keeps naming the inode it opened no
+  // matter what a later swap does to the path.
+  let ownedIdentity = null;
+  try {
+    const createdStats = await handle.stat();
+    // ctimeMs guards against inode reuse; see the function comment above.
+    ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
+  } catch {
+    ownedIdentity = null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  if (!ownedIdentity) {
+    // fstat on this call's own just-opened descriptor failed. This call then
+    // has no verified identity for the probe file it created, so it must not
+    // check or remove that file by path: a peer could already own the entry
+    // at that path, and a path-based removal here could delete the peer's
+    // entry instead of this call's own file. Fail closed right here instead
+    // of falling through to the birthtime comparison below, so a failed
+    // identity read can never let this probe report success.
+    return "its own probe file's identity could not be read from the open file descriptor";
+  }
+  // The one gap the fs API cannot close: this lstat and the removal below
+  // are two separate calls, not one atomic "remove if identity still
+  // matches" step. A peer that wins this narrow gap can put any entry at
+  // the probe path, including a pre-existing file it renames into place,
+  // and the removal call below removes whatever entry is there when it
+  // runs.
+  const currentStats = await fs.lstat(probePath).catch(() => null);
+  const stillOwned =
+    currentStats !== null &&
+    currentStats.dev === ownedIdentity.dev &&
+    currentStats.ino === ownedIdentity.ino &&
+    currentStats.ctimeMs === ownedIdentity.ctimeMs;
+  if (stillOwned) {
+    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  }
+  let after;
+  try {
+    after = (await fs.lstat(dirPath)).birthtimeMs;
+  } catch {
+    return "its reported creation time could not be read";
+  }
+  return before === after ? null : "its reported creation time changed after a probe write";
+}
+
+async function refuseUnusableCreationTime(label, dirPath, reason) {
+  process.stderr.write(
+    "Refusing to trust the process session control path " + label + " (" + dirPath + "): " + reason +
+      ". This filesystem or kernel gives no usable creation time. Terminating.\\n",
+  );
+  await latchAndTerminate();
+}
+
+// Runs once, before the first poll cycle, and before this wrapper captures
+// the identities it later checks on every cycle. A failed capture fails
+// closed: the wrapper has no verified identity to check on later cycles, so
+// it terminates now instead of polling a control path it never verified.
+//
+// This wrapper cannot assume stats.birthtimeMs is a real creation time. Node
+// reports it in one of two unusable shapes on a filesystem or kernel that
+// cannot supply one: 0 (the Linux statx() path when the filesystem reports
+// no STATX_BTIME), or a copy of the change time (the generic POSIX stat()
+// path on a platform with no birthtime field). A 0 value fails open, so this
+// wrapper rejects it outright. A change-time copy fails closed but far too
+// aggressively (it would move on every stdin file this wrapper deletes), so
+// this wrapper proves the value is not a copy with a probe before it trusts
+// it, run once here, before either directory's identity is captured.
+async function captureSessionIdentity() {
+  try {
+    const sessionProbeFailure = await birthtimeSurvivesProbe(sessionDir);
+    if (sessionProbeFailure) {
+      await refuseUnusableCreationTime("sessionDir", sessionDir, sessionProbeFailure);
+      return;
+    }
+    const stdinProbeFailure = await birthtimeSurvivesProbe(stdinDir);
+    if (stdinProbeFailure) {
+      await refuseUnusableCreationTime("stdinDir", stdinDir, stdinProbeFailure);
+      return;
+    }
+    const session = await statPathIdentity(sessionDir);
+    const stdin = await statPathIdentity(stdinDir);
+    if (!isUsableBirthtimeMs(session.birthtimeMs)) {
+      await refuseUnusableCreationTime("sessionDir", sessionDir, "its reported creation time (" + session.birthtimeMs + ") is not usable");
+      return;
+    }
+    if (!isUsableBirthtimeMs(stdin.birthtimeMs)) {
+      await refuseUnusableCreationTime("stdinDir", stdinDir, "its reported creation time (" + stdin.birthtimeMs + ") is not usable");
+      return;
+    }
+    sessionDirIdentity = session;
+    stdinDirIdentity = stdin;
+  } catch (error) {
+    process.stderr.write(
+      "Failed to capture the process session identity: " +
+        (error instanceof Error ? error.message : String(error)) + ". Terminating.\\n",
+    );
+    await latchAndTerminate();
+  }
+}
+
+// Runs on every poll cycle, before the wrapper reads stdinDir. Terminate and
+// latch on any proof the control path is no longer the one this wrapper
+// captured at startup (a missing path, a path that is no longer a directory,
+// a symbolic link, or a directory whose identity changed), AND on every
+// other lstat failure. A permission error is not transient here: a sandbox
+// peer can deny search permission on the control directory without removing
+// it, and treating that as transient would leave the wrapper and its child
+// alive forever. The error code below only picks the stderr message, so an
+// operator can still tell a removed directory from a permission error; it
+// never decides whether to latch.
+//
+// Contrast readStdinDirNames() right below, whose catch block stays narrow
+// on purpose: readdir() opens a directory descriptor, so it can fail with a
+// genuinely transient error under descriptor exhaustion, and latching there
+// would kill live sessions under load. lstat() opens no descriptor, and this
+// function already runs before every call to readStdinDirNames(), so a
+// permission error latches here before readdir() is ever reached.
+async function verifySessionIdentity() {
+  if (identityLost) return false;
+  try {
+    const session = await statPathIdentity(sessionDir);
+    const stdin = await statPathIdentity(stdinDir);
+    if (!sameIdentity(session, sessionDirIdentity) || !sameIdentity(stdin, stdinDirIdentity)) {
+      await latchAndTerminate();
+      return false;
+    }
+    return true;
+  } catch (error) {
+    const code = error && typeof error === "object" ? error.code : undefined;
+    const reason =
+      code === "ENOENT"
+        ? "the control path no longer exists"
+        : code === "ENOTDIR"
+          ? "the control path is no longer a directory"
+          : code === "EPAPERCLIP_SYMLINK"
+            ? "the control path is now a symbolic link"
+            : "lstat failed" + (code ? " with " + code : "");
+    process.stderr.write("Latching on a lost process session identity: " + reason + ". Terminating.\\n");
+    await latchAndTerminate();
+    return false;
+  }
+}
+
+// This catch block stays narrow on purpose: see the comment above
+// verifySessionIdentity() for why a permission error here is treated as
+// transient while the same error latches there.
+async function readStdinDirNames() {
+  if (!(await verifySessionIdentity())) return [];
+  try {
+    return await fs.readdir(stdinDir);
+  } catch (error) {
+    const code = error && typeof error === "object" ? error.code : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      await latchAndTerminate();
+    }
+    return [];
+  }
+}
+
 async function pollStdin() {
-  while (!stdinClosed) {
-    const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
+  while (!shuttingDown) {
+    const entries = (await readStdinDirNames()).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
-      if (stdinClosed) break;
+      if (shuttingDown) break;
       const entrySeq = Number.parseInt(name, 10);
       // Hold the send order when an earlier file has not appeared. Do not consume
       // this later file: wait for the missing file on a later cycle, bounded by
@@ -2271,7 +2720,12 @@ async function pollStdin() {
       const file = path.posix.join(stdinDir, name);
       let message;
       try {
-        const raw = await fs.readFile(file, "utf8");
+        // Hardening (I3): open with O_NOFOLLOW where the platform defines it,
+        // so a control-path symbolic link swapped in after the directory
+        // check fails the read instead of following it.
+        const readFlag =
+          typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW : "r";
+        const raw = await fs.readFile(file, { encoding: "utf8", flag: readFlag });
         // An empty read means the content is not on disk yet. Treat it the same
         // as a parse failure: keep the file and retry on a later cycle.
         if (!raw) throw new Error("stdin file is empty");
@@ -2317,11 +2771,16 @@ async function pollStdin() {
         stdinClosed = true;
         child.stdin.end();
         break;
+      } else if (message.type === "shutdown") {
+        await terminate();
+        break;
       }
     }
-    if (!stdinClosed) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!shuttingDown) await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+await captureSessionIdentity();
 
 void pollStdin().catch((error) => void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) }));
 `;
@@ -2335,7 +2794,7 @@ void pollStdin().catch((error) => void writeEvent({ type: "error", message: erro
 // command settles and the session shell (the subshell wrap around it) survives.
 function getProcessSessionRemoteStreamSource(): string {
   return `import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
 const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
@@ -2345,6 +2804,9 @@ if (!sessionDir || !commandPayload) throw new Error("Missing process session bri
 const stdinDir = path.posix.join(sessionDir, "stdin");
 let seq = 0;
 let stdinClosed = false;
+let shuttingDown = false;
+let terminated = false;
+let killTimer = null;
 
 const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 await fs.mkdir(stdinDir, { recursive: true });
@@ -2356,9 +2818,36 @@ function writeEvent(event) {
   process.stdout.write(JSON.stringify({ seq, ...event }) + "\\n");
 }
 
+// Hardening (I3): refuse a symbolic link on a control path before this
+// wrapper reads or writes through it. A symbolic link here could let another
+// sandbox process redirect the wrapper's file I/O outside the session tree.
+async function isSymbolicLink(candidatePath) {
+  try {
+    const stats = await fs.lstat(candidatePath);
+    return stats.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
+  await writeEvent({ type: "error", message: "Refusing a symbolic link on a process session control path." });
+  process.exitCode = 1;
+  process.exit(1);
+}
+
+// Hardening (I3, not containment): the wrapper's own launch env carries the
+// session dir and the command payload. Scrub both keys before they reach the
+// spawned child, so the child never inherits a path to its own control files.
+const childEnv = { ...process.env, ...(config.env || {}) };
+delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+
+// I1: exactly one child process per emitted wrapper. Do not add a second
+// tracked child handle.
 const child = spawn(config.command, Array.isArray(config.args) ? config.args : [], {
   cwd: config.cwd || process.cwd(),
-  env: { ...process.env, ...(config.env || {}) },
+  env: childEnv,
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -2366,12 +2855,21 @@ child.stdout.on("data", (chunk) => writeEvent({ type: "data", stream: "stdout", 
 child.stderr.on("data", (chunk) => writeEvent({ type: "data", stream: "stderr", data: Buffer.from(chunk).toString("base64") }));
 child.on("error", (error) => writeEvent({ type: "error", message: error.message }));
 // "close" (not "exit") so stdout/stderr fully drain before the exit frame.
-// Stop the stdin poll and set the exit code, then let the event loop drain: a
-// natural exit flushes the stdout pipe, so the exit frame always lands.
+// Queue the exit frame first, then run terminate(), so the exit frame always
+// lands even when the child closes on its own, with no stdinEnd and no
+// shutdown message ever received. writeEvent() only queues an asynchronous
+// write. terminate()'s own synchronous work (ending the child's stdin and
+// sending SIGTERM) already runs in this same handler by the time the exit
+// frame becomes readable on disk. terminate() is idempotent and its
+// child.kill() call here is always a no-op (I2): the child's process handle
+// is already gone by the time "close" fires. An error frame carries no such
+// guarantee: child.on("error", ...) below does not call terminate(), and
+// neither does the poll loop's own error writes, so those fire while the
+// wrapper and its child are still fully alive.
 child.on("close", (code, signal) => {
   writeEvent({ type: "exit", code, signal });
-  stdinClosed = true;
   process.exitCode = typeof code === "number" ? code : 1;
+  void terminate();
 });
 
 ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
@@ -2379,7 +2877,7 @@ ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
 
 function getProcessSessionRemoteEventFileSource(): string {
   return `import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
 const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
@@ -2390,6 +2888,9 @@ const stdinDir = path.posix.join(sessionDir, "stdin");
 const eventsDir = path.posix.join(sessionDir, "events");
 let seq = 0;
 let stdinClosed = false;
+let shuttingDown = false;
+let terminated = false;
+let killTimer = null;
 
 const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 await fs.mkdir(stdinDir, { recursive: true });
@@ -2408,9 +2909,36 @@ function writeEvent(event) {
   return write;
 }
 
+// Hardening (I3): refuse a symbolic link on a control path before this
+// wrapper reads or writes through it. A symbolic link here could let another
+// sandbox process redirect the wrapper's file I/O outside the session tree.
+async function isSymbolicLink(candidatePath) {
+  try {
+    const stats = await fs.lstat(candidatePath);
+    return stats.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
+  await writeEvent({ type: "error", message: "Refusing a symbolic link on a process session control path." });
+  process.exitCode = 1;
+  process.exit(1);
+}
+
+// Hardening (I3, not containment): the wrapper's own launch env carries the
+// session dir and the command payload. Scrub both keys before they reach the
+// spawned child, so the child never inherits a path to its own control files.
+const childEnv = { ...process.env, ...(config.env || {}) };
+delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+
+// I1: exactly one child process per emitted wrapper. Do not add a second
+// tracked child handle.
 const child = spawn(config.command, Array.isArray(config.args) ? config.args : [], {
   cwd: config.cwd || process.cwd(),
-  env: { ...process.env, ...(config.env || {}) },
+  env: childEnv,
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -2419,7 +2947,22 @@ child.stderr.on("data", (chunk) => void writeEvent({ type: "data", stream: "stde
 child.on("error", (error) => void writeEvent({ type: "error", message: error.message }));
 // "close" (not "exit") so stdout/stderr fully drain before the exit event;
 // the write chain then guarantees the exit file lands after every data file.
-child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+// Queue the exit event first, then run terminate(), so the poll loop ends
+// even when the child closes on its own, with no stdinEnd and no shutdown
+// message ever received. writeEvent() only queues an asynchronous write.
+// terminate()'s own synchronous work (ending the child's stdin and sending
+// SIGTERM) already runs in this same handler by the time the exit file
+// becomes readable on disk. terminate() is idempotent and its child.kill()
+// call here is always a no-op (I2): the child's process handle is already
+// gone by the time "close" fires. An error event carries no such guarantee:
+// child.on("error", ...) below does not call terminate(), and neither does
+// the poll loop's own error writes, so those fire while the wrapper and its
+// child are still fully alive.
+child.on("close", (code, signal) => {
+  void writeEvent({ type: "exit", code, signal });
+  process.exitCode = typeof code === "number" ? code : 1;
+  void terminate();
+});
 
 ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
 }

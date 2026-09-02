@@ -439,7 +439,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message="Select an organization to view the org chart." />;
   }
 
   if (isLoading) {
@@ -457,7 +457,7 @@ export function OrgChart() {
           <Link to="/company/import">
             <Button variant="outline" size="sm">
               <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Import company
+              Import organization
             </Button>
           </Link>
         )}
@@ -465,7 +465,7 @@ export function OrgChart() {
           <Link to="/company/export">
             <Button variant="outline" size="sm">
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export company
+              Export organization
             </Button>
           </Link>
         )}

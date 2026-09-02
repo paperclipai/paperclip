@@ -11,6 +11,7 @@ import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimenta
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
+import { IsolatedWorkspacesRouteGate } from "./components/IsolatedWorkspacesRouteGate";
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
@@ -68,7 +69,6 @@ import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
-import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
@@ -76,7 +76,6 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
-import { InstanceSettings } from "./pages/InstanceSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -99,6 +98,9 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { useCloudInstance } from "./hooks/useCloudInstance";
+import { cloudStackCreateUrl } from "./lib/cloudLinks";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 
 const CompanyExport = lazy(() =>
   import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
@@ -120,8 +122,13 @@ function boardRoutes() {
         <Route path="company/settings/members" element={<CompanyAccess />} />
         <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       </Route>
+      {/* Invites moved into the Members page; the old URL redirects (and stays
+          gated so a hidden Invites surface never round-trips through it). */}
       <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
-        <Route path="company/settings/invites" element={<CompanyInvites />} />
+        <Route
+          path="company/settings/invites"
+          element={<Navigate to="/company/settings/members?tab=invites" replace />}
+        />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
         <Route
@@ -173,6 +180,7 @@ function boardRoutes() {
         <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       </Route>
       <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
+      <Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.environments" />}>
         <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
         <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
@@ -180,9 +188,6 @@ function boardRoutes() {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
-      </Route>
-      <Route element={<HiddenSettingsPageGate pageKey="instance.heartbeats" />}>
-        <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
         <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
@@ -217,11 +222,15 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      </Route>
       <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
-      <Route path="workspaces" element={<Workspaces />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="workspaces" element={<Workspaces />} />
+      </Route>
       <Route path="issues" element={<Issues />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
@@ -287,12 +296,14 @@ function boardRoutes() {
       />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
-      <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+      </Route>
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="artifacts" element={<Artifacts />} />
@@ -440,6 +451,9 @@ function legacyToolsRedirectTarget(tab?: string) {
 export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const { t } = useTranslation();
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
@@ -457,13 +471,13 @@ export function OnboardingRoutePage() {
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? "Create another organization"
+      : "Create your first organization";
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? "Run onboarding again to add an agent and a starter task for this organization."
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? "Run onboarding again to create another organization and seed its first agent."
+      : "Get started by creating an organization and your first agent.";
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -471,24 +485,39 @@ export function OnboardingRoutePage() {
         <h1 className="text-xl font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
-          <Button
-            onClick={() =>
-              matchedCompany
-                ? openOnboarding({
-                    // "Add another agent" to a company that already has its
-                    // mission must not stop to ask for the mission again. An
-                    // unsettled or failed lookup reads as "no mission" and
-                    // costs the step, which the customer can pass - and the
-                    // mission step now updates the existing goal rather than
-                    // adding a second one.
-                    initialStep: onboardingStepForCompany(),
-                    companyId: matchedCompany.id,
-                  })
-                : openOnboarding()
-            }
-          >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
-          </Button>
+          {/* On a managed stack whose Cloud origin is unknown there is nowhere
+              to send this click: creation lives on Cloud, and in-app creation
+              is a 403 floor. A button that does nothing is worse than none, so
+              say why instead of rendering an inert control. */}
+          {!matchedCompany && cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                matchedCompany
+                  ? openOnboarding({
+                      // "Add another agent" to a company that already has its
+                      // mission must not stop to ask for the mission again. An
+                      // unsettled or failed lookup reads as "no mission" and
+                      // costs the step, which the customer can pass - and the
+                      // mission step now updates the existing goal rather than
+                      // adding a second one.
+                      initialStep: onboardingStepForCompany(),
+                      companyId: matchedCompany.id,
+                    })
+                  : cloudInstance && createStackUrl
+                    ? navigateTopLevel(createStackUrl)
+                    : openOnboarding()
+              }
+            >
+              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -558,20 +587,41 @@ function UnprefixedBoardRedirect() {
 function NoCompaniesStartPage() {
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
+  // A managed stack with no visible companies is a loading or error state, not
+  // an invitation to create one in-app — creation lives on Cloud (403 floor).
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
 
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {t("app.noCompanies.title", { defaultValue: "Create your first company" })}
+          {t("app.noCompanies.title", { defaultValue: "Create your first organization" })}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
+          {t("app.noCompanies.description", { defaultValue: "Get started by creating an organization." })}
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>
-            {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
-          </Button>
+          {/* Same as the onboarding route: no Cloud origin means nowhere to
+              send the click, and in-app creation is a 403 floor here. */}
+          {cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                cloudInstance && createStackUrl
+                  ? navigateTopLevel(createStackUrl)
+                  : openOnboarding()
+              }
+            >
+              {t("app.noCompanies.newCompany", { defaultValue: "New Organization" })}
+            </Button>
+          )}
         </div>
       </div>
     </div>

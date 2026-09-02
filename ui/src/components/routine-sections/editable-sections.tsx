@@ -85,8 +85,8 @@ const activityGatePolicyOptions = [
 const activityGateScopeOptions = [
   {
     value: "company",
-    title: "Company-wide",
-    description: "Any activity across the company counts as a reason to run.",
+    title: "Organization-wide",
+    description: "Any activity across the organization counts as a reason to run.",
   },
   {
     value: "project",

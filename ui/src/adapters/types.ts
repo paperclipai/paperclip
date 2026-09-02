@@ -34,6 +34,15 @@ export interface AdapterConfigFieldsProps {
   models: { id: string; label: string }[];
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
+  /**
+   * When true, the adapter must hide every host filesystem path field and every
+   * execution-engine choice. Non-path behavior toggles stay visible.
+   *
+   * The form sets this from the instance managed-sandbox-only policy
+   * (`enableManagedSandboxOnly`), and also while that policy is still loading,
+   * so a stored path never flashes before the policy resolves.
+   */
+  managedSandboxOnly?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {

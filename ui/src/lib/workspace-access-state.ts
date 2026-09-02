@@ -106,9 +106,9 @@ const HANDOFF_REASON_COPY: Record<string, string> = {
 
 const READINESS_FAILURE_COPY: Record<string, string> = {
   database_unreachable: "The isolated database is not answering.",
-  clone_data_missing: "The clone restored no company or issue rows.",
+  clone_data_missing: "The clone restored no organization or issue rows.",
   clone_data_unreadable: "The cloned product tables could not be read.",
-  cloned_membership_missing: "No cloned user has an active company membership.",
+  cloned_membership_missing: "No cloned user has an active organization membership.",
   cloned_identity_unreadable: "The cloned identity tables could not be read.",
   auth_handoff_not_configured: "The workspace was started without a login handoff key.",
   seed_manifest_unreadable: "The seed manifest is unreadable, so the restore cannot be trusted.",

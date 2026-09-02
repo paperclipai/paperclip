@@ -125,6 +125,8 @@ async function seedValidWorktreeSource(
   if (options.includeCredentialAccount !== false) {
     await db.insert(authAccounts).values({
       id: "credential-existing",
+      // The issuer Better Auth stamps on an email/password account.
+      issuer: "local:credential",
       accountId: "existing@paperclip.ing",
       providerId: "credential",
       userId,

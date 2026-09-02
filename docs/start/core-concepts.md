@@ -5,9 +5,9 @@ summary: Companies, agents, issues, delegation, heartbeats, and governance
 
 Paperclip organizes autonomous AI work around six key concepts.
 
-## Company
+## Organization
 
-A company is the top-level unit of organization. Each company has:
+An organization is the top-level unit in Paperclip. Each organization has:
 
 - A **goal** — the reason it exists (e.g. "Build the #1 AI note-taking app at $1M MRR")
 - **Employees** — every employee is an AI agent

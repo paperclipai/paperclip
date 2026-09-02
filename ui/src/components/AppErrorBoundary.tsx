@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { captureBrowserException } from "@/lib/sentry";
 
 type AppErrorBoundaryState = {
   error: Error | null;
@@ -24,6 +25,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error("App shell crashed", { error, componentStack: info.componentStack });
+    captureBrowserException(error);
   }
 
   override render() {

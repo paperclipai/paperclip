@@ -43,6 +43,23 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+To run against a separate local state root, pass `--data-dir`. The dev runner
+translates it to an isolated `PAPERCLIP_HOME` before migration checks or server
+startup, so embedded PostgreSQL and other default instance state live under that
+directory:
+
+```sh
+pnpm dev --data-dir ./tmp/paperclip-dev
+```
+
+Pass the same option to the service-management commands so they use the
+isolated runtime-service registry:
+
+```sh
+pnpm dev:list --data-dir ./tmp/paperclip-dev
+pnpm dev:stop --data-dir ./tmp/paperclip-dev
+```
+
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
 ### Mobile-friendly preview (`pnpm dev:mobile`)
@@ -738,6 +755,15 @@ packages/skills-catalog/
 Server and CLI import the generated manifest; they do not crawl repository
 paths at request time. Root `skills/` remains reserved for Paperclip runtime
 skills and is not part of the catalog.
+
+Skill-capable legacy local adapters always select the bundled
+`paperclipai/paperclip/paperclip` operational skill when it is present in the
+runtime inventory. This applies to existing agents without a stored skill
+preference and to explicit empty optional-skill selections. The operational
+skill supplies the control-plane workflow that those adapters need for
+heartbeats. Other runtime skills remain controlled by
+`paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
+this legacy default because its protocol supplies the control-plane contract.
 
 Validate the catalog without writing the manifest:
 

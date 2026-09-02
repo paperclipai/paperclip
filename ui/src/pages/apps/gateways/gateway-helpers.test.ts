@@ -121,8 +121,8 @@ describe("isGatewayOn", () => {
 });
 
 describe("formatScope", () => {
-  it("labels company, project, and agent scopes", () => {
-    expect(formatScope(gateway(), new Map(), new Map())).toBe("Company");
+  it("labels organization, project, and agent scopes", () => {
+    expect(formatScope(gateway(), new Map(), new Map())).toBe("Organization");
     expect(
       formatScope(
         gateway({ contextScopeType: "project", contextScopeId: "p1" }),

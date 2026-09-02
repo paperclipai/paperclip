@@ -28,8 +28,10 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
+import { applyOperatorGeneralDefaults, stripOperatorGeneralEchoes } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
+import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -328,6 +330,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+  // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
+  // read, never persisted (see applyOperatorGeneralDefaults) — including on
+  // the write path, where a full-GET echo of the overlaid value is stripped
+  // back to the schema default (see stripOperatorGeneralEchoes).
+  const operatorDefaults = getOperatorSettingDefaults(options.runtimeEnv ?? process.env);
+
+  function toGeneralView(raw: unknown): InstanceGeneralSettings {
+    return applyOperatorGeneralDefaults(normalizeGeneralSettings(raw), operatorDefaults);
+  }
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
@@ -342,7 +353,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return {
       id: row.id,
       defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-      general: normalizeGeneralSettings(row.general),
+      general: toGeneralView(row.general),
       experimental: toExperimentalView(row.experimental),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -415,7 +426,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+      return toGeneralView(row.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
@@ -425,10 +436,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
-        ...patch,
-      });
+      const storedGeneral = normalizeGeneralSettings(current.general);
+      // A full-GET echo carries the overlaid operator value for a field the
+      // user never chose; stripping it keeps the overlay strictly read-time,
+      // so changing or unsetting the variable later still takes effect.
+      const nextGeneral = stripOperatorGeneralEchoes(
+        storedGeneral,
+        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        operatorDefaults,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)

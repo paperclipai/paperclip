@@ -216,6 +216,13 @@ export function IssueWorkspaceCard({
   });
 
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
+  // Managed-sandbox-only policy: the workspace path is a host filesystem path,
+  // so the card omits it and keeps branch, repo, and environment. The gate fails
+  // closed whenever the policy is unknown — in flight and also on a failed read
+  // — because an unresolved policy reads as "not managed" and would show the
+  // path the policy exists to hide.
+  const hideHostPaths =
+    experimentalSettings === undefined || experimentalSettings.enableManagedSandboxOnly === true;
   const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
     && Boolean(project?.executionWorkspacePolicy?.enabled);
 
@@ -403,7 +410,7 @@ export function IssueWorkspaceCard({
               <CopyableInline value={workspace.branchName} mono />
             </div>
           )}
-          {workspace?.cwd && (
+          {workspace?.cwd && !hideHostPaths && (
             <div className="flex items-center gap-1.5">
               <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
               <CopyableInline value={workspace.cwd} mono />

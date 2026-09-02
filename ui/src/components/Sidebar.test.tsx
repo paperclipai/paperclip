@@ -352,7 +352,7 @@ describe("Sidebar", () => {
 
     const sections = [...container.querySelectorAll("nav > div")];
     const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
-    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Organization"));
     expect(workSection?.textContent).toContain("Skills");
     expect(companySection?.textContent).not.toContain("Skills");
 
@@ -411,7 +411,7 @@ describe("Sidebar", () => {
 
     const sections = [...container.querySelectorAll("nav > div")];
     const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
-    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Organization"));
     expect(workSection?.textContent).not.toContain("Timeline");
     expect(companySection?.textContent).toContain("Timeline");
 
