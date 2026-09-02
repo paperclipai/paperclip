@@ -402,6 +402,33 @@ function isTrustedQuotedValueBoundary(input: string, index: number) {
   return boundary === "hard" || boundary === "provisional";
 }
 
+function startsIndependentCredentialLine(input: string, index: number) {
+  if (input[index] !== "\r" && input[index] !== "\n") return false;
+  let lineStart = index + 1;
+  if (input[index] === "\r" && input[lineStart] === "\n") lineStart += 1;
+  const lineEndCandidates = [
+    input.indexOf("\r", lineStart),
+    input.indexOf("\n", lineStart),
+  ].filter((candidate) => candidate >= 0);
+  const lineEnd =
+    lineEndCandidates.length > 0
+      ? Math.min(...lineEndCandidates)
+      : input.length;
+  const words = input
+    .slice(lineStart, lineEnd)
+    .trimStart()
+    .toLowerCase()
+    .split(/[ \t]+/);
+  return (
+    (words[0] === "bearer" && words.length >= 2) ||
+    (words[0] === "request" &&
+      words[1] === "failed" &&
+      words[2] === "with" &&
+      words[3] === "bearer" &&
+      words.length >= 5)
+  );
+}
+
 function rawQuotedValueEnd(
   input: string,
   start: number,
@@ -422,6 +449,11 @@ function rawQuotedValueEnd(
       if (boundary === "provisional") {
         provisionalEnd = candidateEnd;
         unsafeAfterProvisional = false;
+      } else if (
+        boundary === "line" &&
+        startsIndependentCredentialLine(input, candidateEnd)
+      ) {
+        return candidateEnd;
       } else {
         if (boundary === "line") provisionalEnd = null;
         unsafeAfterProvisional = true;
@@ -464,6 +496,11 @@ function escapedQuotedValueEnd(
       if (boundary === "provisional") {
         provisionalEnd = candidateEnd;
         unsafeAfterProvisional = false;
+      } else if (
+        boundary === "line" &&
+        startsIndependentCredentialLine(input, candidateEnd)
+      ) {
+        return candidateEnd;
       } else {
         if (boundary === "line") provisionalEnd = null;
         unsafeAfterProvisional = true;
@@ -484,6 +521,7 @@ function escapedQuoteAt(input: string, index: number): '"' | "'" | null {
 
 function credentialEndAfterQuotedDelimiter(input: string, quotedEnd: number) {
   if (isTrustedQuotedValueBoundary(input, quotedEnd)) return quotedEnd;
+  if (startsIndependentCredentialLine(input, quotedEnd)) return quotedEnd;
 
   // A closing delimiter followed immediately by more token bytes is not a
   // trustworthy credential boundary (for example `"abc"defg`). Once a

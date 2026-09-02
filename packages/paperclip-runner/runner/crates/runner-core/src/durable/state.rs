@@ -1237,6 +1237,30 @@ fn redact_sensitive_text_values(input: &str) -> String {
     let quoted_value_end = |start: usize, quote: (u8, usize)| {
         let (quote, delimiter_backslashes) = quote;
         let scan_end = bytes.len();
+        let starts_independent_credential_line = |index: usize| {
+            if !bytes
+                .get(index)
+                .is_some_and(|value| matches!(value, b'\r' | b'\n'))
+            {
+                return false;
+            }
+            let mut line_start = index + 1;
+            if bytes[index] == b'\r' && bytes.get(line_start) == Some(&b'\n') {
+                line_start += 1;
+            }
+            let line_end = (line_start..scan_end)
+                .find(|candidate| matches!(bytes[*candidate], b'\r' | b'\n'))
+                .unwrap_or(scan_end);
+            let words = normalized[line_start..line_end]
+                .split_ascii_whitespace()
+                .collect::<Vec<_>>();
+            (words.first() == Some(&"bearer") && words.len() >= 2)
+                || (words.first() == Some(&"request")
+                    && words.get(1) == Some(&"failed")
+                    && words.get(2) == Some(&"with")
+                    && words.get(3) == Some(&"bearer")
+                    && words.len() >= 5)
+        };
         let mut end = start;
         let mut provisional_end = None;
         let mut unsafe_after_provisional = false;
@@ -1256,6 +1280,9 @@ fn redact_sensitive_text_values(input: &str) -> String {
                             b',' | b';' | b'&' | b')' | b']' | b'}'
                         )
                     {
+                        return candidate_end;
+                    }
+                    if starts_independent_credential_line(after_delimiter) {
                         return candidate_end;
                     }
                     if matches!(bytes[after_delimiter], b'\r' | b'\n') {
@@ -2172,6 +2199,14 @@ mod tests {
             (
                 "authorization=\"Bearer abc\"\ndef status=401",
                 r#"authorization="Bearer [REDACTED]"#,
+            ),
+            (
+                "authorization=\\\"Bearer first-line\\\"\nrequest failed with Bearer standalone\\\"embedded-tail",
+                "authorization=\\\"Bearer [REDACTED]\\\"\nrequest failed with Bearer [REDACTED]",
+            ),
+            (
+                "authorization=\"Bearer first-line\"\nrequest failed with Bearer standalone\"embedded-tail",
+                "authorization=\"Bearer [REDACTED]\"\nrequest failed with Bearer [REDACTED]",
             ),
             (
                 r#"{\"authorization\":\"Bearer a\"b c\"} status=401"#,

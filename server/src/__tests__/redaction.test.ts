@@ -500,6 +500,17 @@ def status=401`,
         expected: String.raw`authorization=\"***REDACTED***\"`,
       },
       {
+        input:
+          'authorization="Bearer first-line"\nrequest failed with Bearer standalone"embedded-tail',
+        expected: `authorization="${REDACTED_EVENT_VALUE}"\nrequest failed with Bearer ${REDACTED_EVENT_VALUE}`,
+      },
+      {
+        input: String.raw`authorization=\"Bearer first-line\"
+request failed with Bearer standalone\"embedded-tail`,
+        expected: String.raw`authorization=\"***REDACTED***\"
+request failed with Bearer ***REDACTED***`,
+      },
+      {
         input: String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
         expected: String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
       },
