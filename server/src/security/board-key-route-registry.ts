@@ -305,6 +305,7 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
   // non-/api path stays undeclared and fails closed.
   if (segments[0] === "_plugins") return denied(method, "/_plugins/{*path}");
   if (segments[0] === "llms") return denied(method, "/llms/{*path}");
+  if (segments[0] === "runtime-tools") return denied(method, "/runtime-tools/{*path}");
   if (segments[0] !== "api") {
     return declared(method, path, "deny", "undeclared", "none", { concealment: "forbidden" });
   }
@@ -339,6 +340,7 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
     "smoke-lab",
     "cases",
     "pipelines",
+    "connection-intents",
     "_plugins",
   ].includes(top)) return denied(method, `/api/${top}/{*path}`);
 
