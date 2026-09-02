@@ -175,9 +175,21 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
   if (additions !== null || deletions !== null || files !== null) {
     stats = [additions === null ? null : `+${additions}`, deletions === null ? null : `−${deletions}`, files === null ? null : `${files} ${files === 1 ? "file" : "files"}`];
   }
-  const chip = workProduct.type === "preview_url" && workProduct.healthStatus === "unhealthy"
-    ? { label: "Down", tone: "failure" as const }
-    : stateChipFor(workProduct.type, workProduct.status, workProduct.reviewState);
+  const unhealthyChip =
+    workProduct.healthStatus === "unhealthy"
+      ? workProduct.type === "preview_url"
+        ? { label: "Down", tone: "failure" as const }
+        : workProduct.type === "runtime_service"
+          ? { label: "Stopped", tone: "failure" as const }
+          : null
+      : null;
+  const chip =
+    unhealthyChip ??
+    stateChipFor(
+      workProduct.type,
+      workProduct.status,
+      workProduct.reviewState,
+    );
   const visibleMeta = meta.filter((value): value is string => Boolean(value));
   const visibleStats = stats.filter((value): value is string => Boolean(value));
 

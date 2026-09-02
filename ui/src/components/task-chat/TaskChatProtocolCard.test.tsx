@@ -168,6 +168,30 @@ describe("TaskChatProtocolCard", () => {
     expect(stateChipFor("artifact", "pending", "none")).toMatchObject({ label: "Pending", dashed: true });
   });
 
+  it("shows an unhealthy active runtime as stopped", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "active",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · active",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Stopped");
+    expect(container.textContent).not.toContain("Running");
+  });
+
   it("renders provider plan steps and status", () => {
     renderCard(root, {
       id: "provider-plan",
