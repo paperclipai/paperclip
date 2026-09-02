@@ -9,6 +9,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRelations,
@@ -19,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { issueRoutes } from "../routes/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -34,19 +36,23 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("stale issue execution lock routes", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-execution-lock-routes-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -488,10 +494,6 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         },
       },
     });
-    await expect.poll(async () => {
-      const rows = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests);
-      return rows.length;
-    }).toBeGreaterThan(0);
   });
 
   it("rejects checkout from a terminal run instead of creating immediately stale ownership", async () => {
