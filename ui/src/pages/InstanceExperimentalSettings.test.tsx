@@ -58,7 +58,6 @@ const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
 const BETA_SKILLS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle beta skills experimental setting"]';
-const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
 const STATUS_CARDS_TOGGLE_SELECTOR =
@@ -73,7 +72,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
-    enableApps: false,
+    enableApps: true,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
@@ -190,17 +189,11 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(warning?.textContent).toContain("no compatibility guarantees");
   });
 
-  it("enables the Apps UI from experimental settings", async () => {
+  it("does not render an Apps experimental setting", async () => {
     await renderPage();
 
-    const toggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(() => toggle?.click());
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableApps: true });
-    expect(container.querySelector(APPS_TOGGLE_SELECTOR)?.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('button[aria-label="Toggle apps experimental setting"]')).toBeNull();
+    expect(container.textContent).not.toContain("Show the Apps navigation");
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
@@ -664,19 +657,19 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
   it("renders a managed key locked with the badge while unmanaged keys stay editable", async () => {
     await renderPage({
       ...defaultExperimentalSettings(),
-      enableApps: true,
+      enableBuiltInAgents: true,
       managedKeys: {
-        enableApps: { managed: true, managedBy: "paperclip-cloud" },
+        enableBuiltInAgents: { managed: true, managedBy: "paperclip-cloud" },
       },
     });
 
     expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
 
-    const appsToggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
-    expect(appsToggle?.getAttribute("aria-checked")).toBe("true");
-    expect(appsToggle?.disabled).toBe(true);
+    const builtInAgentsToggle = container.querySelector<HTMLButtonElement>(BUILT_IN_AGENTS_TOGGLE_SELECTOR);
+    expect(builtInAgentsToggle?.getAttribute("aria-checked")).toBe("true");
+    expect(builtInAgentsToggle?.disabled).toBe(true);
 
-    await act(() => appsToggle?.click());
+    await act(() => builtInAgentsToggle?.click());
     await flushReact();
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
 
@@ -729,12 +722,12 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
 
     expect(container.textContent).not.toContain(MANAGED_BADGE_TEXT);
 
-    const appsToggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
-    expect(appsToggle?.disabled).toBe(false);
+    const builtInAgentsToggle = container.querySelector<HTMLButtonElement>(BUILT_IN_AGENTS_TOGGLE_SELECTOR);
+    expect(builtInAgentsToggle?.disabled).toBe(false);
 
-    await act(() => appsToggle?.click());
+    await act(() => builtInAgentsToggle?.click());
     await flushReact();
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableApps: true });
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableBuiltInAgents: true });
   });
 });
 
@@ -863,7 +856,7 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
-    expect(container.textContent).toContain("Apps");
+    expect(container.textContent).not.toContain("Show the Apps navigation");
   });
 
   it("shows every toggle when nothing is hidden", async () => {

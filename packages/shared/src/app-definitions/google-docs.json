@@ -42,7 +42,8 @@
         "description": "Read document text and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -72,7 +73,8 @@
         "description": "Read document text and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -115,7 +117,8 @@
         "description": "Read and update documents."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -147,7 +150,8 @@
         "description": "Read and update documents."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

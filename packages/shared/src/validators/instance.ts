@@ -45,7 +45,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
-  enableApps: z.boolean().default(false),
+  // Deprecated compatibility key. Apps is a standard product surface and is
+  // always enabled; this remains accepted so older stored rows and managed
+  // configs continue to load during upgrades.
+  enableApps: z.boolean().default(true),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),

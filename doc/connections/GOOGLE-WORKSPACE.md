@@ -73,9 +73,12 @@ methods available for that capability:
 - **Use the Paperclip robot account** remains an additional Google Sheets-only
   option for explicitly shared spreadsheets.
 
-OAuth grants begin as personal connections. Existing promotion controls may
-later make an eligible connection available to the company without silently
-changing the underlying Google principal.
+Before Google consent, the setup flow asks whether the credential is for just
+the connecting user or for any human in the company. A personal choice stores
+the tokens only on that user's grant. A company choice stores them on the
+default organization grant, while still recording which signed-in Google
+principal completed consent so refresh and reconnect stay bound to that
+principal.
 
 ## Broker profiles
 
@@ -121,7 +124,10 @@ path.
 Cloud-hosted stacks receive these values through the existing per-stack secret
 delivery path. A self-hosted instance creates its keys during enrollment and
 stores them with owner-only permissions in the instance's ignored secret
-directory. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
+directory. The setup page supplies its authenticated same-origin HTTPS address
+to enrollment, so a normal Tailscale-hosted self-hoster does not need to edit
+`config.json` or set `PAPERCLIP_PUBLIC_URL`; the enrolled origin becomes the
+durable callback binding. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
 Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
 reconnect legacy grants before their old access tokens expire.
 

@@ -126,12 +126,11 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),

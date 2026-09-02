@@ -203,18 +203,17 @@ export function Browse() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
   const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Connectors" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),

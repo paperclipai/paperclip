@@ -9,7 +9,6 @@ import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
-import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
 import { IsolatedWorkspacesRouteGate } from "./components/IsolatedWorkspacesRouteGate";
@@ -156,37 +155,35 @@ function boardRoutes() {
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
-        <Route element={<AppsExperimentalGate />}>
-          <Route path="apps" element={<Browse />} />
-          <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
-          <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/byo" element={<AppsConnect byoOnly />} />
-        <Route
-          path="apps/vercel-connect"
-          element={<AppsConnectEntryRoute credentialSource="vercel_connect" />}
-        />
-        <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
-        <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/review" element={<AppsReview />} />
-        {/* Connector health is inline on the Apps landing page; keep legacy links working. */}
-        <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/gateways" element={<GatewaysList />} />
-        <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
-        <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
-        <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
-        <Route path="apps/advanced/gateways" element={<GatewaysList />} />
-        <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
-        <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
-        <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
-        <Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
-        <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
-        <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
-        <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
-        <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
-      </Route>
+      <Route path="apps" element={<Browse />} />
+      <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/byo" element={<AppsConnect byoOnly />} />
+      <Route
+        path="apps/vercel-connect"
+        element={<AppsConnectEntryRoute credentialSource="vercel_connect" />}
+      />
+      <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
+      <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/review" element={<AppsReview />} />
+      {/* Connector health is inline on the Apps landing page; keep legacy links working. */}
+      <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/gateways" element={<GatewaysList />} />
+      <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+      <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+      <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+      <Route path="apps/advanced/gateways" element={<GatewaysList />} />
+      <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+      <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
+      <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+      <Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
+      <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
+      <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
+      <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
+      <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.profile" />}>
         <Route path="company/settings/instance/profile" element={<ProfileSettings />} />

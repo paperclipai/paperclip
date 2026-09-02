@@ -4,9 +4,6 @@ import { expect, test } from "@playwright/test";
 // table now redirects into Apps, so capture the current app removal
 // confirmation on the app Advanced tab instead.
 test("captures the current app removal confirmations", async ({ page }) => {
-  const flags = await page.request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
-
   const companyRes = await page.request.post("/api/companies", {
     data: { name: `PAP-10817 remove app ${Date.now()}` },
   });

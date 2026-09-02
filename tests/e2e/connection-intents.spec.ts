@@ -22,11 +22,6 @@ async function newCompany(request: APIRequestContext): Promise<Seed> {
       data: { name: `Connection intent E2E ${Date.now()}` },
     }),
   );
-  await json(
-    await request.patch("/api/instance/settings/experimental", {
-      data: { enableApps: true },
-    }),
-  );
   return { companyId: company.id, prefix: company.issuePrefix };
 }
 

@@ -82,12 +82,12 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enableApps: {
-    title: "Apps",
+    title: "Apps (compatibility)",
     description:
-      "Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.",
+      "Deprecated compatibility key. Apps is always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enablePipelines: {
     title: "Pipelines",

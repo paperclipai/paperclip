@@ -71,6 +71,7 @@ import {
   oauthClientIdMetadataDocument,
 } from "../services/tool-access.js";
 import { isLoopbackHost } from "../url-utils.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { redactRemoteUrlCredential } from "../services/remote-url-credentials.js";
 import { wakeConnectionIntentAfterResolution } from "./connection-intents.js";
@@ -180,8 +181,31 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
-export function cloudConnectorEnrollmentReturnPath(issuePrefix: string): string {
-  return `/${encodeURIComponent(issuePrefix)}/apps/connections?cloud_connector=enrolled`;
+function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): string | null {
+  if (!returnTo || returnTo.length > 2_048) return null;
+  try {
+    const parsed = new URL(returnTo, "http://paperclip.local");
+    if (
+      parsed.origin !== "http://paperclip.local"
+      || parsed.pathname !== "/apps/connect"
+      || parsed.username
+      || parsed.password
+    ) return null;
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return null;
+  }
+}
+
+export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo?: string | null): string {
+  const companyRoot = `/${encodeURIComponent(issuePrefix)}`;
+  const normalizedReturnTo = normalizeCloudConnectorEnrollmentReturnTo(returnTo);
+  if (normalizedReturnTo) {
+    const parsed = new URL(normalizedReturnTo, "http://paperclip.local");
+    parsed.searchParams.set("cloud_connector", "enrolled");
+    return `${companyRoot}${parsed.pathname}${parsed.search}`;
+  }
+  return `${companyRoot}/apps/connections?cloud_connector=enrolled`;
 }
 
 export function toolAccessRoutes(
@@ -319,8 +343,62 @@ export function toolAccessRoutes(
     }
   }
 
+  function trustedBrowserBaseUrl(req: Request) {
+    const origin = trustedBoardMutationOrigin(req);
+    if (!origin) return null;
+    try {
+      const parsed = new URL(origin);
+      const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+      const routedHost = forwardedHost || req.header("host")?.trim();
+      const normalizedRoutedHost = routedHost
+        ? new URL(`${parsed.protocol}//${routedHost}`).host.toLowerCase()
+        : null;
+      if (
+        parsed.host.toLowerCase() === normalizedRoutedHost
+        && (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)))
+      ) {
+        return parsed.origin;
+      }
+    } catch {
+      // The shared origin parser already validates this. Fail closed if its
+      // contract ever changes.
+    }
+    return null;
+  }
+
+  function enrolledConnectorBaseUrl(req: Request) {
+    // Browser-initiated mutations must prove their own same-origin HTTPS
+    // request. The durable binding is only a callback/metadata fallback for
+    // provider GETs, which do not carry the initiating browser's Origin.
+    if (req.method !== "GET" && req.method !== "HEAD") return null;
+    const identity = loadPaperclipCloudConnectorIdentity();
+    if (identity?.status !== "active") return null;
+    const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+    const requestHost = (forwardedHost || req.header("host")?.trim())?.toLowerCase();
+    if (!requestHost) return null;
+    for (const origin of identity.origins) {
+      try {
+        const parsed = new URL(origin);
+        if (
+          parsed.protocol === "https:"
+          && !parsed.username
+          && !parsed.password
+          && parsed.host.toLowerCase() === requestHost
+        ) {
+          return parsed.origin;
+        }
+      } catch {
+        // Ignore malformed legacy identity origins.
+      }
+    }
+    return null;
+  }
+
   function oauthRedirectUri(req: Request) {
-    const baseUrl = configuredPublicBaseUrl() ?? requestLoopbackBaseUrl(req);
+    const baseUrl = configuredPublicBaseUrl()
+      ?? trustedBrowserBaseUrl(req)
+      ?? enrolledConnectorBaseUrl(req)
+      ?? requestLoopbackBaseUrl(req);
     if (!baseUrl) {
       throw unprocessable(
         "This Paperclip needs a browser-reachable HTTPS address (or loopback HTTP) before browser sign-in can start.",
@@ -331,6 +409,8 @@ export function toolAccessRoutes(
   }
 
   function oauthBrowserOrigin(req: Request) {
+    const trustedBrowserOrigin = trustedBrowserBaseUrl(req);
+    if (trustedBrowserOrigin) return trustedBrowserOrigin;
     const host = req.get("host")?.trim();
     if (!host) return null;
     try {
@@ -863,6 +943,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (!companyId) throw badRequest("Paperclip Cloud enrollment requires a company");
     assertCompanyAccess(req, companyId);
     const origin = new URL(oauthRedirectUri(req)).origin;
+    const returnTo = normalizeCloudConnectorEnrollmentReturnTo(
+      typeof req.body?.returnTo === "string" ? req.body.returnTo : undefined,
+    ) ?? undefined;
     let status;
     try {
       status = await startPaperclipCloudConnectorEnrollment({
@@ -870,6 +953,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         companyId,
         initiatedBy: connectorEnrollmentPrincipal(req),
         label: typeof req.body?.label === "string" ? req.body.label : undefined,
+        returnTo,
       });
     } catch {
       throw unprocessable("Paperclip Cloud enrollment could not be started", {
@@ -926,7 +1010,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { environment: status.environment, status: status.status },
       });
     }
-    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix));
+    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix, pending?.returnTo));
   });
 
   const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {

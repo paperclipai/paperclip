@@ -54,6 +54,7 @@ export interface InstanceExperimentalSettings {
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
+  /** @deprecated Compatibility key only. Apps is always enabled. */
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;

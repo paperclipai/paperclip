@@ -18,8 +18,6 @@ async function discoverCompany(request: APIRequestContext): Promise<SeedResult> 
   });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
     companyId: company.id,
     prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",

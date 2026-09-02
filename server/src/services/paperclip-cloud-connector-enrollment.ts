@@ -25,6 +25,7 @@ type PendingEnrollment = {
   expiresAt: string;
   companyId?: string;
   initiatedBy?: string;
+  returnTo?: string;
 };
 
 export type PaperclipCloudConnectorIdentity = {
@@ -132,6 +133,7 @@ export async function startPaperclipCloudConnectorEnrollment(input: {
   label?: string;
   companyId?: string;
   initiatedBy?: string;
+  returnTo?: string;
   env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
@@ -143,6 +145,7 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
   label?: string;
   companyId?: string;
   initiatedBy?: string;
+  returnTo?: string;
   env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 }): Promise<PaperclipCloudConnectorEnrollmentStatus> {
@@ -217,6 +220,7 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
       expiresAt: body.expiresAt,
       ...(input.companyId ? { companyId: input.companyId } : {}),
       ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
+      ...(input.returnTo ? { returnTo: input.returnTo } : {}),
     },
   };
   saveIdentity(identity);

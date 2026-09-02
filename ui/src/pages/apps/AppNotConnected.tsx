@@ -42,7 +42,7 @@ export function AppNotConnected() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;
 
@@ -115,13 +115,12 @@ export function AppNotConnected() {
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: appName, href: appApplicationTabHref(applicationId, "setup") },
       { label: appTabLabel(activeTab) },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, appName, applicationId, activeTab]);
+  }, [setBreadcrumbs, appName, applicationId, activeTab]);
 
   const remove = useMutation({
     mutationFn: () => toolsApi.updateApplication(applicationId, { status: "archived" }),

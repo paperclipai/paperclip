@@ -5127,6 +5127,101 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("routes a managed Drive callback into the shared organization vault when selected", async () => {
+    const company = await createCompany(db);
+    const userId = `shared-drive-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const profile = "drive.read" as const;
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([{ name: "search_files", annotations: { readOnlyHint: true } }]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-read",
+        grantKind: "organization",
+        name: "Shared Drive managed read",
+      }, actor);
+      expect(connected.connection).toMatchObject({ credentialPolicy: "shared" });
+
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const completed = await service.completePaperclipCloudConnectorCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        claimId: "shared-drive-claim",
+        actor,
+      });
+
+      expect(completed.connection).toMatchObject({
+        status: "active",
+        enabled: true,
+        credentialPolicy: "shared",
+        config: {
+          oauth: {
+            strategy: "paperclip_cloud_connector",
+            connectorSubjectUserId: userId,
+          },
+        },
+      });
+      expect(completed.connection.credentialRefs).toEqual([
+        expect.objectContaining({
+          name: "oauth.access_token",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }),
+      ]);
+      expect(completed.connection.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual([
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+
+      const grants = await db.select().from(connectionGrants).where(eq(
+        connectionGrants.connectionId,
+        connected.connectionId,
+      ));
+      expect(grants).toHaveLength(1);
+      expect(grants[0]).toMatchObject({
+        kind: "organization",
+        subjectUserId: null,
+        isDefault: true,
+        status: "active",
+        providerTenant: {
+          externalId: userId,
+          oauth: { strategy: "paperclip_cloud_connector" },
+        },
+      });
+      expect(grants[0]!.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(
+        completed.connection.credentialSecretRefs.map((ref) => ref.secretId).sort(),
+      );
+
+      const secrets = await db.select().from(companySecrets).where(inArray(
+        companySecrets.id,
+        completed.connection.credentialSecretRefs.map((ref) => ref.secretId),
+      ));
+      expect(secrets).toHaveLength(2);
+      expect(secrets.every((secret) => secret.scope === "company" && secret.ownerUserId === null)).toBe(true);
+      const bindings = await db.select().from(companySecretBindings).where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connected.connectionId),
+      ));
+      expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
+        "credentials.oauth.access_token",
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
   it("activates allowed Drive write actions with recommended approval defaults after a managed callback", async () => {
     const company = await createCompany(db);
     const userId = `drive-write-member-${randomUUID()}`;
@@ -6555,6 +6650,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("normalizes a direct numeric loopback origin for OAuth when no public URL is configured", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
@@ -6573,6 +6669,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("does not derive an OAuth callback origin from a non-loopback request host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
@@ -6589,6 +6686,48 @@ describeEmbeddedPostgres("tool access service", () => {
       code: "oauth_redirect_origin_unsupported",
       error: "This Paperclip needs a browser-reachable HTTPS address (or loopback HTTP) before browser sign-in can start.",
     });
+  });
+
+  it("uses an authenticated same-origin HTTPS browser request without public URL config", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "owner"), undefined, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.tail123.ts.net")
+      .set("Origin", "https://paperclip.tail123.ts.net")
+      .send({ galleryKey: "slack", name: "Tailscale Slack workspace" });
+
+    expect(connectRes.status).toBe(201);
+    expect(new URL(connectRes.body.auth.startUrl).searchParams.get("redirect_uri")).toBe(
+      "https://paperclip.tail123.ts.net/api/tools/oauth/callback",
+    );
+  });
+
+  it("rejects a browser HTTPS origin that does not match the routed request host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "owner"), undefined, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.tail123.ts.net")
+      .set("Origin", "https://evil.example")
+      .send({ galleryKey: "slack", name: "Mismatched Slack workspace" });
+
+    expect(connectRes.status).toBe(422);
+    expect(connectRes.body).toMatchObject({ code: "oauth_redirect_origin_unsupported" });
   });
 
   it("requires non-viewer board access to start OAuth for active app connections", async () => {
