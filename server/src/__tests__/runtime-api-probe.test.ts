@@ -3,6 +3,7 @@ import {
   probeRuntimeApiUrl,
   resolveVerifiedRuntimeApiUrl,
   runtimeApiProbeUrl,
+  runtimeSelfOriginApiUrl,
   type RuntimeApiProbeResult,
 } from "../runtime-api-probe.js";
 
@@ -100,57 +101,6 @@ describe("probeRuntimeApiUrl", () => {
     expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
   });
 
-  it("accepts a board health response whose commit is this build's, when self-identity is required", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: "a".repeat(40) }));
-
-    await expect(
-      probeRuntimeApiUrl("http://127.0.0.1:3100", {
-        fetchImpl: fetchImpl as any,
-        requireCommit: "a".repeat(40),
-      }),
-    ).resolves.toEqual({ ok: true, status: 200 });
-  });
-
-  it("rejects a board-shaped response from a different build when self-identity is required", async () => {
-    // A fallback origin is this server's own port on its own hostname, so
-    // anything reporting another commit is not this server and must not receive
-    // spawned runs' bearer tokens.
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: "b".repeat(40) }));
-
-    const result = await probeRuntimeApiUrl("http://10.0.0.5:3100", {
-      fetchImpl: fetchImpl as any,
-      requireCommit: "a".repeat(40),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toContain(`reports build commit ${"b".repeat(40)}`);
-    expect(result.ok === false && result.reason).toContain(`not this server's ${"a".repeat(40)}`);
-  });
-
-  it("rejects a board-shaped response with no commit when self-identity is required", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "cloud", commit: null }));
-
-    const result = await probeRuntimeApiUrl("http://10.0.0.5:3100", {
-      fetchImpl: fetchImpl as any,
-      requireCommit: "a".repeat(40),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toContain("reports no build commit");
-  });
-
-  it("waives the commit check when this server cannot read its own commit", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "cloud", commit: null }));
-
-    await expect(
-      probeRuntimeApiUrl("http://10.0.0.5:3100", { fetchImpl: fetchImpl as any, requireCommit: null }),
-    ).resolves.toEqual({ ok: true, status: 200 });
-  });
-
   it("rejects an auth-proxy origin that answers 200 text/html", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(200));
 
@@ -236,12 +186,12 @@ describe("resolveVerifiedRuntimeApiUrl", () => {
   const ok: RuntimeApiProbeResult = { ok: true, status: 200 };
   const bad = (reason: string): RuntimeApiProbeResult => ({ ok: false, reason });
 
-  it("keeps the configured URL when it answers, without probing any fallback", async () => {
+  it("keeps the configured URL when it answers, without probing the fallback", async () => {
     const probe = vi.fn().mockResolvedValue(ok);
 
     const resolution = await resolveVerifiedRuntimeApiUrl({
       configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["http://127.0.0.1:3100"],
+      selfOriginApiUrl: "http://127.0.0.1:3100",
       probe,
     });
 
@@ -254,26 +204,45 @@ describe("resolveVerifiedRuntimeApiUrl", () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to the loopback origin when the configured URL serves HTML", async () => {
+  it("falls back to this server's own bound origin when the configured URL serves HTML", async () => {
     const probe = vi.fn(async (apiUrl: string) =>
       apiUrl === "http://127.0.0.1:3100" ? ok : bad("answered HTTP 200 with content-type text/html instead of JSON"),
     );
 
     const resolution = await resolveVerifiedRuntimeApiUrl({
       configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["https://board.example.com", "http://10.0.0.5:3100", "http://127.0.0.1:3100"],
+      selfOriginApiUrl: "http://127.0.0.1:3100",
       probe,
     });
 
     expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
     expect(resolution.changed).toBe(true);
     expect(resolution.unverified).toBe(false);
-    // The configured URL is reported once even though the candidate list repeats it.
-    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual([
-      "https://board.example.com",
-      "http://10.0.0.5:3100",
-    ]);
+    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual(["https://board.example.com"]);
     expect(resolution.rejected[0]!.reason).toContain("text/html");
+  });
+
+  it("stays on the configured URL when the listener has no provable origin", async () => {
+    // A spawned run sends its bearer run token to whichever origin wins, and no
+    // response body can prove the responder is this server: every
+    // self-identifying value on the health route is readable off that same
+    // route by anything that can reach it. So when there is no provable origin
+    // — a UNIX-socket listener has none — there is no fallback at all, rather
+    // than some other origin that merely answers.
+    const probe = vi.fn(async () => bad("answered HTTP 200 with content-type text/html instead of JSON"));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      selfOriginApiUrl: null,
+      probe,
+    });
+
+    expect(resolution).toMatchObject({
+      apiUrl: "https://board.example.com",
+      changed: false,
+      unverified: true,
+    });
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it("reports every candidate and stays on the configured URL when nothing answers", async () => {
@@ -281,7 +250,7 @@ describe("resolveVerifiedRuntimeApiUrl", () => {
 
     const resolution = await resolveVerifiedRuntimeApiUrl({
       configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["http://127.0.0.1:3100"],
+      selfOriginApiUrl: "http://127.0.0.1:3100",
       probe,
     });
 
@@ -296,87 +265,61 @@ describe("resolveVerifiedRuntimeApiUrl", () => {
     ]);
   });
 
-  it("holds fallbacks to this server's commit while leaving the configured URL on the shape check", async () => {
-    // The configured URL is the operator's own choice and already reached every
-    // run before this check existed, so probing it can only narrow where
-    // credentials go. Promoting a fallback is the one path that could widen it.
-    const probe = vi.fn(async () => ok);
+  it("does not probe the self origin twice when it is exactly the configured URL", async () => {
+    // A loopback-bound server derives its primary runtime URL from the same
+    // address it binds, so both candidates are the same string. One verdict is
+    // enough, and a second probe would only report the same rejection twice.
+    const probe = vi.fn(async () => bad("could not be reached (connect ECONNREFUSED)"));
 
-    await resolveVerifiedRuntimeApiUrl({
-      configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["http://127.0.0.1:3100"],
-      selfCommit: "a".repeat(40),
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "http://127.0.0.1:3100",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
       probe,
     });
 
     expect(probe).toHaveBeenCalledTimes(1);
-    expect(probe.mock.calls[0]![1]).toEqual({ requireCommit: null });
+    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual(["http://127.0.0.1:3100"]);
+    expect(resolution.unverified).toBe(true);
   });
 
-  it("requires this server's commit of every fallback it promotes", async () => {
-    const probe = vi.fn(async (_apiUrl: string, identity: { requireCommit: string | null }) =>
-      identity.requireCommit === null ? bad("answered HTTP 200 with content-type text/html instead of JSON") : ok,
-    );
-
-    const resolution = await resolveVerifiedRuntimeApiUrl({
-      configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["http://10.0.0.5:3100"],
-      selfCommit: "a".repeat(40),
-      probe,
-    });
-
-    expect(resolution.apiUrl).toBe("http://10.0.0.5:3100");
-    expect(resolution.changed).toBe(true);
-    expect(probe.mock.calls.map((call) => call[1])).toEqual([
-      { requireCommit: null },
-      { requireCommit: "a".repeat(40) },
-    ]);
-  });
-
-  it("waives the fallback commit check when this server cannot read its own commit", async () => {
-    const probe = vi.fn(async (apiUrl: string) => (apiUrl === "http://127.0.0.1:3100" ? ok : bad("text/html")));
-
-    const resolution = await resolveVerifiedRuntimeApiUrl({
-      configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["http://127.0.0.1:3100"],
-      selfCommit: null,
-      probe,
-    });
-
-    expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
-    expect(probe.mock.calls[1]![1]).toEqual({ requireCommit: null });
-  });
-
-  it("does not re-probe the configured URL under the strict check when the candidate list repeats it", async () => {
-    // The candidate list starts with the preferred API URL, so the configured
-    // value appears twice. Re-probing it as a fallback would reject an origin
-    // the operator explicitly chose.
-    const probe = vi.fn(async (_apiUrl: string, identity: { requireCommit: string | null }) =>
-      identity.requireCommit === null ? ok : bad("reports no build commit"),
-    );
-
-    const resolution = await resolveVerifiedRuntimeApiUrl({
-      configuredApiUrl: "https://board.example.com",
-      fallbackApiUrls: ["https://board.example.com", "http://127.0.0.1:3100"],
-      selfCommit: "a".repeat(40),
-      probe,
-    });
-
-    expect(resolution.apiUrl).toBe("https://board.example.com");
-    expect(resolution.changed).toBe(false);
-    expect(probe).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips blank candidates", async () => {
+  it("skips a blank configured URL", async () => {
     const probe = vi.fn(async (apiUrl: string) => (apiUrl === "http://127.0.0.1:3100" ? ok : bad("nope")));
 
     const resolution = await resolveVerifiedRuntimeApiUrl({
       configuredApiUrl: "  ",
-      fallbackApiUrls: ["", "   ", "http://127.0.0.1:3100"],
+      selfOriginApiUrl: "http://127.0.0.1:3100",
       probe,
     });
 
     expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
     expect(probe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runtimeSelfOriginApiUrl", () => {
+  it("uses the family's loopback address for a wildcard bind, which holds the whole port", () => {
+    expect(runtimeSelfOriginApiUrl({ address: "0.0.0.0", port: 3100 })).toBe("http://127.0.0.1:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "::", port: 3100 })).toBe("http://[::1]:3100");
+  });
+
+  it("uses the bound address itself when the listener is not wildcard-bound", () => {
+    // 127.0.0.1:3100 would be free for another process to hold, so it is not
+    // this server's provable origin — the address actually bound is.
+    expect(runtimeSelfOriginApiUrl({ address: "10.0.0.5", port: 3100 })).toBe("http://10.0.0.5:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "127.0.0.1", port: 3100 })).toBe("http://127.0.0.1:3100");
+  });
+
+  it("brackets a bare IPv6 address", () => {
+    expect(runtimeSelfOriginApiUrl({ address: "fd00::1", port: 3100 })).toBe("http://[fd00::1]:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "[fd00::1]", port: 3100 })).toBe("http://[fd00::1]:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "[::]", port: 3100 })).toBe("http://[::1]:3100");
+  });
+
+  it("has no origin for a UNIX-socket listener or an unusable port", () => {
+    expect(runtimeSelfOriginApiUrl("/run/paperclip.sock")).toBeNull();
+    expect(runtimeSelfOriginApiUrl(null)).toBeNull();
+    expect(runtimeSelfOriginApiUrl(undefined)).toBeNull();
+    expect(runtimeSelfOriginApiUrl({ address: "0.0.0.0", port: 0 })).toBeNull();
+    expect(runtimeSelfOriginApiUrl({ address: "", port: 3100 })).toBeNull();
   });
 });
