@@ -3208,6 +3208,41 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("ignores unattributed operations when a done blocker reuses another issue's workspace", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      foreignIssueId,
+    } = await seedSharedWorkspaceDependency();
+
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: foreignIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: null,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({
+        id: dependentId,
+        blockerIssueIds: [blockerId],
+      }),
+    ]);
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+    });
+  });
+
   it("keeps dependents blocked on unattributed workspace operations for the blocker workspace", async () => {
     const {
       companyId,

@@ -692,7 +692,11 @@ export async function listUnfinalizedExecutionWorkspaceIds(
 async function listPendingFinalizeBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
-  blockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }>,
+  blockerWorkspacePairs: Array<{
+    blockerIssueId: string;
+    executionWorkspaceId: string;
+    workspaceSourceIssueId: string | null;
+  }>,
 ): Promise<Set<string>> {
   const pending = new Set<string>();
   const blockerIssueIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId))];
@@ -748,8 +752,20 @@ async function listPendingFinalizeBlockerIssueIds(
   }
 
   for (const pair of blockerWorkspacePairs) {
-    const latest = latestAttributedByBlockerWorkspace.get(`${pair.blockerIssueId}:${pair.executionWorkspaceId}`)
-      ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
+    const attributed = latestAttributedByBlockerWorkspace.get(
+      `${pair.blockerIssueId}:${pair.executionWorkspaceId}`,
+    );
+    // Legacy operations had no issue attribution. They are safe to inherit only
+    // when this blocker owns the workspace (or the legacy workspace has no owner).
+    // A child that merely reuses its parent's workspace must not inherit the
+    // parent's unattributed operation and become a false pending-finalize blocker.
+    const mayUseUnattributedFallback =
+      pair.workspaceSourceIssueId === null || pair.workspaceSourceIssueId === pair.blockerIssueId;
+    const latest = attributed ?? (
+      mayUseUnattributedFallback
+        ? latestUnattributedByWorkspace.get(pair.executionWorkspaceId)
+        : undefined
+    );
     if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
     if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
     pending.add(pair.blockerIssueId);
@@ -813,9 +829,11 @@ async function listIssueDependencyReadinessMap(
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      blockerWorkspaceSourceIssueId: executionWorkspaces.sourceIssueId,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .leftJoin(executionWorkspaces, eq(issues.executionWorkspaceId, executionWorkspaces.id))
     .where(
       and(
         eq(issueRelations.companyId, companyId),
@@ -827,12 +845,17 @@ async function listIssueDependencyReadinessMap(
   // Collect issue/workspace pairs of "done" blockers — these are the only ones
   // subject to the workspace-finalize barrier. Blockers that aren't done already
   // mark the dependent as not-ready and don't need a finalize check.
-  const doneBlockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }> = [];
+  const doneBlockerWorkspacePairs: Array<{
+    blockerIssueId: string;
+    executionWorkspaceId: string;
+    workspaceSourceIssueId: string | null;
+  }> = [];
   for (const row of blockerRows) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspacePairs.push({
         blockerIssueId: row.blockerIssueId,
         executionWorkspaceId: row.blockerExecutionWorkspaceId,
+        workspaceSourceIssueId: row.blockerWorkspaceSourceIssueId,
       });
     }
   }
