@@ -323,6 +323,7 @@ const INLINE_BOARD_ASSERTIONS: Record<string, readonly string[]> = {};
 // one — the board closure too.
 const INLINE_INSTANCE_ADMIN_ASSERTIONS: Record<string, readonly string[]> = {
   "environments.ts": ["assertCanAccessInstanceEnvironments"],
+  "instance-settings.ts": ["assertCanManageInstanceSettings"],
 };
 
 // `function name(` and `const name = (` declarations, used both to find wrappers and

@@ -1147,6 +1147,17 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/cancel",
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/finish",
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/terminal-session-token",
+  // Instance settings and task drain: every write handler in
+  // `instance-settings.ts` opens with `assertCanManageInstanceSettings`, which
+  // matches `assertInstanceAdmin` exactly (board actor, then local-implicit or
+  // instance admin).
+  "PATCH /api/instance/settings",
+  "PATCH /api/instance/settings/general",
+  "PATCH /api/instance/settings/experimental",
+  "POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
+  "POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
+  "POST /api/instance/task-drain",
+  "DELETE /api/instance/task-drain",
 ]);
 
 const CREATED_OPERATIONS = new Set([
