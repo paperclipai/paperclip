@@ -1088,6 +1088,23 @@ function approvedRunnerArtifact(runnerBinaryPath: string): {
   };
 }
 
+type BuildOwnedCliArtifact =
+  "acpx-runtime-sidecar.js" | "opencode-app-server-proxy.js";
+
+function resolveBuildOwnedCliArtifact(
+  artifact: BuildOwnedCliArtifact,
+  candidates: readonly string[] = [
+    fileURLToPath(new URL(`../cli/${artifact}`, import.meta.url)),
+    resolve(packageRoot, "dist", "cli", artifact),
+  ],
+): string {
+  const resolved = candidates.find((candidate) => existsSync(candidate));
+  if (resolved) return resolved;
+  throw new Error(
+    `runner_local_provider_artifact_missing: ${artifact} is absent; build @paperclipai/paperclip-runner TypeScript artifacts with build:typescript before starting a local JS-backed provider`,
+  );
+}
+
 function acpxRunnerLaunchProfile(
   options: CapabilityRunnerdCodexTransportOptions,
   command: string,
@@ -1103,8 +1120,8 @@ function acpxRunnerLaunchProfile(
     `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   if (!options.runnerFilesystemRoot) {
     const buildCommand = process.execPath;
-    const buildSidecar = fileURLToPath(
-      new URL("../cli/acpx-runtime-sidecar.js", import.meta.url),
+    const buildSidecar = resolveBuildOwnedCliArtifact(
+      "acpx-runtime-sidecar.js",
     );
     if (
       options.providerNodeCommand !== undefined ||
@@ -2024,12 +2041,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const opencodeProxyPath =
       this.options.opencodeProxyPath ??
-      fileURLToPath(
-        new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
-      );
+      (provider === "opencode"
+        ? resolveBuildOwnedCliArtifact("opencode-app-server-proxy.js")
+        : fileURLToPath(
+            new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
+          ));
     const acpxSidecarPath =
       this.options.acpxSidecarPath ??
-      fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
+      (provider === "acpx"
+        ? resolveBuildOwnedCliArtifact("acpx-runtime-sidecar.js")
+        : fileURLToPath(
+            new URL("../cli/acpx-runtime-sidecar.js", import.meta.url),
+          ));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
     const opencodeExecutable =
@@ -2504,12 +2527,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const opencodeProxyPath =
       this.options.opencodeProxyPath ??
-      fileURLToPath(
-        new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
-      );
+      (provider === "opencode"
+        ? resolveBuildOwnedCliArtifact("opencode-app-server-proxy.js")
+        : fileURLToPath(
+            new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
+          ));
     const acpxSidecarPath =
       this.options.acpxSidecarPath ??
-      fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
+      (provider === "acpx"
+        ? resolveBuildOwnedCliArtifact("acpx-runtime-sidecar.js")
+        : fileURLToPath(
+            new URL("../cli/acpx-runtime-sidecar.js", import.meta.url),
+          ));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
     const opencodeExecutable =
@@ -3318,4 +3347,5 @@ export const createRunnerdCodexTransport =
 
 export const runnerdLaunchProfileInternals = Object.freeze({
   acpxRunnerLaunchProfile,
+  resolveBuildOwnedCliArtifact,
 });

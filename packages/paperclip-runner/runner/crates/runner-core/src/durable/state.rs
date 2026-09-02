@@ -1253,12 +1253,19 @@ fn redact_sensitive_text_values(input: &str) -> String {
                     if after_delimiter >= scan_end
                         || matches!(
                             bytes[after_delimiter],
-                            b'\r' | b'\n' | b',' | b';' | b'&' | b')' | b']' | b'}'
+                            b',' | b';' | b'&' | b')' | b']' | b'}'
                         )
                     {
                         return candidate_end;
                     }
-                    if bytes[after_delimiter].is_ascii_whitespace() {
+                    if matches!(bytes[after_delimiter], b'\r' | b'\n') {
+                        // A quote immediately before a literal newline can be
+                        // an embedded fragment rather than the true delimiter.
+                        // Keep scanning for a later same-depth close and fail
+                        // closed through the bounded diagnostic if none exists.
+                        provisional_end = None;
+                        unsafe_after_provisional = true;
+                    } else if bytes[after_delimiter].is_ascii_whitespace() {
                         provisional_end = Some(candidate_end);
                         unsafe_after_provisional = false;
                     } else {
@@ -1803,6 +1810,7 @@ mod tests {
                     "nestedAuthorizationDiagnostic": r#"{\"authorization\":\"CustomScheme \\"credential-tail\\"\"}"#,
                     "embeddedQuoteDiagnostic": r#"password=abc"defg status=403"#,
                     "multilineProviderDiagnostic": "authorization=\\\"Bearer first-line\nsecond-line\\\" status=401",
+                    "newlineQuoteProviderDiagnostic": "authorization=\\\"Bearer first-line\\\"\nsecond-line\\\" status=401",
                     "providerApiKeyDiagnostic": "Invalid API key: sk-proj-provider-secret; request rejected",
                     "compoundWhitespaceDiagnostic": "OPENAI_API_KEY first-secret; proxyAuthorization Basic dXNlcjpwYXNz",
                 }}),
@@ -1876,6 +1884,12 @@ mod tests {
             state.outbox[0]
                 .envelope
                 .pointer("/payload/payload/nested/multilineProviderDiagnostic"),
+            Some(&json!(r#"authorization=\"Bearer [REDACTED]\" status=401"#))
+        );
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/nested/newlineQuoteProviderDiagnostic"),
             Some(&json!(r#"authorization=\"Bearer [REDACTED]\" status=401"#))
         );
         assert_eq!(
@@ -2142,6 +2156,22 @@ mod tests {
             (
                 "authorization=\"Bearer abc\ndef\" status=401",
                 r#"authorization="Bearer [REDACTED]" status=401"#,
+            ),
+            (
+                "authorization=\\\"Bearer abc\\\"\ndef\\\" status=401",
+                r#"authorization=\"Bearer [REDACTED]\" status=401"#,
+            ),
+            (
+                "authorization=\"Bearer abc\"\ndef\" status=401",
+                r#"authorization="Bearer [REDACTED]" status=401"#,
+            ),
+            (
+                "authorization=\\\"Bearer abc\\\"\ndef status=401",
+                r#"authorization=\"Bearer [REDACTED]"#,
+            ),
+            (
+                "authorization=\"Bearer abc\"\ndef status=401",
+                r#"authorization="Bearer [REDACTED]"#,
             ),
             (
                 r#"{\"authorization\":\"Bearer a\"b c\"} status=401"#,

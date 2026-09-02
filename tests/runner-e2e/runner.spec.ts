@@ -7,7 +7,7 @@ import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
-import { evaluateMatchers, type MatcherResult } from "./matchers.js";
+import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
   isNonExecutingReviewFenceRun,
   numberedPlanStepCount,
@@ -1171,6 +1171,7 @@ for (const execution of executions) {
         ),
       );
       selectedRuns = sortRunsChronologically(selectedRuns);
+      const finalRun = selectedRuns.at(-1)!;
       const run =
         selectedRuns.find(
           (candidate) => candidate.id === issue!.executionRunId,
@@ -1233,6 +1234,10 @@ for (const execution of executions) {
       // response. The browser assertion below remains the visible source of
       // truth after the comment projection has settled.
       const message = agentComments
+        .map((comment) => comment.body ?? "")
+        .join("\n");
+      const finalRunMessage = agentComments
+        .filter((comment) => comment.createdByRunId === finalRun.id)
         .map((comment) => comment.body ?? "")
         .join("\n");
       const pendingInteractions = terminal.interactions.filter(
@@ -1356,29 +1361,39 @@ for (const execution of executions) {
         (persistedAgent.adapterType === "paperclip_runner"
           ? "native"
           : "legacy");
-      matcherResults = await evaluateMatchers(
-        execution.task.buildMatchers(nonce, execution),
-        {
-          message,
-          issueStatus: issue.status,
-          runStatus: selectedRuns.every(
-            (candidate) =>
-              candidate.status === execution.task.expectedTerminalState.run,
-          )
-            ? execution.task.expectedTerminalState.run
-            : selectedRuns.map((candidate) => candidate.status).join(","),
-          runtimeMode: observedRuntimeMode,
-          environment:
-            typeof observedEnvironment === "string"
-              ? observedEnvironment
-              : undefined,
-          json: {
-            issue,
-            run,
-            comments: terminal.comments,
-            interactions: terminal.interactions,
-          },
+      const matcherObservation = {
+        message,
+        issueStatus: issue.status,
+        runStatus: selectedRuns.every(
+          (candidate) =>
+            candidate.status === execution.task.expectedTerminalState.run,
+        )
+          ? execution.task.expectedTerminalState.run
+          : selectedRuns.map((candidate) => candidate.status).join(","),
+        runtimeMode: observedRuntimeMode,
+        environment:
+          typeof observedEnvironment === "string"
+            ? observedEnvironment
+            : undefined,
+        json: {
+          issue,
+          run,
+          comments: terminal.comments,
+          interactions: terminal.interactions,
         },
+      };
+      matcherResults = await Promise.all(
+        execution.task.buildMatchers(nonce, execution).map((matcher) =>
+          evaluateMatcher(matcher, {
+            ...matcherObservation,
+            // Multi-run tasks intentionally retain earlier waiting/revision
+            // replies. Exact completion text belongs to the chronological
+            // final run, while occurrence checks still span every agent
+            // comment so duplicate terminal markers cannot be hidden.
+            message:
+              matcher.kind === "message_exact" ? finalRunMessage : message,
+          }),
+        ),
       );
       const failedMatchers = matcherResults.filter((result) => !result.passed);
       const observedEnvironmentId =
@@ -1568,13 +1583,17 @@ for (const execution of executions) {
       const visibleAgentReplies = page
         .getByTestId("task-chat-thread")
         .getByTestId("task-chat-agent-bubble");
-      await expect(visibleAgentReplies).toHaveCount(1, { timeout: 30_000 });
-      await expect(visibleAgentReplies.first()).toBeVisible();
+      const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const terminalAgentReplies = visibleAgentReplies.filter({
+        hasText: new RegExp(`^\\s*${escapedMarker}\\s*$`),
+      });
+      await expect(terminalAgentReplies).toHaveCount(1, { timeout: 30_000 });
+      await expect(terminalAgentReplies.first()).toBeVisible();
       // A string-valued toHaveText assertion compares the complete rendered
       // text while normalizing ordinary DOM whitespace. This keeps Markdown
       // layout differences harmless without allowing prefixed, suffixed, or
       // substituted provider prose to masquerade as the requested response.
-      await expect(visibleAgentReplies.first()).toHaveText(marker, {
+      await expect(terminalAgentReplies.first()).toHaveText(marker, {
         useInnerText: true,
       });
       await expect(

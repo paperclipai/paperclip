@@ -329,6 +329,10 @@ jobs:
       - name: Build runner TypeScript prerequisites
         run: pnpm --filter @paperclipai/paperclip-eval-kernel build
 
+      - name: Build local JS-backed provider artifacts
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        run: pnpm --filter @paperclipai/paperclip-runner build:typescript
+
       - name: Build native remote provider pack
         if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
         env:

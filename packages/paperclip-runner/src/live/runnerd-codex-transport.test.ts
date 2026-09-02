@@ -85,6 +85,38 @@ it("rejects caller-selected local ACPX artifacts even when they are self-hashed"
   }
 });
 
+it.each(["acpx-runtime-sidecar.js", "opencode-app-server-proxy.js"] as const)(
+  "resolves the %s local provider artifact from verified build-owned output",
+  async (artifact) => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "paperclip-provider-artifact-"),
+    );
+    const sourceAdjacent = join(directory, "src", "cli", artifact);
+    const buildOwned = join(directory, "dist", "cli", artifact);
+    await mkdir(join(directory, "dist", "cli"), { recursive: true });
+    await writeFile(buildOwned, "build-owned provider artifact", {
+      mode: 0o600,
+    });
+    try {
+      expect(
+        runnerdLaunchProfileInternals.resolveBuildOwnedCliArtifact(artifact, [
+          sourceAdjacent,
+          buildOwned,
+        ]),
+      ).toBe(buildOwned);
+      await rm(buildOwned);
+      expect(() =>
+        runnerdLaunchProfileInternals.resolveBuildOwnedCliArtifact(artifact, [
+          sourceAdjacent,
+          buildOwned,
+        ]),
+      ).toThrow(`runner_local_provider_artifact_missing: ${artifact}`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
   expect(() =>
     runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(

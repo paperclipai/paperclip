@@ -482,6 +482,24 @@ def\" status=401`,
         expected: String.raw`authorization=\"***REDACTED***\" status=401`,
       },
       {
+        input: 'authorization="Bearer abc"\ndef" status=401',
+        expected: `authorization="${REDACTED_EVENT_VALUE}" status=401`,
+      },
+      {
+        input: String.raw`authorization=\"Bearer abc\"
+def\" status=401`,
+        expected: String.raw`authorization=\"***REDACTED***\" status=401`,
+      },
+      {
+        input: 'authorization="Bearer abc"\ndef status=401',
+        expected: `authorization="${REDACTED_EVENT_VALUE}"`,
+      },
+      {
+        input: String.raw`authorization=\"Bearer abc\"
+def status=401`,
+        expected: String.raw`authorization=\"***REDACTED***\"`,
+      },
+      {
         input: String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
         expected: String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
       },
@@ -519,6 +537,8 @@ def\" status=401`,
           String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
           String.raw`authorization=\"Bearer first-line
 second-line\" status=401`,
+          String.raw`authorization=\"Bearer first-line\"
+second-line\" status=401`,
         ],
       },
     });
@@ -530,6 +550,7 @@ second-line\" status=401`,
         diagnostics: [
           String.raw`Bearer \"***REDACTED***\"`,
           String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
+          String.raw`authorization=\"***REDACTED***\" status=401`,
           String.raw`authorization=\"***REDACTED***\" status=401`,
         ],
       },

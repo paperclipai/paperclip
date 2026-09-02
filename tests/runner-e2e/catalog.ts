@@ -382,7 +382,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
         `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
         `In a native runner, first call paperclip_finish with that marker as its summary and an objective-satisfied claim for the supplied contract revision. After it succeeds, emit that exact marker once as the complete user-facing final response and do not call another tool.`,
-        `In a legacy runner, post a task comment containing exactly that marker and mark the task Done through the public API.`,
+        `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_OK_${nonce}"}. Do not POST to /comments, and do not include the marker in any other write.`,
         "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
         "Use underscore characters exactly as shown and do not insert backslashes.",
         "Do not create files, ask questions, start additional tasks, or include any credentials.",

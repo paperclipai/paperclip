@@ -389,15 +389,17 @@ function inlineWhitespaceEnd(input: string, start: number): number {
 function quotedValueBoundary(
   input: string,
   index: number,
-): "hard" | "provisional" | "unsafe" {
+): "hard" | "line" | "provisional" | "unsafe" {
   const boundary = input[index];
-  if (boundary === undefined || /[\r\n,;&)}\]]/.test(boundary)) return "hard";
+  if (boundary === undefined || /[,;&)}\]]/.test(boundary)) return "hard";
+  if (boundary === "\r" || boundary === "\n") return "line";
   if (/\s/.test(boundary)) return "provisional";
   return "unsafe";
 }
 
 function isTrustedQuotedValueBoundary(input: string, index: number) {
-  return quotedValueBoundary(input, index) !== "unsafe";
+  const boundary = quotedValueBoundary(input, index);
+  return boundary === "hard" || boundary === "provisional";
 }
 
 function rawQuotedValueEnd(
@@ -421,6 +423,7 @@ function rawQuotedValueEnd(
         provisionalEnd = candidateEnd;
         unsafeAfterProvisional = false;
       } else {
+        if (boundary === "line") provisionalEnd = null;
         unsafeAfterProvisional = true;
       }
     }
@@ -462,6 +465,7 @@ function escapedQuotedValueEnd(
         provisionalEnd = candidateEnd;
         unsafeAfterProvisional = false;
       } else {
+        if (boundary === "line") provisionalEnd = null;
         unsafeAfterProvisional = true;
       }
     }
