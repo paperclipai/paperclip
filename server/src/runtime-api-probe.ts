@@ -11,14 +11,44 @@
  *
  * So probe the resolved URL once, at boot, as soon as the listener is up, and
  * fall back to a candidate origin that does answer. The probe is a routing
- * check, not a health check: any JSON object response means the board API is
- * on the other end, including a `503 unhealthy` one.
+ * check, not a health check: a Paperclip-shaped health response means the board
+ * API is on the other end, including a `503 unhealthy` one.
  */
 
 export const RUNTIME_API_PROBE_PATH = "/api/health";
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 // `application/json`, plus structured suffixes such as `application/problem+json`.
 const JSON_CONTENT_TYPE_RE = /^application\/(?:[\w.+-]+\+)?json\b/i;
+
+const HEALTH_STATUS_VALUES = new Set(["ok", "unhealthy"]);
+/**
+ * Fields that only Paperclip's own `/api/health` serves. Every response variant
+ * of that route carries at least one: `deploymentMode` on the redacted
+ * (unauthenticated) shape, `serverVersion`/`serverInfo` on the full-detail and
+ * `503 unhealthy` shapes.
+ *
+ * `version` and `commit` are deliberately not on this list — plenty of unrelated
+ * services publish those on a health route.
+ */
+const PAPERCLIP_HEALTH_MARKERS = ["deploymentMode", "serverVersion", "serverInfo"] as const;
+
+/**
+ * Whether a parsed body is Paperclip's health response rather than some other
+ * service's.
+ *
+ * "Answers JSON" is not a strong enough identity signal: spawned runs attach
+ * their bearer run token to every request they send to this origin, so an
+ * unrelated `/api/health` returning `{"status":"ok"}` must not be accepted as
+ * the board API. A false negative is the safe direction — a rejected candidate
+ * either loses to a later one or leaves the configured URL in place, unverified
+ * and loudly logged.
+ */
+function isPaperclipHealthBody(parsed: unknown): boolean {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+  const body = parsed as Record<string, unknown>;
+  if (typeof body.status !== "string" || !HEALTH_STATUS_VALUES.has(body.status)) return false;
+  return PAPERCLIP_HEALTH_MARKERS.some((key) => key in body);
+}
 
 export type RuntimeApiProbeResult =
   | { ok: true; status: number }
@@ -87,6 +117,12 @@ export async function probeRuntimeApiUrl(
       return {
         ok: false,
         reason: `answered HTTP ${response.status} with a JSON body that is not an API response object`,
+      };
+    }
+    if (!isPaperclipHealthBody(parsed)) {
+      return {
+        ok: false,
+        reason: `answered HTTP ${response.status} with JSON that is not a Paperclip ${RUNTIME_API_PROBE_PATH} response`,
       };
     }
 
