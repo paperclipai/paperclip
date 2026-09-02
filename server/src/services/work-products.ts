@@ -135,8 +135,8 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
  * the authoritative publication record, so it wins over the stored copy.
  *
  * Read-path only and deliberately non-destructive: a work product whose runtime
- * row is gone keeps its recorded URL and is reported unhealthy rather than
- * silently blanked, so the history of what was published survives.
+ * row is gone keeps its recorded URL and is reported closed rather than silently
+ * blanked, so the history of what was published survives.
  */
 export function reconcileRuntimeServiceWorkProducts(
   products: IssueWorkProduct[],
@@ -153,13 +153,16 @@ export function reconcileRuntimeServiceWorkProducts(
     if (product.type !== "runtime_service" || !product.runtimeServiceId) return product;
     const live = liveById.get(product.runtimeServiceId);
     if (!live) {
-      return product.healthStatus === "unhealthy" ? product : { ...product, healthStatus: "unhealthy" };
+      return product.status === "closed" && product.healthStatus === "unhealthy"
+        ? product
+        : { ...product, status: "closed", healthStatus: "unhealthy" };
     }
     const isServing = live.status === "running" && live.healthStatus === "healthy";
     const url = live.url ?? product.url;
+    const status = live.status === "running" ? product.status : "closed";
     const healthStatus: IssueWorkProduct["healthStatus"] = isServing ? "healthy" : "unhealthy";
-    if (product.url === url && product.healthStatus === healthStatus) return product;
-    return { ...product, url, healthStatus };
+    if (product.url === url && product.status === status && product.healthStatus === healthStatus) return product;
+    return { ...product, url, status, healthStatus };
   });
 }
 
