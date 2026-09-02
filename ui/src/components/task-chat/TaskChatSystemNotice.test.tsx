@@ -172,11 +172,10 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
 
     const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
     expect(details?.textContent).toContain("Workspace");
-    expect(details?.textContent).toContain("git_worktree");
-    expect(details?.textContent).toContain(
-      "fix/workspace-ready-notice",
-    );
+    expect(details?.textContent?.match(/git_worktree/g)).toHaveLength(1);
+    expect(details?.textContent?.match(/fix\/workspace-ready-notice/g)).toHaveLength(1);
     expect(details?.textContent).toContain("/worktrees/workspace-ready-notice");
+    expect(details?.querySelector(".paperclip-markdown")).toBeNull();
   });
 
   it("shows Try again while folded and invokes it without expanding the notice", async () => {
