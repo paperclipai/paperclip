@@ -238,7 +238,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
         {href ? (
-          <a href={href} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
+          <a href={href} aria-label={compact ? `${action}: ${workProduct.title}` : undefined} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
             {compact ? null : action}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : null}
