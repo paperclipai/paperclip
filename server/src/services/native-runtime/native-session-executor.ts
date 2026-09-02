@@ -247,11 +247,13 @@ async function measureNativeRunnerSpan<T>(
  * Provider bootstrap needs a small amount of host process context even when
  * the agent has no configured env. In particular, an empty environment makes
  * a bare `codex` command unresolvable. Agent-configured values remain
- * authoritative and may intentionally override the host defaults.
+ * authoritative and may intentionally override the host defaults, while the
+ * server-selected workspace remains an immutable containment boundary.
  */
 export function buildNativeProviderEnvironment(
   configured: NodeJS.ProcessEnv,
   host: NodeJS.ProcessEnv = process.env,
+  assignedWorkspaceCwd?: string,
 ): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(
     NATIVE_PROVIDER_HOST_ENV_KEYS.flatMap((key) => {
@@ -261,7 +263,11 @@ export function buildNativeProviderEnvironment(
         : [];
     }),
   );
-  return { ...inherited, ...configured };
+  const environment = { ...inherited, ...configured };
+  if (assignedWorkspaceCwd?.trim()) {
+    environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
+  }
+  return environment;
 }
 
 type PlanSynchronization = {
@@ -1081,7 +1087,7 @@ function readRunnerdDurableIdentity(
   root: string,
 ): Record<string, unknown> | null {
   if (!isSafeNativeStateDirectory(root)) return null;
-  const statePath = resolve(root, "control-plane", "mock-core-state.json");
+  const statePath = resolve(root, "control-plane", "control-plane-state.json");
   if (!existsSync(statePath)) return null;
   try {
     return record(
@@ -1107,7 +1113,19 @@ function durableIdentityMatchesExecution(
   return Boolean(
     identity &&
       identity.runId === execution.binding.runId &&
+      durableIdentityMatchesSession(identity, execution),
+  );
+}
+
+function durableIdentityMatchesSession(
+  identity: Record<string, unknown> | null,
+  execution: NativeExecutionInput,
+): identity is RunnerdDurableIdentity {
+  return Boolean(
+    identity &&
       identity.normalizedSessionId === nativeSessionKey(execution) &&
+      typeof identity.runId === "string" &&
+      identity.runId.length > 0 &&
       typeof identity.runnerInstanceId === "string" &&
       identity.runnerInstanceId.length > 0 &&
       typeof identity.environmentLeaseId === "string" &&
@@ -1143,7 +1161,11 @@ function loadRunnerdDurableBinding(execution: NativeExecutionInput): {
   environmentLeaseId: string;
 } | null {
   const identity = readRunnerdDurableIdentity(runnerdStateRoot(execution));
-  if (!durableIdentityMatchesExecution(identity, execution)) return null;
+  // The run id is intentionally different during a continuation. Reuse only
+  // the verified runner/lease binding from the same company-scoped durable
+  // session root; rotateLocalAuthorityEpoch then requires that exact binding
+  // before it can archive the prior per-run authority.
+  if (!durableIdentityMatchesSession(identity, execution)) return null;
   return {
     runnerInstanceId: identity.runnerInstanceId,
     environmentLeaseId: identity.environmentLeaseId,
@@ -5965,8 +5987,12 @@ export async function createRunnerdBackend(input: {
         ...(input.runnerEnvironment ?? process.env),
         HOME: remoteTarget!.remoteCwd,
         CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
+        PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
       }
-    : (input.runnerEnvironment ?? process.env);
+    : {
+        ...(input.runnerEnvironment ?? process.env),
+        PAPERCLIP_WORKSPACE_CWD: input.execution.workspace.cwd,
+      };
   const archiveContinuityState = async () => {
     const archiveToken = `${Date.now()}-${randomUUID()}`;
     const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
@@ -6002,6 +6028,7 @@ export async function createRunnerdBackend(input: {
   };
   const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId: input.runnerInstanceId,
+    environment: effectiveRunnerEnvironment,
     onSpawn: input.onSpawn,
     dynamicTools,
     dynamicToolHandler: (call) => authorityRouter.execute(call),
@@ -6143,6 +6170,13 @@ export async function createRunnerdBackend(input: {
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,
         resumeDynamicTools: dynamicTools,
+        resumeCompletionContract: {
+          revision: input.execution.completionContract.contract.revision,
+          criterionIds:
+            input.execution.completionContract.contract.criteria.map(
+              (criterion) => criterion.id,
+            ),
+        },
         providerRecoveryPolicy:
           recoveryContext?.providerRecoveryPolicy ??
           (input.execution.provider.kind === "acpx" &&

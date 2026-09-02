@@ -445,6 +445,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
+    let require_codex_home_auth = args
+        .iter()
+        .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
@@ -575,6 +578,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let question_before_failed_turn = args
         .iter()
         .any(|value| value == "--question-before-failed-turn");
+    let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
     let pre_response_notification = args
         .iter()
@@ -590,6 +594,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 skill_path.display()
             )
             .into());
+        }
+    }
+    if require_codex_home_auth {
+        let auth_path = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("auth.json"))
+            .ok_or("CODEX_HOME is required for the selected auth fixture")?;
+        if !auth_path.is_file() {
+            return Err(
+                format!("Codex auth was not materialized at {}", auth_path.display()).into(),
+            );
         }
     }
     let mut state = load_state(&state_path);
@@ -897,6 +912,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
+                } else if fail_turn_immediately {
+                    send(json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": state.thread_id,
+                            "turn": {
+                                "id": provider_turn_id,
+                                "status": "failed",
+                                "error": {"message": "immediate provider failure"}
+                            }
+                        }
+                    }))?;
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
                 } else if question_before_failed_turn {
                     send_question(&state)?;
                     send(json!({

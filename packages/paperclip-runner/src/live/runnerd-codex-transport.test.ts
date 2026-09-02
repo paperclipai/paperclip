@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +13,8 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
+import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
 
 import {
@@ -90,6 +92,9 @@ it("adds Codex-style turn updates only when collaboration instructions are enabl
   expect(enabled).toContain(base);
   expect(enabled).toContain("Before the first tool call in a turn");
   expect(enabled).toContain("Do not call it merely to create a completion comment");
+  expect(enabled).toContain("semantic completion tool exactly once before");
+  expect(enabled).toContain("After it succeeds");
+  expect(enabled).not.toContain("Before semantic finalization");
   expect(withCodexCollaborationRuntimeInstructions(base, false)).toBe(base);
 });
 
@@ -481,6 +486,8 @@ it("rehydrates a canonical agent item for the strict Codex facade", () => {
         itemId: "message-1",
         kind: "agentMessage",
         status: "completed",
+        channel: "final",
+        providerPhase: "final_answer",
         text: "Durable final reply",
       },
       "opened-thread-1",
@@ -490,6 +497,8 @@ it("rehydrates a canonical agent item for the strict Codex facade", () => {
     itemId: "message-1",
     kind: "agentMessage",
     status: "completed",
+    channel: "final",
+    providerPhase: "final_answer",
     text: "Durable final reply",
     threadId: "opened-thread-1",
     turnId: "provider-turn-1",
@@ -498,7 +507,30 @@ it("rehydrates a canonical agent item for the strict Codex facade", () => {
       type: "agentMessage",
       status: "completed",
       text: "Durable final reply",
+      phase: "final_answer",
+      channel: "final",
     },
+  });
+});
+
+it.each([
+  ["progress", "commentary"],
+  ["final", "final_answer"],
+] as const)("rehydrates the %s assistant channel when provider phase is absent", (channel, phase) => {
+  expect(
+    rehydrateRunnerdItemNotification(
+      {
+        itemId: `message-${channel}`,
+        kind: "agentMessage",
+        status: "completed",
+        channel,
+        text: `${channel} reply`,
+      },
+      "opened-thread-1",
+      "provider-turn-1",
+    ),
+  ).toMatchObject({
+    item: { channel, phase },
   });
 });
 
@@ -517,6 +549,29 @@ it("binds a canonical runnerd terminal to the active provider turn", () => {
     threadId: "opened-thread-1",
     turnId: "provider-turn-1",
     turn: { id: "provider-turn-1", status: "completed", items: [] },
+  });
+});
+
+it("rehydrates a canonical runnerd terminal error into the Codex turn", () => {
+  expect(
+    rehydrateRunnerdTurnNotification(
+      {
+        providerTurnId: "provider-turn-1",
+        status: "failed",
+        error: { code: "provider_failed", message: "provider rejected the turn" },
+      },
+      "opened-thread-1",
+      "provider-turn-1",
+      "turn/completed",
+    ),
+  ).toMatchObject({
+    threadId: "opened-thread-1",
+    turnId: "provider-turn-1",
+    turn: {
+      id: "provider-turn-1",
+      status: "failed",
+      error: { code: "provider_failed", message: "provider rejected the turn" },
+    },
   });
 });
 
@@ -808,6 +863,71 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     runnerExited: true,
     runnerExitCode: 0,
   });
+}, 30_000);
+
+it("binds an immediately failed durable turn before exposing its terminal", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-fast-terminal-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--fail-turn-immediately"),
+    stateDirectory,
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: createCodexTaskEnvelope({
+      objective: "Exercise an immediate provider failure.",
+    }),
+    environment: {
+      PATH: process.env.PATH,
+      HOME: join(tmpdir(), "runnerd-fast-terminal-host-home"),
+      PAPERCLIP_WORKSPACE_CWD: stateDirectory,
+    },
+    approvalPolicy: "never",
+    transportFactory: () => bundle.transport,
+  });
+  const session = await driver.openSession({
+    runId: "run-fast-terminal",
+    normalizedSessionId: "session-fast-terminal",
+    workingDirectory: stateDirectory,
+  });
+  try {
+    const accepted = await session.startTurn({
+      message: { role: "user", text: "Fail this test turn." },
+    });
+    expect(accepted.turnId).toBe("provider-turn-1");
+    const events = [];
+    for await (const event of session.events()) {
+      events.push(event);
+      if (event.eventType === "turn.failed") break;
+    }
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).toEqual(
+      expect.arrayContaining(["turn.started", "turn.accepted", "turn.failed"]),
+    );
+    expect(eventTypes.indexOf("turn.started")).toBeLessThan(
+      eventTypes.indexOf("turn.accepted"),
+    );
+    expect(eventTypes.indexOf("turn.accepted")).toBeLessThan(
+      eventTypes.indexOf("turn.failed"),
+    );
+    expect(
+      events.find((event) => event.eventType === "session.failed"),
+    ).toBeUndefined();
+    expect(await session.snapshot()).toMatchObject({
+      activeTurnId: null,
+      terminalTurns: [
+        { turnId: "provider-turn-1", fingerprint: expect.any(String) },
+      ],
+    });
+  } finally {
+    await session.close();
+    await rm(stateDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 25,
+    });
+  }
 }, 30_000);
 
 it("bridges a runnerd-native question into the server request handler and resolves it canonically", async () => {
@@ -1212,6 +1332,67 @@ it("does not expose cross-run attachment before PRP authority can rotate atomica
   }
 }, 30_000);
 
+it.each([
+  {
+    binding: "runner instance",
+    priorRunnerInstanceId: "runner-other",
+    priorEnvironmentLeaseId: "lease-current",
+  },
+  {
+    binding: "environment lease",
+    priorRunnerInstanceId: "runner-current",
+    priorEnvironmentLeaseId: "lease-other",
+  },
+])("quarantines a mismatched $binding instead of reusing its provider session", async ({
+  priorRunnerInstanceId,
+  priorEnvironmentLeaseId,
+}) => {
+  const container = await mkdtemp(join(tmpdir(), "runnerd-mismatched-authority-"));
+  const stateDirectory = join(container, "state");
+  await mkdir(join(stateDirectory, "control-plane"), { recursive: true });
+  await writeFile(
+    join(stateDirectory, "control-plane", "control-plane-state.json"),
+    JSON.stringify({
+      identity: {
+        runnerInstanceId: priorRunnerInstanceId,
+        environmentLeaseId: priorEnvironmentLeaseId,
+        runId: "run-old",
+        normalizedSessionId: "session-current",
+        turnId: "turn-old",
+        itemId: "item-old",
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    stateDirectory,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    prpIdentity: {
+      runnerInstanceId: "runner-current",
+      environmentLeaseId: "lease-current",
+      runId: "run-new",
+      normalizedSessionId: "session-current",
+      turnId: "turn-new",
+      itemId: "item-new",
+    },
+  });
+  try {
+    await expect(bundle.transport.request("thread/read", {})).rejects.toThrow(
+      "native_runner_state_quarantined",
+    );
+    expect(await readdir(stateDirectory)).toEqual([]);
+    expect(
+      (await readdir(container)).some((entry) =>
+        entry.startsWith("state.quarantine-"),
+      ),
+    ).toBe(true);
+  } finally {
+    await bundle.transport.close();
+    await rm(container, { recursive: true, force: true });
+  }
+});
+
 it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const skillRoot = join(stateDirectory, "runtime-skill");
@@ -1275,6 +1456,47 @@ it("cold-restores a suspended provider session under its durable run binding", a
     await first.transport.close();
   }
 
+  const secondIdentity = {
+    ...baseIdentity,
+    runId: "run-cold-second",
+    turnId: "turn-cold-second",
+    itemId: "item-cold-second",
+  };
+  const rotated = createCapabilityRunnerdCodexTransport({
+    ...options,
+    resumeDynamicTools: dynamicTools,
+    resumeCompletionContract: {
+      revision: "contract-second",
+      criterionIds: ["criterion-second"],
+    },
+    prpIdentity: secondIdentity,
+  });
+  rotated.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    const read = await rotated.transport.request("thread/read", {});
+    expect(read.thread).toMatchObject({
+      id: "codex-thread-1",
+      cwd: tmpdir(),
+    });
+    await rotated.transport.request("turn/start", {
+      input: [{ type: "text", text: "second authority epoch" }],
+    });
+    for await (const event of rotated.transport.notifications()) {
+      if (event.method === "paperclip/runResult") break;
+    }
+    expect(rotated.evidence().diagnostics).toContain(
+      "runnerd attached the durable provider session to a fresh PRP run authority",
+    );
+    expect(
+      await stat(join(stateDirectory, "authority-epochs")),
+    ).toBeDefined();
+  } finally {
+    await rotated.transport.close();
+  }
+
   // A remote process owner keeps runner-state outside the controller's local
   // session root. Resume must defer to its explicit state reader instead of
   // rejecting recovery before the remote checkpoint can be made available.
@@ -1298,7 +1520,12 @@ it("cold-restores a suspended provider session under its durable run binding", a
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: { ...baseIdentity, runId: "run-cold-other" },
+    prpIdentity: {
+      ...secondIdentity,
+      runId: "run-cold-other",
+      turnId: "turn-cold-other",
+      itemId: "item-cold-other",
+    },
   });
   await expect(
     mismatched.transport.request("thread/read", {}),
@@ -1310,7 +1537,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: baseIdentity,
+    prpIdentity: secondIdentity,
   });
   restored.transport.setServerRequestHandler(async () => ({
     success: true,
@@ -1318,7 +1545,10 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }));
   try {
     const read = await restored.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject({ id: "codex-thread-1" });
+    expect(read.thread).toMatchObject({
+      id: "codex-thread-1",
+      cwd: tmpdir(),
+    });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
     const providerState = JSON.parse(

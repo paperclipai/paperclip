@@ -57,6 +57,42 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
     }
 }
 
+#[test]
+fn provider_receives_the_isolated_codex_auth_home() {
+    let directory = temporary_directory("isolated-auth-home");
+    fs::write(directory.join("auth.json"), r#"{"auth_mode":"apikey"}"#)
+        .expect("write isolated Codex auth fixture");
+
+    // Run this assertion in a dedicated subprocess because environment
+    // mutation is process-global and Rust executes tests concurrently.
+    let test_binary = std::env::current_exe().expect("resolve current test binary");
+    let status = std::process::Command::new(test_binary)
+        .arg("provider_receives_isolated_codex_auth_home_subprocess")
+        .arg("--exact")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env("PAPERCLIP_CODEX_AUTH_TEST_HOME", &directory)
+        .env("HOME", &directory)
+        .env("CODEX_HOME", &directory)
+        .status()
+        .expect("run isolated auth-home assertion");
+    assert!(status.success());
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+#[ignore = "subprocess helper for provider_receives_the_isolated_codex_auth_home"]
+fn provider_receives_isolated_codex_auth_home_subprocess() {
+    let Some(directory) = std::env::var_os("PAPERCLIP_CODEX_AUTH_TEST_HOME").map(PathBuf::from)
+    else {
+        return;
+    };
+    let config = provider_config(&directory, &["--require-codex-home-auth"]);
+    let mut provider = CodexProvider::start(&config, None)
+        .expect("Codex provider should read auth from the isolated CODEX_HOME");
+    provider.shutdown().expect("stop fake Codex provider");
+}
+
 fn task_context_tool() -> AuthorizedTool {
     AuthorizedTool {
         operation_id: "get_task_context".to_owned(),
@@ -1734,6 +1770,7 @@ fn durable_ambiguous_start_recovers_a_distinct_active_replacement_after_process_
         .expect("reconcile active replacement turn");
     assert_eq!(snapshot.result["status"], "turn_active");
     assert_eq!(snapshot.result["activeProviderTurnId"], "provider-turn-2");
+    assert_eq!(snapshot.result["cwd"], config.cwd);
     let persisted_recovered: Value = serde_json::from_slice(
         &fs::read(directory.join("codex-provider-state.json"))
             .expect("read recovered provider state"),
@@ -2990,6 +3027,77 @@ fn durable_backend_rejects_tool_catalog_drift_during_attach() {
         .expect_err("attach must reject tool catalog drift");
     assert!(error.to_string().contains("tool contract changed"));
 
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn durable_backend_attaches_after_a_settled_restore_notice() {
+    let directory = temporary_directory("durable-settled-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids"]);
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+            }),
+        ))
+        .expect("prepare the durable provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the durable provider session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Settle before rotating run authority."}),
+        ))
+        .expect("start the provider turn");
+
+    let mut saw_terminal = false;
+    for _ in 0..32 {
+        let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
+        saw_terminal |= events
+            .iter()
+            .any(|event| event.event_type == "run.terminal");
+        if saw_terminal && events.is_empty() {
+            break;
+        }
+    }
+    assert!(saw_terminal, "the first run must settle before attachment");
+    first.shutdown().expect("stop the first provider process");
+    drop(first);
+
+    let mut rotated = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let attached = rotated
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+            }),
+        ))
+        .expect("discard only the restore notice and attach the settled session");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert!(
+        rotated
+            .poll_events()
+            .expect("inspect the provider queue after attachment")
+            .is_empty(),
+        "attachment must not replay the prior recovery notice"
+    );
+
+    rotated.shutdown().expect("stop the rotated provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

@@ -46,6 +46,7 @@ import {
   capturePaperclipWorkspace,
   diffPaperclipWorkspace,
   type PaperclipWorkspaceDiff,
+  type PaperclipWorkspaceSnapshot,
 } from "./workspace-diff.js";
 import {
   discoverPaperclipWorkspaceFileReferences,
@@ -426,6 +427,30 @@ type CapabilityLiveTurnEventInput = CapabilityLiveTurnEvent extends infer Varian
 export const CAPABILITY_LIVE_TURN_EVENT_LIMIT = 4_000;
 /** Separate bound so provider usage cannot be starved by delta/activity traffic. */
 const CAPABILITY_LIVE_USAGE_EVENT_LIMIT = 512;
+/** Bounded preflight prevents a large workspace from blocking provider admission. */
+const CAPABILITY_WORKSPACE_BASELINE_DEADLINE_MS = 100;
+const CAPABILITY_ADMISSION_SHUTDOWN_DEADLINE_MS = 1_000;
+
+async function captureWorkspaceBaselineBeforeAdmission(
+  workingDirectory: string,
+): Promise<PaperclipWorkspaceSnapshot | null> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      capturePaperclipWorkspace(workingDirectory, { signal: controller.signal }),
+      new Promise<null>((resolveTimeout) => {
+        timeout = setTimeout(() => {
+          resolveTimeout(null);
+          controller.abort(new Error("workspace baseline admission deadline exceeded"));
+        }, CAPABILITY_WORKSPACE_BASELINE_DEADLINE_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
+    controller.abort();
+  }
+}
 
 export interface CapabilityInteractionResolution {
   interactionId: string;
@@ -479,6 +504,13 @@ interface TurnWaiter {
    * projection sees the same entry id from the first delta to the last.
    */
   draftId: string | null;
+}
+
+interface PendingTurnAdmission {
+  transport: CodexAppServerTransport;
+  cancellation: { reason: string; resumeLifecycle: boolean } | null;
+  settled: Promise<void>;
+  settle: () => void;
 }
 
 interface PendingTurnCompletion {
@@ -1124,6 +1156,7 @@ export class CapabilityLiveSession {
   #revision = 0;
   #updatedAt: string;
   #entryCounter = 0;
+  #pendingTurnAdmission: PendingTurnAdmission | null = null;
   #turnWaiter: TurnWaiter | null = null;
   #pump: Promise<void> | null = null;
   #persistChain: Promise<void> = Promise.resolve();
@@ -1398,7 +1431,12 @@ export class CapabilityLiveSession {
     if (attempt === undefined || attempt.status !== "running") {
       throw new Error("capability_live_attempt_not_running");
     }
-    if (status === "succeeded" && this.#activeTurnId !== null) {
+    if (
+      status === "succeeded" &&
+      (this.#activeTurnId !== null ||
+        this.#turnWaiter !== null ||
+        this.#pendingTurnAdmission !== null)
+    ) {
       throw new Error("capability_live_attempt_active_turn");
     }
     attempt.status = status;
@@ -1419,46 +1457,94 @@ export class CapabilityLiveSession {
     if (this.#transport === null || this.#status === "closed" || this.#status === "failed") {
       throw new Error("Capability live session is not connected");
     }
-    if (this.#activeTurnId !== null || this.#turnWaiter !== null) {
+    if (
+      this.#activeTurnId !== null ||
+      this.#turnWaiter !== null ||
+      this.#pendingTurnAdmission !== null
+    ) {
       throw new Error("Capability live session already has an active turn");
     }
+    let settleAdmission!: () => void;
+    const admission: PendingTurnAdmission = {
+      transport: this.#transport,
+      cancellation: null,
+      settled: new Promise<void>((resolveSettled) => {
+        settleAdmission = resolveSettled;
+      }),
+      settle: () => settleAdmission(),
+    };
+    this.#pendingTurnAdmission = admission;
+    this.#status = "running";
+    this.#clearIdleTimer();
+    this.#turnEventCount = 0;
+    this.#turnUsageEventCount = 0;
+    // Publish the user entry before the first admission await. The UI must not
+    // lose the submitted message merely because bounded preflight is slow.
+    const userEntryId = this.#appendTranscript("user", value, null);
+    const workspaceBeforePromise = captureWorkspaceBaselineBeforeAdmission(
+      this.#config.workingDirectory,
+    );
+    let admissionFailure: unknown = null;
     if (this.#terminalTurns.length > 0) {
-      if (this.#transport.attachRun !== undefined) {
+      if (admission.transport.attachRun !== undefined) {
         const bindingId = randomUUID().replaceAll("-", "");
         const binding = {
           runId: `run_lab_${bindingId}`,
           turnId: `turn_lab_${bindingId}`,
           itemId: `item_lab_${bindingId}`,
         };
-        await this.#transport.attachRun(binding);
-        this.#providerRunBinding = binding;
-        await this.#persist();
+        try {
+          await admission.transport.attachRun(binding);
+          this.#providerRunBinding = binding;
+          await this.#persist();
+        } catch (error) {
+          admissionFailure = error;
+        }
       }
       // A transport without cross-run attachment keeps subsequent provider
       // turns inside this capability session's existing governed run. This is
       // distinct from reusing the provider under a different PRP authority.
     }
-    this.#status = "running";
-    this.#clearIdleTimer();
-    this.#turnEventCount = 0;
-    this.#turnUsageEventCount = 0;
-    // Start the baseline before admitting provider work, but do not make turn
-    // interruption wait for a potentially large workspace walk. The provider
-    // turn id is bound first; the terminal path waits for this baseline before
-    // comparing the post-turn workspace.
-    const workspaceBeforePromise = capturePaperclipWorkspace(this.#config.workingDirectory);
-    // Held by id, not by position: a provider can start streaming before
-    // `turn/start` resolves, in which case the assistant draft is already the
-    // last transcript entry and the user message would never learn its turn.
-    const userEntryId = this.#appendTranscript("user", value, null);
+    let workspaceBefore: PaperclipWorkspaceSnapshot | null = null;
+    try {
+      workspaceBefore = await workspaceBeforePromise;
+    } catch (error) {
+      admissionFailure ??= error;
+    }
+    if (this.#pendingTurnAdmission !== admission) {
+      throw new Error("Capability live turn admission was abandoned during teardown");
+    }
+    if (admissionFailure !== null) {
+      return this.#failTurnAdmission(admission, userEntryId, admissionFailure);
+    }
+    if (admission.cancellation !== null) {
+      return this.#completeInterruptedAdmission(admission, userEntryId);
+    }
+    if (workspaceBefore === null) {
+      this.#appendEvidence("diagnostic", null, {
+        code: "workspace_baseline_deadline_exceeded",
+        message:
+          "The runner could not establish an exact pre-turn workspace baseline inside its bounded admission window; workspace diff projection is unavailable for this turn.",
+      });
+    }
+    if (
+      this.#pendingTurnAdmission !== admission ||
+      this.#transport !== admission.transport ||
+      this.#status !== "running"
+    ) {
+      return this.#failTurnAdmission(
+        admission,
+        userEntryId,
+        new Error("Capability live session changed during turn admission"),
+      );
+    }
     let response: Record<string, unknown>;
+    // Arm the provider timeout only after bounded preflight succeeds. The
+    // admission token excludes concurrent sends before this point.
     const terminal = this.#armTurnWaiter();
-    // Workspace capture can outlive a deliberately tiny test timeout. Attach
-    // a rejection observer immediately; the authoritative await below still
-    // propagates the same error to the caller.
     void terminal.catch(() => undefined);
     try {
-      response = await this.#transport.request("turn/start", {
+      response = await admission.transport.request("turn/start", {
         threadId: this.#providerThreadId,
         cwd: this.#config.workingDirectory,
         permissions: CODEX_PERMISSION_PROFILE,
@@ -1466,29 +1552,69 @@ export class CapabilityLiveSession {
         input: [userInput(value)],
       });
     } catch (error) {
+      if (this.#pendingTurnAdmission !== admission) {
+        await terminal.catch(() => undefined);
+        throw error;
+      }
+      if (admission.cancellation !== null) {
+        return this.#completeInterruptedAdmission(admission, userEntryId);
+      }
       this.#rejectTurn(error);
+      this.#releaseTurnAdmission(admission);
       await terminal.catch(() => undefined);
       throw error;
+    }
+    if (this.#pendingTurnAdmission !== admission) {
+      await terminal.catch(() => undefined);
+      throw new Error("Capability live turn start completed after admission teardown");
     }
     const turnId = text(record(response.turn).id);
     if (turnId.length === 0) {
       this.#rejectTurn(new Error("Codex turn response omitted turn.id"));
+      this.#releaseTurnAdmission(admission);
       throw new Error("Codex turn response omitted turn.id");
     }
     if (this.#activeTurnId !== null && this.#activeTurnId !== turnId) {
       this.#rejectTurn(new Error("Codex turn identity changed during start"));
+      this.#releaseTurnAdmission(admission);
       throw new Error("Codex turn identity changed during start");
     }
     if (this.#turnWaiter !== null) this.#activeTurnId = turnId;
-    const sent = this.#transcript.find((entry) => entry.id === userEntryId);
-    if (sent !== undefined && sent.turnId === null) sent.turnId = turnId;
+    this.#bindAdmissionUser(userEntryId, turnId);
     const draftId = (this.#turnWaiter as TurnWaiter | null)?.draftId ?? null;
     const draft =
       draftId === null ? undefined : this.#transcript.find((entry) => entry.id === draftId);
     if (draft !== undefined && draft.turnId === null) draft.turnId = turnId;
-    const workspaceBefore = await workspaceBeforePromise;
-    await this.#persist();
-    const result = await terminal;
+    try {
+      await this.#persist();
+    } catch (error) {
+      this.#rejectTurn(error);
+      this.#releaseTurnAdmission(admission);
+      await terminal.catch(() => undefined);
+      throw error;
+    }
+    let result: Omit<CapabilityLiveTurnResult, "snapshot">;
+    if (admission.cancellation !== null && this.#activeTurnId !== null) {
+      try {
+        await admission.transport.request("turn/interrupt", {
+          threadId: this.#providerThreadId,
+          turnId,
+        });
+        // A lifecycle operation waiting on admission may disconnect only
+        // after the provider terminal has crossed the durable notification
+        // path. Otherwise recovery can inherit an unacknowledged old turn.
+        result = await terminal;
+      } catch (error) {
+        this.#rejectTurn(error);
+        await terminal.catch(() => undefined);
+        throw error;
+      } finally {
+        this.#releaseTurnAdmission(admission);
+      }
+    } else {
+      this.#releaseTurnAdmission(admission);
+      result = await terminal;
+    }
     const workspaceFileReferences = await discoverPaperclipWorkspaceFileReferences(
       this.#config.workingDirectory,
       result.assistantText,
@@ -1504,12 +1630,13 @@ export class CapabilityLiveSession {
         },
       });
     }
-    const workspaceAfter = await capturePaperclipWorkspace(this.#config.workingDirectory);
-    const workspaceDiff = diffPaperclipWorkspace(
-      workspaceBefore,
-      workspaceAfter,
-      `${this.id}:${result.turnId}:workspace`,
-    );
+    const workspaceDiff = workspaceBefore === null
+      ? null
+      : diffPaperclipWorkspace(
+          workspaceBefore,
+          await capturePaperclipWorkspace(this.#config.workingDirectory),
+          `${this.id}:${result.turnId}:workspace`,
+        );
     if (workspaceDiff !== null) {
       this.#workspaceDiffs.push({
         turnId: result.turnId,
@@ -1670,7 +1797,11 @@ export class CapabilityLiveSession {
     if (this.#status === "closed" || this.#status === "failed") {
       throw new Error("Capability live session is not connected");
     }
-    if (this.#activeTurnId !== null || this.#turnWaiter !== null) {
+    if (
+      this.#activeTurnId !== null ||
+      this.#turnWaiter !== null ||
+      this.#pendingTurnAdmission !== null
+    ) {
       throw new Error("Capability live session already has an active turn");
     }
     const turnId = `devtools-${randomUUID()}`;
@@ -1708,6 +1839,148 @@ export class CapabilityLiveSession {
     this.#recordTerminalFact(turnId, "completed");
     await this.#persist();
     return { turnId, result, snapshot: this.snapshot() };
+  }
+
+  #releaseTurnAdmission(admission: PendingTurnAdmission): void {
+    if (this.#pendingTurnAdmission === admission) this.#pendingTurnAdmission = null;
+    admission.settle();
+  }
+
+  #bindAdmissionUser(userEntryId: string, turnId: string): void {
+    const sent = this.#transcript.find((entry) => entry.id === userEntryId);
+    if (sent !== undefined && sent.turnId === null) sent.turnId = turnId;
+  }
+
+  async #failTurnAdmission(
+    admission: PendingTurnAdmission,
+    userEntryId: string,
+    error: unknown,
+  ): Promise<never> {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const turnId = `turn_admission_${randomUUID().replaceAll("-", "")}`;
+    this.#bindAdmissionUser(userEntryId, turnId);
+    this.#recordTerminalFact(turnId, "failed");
+    this.#status = "failed";
+    this.#appendEvidence("diagnostic", turnId, {
+      code: "turn_admission_failed",
+      message: redactCodexDiagnostic(failure.message),
+    });
+    try {
+      // A failure must be durable before observers are told the turn ended.
+      await this.#persist();
+    } finally {
+      this.#releaseTurnAdmission(admission);
+    }
+    this.#emit({
+      turnId,
+      kind: "error",
+      message: redactCodexDiagnostic(failure.message),
+    });
+    throw failure;
+  }
+
+  async #completeInterruptedAdmission(
+    admission: PendingTurnAdmission,
+    userEntryId: string,
+  ): Promise<CapabilityLiveTurnResult> {
+    const cancellation = admission.cancellation;
+    if (cancellation === null) throw new Error("turn admission was not interrupted");
+    const turnId = this.#activeTurnId
+      ?? `turn_admission_${randomUUID().replaceAll("-", "")}`;
+    this.#bindAdmissionUser(userEntryId, turnId);
+    const completion = this.#turnWaiter === null
+      ? {
+          waiter: null,
+          result: { turnId, status: "interrupted" as const, assistantText: "" },
+        }
+      : this.#completeTurn(turnId, "interrupted");
+    if (completion.waiter === null) this.#recordTerminalFact(turnId, "interrupted");
+    const resumeLifecycle =
+      cancellation.resumeLifecycle &&
+      this.#transport === admission.transport &&
+      this.#status === "stopping";
+    if (resumeLifecycle) {
+      this.#status = "idle";
+    } else if (this.#status !== "failed") {
+      this.#status = cancellation.resumeLifecycle ? "stopping" : "suspending";
+    }
+    try {
+      // Mirror the provider terminal path: persist first, publish second.
+      await this.#persist();
+    } catch (error) {
+      completion.waiter?.reject(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    } finally {
+      this.#releaseTurnAdmission(admission);
+    }
+    this.#emit({
+      turnId,
+      kind: "terminal",
+      status: "interrupted",
+      assistantText: completion.result.assistantText,
+    });
+    completion.waiter?.resolve(completion.result);
+    if (resumeLifecycle) await this.#afterTurnSettled();
+    return {
+      ...completion.result,
+      snapshot: this.snapshot(),
+    };
+  }
+
+  async #boundAdmissionSettlementAfterClose(
+    admission: PendingTurnAdmission,
+    reason: string,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      admission.settled.then(() => true),
+      new Promise<false>((resolveTimeout) => {
+        timeout = setTimeout(
+          () => resolveTimeout(false),
+          CAPABILITY_ADMISSION_SHUTDOWN_DEADLINE_MS,
+        );
+      }),
+    ]).finally(() => {
+      if (timeout !== null) clearTimeout(timeout);
+    });
+    if (settled) return;
+
+    const error = new Error(
+      `Capability live turn admission did not stop after transport close: ${reason}`,
+    );
+    const waiter = this.#turnWaiter;
+    if (waiter !== null) clearTimeout(waiter.timer);
+    this.#turnWaiter = null;
+    this.#activeTurnId = null;
+    this.#status = "failed";
+    this.#appendEvidence("diagnostic", null, {
+      code: "turn_admission_shutdown_timeout",
+      message: redactCodexDiagnostic(error.message),
+    });
+    let persistenceError: unknown = null;
+    try {
+      await this.#persist();
+    } catch (error) {
+      persistenceError = error;
+    } finally {
+      this.#releaseTurnAdmission(admission);
+    }
+    if (persistenceError !== null) {
+      waiter?.reject(
+        persistenceError instanceof Error
+          ? persistenceError
+          : new Error(String(persistenceError)),
+      );
+      throw persistenceError;
+    }
+    this.#emit({
+      turnId: null,
+      kind: "error",
+      message: redactCodexDiagnostic(error.message),
+    });
+    waiter?.reject(error);
   }
 
   #armTurnWaiter(): Promise<Omit<CapabilityLiveTurnResult, "snapshot">> {
@@ -1751,7 +2024,16 @@ export class CapabilityLiveSession {
   }
 
   async interrupt(reason = "operator interrupted turn"): Promise<CapabilityLiveSessionSnapshot> {
-    if (this.#transport === null || this.#activeTurnId === null) return this.snapshot();
+    if (this.#transport === null) return this.snapshot();
+    if (this.#activeTurnId === null && this.#pendingTurnAdmission !== null) {
+      this.#pendingTurnAdmission.cancellation = { reason, resumeLifecycle: true };
+      this.#status = "stopping";
+      this.#appendEvidence("session", null, { action: "stop_requested", reason });
+      this.#emit({ turnId: null, kind: "activity", reason: "stop_requested" });
+      await this.#persist();
+      return this.snapshot();
+    }
+    if (this.#activeTurnId === null) return this.snapshot();
     this.#status = "stopping";
     const turnId = this.#activeTurnId;
     this.#appendEvidence("session", turnId, { action: "stop_requested", reason });
@@ -1808,7 +2090,11 @@ export class CapabilityLiveSession {
         "remote session deletion requires a connected remote provider session",
       );
     }
-    if (this.#activeTurnId !== null) {
+    if (
+      this.#activeTurnId !== null ||
+      this.#turnWaiter !== null ||
+      this.#pendingTurnAdmission !== null
+    ) {
       throw new Error(
         "interrupt the active turn before deleting the remote session",
       );
@@ -1862,7 +2148,11 @@ export class CapabilityLiveSession {
   }
 
   async reconnect(): Promise<void> {
-    if (this.#activeTurnId !== null) {
+    if (
+      this.#activeTurnId !== null ||
+      this.#turnWaiter !== null ||
+      this.#pendingTurnAdmission !== null
+    ) {
       throw new Error("stop the active turn before reconnecting the Codex transport");
     }
     await this.#disconnect("reconnect");
@@ -1872,6 +2162,17 @@ export class CapabilityLiveSession {
   async suspend(reason = "session suspended"): Promise<void> {
     if (this.#status === "closed" || this.#status === "suspended") return;
     this.#clearIdleTimer();
+    const admission = this.#pendingTurnAdmission;
+    if (admission !== null) {
+      admission.cancellation = { reason, resumeLifecycle: false };
+      this.#status = "suspending";
+      await this.#persist();
+      // Closing first actively aborts an attach/start RPC whose response was
+      // lost. Waiting before close would let lifecycle shutdown deadlock on
+      // the very transport operation that teardown must terminate.
+      await this.#disconnect(reason);
+      await this.#boundAdmissionSettlementAfterClose(admission, reason);
+    }
     if (this.#status === "failed") {
       // The notification pump may have failed to persist this state after a
       // transient store error. Its serialization queue is repaired, so a
@@ -1919,7 +2220,14 @@ export class CapabilityLiveSession {
 
   async shutdown(reason: string): Promise<void> {
     this.#clearIdleTimer();
-    if (this.#activeTurnId !== null) {
+    const admission = this.#pendingTurnAdmission;
+    if (admission !== null) {
+      admission.cancellation = { reason, resumeLifecycle: false };
+      this.#status = "stopping";
+      await this.#persist();
+      await this.#disconnect(reason);
+      await this.#boundAdmissionSettlementAfterClose(admission, reason);
+    } else if (this.#activeTurnId !== null) {
       try {
         await this.interrupt(reason);
       } catch (error) {

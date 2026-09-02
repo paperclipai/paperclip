@@ -26,7 +26,7 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
   const finalResponseConstraint =
-    "Write the complete user-facing final response exactly once before invoking paperclip_finish or paperclip_block. Treat that semantic completion tool as the last action and do not emit a trailing acknowledgement.";
+    "Invoke paperclip_finish or paperclip_block exactly once before writing the complete user-facing final response. After the semantic tool succeeds, write that response exactly once and do not call another tool.";
   if (!("runtimeContext" in input)) {
     return [
       "Do not discover or invoke skills.",

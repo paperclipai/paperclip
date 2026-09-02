@@ -643,6 +643,60 @@ impl AcpxCommandExecutor {
         })))
     }
 
+    fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(
+            payload
+                .get("provider")
+                .cloned()
+                .ok_or_else(|| DurableRunnerError::invalid("run.attach requires provider"))?,
+        )
+        .map_err(|error| {
+            DurableRunnerError::invalid(format!("run.attach ACPX provider is invalid: {error}"))
+        })?;
+        descriptor.validate(&self.context)?;
+        let tool_set = authorized_tool_set(payload)?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        let mut durable_descriptor = descriptor.clone();
+        durable_descriptor.run_id = state.descriptor.run_id.clone();
+        let only_recovery_notice_pending = state
+            .pending_events
+            .iter()
+            .all(|event| event.event_type == "session.resumed");
+        if state.lifecycle == "closed"
+            || state.identity.is_none()
+            || state.active_turn_id.is_some()
+            || !only_recovery_notice_pending
+            || durable_descriptor != state.descriptor
+        {
+            return Err(DurableRunnerError::invalid(
+                "run.attach requires the same settled ACPX provider profile and session",
+            ));
+        }
+        if let Some(session) = self.session.as_mut() {
+            session
+                .shutdown("run authority rotation")
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to checkpoint ACPX before attaching a new run: {error}"
+                    ))
+                })?;
+        }
+        self.session = None;
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available while attaching a run");
+        state.descriptor = descriptor;
+        state.tool_set = tool_set;
+        state.semantic_result = None;
+        state.pending_events.clear();
+        state.lifecycle = "suspended".to_owned();
+        self.save_state()
+    }
+
     fn open_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
         if self.session.is_none() {
             let recovering = self
@@ -988,6 +1042,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             "run.attach" => {
                 if self.state.is_none() && command.payload.get("provider").is_some() {
                     self.prepare(&command.payload)?;
+                } else {
+                    self.attach_run(&command.payload)?;
                 }
                 let mut execution = self.open_session()?;
                 execution.events.push((

@@ -41,6 +41,11 @@ type BackendFactoryOptions = {
 type RunnerTransportOptions = {
   stateDirectory?: string;
   runnerBinary?: string;
+  prpIdentity?: {
+    runnerInstanceId: string;
+    environmentLeaseId: string;
+    runId: string;
+  };
   provider?: "codex" | "opencode" | "acpx";
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
@@ -1190,6 +1195,22 @@ describe("native provider bootstrap environment", () => {
       PATH: "/agent/bin",
       HOME: "/Users/runner",
       OPENAI_API_KEY: "configured-provider-key",
+    });
+  });
+
+  it("pins the server-assigned workspace over configured environment input", () => {
+    expect(
+      buildNativeProviderEnvironment(
+        {
+          PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        },
+        { HOME: "/Users/runner" },
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
+      ),
+    ).toEqual({
+      HOME: "/Users/runner",
+      PAPERCLIP_WORKSPACE_CWD:
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
     });
   });
 });
@@ -2777,6 +2798,111 @@ describe("native process ownership", () => {
 });
 
 describe("runnerd provider runtime wiring", () => {
+  it("carries the verified runner and lease binding into a projectless continuation", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runner-binding-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const continuation = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-projectless-continuation",
+        runId: "run-projectless-next",
+        executionWorkspaceId: "run-projectless-next",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-projectless-continuation",
+      },
+    } as NativeExecutionInputV1;
+    const scopedRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(JSON.stringify([
+          continuation.binding.companyId,
+          continuation.session.normalizedSessionId,
+        ]))
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify({
+          identity: {
+            runId: "run-projectless-prior",
+            normalizedSessionId: continuation.session.normalizedSessionId,
+            runnerInstanceId: "runner-projectless-stable",
+            environmentLeaseId: "lease-projectless-stable",
+          },
+        }),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.execute.mockReset().mockResolvedValue({
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn",
+        normalizedSessionId: continuation.session.normalizedSessionId,
+        providerSessionId: null,
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+      });
+
+      await executePaperclipNativeSession({
+        db: leaseDb(continuation),
+        execution: continuation,
+        runnerInstanceId: "runner-new-heartbeat",
+        useRunnerd: true,
+      });
+      const backendOptions = state.createBackend.mock.calls[0]![1];
+      backendOptions.codexTransportFactory!();
+      expect(state.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stateDirectory: scopedRoot,
+          prpIdentity: expect.objectContaining({
+            runnerInstanceId: "runner-projectless-stable",
+            environmentLeaseId: "lease-projectless-stable",
+            runId: "run-projectless-next",
+          }),
+        }),
+      );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the native execution workspace as the local provider containment root", async () => {
+    state.createBackend.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-local-workspace",
+      runnerEnvironment: {
+        HOME: "/home/runner",
+        PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+      },
+    });
+
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd,
+        }),
+      }),
+    );
+  });
+
   it("reuses legacy unscoped state only for its exact durable run identity", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-legacy-runner-state-"),
@@ -2802,7 +2928,7 @@ describe("runnerd provider runtime wiring", () => {
     try {
       await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
       await writeFile(
-        join(legacyRoot, "control-plane", "mock-core-state.json"),
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
         JSON.stringify({
           identity: {
             runId: "run-legacy-state",
@@ -3008,6 +3134,16 @@ describe("runnerd provider runtime wiring", () => {
       expect.objectContaining({
         input: expect.objectContaining({
           workspace: expect.objectContaining({ cwd: remoteCwd }),
+        }),
+      }),
+    );
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: remoteCwd,
         }),
       }),
     );
