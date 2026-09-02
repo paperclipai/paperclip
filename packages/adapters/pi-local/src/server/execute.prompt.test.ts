@@ -159,4 +159,60 @@ describe("pi local prompt delivery", () => {
     expect(stagedPrompt).toContain(hugeInstructions);
     expect(stagedPrompt).toContain("The above agent instructions were loaded from");
   });
+
+  it("enables the native PowerShell tool and shell guidance on Windows", async () => {
+    if (process.platform !== "win32") return;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-windows-tools-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    let capturedArgs: string[] = [];
+    let stagedPrompt = "";
+    const result = await execute({
+      runId: "run-windows-tools",
+      agent: {
+        id: "agent-windows-tools",
+        companyId: "company-1",
+        name: "Pi Builder",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "pi",
+        model: "openai/gpt-5.4-mini",
+        promptTemplate: "Keep working.",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async (meta) => {
+        capturedArgs = Array.isArray(meta.commandArgs) ? meta.commandArgs.map(String) : [];
+        const promptPathFlag = capturedArgs.indexOf("--append-system-prompt");
+        const promptArg = promptPathFlag >= 0 ? capturedArgs[promptPathFlag + 1] : "";
+        if (promptArg) stagedPrompt = await readFile(promptArg, "utf8");
+      },
+    });
+
+    if (typeof result.sessionId === "string" && result.sessionId.length > 0) {
+      cleanupFiles.push(result.sessionId);
+    }
+
+    const toolsFlag = capturedArgs.indexOf("--tools");
+    expect(toolsFlag).toBeGreaterThanOrEqual(0);
+    expect(capturedArgs[toolsFlag + 1]).toBe("read,bash,powershell,edit,write,grep,find,ls");
+    expect(stagedPrompt).toContain("Use the `powershell` tool for PowerShell-native syntax");
+    expect(stagedPrompt).toContain("Where-Object { $_.PSIsContainer }");
+  });
 });

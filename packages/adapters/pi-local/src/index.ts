@@ -17,7 +17,7 @@ Use when:
 - You want Paperclip to run Pi (the AI coding agent) locally as the agent runtime
 - You want provider/model routing in Pi format (--provider <name> --model <id>)
 - You want Pi session resume across heartbeats via --session
-- You need Pi's tool set (read, bash, edit, write, grep, find, ls)
+- You need Pi's tool set (read, bash, edit, write, grep, find, ls; plus powershell on Windows)
 
 Don't use when:
 - You need webhook-style external invocation (use openclaw_gateway or http)
@@ -41,6 +41,6 @@ Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
-- All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
+- All tools (read, bash, edit, write, grep, find, ls) are enabled by default. On Windows the adapter also enables Pi's native \`powershell\` tool and appends shell-selection guidance so PowerShell syntax is not routed through Bash.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt. On local targets the adapter writes that text to a temp file and passes the file path so the command line stays under the Windows cmd.exe 8191-character limit. The user task is sent on stdin with -p.
 `;
