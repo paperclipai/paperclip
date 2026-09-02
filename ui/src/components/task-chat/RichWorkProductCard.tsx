@@ -119,9 +119,10 @@ function Chip({ chip }: { chip: StateChip }) {
 export interface RichWorkProductCardProps {
   workProduct: IssueWorkProduct;
   href: string | null;
+  variant?: "card" | "compact";
 }
 
-export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardProps) {
+export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
   const metadata = workProduct.metadata;
   const contentType = stringMeta(metadata, "contentType") ?? "";
   const isImage = contentType.startsWith("image/");
@@ -205,22 +206,40 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
     .join(" ");
   const fileCount = files === null ? null : `${files} ${files === 1 ? "file" : "files"}`;
   const statsLabel = [changeCounts || null, fileCount].filter(Boolean).join(" · ");
+  const compact = variant === "compact";
+  const imagePath = isImage
+    ? stringMeta(metadata, "openPath", "contentPath") ?? href
+    : null;
 
   return (
-    <article className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-card/60 px-3 py-2.5" data-testid={`task-chat-rich-work-product-${workProduct.type}`}>
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-muted/60 text-muted-foreground">
-        <Icon aria-hidden className="h-5 w-5" />
+    <article
+      className={cn(
+        "flex min-w-0 rounded-md border border-border bg-card/60",
+        compact ? "items-center gap-2 px-2.5 py-1.5" : "items-start gap-3 px-3 py-2.5",
+      )}
+      data-testid={`task-chat-rich-work-product-${workProduct.type}`}
+      data-variant={variant}
+    >
+      <div className={cn(
+        "flex shrink-0 items-center justify-center overflow-hidden rounded-sm bg-muted/60 text-muted-foreground",
+        compact ? "h-8 w-8" : "h-10 w-10",
+      )}>
+        {imagePath ? (
+          <img src={imagePath} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <Icon aria-hidden className={compact ? "h-4 w-4" : "h-5 w-5"} />
+        )}
       </div>
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-sm font-medium text-foreground">{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
         {statsLabel ? <p className="mt-1 text-xs text-muted-foreground">{statsLabel}</p> : null}
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
         {href ? (
           <a href={href} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
-            {action}<ExternalLink aria-hidden className="h-3 w-3" />
+            {compact ? null : action}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : null}
       </div>

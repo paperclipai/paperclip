@@ -58,3 +58,19 @@ export const Inventory: Story = {
     </div>
   ),
 };
+
+export const CompactInventory: Story = {
+  args: { workProduct: inventory[0], href: inventory[0].url, variant: "compact" },
+  render: () => (
+    <div className="flex w-(--container-sm) flex-col gap-2">
+      {inventory.map((workProduct) => (
+        <RichWorkProductCard
+          key={workProduct.id + workProduct.title}
+          workProduct={workProduct}
+          href={workProduct.url}
+          variant="compact"
+        />
+      ))}
+    </div>
+  ),
+};
