@@ -35,8 +35,10 @@ describe("runtimeApiProbeUrl", () => {
 });
 
 describe("probeRuntimeApiUrl", () => {
-  it("accepts a JSON object response", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", commit: null }));
+  it("accepts the redacted health response an unauthenticated caller gets", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: null }));
 
     const result = await probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any });
 
@@ -45,13 +47,57 @@ describe("probeRuntimeApiUrl", () => {
     expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ method: "GET", redirect: "manual" });
   });
 
+  it("accepts the full-detail health response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        status: "ok",
+        version: "2026.9.1",
+        serverVersion: "2026.9.1",
+        commit: "abc123",
+        serverInfo: { git: { available: false } },
+      }),
+    );
+
+    await expect(probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any })).resolves.toEqual({
+      ok: true,
+      status: 200,
+    });
+  });
+
   it("accepts an unhealthy JSON response — the probe checks routing, not health", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "unhealthy" }, { status: 503 }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(
+          { status: "unhealthy", serverVersion: "2026.9.1", error: "database_unreachable" },
+          { status: 503 },
+        ),
+      );
 
     await expect(probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any })).resolves.toEqual({
       ok: true,
       status: 503,
     });
+  });
+
+  it("rejects an unrelated service's health route that answers a generic JSON object", async () => {
+    // Spawned runs send their bearer run token to whatever origin wins the
+    // probe, so a bare `{"status":"ok"}` from some other service must not pass.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", uptime: 41 }));
+
+    const result = await probeRuntimeApiUrl("https://grafana.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
+  });
+
+  it("rejects a JSON object with Paperclip fields but no health status", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: "unauthorized", deploymentMode: "cloud" }));
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
   });
 
   it("rejects an auth-proxy origin that answers 200 text/html", async () => {
