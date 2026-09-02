@@ -42,7 +42,7 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
+import { setupRunnerPrpWebSocketServer, updateRunnerPrpApiUrl } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -86,6 +86,11 @@ import {
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import {
+  probeRuntimeApiUrl,
+  resolveVerifiedRuntimeApiUrl,
+  RUNTIME_API_PROBE_PATH,
+} from "./runtime-api-probe.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1704,7 +1709,62 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
+
+  // Now that the listener is up, check that the URL every spawned run inherits
+  // as PAPERCLIP_API_URL actually answers this instance's API. An override
+  // pointing at a UI origin or an auth proxy answers HTML, which deterministic
+  // agents surface as an anonymous non-zero exit long after the fact. The
+  // healthy case costs one loopback request.
+  let resolvedApiUrl = configuredApiUrl;
+  // A guard against a misconfiguration must not itself become one: an
+  // unexpected throw here leaves the configured URL in place, exactly as before
+  // this check existed.
+  try {
+    const runtimeApiResolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl,
+      // The candidate list already ends with every reachable interface address;
+      // append the loopback origin, which reaches a wildcard-bound listener even
+      // when nothing else does.
+      fallbackApiUrls: [...runtimeApiCandidates, `http://127.0.0.1:${listenPort}`],
+      probe: (apiUrl) => probeRuntimeApiUrl(apiUrl),
+    });
+    if (runtimeApiResolution.unverified) {
+      // Keep booting rather than exit: external clients may well reach an origin
+      // this process cannot, and taking the API away is the worse failure.
+      logger.error(
+        {
+          configuredApiUrl,
+          probePath: RUNTIME_API_PROBE_PATH,
+          rejected: runtimeApiResolution.rejected,
+        },
+        `No candidate origin served the Paperclip API; spawned agents keep PAPERCLIP_API_URL=${configuredApiUrl} and may be unable to reach their own board`,
+      );
+    } else if (runtimeApiResolution.changed) {
+      resolvedApiUrl = runtimeApiResolution.apiUrl;
+      logger.error(
+        {
+          configuredApiUrl,
+          fallbackApiUrl: resolvedApiUrl,
+          probePath: RUNTIME_API_PROBE_PATH,
+          rejected: runtimeApiResolution.rejected,
+        },
+        `PAPERCLIP_API_URL=${configuredApiUrl} does not serve the Paperclip API; spawned agents will use ${resolvedApiUrl} instead`,
+      );
+      process.env.PAPERCLIP_API_URL = resolvedApiUrl;
+      // Runtime clients walk the candidate list in order, so put the origin that
+      // answered first and drop the one that did not.
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+        resolvedApiUrl,
+        ...runtimeApiCandidates.filter((candidate) => candidate !== resolvedApiUrl && candidate !== configuredApiUrl),
+      ]);
+      // The runner PRP websocket derives its connect origin from the same URL,
+      // so a stale origin here would send runners to the auth proxy too.
+      updateRunnerPrpApiUrl(resolvedApiUrl);
+    }
+  } catch (err) {
+    logger.error({ err, configuredApiUrl }, "runtime API URL startup validation failed; keeping the configured URL");
+  }
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
@@ -1792,7 +1852,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: configuredApiUrl,
+    apiUrl: resolvedApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
 }
