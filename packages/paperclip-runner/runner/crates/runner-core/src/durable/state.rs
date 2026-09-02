@@ -1236,21 +1236,46 @@ fn redact_sensitive_text_values(input: &str) -> String {
     };
     let quoted_value_end = |start: usize, quote: (u8, usize)| {
         let (quote, delimiter_backslashes) = quote;
+        let scan_end = (start..bytes.len())
+            .find(|index| matches!(bytes[*index], b'\r' | b'\n'))
+            .unwrap_or(bytes.len());
         let mut end = start;
-        while end < bytes.len() {
+        let mut provisional_end = None;
+        let mut unsafe_after_provisional = false;
+        while end < scan_end {
             if bytes[end] == quote {
                 let preceding_backslashes = bytes[..end]
                     .iter()
                     .rev()
                     .take_while(|value| **value == b'\\')
                     .count();
+                let after_delimiter = end.saturating_add(1);
                 if preceding_backslashes == delimiter_backslashes {
-                    return end - delimiter_backslashes;
+                    let candidate_end = end - delimiter_backslashes;
+                    if after_delimiter >= scan_end
+                        || matches!(
+                            bytes[after_delimiter],
+                            b'\r' | b'\n' | b',' | b';' | b'&' | b')' | b']' | b'}'
+                        )
+                    {
+                        return candidate_end;
+                    }
+                    if bytes[after_delimiter].is_ascii_whitespace() {
+                        provisional_end = Some(candidate_end);
+                        unsafe_after_provisional = false;
+                    } else {
+                        unsafe_after_provisional = true;
+                    }
                 }
             }
             end += 1;
         }
-        bytes.len()
+        // A quote followed by whitespace normally closes a value and preserves
+        // useful trailing context. Keep it only when no later same-depth quote
+        // contradicts it; otherwise an unterminated malformed value fails closed.
+        provisional_end
+            .filter(|_| !unsafe_after_provisional)
+            .unwrap_or(scan_end)
     };
     let is_redaction_marker = |start: usize| {
         normalized[start..].starts_with("[redacted]")
@@ -1503,21 +1528,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
             continue;
         }
         let end = if let Some(quote) = quote {
-            let quoted_end = quoted_value_end(value_start, quote);
-            let after_delimiter = quoted_end.saturating_add(quote.1).saturating_add(1);
-            // A delimiter followed immediately by more token bytes is not a
-            // trustworthy end boundary (for example `\"abc\"defg`). Treat
-            // the delimiter and tail as credential material through the next
-            // structural boundary so malformed provider diagnostics cannot
-            // expose a suffix outside the redaction range.
-            if quoted_end < bytes.len()
-                && after_delimiter < bytes.len()
-                && !is_value_end(bytes[after_delimiter])
-            {
-                value_end(after_delimiter)
-            } else {
-                quoted_end
-            }
+            quoted_value_end(value_start, quote)
         } else if key == "authorization"
             && has_assignment_separator
             && !recognized_authorization_scheme
@@ -2099,11 +2110,39 @@ mod tests {
             ),
             (
                 r#"OPENAI_API_KEY \"abc\"defg retry"#,
-                r#"OPENAI_API_KEY \"[REDACTED] retry"#,
+                r#"OPENAI_API_KEY \"[REDACTED]"#,
             ),
             (
                 r#"proxyAuthorization Basic \"abc\"defg retry"#,
-                r#"proxyAuthorization Basic \"[REDACTED] retry"#,
+                r#"proxyAuthorization Basic \"[REDACTED]"#,
+            ),
+            (
+                r#"OPENAI_API_KEY "abc"defg retry"#,
+                r#"OPENAI_API_KEY "[REDACTED]"#,
+            ),
+            (
+                "OPENAI_API_KEY \\\"abc\\\"defg retry\nsafe context",
+                "OPENAI_API_KEY \\\"[REDACTED]\nsafe context",
+            ),
+            (
+                "OPENAI_API_KEY \"abc\"defg retry\nsafe context",
+                "OPENAI_API_KEY \"[REDACTED]\nsafe context",
+            ),
+            (
+                r#"{\"authorization\":\"Bearer a\"b c\"} status=401"#,
+                r#"{\"authorization\":\"Bearer [REDACTED]\"} status=401"#,
+            ),
+            (
+                r#"{"authorization":"Bearer a"b c"} status=401"#,
+                r#"{"authorization":"Bearer [REDACTED]"} status=401"#,
+            ),
+            (
+                r#"{\"authorization\":\"Bearer a\" b c\"} status=401"#,
+                r#"{\"authorization\":\"Bearer [REDACTED]\"} status=401"#,
+            ),
+            (
+                r#"{"authorization":"Bearer a" b c"} status=401"#,
+                r#"{"authorization":"Bearer [REDACTED]"} status=401"#,
             ),
         ] {
             assert_eq!(redact_text(input), expected);

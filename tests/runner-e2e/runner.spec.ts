@@ -1058,10 +1058,9 @@ for (const execution of executions) {
           })
           .last()
           .check();
-        await page
-          .getByRole("button", { name: "Submit answers", exact: true })
-          .last()
-          .click();
+        // Required single-select questions submit as soon as the radio is
+        // checked; waiting for the multi-answer submit control would race the
+        // successful continuation and misreport it as a UI failure.
         questionLifecycleEvidence = {
           interaction: questionInteraction,
           answer: expectedAnswer.optionLabel,

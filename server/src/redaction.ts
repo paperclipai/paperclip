@@ -394,20 +394,51 @@ function lineEnd(input: string, start: number): number {
   return Math.min(carriageReturn, newline);
 }
 
+function quotedValueBoundary(
+  input: string,
+  index: number,
+): "hard" | "provisional" | "unsafe" {
+  const boundary = input[index];
+  if (boundary === undefined || /[\r\n,;&)}\]]/.test(boundary)) return "hard";
+  if (/\s/.test(boundary)) return "provisional";
+  return "unsafe";
+}
+
+function isTrustedQuotedValueBoundary(input: string, index: number) {
+  return quotedValueBoundary(input, index) !== "unsafe";
+}
+
 function rawQuotedValueEnd(
   input: string,
   start: number,
   quote: '"' | "'",
 ): number {
   const end = lineEnd(input, start);
+  let provisionalEnd: number | null = null;
+  let unsafeAfterProvisional = false;
   for (let index = start + 1; index < end; index += 1) {
     if (input[index] === "\\") {
       index += 1;
       continue;
     }
-    if (input[index] === quote) return index + 1;
+    if (input[index] === quote) {
+      const candidateEnd = index + 1;
+      const boundary = quotedValueBoundary(input, candidateEnd);
+      if (boundary === "hard") return candidateEnd;
+      if (boundary === "provisional") {
+        provisionalEnd = candidateEnd;
+        unsafeAfterProvisional = false;
+      } else {
+        unsafeAfterProvisional = true;
+      }
+    }
   }
-  return end;
+  // Whitespace normally separates safe trailing context, so retain a final
+  // provisional delimiter when no later quote contradicts it. If token bytes
+  // follow the last candidate, fail closed through the line boundary.
+  return provisionalEnd !== null && !unsafeAfterProvisional
+    ? provisionalEnd
+    : end;
 }
 
 function escapedQuotedValueEnd(
@@ -416,6 +447,8 @@ function escapedQuotedValueEnd(
   quote: '"' | "'",
 ): number {
   const end = lineEnd(input, start);
+  let provisionalEnd: number | null = null;
+  let unsafeAfterProvisional = false;
   for (let index = start + 2; index < end; index += 1) {
     if (input[index] !== "\\") continue;
     let afterSlashes = index + 1;
@@ -428,10 +461,22 @@ function escapedQuotedValueEnd(
     }
     // A serialized outer quote has one slash. Three or more slashes encode a
     // quote nested inside that value, so keep scanning for the outer delimiter.
-    if (afterSlashes - index === 1) return afterSlashes + 1;
+    if (afterSlashes - index === 1) {
+      const candidateEnd = afterSlashes + 1;
+      const boundary = quotedValueBoundary(input, candidateEnd);
+      if (boundary === "hard") return candidateEnd;
+      if (boundary === "provisional") {
+        provisionalEnd = candidateEnd;
+        unsafeAfterProvisional = false;
+      } else {
+        unsafeAfterProvisional = true;
+      }
+    }
     index = afterSlashes;
   }
-  return end;
+  return provisionalEnd !== null && !unsafeAfterProvisional
+    ? provisionalEnd
+    : end;
 }
 
 function escapedQuoteAt(input: string, index: number): '"' | "'" | null {
@@ -441,16 +486,14 @@ function escapedQuoteAt(input: string, index: number): '"' | "'" | null {
 }
 
 function credentialEndAfterQuotedDelimiter(input: string, quotedEnd: number) {
-  const boundary = input[quotedEnd];
-  if (boundary === undefined || /[\s,;}\]]/.test(boundary)) return quotedEnd;
+  if (isTrustedQuotedValueBoundary(input, quotedEnd)) return quotedEnd;
 
   // A closing delimiter followed immediately by more token bytes is not a
-  // trustworthy credential boundary (for example `"abc"defg`). Treat the
-  // malformed suffix as credential material through the next structural
-  // boundary instead of exposing it after an otherwise valid quoted value.
-  let end = quotedEnd;
-  while (end < input.length && !/[\s,;}\]]/.test(input[end]!)) end += 1;
-  return end;
+  // trustworthy credential boundary (for example `"abc"defg`). Once a
+  // provider diagnostic is malformed this way, whitespace is not a safe
+  // boundary either (`"a"b c"`). Fail closed through the rest of the
+  // diagnostic so no later credential fragment survives.
+  return lineEnd(input, quotedEnd);
 }
 
 interface AuthorizationCredentialRange {

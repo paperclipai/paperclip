@@ -449,19 +449,44 @@ describe("redaction", () => {
     const cases = [
       {
         input: 'Authorization: Basic "abc"defg retry',
-        expected: `Authorization: ${REDACTED_EVENT_VALUE} retry`,
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}`,
       },
       {
         input: String.raw`Authorization: Basic \"abc\"defg retry`,
-        expected: `Authorization: ${REDACTED_EVENT_VALUE} retry`,
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}`,
       },
       {
         input: 'Bearer "abc"defg retry',
-        expected: `Bearer "${REDACTED_EVENT_VALUE}" retry`,
+        expected: `Bearer "${REDACTED_EVENT_VALUE}"`,
       },
       {
         input: String.raw`Bearer \"abc\"defg retry`,
-        expected: String.raw`Bearer \"***REDACTED***\" retry`,
+        expected: String.raw`Bearer \"***REDACTED***\"`,
+      },
+      {
+        input: 'Authorization: Basic "abc"defg retry\nsafe context',
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}\nsafe context`,
+      },
+      {
+        input:
+          String.raw`Authorization: Basic \"abc\"defg retry` + "\nsafe context",
+        expected: `Authorization: ${REDACTED_EVENT_VALUE}\nsafe context`,
+      },
+      {
+        input: String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
+        expected: String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
+      },
+      {
+        input: `{"authorization":"Bearer a"b c"} suffix`,
+        expected: `{"authorization":"${REDACTED_EVENT_VALUE}"} suffix`,
+      },
+      {
+        input: String.raw`{\"authorization\":\"Bearer a\" b c\"} suffix`,
+        expected: String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
+      },
+      {
+        input: `{"authorization":"Bearer a" b c"} suffix`,
+        expected: `{"authorization":"${REDACTED_EVENT_VALUE}"} suffix`,
       },
     ];
 
@@ -470,18 +495,34 @@ describe("redaction", () => {
       expect(result).toBe(expected);
       expect(result).not.toContain("abc");
       expect(result).not.toContain("defg");
+      expect(result).not.toContain('a"b c');
+      expect(result).not.toContain('a" b c');
       expect(redactSensitiveText(result)).toBe(result);
     }
 
-    expect(
-      redactEventPayload({
-        message: 'Authorization: Basic "abc"defg retry',
-        nested: [String.raw`Bearer \"abc\"defg retry`],
-      }),
-    ).toEqual({
-      message: `Authorization: ${REDACTED_EVENT_VALUE} retry`,
-      nested: [String.raw`Bearer \"***REDACTED***\" retry`],
+    const sanitized = redactEventPayload({
+      message: 'Authorization: Basic "abc"defg retry',
+      malformedProviderText: '{"authorization":"Bearer a" b c"} suffix',
+      authorization: 'Bearer a"b c"',
+      nested: {
+        diagnostics: [
+          String.raw`Bearer \"abc\"defg retry`,
+          String.raw`{\"authorization\":\"Bearer a\"b c\"} suffix`,
+        ],
+      },
     });
+    expect(sanitized).toEqual({
+      message: `Authorization: ${REDACTED_EVENT_VALUE}`,
+      malformedProviderText: `{"authorization":"${REDACTED_EVENT_VALUE}"} suffix`,
+      authorization: REDACTED_EVENT_VALUE,
+      nested: {
+        diagnostics: [
+          String.raw`Bearer \"***REDACTED***\"`,
+          String.raw`{\"authorization\":\"***REDACTED***\"} suffix`,
+        ],
+      },
+    });
+    expect(redactEventPayload(sanitized)).toEqual(sanitized);
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
