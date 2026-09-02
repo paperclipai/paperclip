@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -410,6 +412,131 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(checkoutActivity).toHaveLength(0);
   });
 
+  it("preserves a live owner's checkout through policy setup and the review handoff", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const reviewerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Code Reviewer",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review handoff ownership",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const app = createApp(agentActor(companyId, agentId, currentRunId));
+    const checkout = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+    expect(checkout.body).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const executionPolicy = {
+      stages: [{
+        id: stageId,
+        type: "approval",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      }],
+    };
+    const policyUpdate = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ executionPolicy });
+    expect(policyUpdate.status, JSON.stringify(policyUpdate.body)).toBe(200);
+    expect(policyUpdate.body).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionPolicy,
+    });
+
+    const reviewHandoff = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(reviewHandoff.status, JSON.stringify(reviewHandoff.body)).toBe(200);
+    expect(reviewHandoff.body).toMatchObject({
+      status: "in_review",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionState: {
+        status: "pending",
+        currentParticipant: {
+          type: "agent",
+          agentId: reviewerAgentId,
+        },
+      },
+    });
+    await expect.poll(async () => {
+      const rows = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests);
+      return rows.length;
+    }).toBeGreaterThan(0);
+  });
+
+  it("rejects checkout from a terminal run instead of creating immediately stale ownership", async () => {
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Heartbeat run cannot checkout issue",
+      details: {
+        checkoutRunId: failedRunId,
+        runStatus: "failed",
+      },
+    });
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
@@ -500,6 +627,9 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.update(heartbeatRuns)
+      .set({ agentId: otherAgentId })
+      .where(eq(heartbeatRuns.id, currentRunId));
     await db.insert(issues).values({
       id: issueId,
       companyId,
