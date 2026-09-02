@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { workProductService } from "../services/work-products.ts";
+import {
+  enrichWorkProductMetadataWithDiff,
+  refreshPullRequestWorkProductMetadata,
+  workProductDiffSummaryFromEventPayload,
+  workProductService,
+} from "../services/work-products.ts";
 
 function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) {
   const now = new Date("2026-03-17T00:00:00.000Z");
@@ -29,6 +34,64 @@ function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) 
 }
 
 describe("workProductService", () => {
+  it("extracts runner totals and enriches work-product metadata", () => {
+    const summary = workProductDiffSummaryFromEventPayload({
+      schema: "paperclip.workspace.diff.v1",
+      totals: { files: 3, additions: 17, deletions: 5 },
+    });
+
+    expect(summary).toEqual({ changedFiles: 3, additions: 17, deletions: 5 });
+    expect(enrichWorkProductMetadataWithDiff({ repo: "paperclipai/paperclip" }, summary)).toEqual({
+      repo: "paperclipai/paperclip",
+      changedFiles: 3,
+      additions: 17,
+      deletions: 5,
+    });
+  });
+
+  it("refreshes pull-request state without mutating the stored work product", async () => {
+    const product = createWorkProductRow({
+      companyId: "company-1",
+      url: "https://github.com/paperclipai/paperclip/pull/42",
+      metadata: {
+        repo: "paperclipai/paperclip",
+        number: 42,
+        additions: 17,
+        deletions: 5,
+        changedFiles: 3,
+        state: "open",
+        draft: false,
+      },
+    }) as any;
+    const resolve = vi.fn(async () => ({
+      state: "open" as const,
+      workProductState: "merged" as const,
+      draft: false,
+      headRef: "feature/rich-cards",
+      headSha: "abc123",
+      baseRef: "master",
+    }));
+
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+
+    expect(resolve).toHaveBeenCalledWith("company-1", {
+      host: "github.com",
+      owner: "paperclipai",
+      repo: "paperclip",
+      number: 42,
+    });
+    expect(refreshed?.metadata).toMatchObject({
+      state: "merged",
+      draft: false,
+      baseRef: "master",
+      headRef: "feature/rich-cards",
+      additions: 17,
+      deletions: 5,
+      changedFiles: 3,
+    });
+    expect(product.metadata.state).toBe("open");
+  });
+
   it("uses a transaction when creating a new primary work product", async () => {
     const updatedWhere = vi.fn(async () => undefined);
     const updateSet = vi.fn(() => ({ where: updatedWhere }));

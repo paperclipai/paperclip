@@ -2786,8 +2786,9 @@ export function IssueDetail() {
 
   const { data: workProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issueId!),
-    queryFn: () => issuesApi.listWorkProducts(issueId!),
+    queryFn: () => issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
     enabled: !!issueId,
+    refetchOnMount: "always",
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(
       issueId ?? "pending",
     ),

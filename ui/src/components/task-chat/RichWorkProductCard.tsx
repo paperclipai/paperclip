@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 
 type StateChip = {
   label: string;
-  tone: "progress" | "failure" | "review";
+  tone: "progress" | "failure" | "review" | "success" | "neutral";
   dashed?: boolean;
 };
 
@@ -43,7 +43,13 @@ export function stateChipFor(
     return { label: "Open", tone: "progress" };
   }
   if (kind === "pull_request" && status === "draft") {
-    return { label: "Draft", tone: "progress" };
+    return { label: "Draft", tone: "review" };
+  }
+  if (kind === "pull_request" && status === "merged") {
+    return { label: "Merged", tone: "success" };
+  }
+  if (kind === "pull_request" && status === "closed") {
+    return { label: "Closed", tone: "neutral" };
   }
   if (kind === "runtime_service" && status === "active") {
     return { label: "Running", tone: "progress" };
@@ -90,6 +96,10 @@ function urlLabel(url: string | null): string | null {
 function Chip({ chip }: { chip: StateChip }) {
   const cssVar = chip.tone === "failure"
     ? "--status-task-blocked"
+    : chip.tone === "success"
+      ? "--status-task-done"
+      : chip.tone === "neutral"
+        ? "--status-task-cancelled"
     : chip.tone === "review"
       ? "--status-task-in_review"
       : "--status-task-in_progress";
@@ -126,8 +136,8 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
       Icon = GithubIcon;
       const repository = stringMeta(metadata, "repository", "repo", "repositoryName");
       const number = stringMeta(metadata, "number", "pullRequestNumber");
-      const base = stringMeta(metadata, "base", "baseBranch");
-      const head = stringMeta(metadata, "head", "headBranch", "branch");
+      const base = stringMeta(metadata, "baseRef", "base", "baseBranch");
+      const head = stringMeta(metadata, "headRef", "head", "headBranch", "branch");
       meta = [repository, number ? `#${number.replace(/^#/, "")}` : null, base && head ? `${base} ← ${head}` : null, urlLabel(workProduct.url)];
       action = "Open on GitHub";
       break;
@@ -184,7 +194,9 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
     unhealthyChip ??
     stateChipFor(
       workProduct.type,
-      workProduct.type === "runtime_service" &&
+      workProduct.type === "pull_request"
+        ? stringMeta(metadata, "state") ?? workProduct.status
+        : workProduct.type === "runtime_service" &&
         workProduct.status === "active" &&
         workProduct.healthStatus !== "healthy"
         ? null

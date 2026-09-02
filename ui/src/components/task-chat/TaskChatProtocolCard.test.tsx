@@ -116,7 +116,19 @@ describe("TaskChatProtocolCard", () => {
   });
 
   it("renders a rich deliverable card without a completed chip", () => {
-    const product = workProduct();
+    const product = workProduct({
+      metadata: {
+        repo: "paperclipai/paperclip",
+        number: 42,
+        baseRef: "master",
+        headRef: "feat/rich-cards",
+        additions: 17,
+        deletions: 5,
+        changedFiles: 3,
+        state: "merged",
+        draft: false,
+      },
+    });
     renderCard(root, {
       id: "resource:deliverable:work-product-1",
       kind: "protocol",
@@ -130,9 +142,10 @@ describe("TaskChatProtocolCard", () => {
 
     expect(container.querySelector('[data-testid="task-chat-rich-work-product-pull_request"]')).not.toBeNull();
     expect(container.textContent).toContain("Open on GitHub");
-    expect(container.textContent).toContain("github.com/paperclipai/paperclip/pull/42");
+    expect(container.textContent).toContain("paperclipai/paperclip · #42 · master ← feat/rich-cards");
+    expect(container.textContent).toContain("+17 · −5 · 3 files");
+    expect(container.textContent).toContain("Merged");
     expect(container.textContent).not.toContain("Completed");
-    expect(container.textContent).not.toContain("Merged");
   });
 
   it("shows pending artifacts with a dashed Pending chip", () => {
@@ -164,7 +177,8 @@ describe("TaskChatProtocolCard", () => {
   it("keeps completed and approved states out of the state-chip policy", () => {
     expect(stateChipFor("commit", "completed", "none")).toBeNull();
     expect(stateChipFor("document", "approved", "approved")).toBeNull();
-    expect(stateChipFor("pull_request", "merged", "none")).toBeNull();
+    expect(stateChipFor("pull_request", "merged", "none")).toMatchObject({ label: "Merged", tone: "success" });
+    expect(stateChipFor("pull_request", "closed", "none")).toMatchObject({ label: "Closed", tone: "neutral" });
     expect(stateChipFor("artifact", "pending", "none")).toMatchObject({ label: "Pending", dashed: true });
   });
 

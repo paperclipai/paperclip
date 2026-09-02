@@ -122,6 +122,7 @@ import {
   companyService,
   companySearchService,
   executionWorkspaceService,
+  enrichWorkProductMetadataWithDiff,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -7636,7 +7637,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const workProducts = await workProductsSvc.listForIssue(issue.id, {
+      refreshPullRequests: req.query.refreshPullRequests === "true",
+    });
     res.json(workProducts);
   });
 
@@ -8388,6 +8391,12 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
+    if (createdByRunId && (createInput.type === "pull_request" || createInput.type === "commit")) {
+      createInput.metadata = enrichWorkProductMetadataWithDiff(
+        createInput.metadata,
+        await workProductsSvc.latestRunDiffSummary(createdByRunId),
+      );
+    }
     if (requiresPaperclipAttachmentMetadata(createInput)) {
       createInput.metadata = await canonicalizePaperclipArtifactMetadata({
         issue,

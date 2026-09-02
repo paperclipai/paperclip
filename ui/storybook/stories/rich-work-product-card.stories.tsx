@@ -38,8 +38,8 @@ function product(overrides: Partial<IssueWorkProduct>): IssueWorkProduct {
 }
 
 const inventory = [
-  product({ type: "pull_request", provider: "github", title: "Add rich work-product cards", status: "active", url: "https://github.com/paperclipai/paperclip/pull/18217", metadata: { repository: "paperclipai/paperclip", number: 18217, base: "master", head: "rich-cards", additions: 214, deletions: 18, files: 3 } }),
-  product({ type: "commit", provider: "github", title: "Render kind-specific work products", externalId: "9c12ae7b41e5", url: "https://github.com/paperclipai/paperclip/commit/9c12ae7b41e5", metadata: { branch: "rich-cards", additions: 194, deletions: 12, files: 2 } }),
+  product({ type: "pull_request", provider: "github", title: "Add rich work-product cards", status: "active", url: "https://github.com/paperclipai/paperclip/pull/18217", metadata: { repo: "paperclipai/paperclip", number: 18217, baseRef: "master", headRef: "rich-cards", additions: 214, deletions: 18, changedFiles: 3, state: "open", draft: false } }),
+  product({ type: "commit", provider: "github", title: "Render kind-specific work products", externalId: "9c12ae7b41e5", url: "https://github.com/paperclipai/paperclip/commit/9c12ae7b41e5", metadata: { repo: "paperclipai/paperclip", sha: "9c12ae7b41e5", branch: "rich-cards", additions: 194, deletions: 12, changedFiles: 2 } }),
   product({ type: "branch", provider: "github", title: "rich-cards", externalId: "rich-cards", url: "https://github.com/paperclipai/paperclip/tree/rich-cards", metadata: { repository: "paperclipai/paperclip", branch: "rich-cards" } }),
   product({ type: "artifact", title: "interaction-map.pdf", status: "pending", metadata: { contentType: "application/pdf", byteSize: 48120 } }),
   product({ type: "artifact", title: "thread-preview.png", status: "ready_for_review", url: "/android-chrome-512x512.png", metadata: { contentType: "image/png", byteSize: 204800 } }),
