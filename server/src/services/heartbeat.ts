@@ -13967,9 +13967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? "Question withdrawn while waiting for operator input"
         : kind === "interaction_cancelled"
           ? "Cancelled while waiting for operator input"
-          : kind === "issue_unblocked"
-            ? "Issue left blocked status while waiting for operator input"
-            : "Task closed while waiting for operator input";
+          : "Task closed while waiting for operator input";
       try {
         await cancelRunInternal(request.id, reason, {
           resultJson: {
@@ -13979,7 +13977,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ...(kind === "interaction_cancelled" && interactionId
               ? { cancelledInteractionId: interactionId }
               : {}),
-            ...((!kind || kind === "issue_terminal" || kind === "issue_unblocked") && issueStatus
+            ...((!kind || kind === "issue_terminal") && issueStatus
               ? { cancelledByIssueStatus: issueStatus }
               : {}),
             ...(issueId ? { cancelledIssueId: issueId } : {}),

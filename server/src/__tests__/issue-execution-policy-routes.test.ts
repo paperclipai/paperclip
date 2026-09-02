@@ -370,8 +370,6 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({ status: "in_review" }),
       expect.anything(),
-      undefined,
-      expect.any(Array),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -429,8 +427,6 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.not.objectContaining({ reviewInteractionId: expect.anything() }),
       expect.anything(),
-      undefined,
-      expect.any(Array),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -486,8 +482,6 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.not.objectContaining({ reviewInteractionId: expect.anything() }),
       expect.anything(),
-      undefined,
-      expect.any(Array),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -647,8 +641,6 @@ describe("issue execution policy routes", () => {
         }),
       }),
       expect.anything(),
-      undefined,
-      expect.any(Array),
     );
   });
 
@@ -703,8 +695,6 @@ describe("issue execution policy routes", () => {
         monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
       }),
       expect.anything(),
-      undefined,
-      expect.any(Array),
     );
   });
 

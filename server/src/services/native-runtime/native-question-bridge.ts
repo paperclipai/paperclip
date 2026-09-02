@@ -56,7 +56,6 @@ export interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdent
 
 export type NativeQuestionCancellationCause =
   | { kind: "issue_terminal"; issueStatus: string }
-  | { kind: "issue_unblocked"; issueStatus: string }
   | { kind: "interaction_withdrawn"; interactionId: string }
   | { kind: "interaction_cancelled"; interactionId: string };
 
