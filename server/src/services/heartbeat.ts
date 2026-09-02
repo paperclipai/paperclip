@@ -8476,7 +8476,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed") ||
+        // Transient-upstream retries exhausted: block instead of starting another continuation cycle.
+        // Without this, each continuation resets scheduledRetryAttempt to 0, creating an infinite loop.
+        (readHeartbeatRunErrorFamily(run) === "transient_upstream" &&
+          (run.scheduledRetryAttempt ?? 0) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
       if (shouldBlockImmediately) {
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",
