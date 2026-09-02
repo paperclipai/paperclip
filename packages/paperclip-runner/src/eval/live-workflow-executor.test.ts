@@ -31,6 +31,10 @@ const liveSessionMocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   snapshot: vi.fn(),
   interrupt: vi.fn(),
+  suspend: vi.fn(),
+  restore: vi.fn(),
+  subscribedSessionIds: [] as string[],
+  unsubscribedSessionIds: [] as string[],
   turnListener: null as null | ((event: MockTurnEvent) => void),
 }));
 
@@ -43,22 +47,36 @@ vi.mock("../live/live-session.js", () => ({
       liveSessionMocks.createOptions.push(options);
     }
 
-    async create() {
+    session(sessionId: string, subscriptionLabel: string) {
       return {
-        id: "session-shutdown-test",
+        id: sessionId,
         subscribe: (
           listener: NonNullable<typeof liveSessionMocks.turnListener>,
         ) => {
+          liveSessionMocks.subscribedSessionIds.push(subscriptionLabel);
           liveSessionMocks.turnListener = listener;
           return () => {
-            liveSessionMocks.turnListener = null;
+            liveSessionMocks.unsubscribedSessionIds.push(subscriptionLabel);
+            if (liveSessionMocks.turnListener === listener) {
+              liveSessionMocks.turnListener = null;
+            }
           };
         },
         sendMessage: liveSessionMocks.sendMessage,
         pendingInteractions: () => [],
         snapshot: liveSessionMocks.snapshot,
         interrupt: liveSessionMocks.interrupt,
+        suspend: liveSessionMocks.suspend,
       };
+    }
+
+    async create() {
+      return this.session("session-shutdown-test", "created");
+    }
+
+    async restore(sessionId: string) {
+      liveSessionMocks.restore(sessionId);
+      return this.session(sessionId, "restored");
     }
 
     async shutdown(sessionId: string, reason: string) {
@@ -78,12 +96,16 @@ describe("live workflow executor infrastructure failures", () => {
   beforeEach(() => {
     liveSessionMocks.shutdown.mockReset();
     liveSessionMocks.createOptions.length = 0;
+    liveSessionMocks.subscribedSessionIds.length = 0;
+    liveSessionMocks.unsubscribedSessionIds.length = 0;
     liveSessionMocks.turnListener = null;
     liveSessionMocks.sendMessage.mockReset().mockResolvedValue({
       status: "completed",
       turnId: "turn-shutdown-test",
     });
     liveSessionMocks.interrupt.mockReset().mockResolvedValue({});
+    liveSessionMocks.suspend.mockReset().mockResolvedValue({});
+    liveSessionMocks.restore.mockReset();
     liveSessionMocks.snapshot.mockReset().mockReturnValue({
       sessionId: "session-shutdown-test",
       authority: {},
@@ -446,6 +468,128 @@ describe("live workflow executor infrastructure failures", () => {
       expect.stringContaining("candidate reported usage budget stop"),
     );
     expect(liveSessionMocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(observation).toMatchObject({
+      classification: "candidate_failure",
+      metrics: { totalTokens: 100, costUsd: 0.01 },
+      failure: {
+        code: "candidate_budget_reached",
+        category: "candidate",
+        retryable: false,
+      },
+    });
+  });
+
+  it("reattaches the budget interrupt before a restored-session continuation", async () => {
+    const emptySnapshot = {
+      sessionId: "session-restored-budget-test",
+      authority: {},
+      mockState: JSON.stringify({ tasks: [] }),
+      transcript: [],
+      evidence: [],
+      authorizationRecords: [],
+      attempts: [],
+      usageLedger: [],
+      stateHistory: [],
+      workspaceDiffs: [],
+    };
+    const reachedSnapshot = {
+      ...emptySnapshot,
+      usageLedger: [
+        {
+          receiptId: "usage-restored-budget-test",
+          attemptId: "attempt-restored-budget-test",
+          providerResponseId: "response-restored-budget-test",
+          turnId: "turn-restored-budget-test",
+          providerCalls: 1,
+          providerRequests: 1,
+          inputTokens: 70,
+          outputTokens: 20,
+          cachedInputTokens: 0,
+          reasoningTokens: 10,
+          costNanodollars: 10_000_000,
+          observedAt: "2026-09-01T00:00:00.000Z",
+        },
+      ],
+    };
+    let interrupted = false;
+    let resolveRestoredTurn:
+      ((value: { status: string; turnId: string }) => void) | null = null;
+    liveSessionMocks.snapshot.mockImplementation(() =>
+      interrupted ? reachedSnapshot : emptySnapshot,
+    );
+    liveSessionMocks.sendMessage
+      .mockResolvedValueOnce({
+        status: "completed",
+        turnId: "turn-before-restore",
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRestoredTurn = resolve;
+            queueMicrotask(() => {
+              liveSessionMocks.turnListener?.({
+                seq: 1,
+                at: "2026-09-01T00:00:00.000Z",
+                turnId: "turn-restored-budget-test",
+                kind: "usage",
+                usage: {
+                  providerRequests: 1,
+                  inputTokens: 70,
+                  outputTokens: 20,
+                  cachedInputTokens: 0,
+                  reasoningTokens: 10,
+                  costNanodollars: 10_000_000,
+                },
+              });
+            });
+          }),
+      );
+    liveSessionMocks.interrupt.mockImplementationOnce(async () => {
+      interrupted = true;
+      resolveRestoredTurn?.({
+        status: "interrupted",
+        turnId: "turn-restored-budget-test",
+      });
+      return reachedSnapshot;
+    });
+    const source = RUNNER_LIVE_CANDIDATE_SLOTS[0]!.candidates[0]!;
+    const candidate = {
+      ...source,
+      budget: {
+        ...source.budget,
+        maxTotalTokens: 100,
+        maxCostUsd: 0.01,
+      },
+    };
+    const entry: RunnerLiveScheduleEntry = {
+      executionId: "restored-session-budget-stop",
+      caseId: "restart-recovery",
+      candidateId: candidate.id,
+      slotId: candidate.slotId,
+      repetition: 1,
+      providerTrace: "raw",
+      budget: candidate.budget,
+    };
+
+    const observation = await executeLiveRunnerWorkflow({
+      entry,
+      candidate,
+      evalCase: runnerWorkflowCase(entry.caseId),
+    });
+
+    expect(liveSessionMocks.restore).toHaveBeenCalledWith(
+      "session-shutdown-test",
+    );
+    expect(liveSessionMocks.subscribedSessionIds).toEqual([
+      "created",
+      "restored",
+    ]);
+    expect(liveSessionMocks.unsubscribedSessionIds).toEqual([
+      "created",
+      "restored",
+    ]);
+    expect(liveSessionMocks.interrupt).toHaveBeenCalledTimes(1);
+    expect(liveSessionMocks.sendMessage).toHaveBeenCalledTimes(2);
     expect(observation).toMatchObject({
       classification: "candidate_failure",
       metrics: { totalTokens: 100, costUsd: 0.01 },

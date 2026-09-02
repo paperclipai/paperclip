@@ -498,10 +498,42 @@ export async function executeLiveRunnerWorkflow(input: {
   let budgetInterrupt: Promise<void> | null = null;
   let budgetInterruptError: unknown;
   let budgetStopReason: string | null = null;
+  let unsubscribe: () => void = () => undefined;
   const withinBudget = (): boolean =>
     budgetStopReason === null &&
     candidateBudgetThresholdsReached(input.candidate, session?.snapshot())
       .length === 0;
+  const subscribeToSession = (activeSession: CapabilityLiveSession): void => {
+    unsubscribe();
+    unsubscribe = activeSession.subscribe((event) => {
+      streamed.push(event);
+      if (
+        firstVisibleAt === null &&
+        (event.kind === "delta" || event.kind === "activity")
+      )
+        firstVisibleAt = Date.now();
+      if (
+        event.kind === "usage" &&
+        budgetInterrupt === null &&
+        session === activeSession
+      ) {
+        const reason = liveCandidateBudgetStopReason(
+          input.candidate,
+          activeSession.snapshot(),
+          event.usage,
+        );
+        if (reason !== null) {
+          budgetStopReason = reason;
+          budgetInterrupt = activeSession.interrupt(reason).then(
+            () => undefined,
+            (error: unknown) => {
+              budgetInterruptError = error;
+            },
+          );
+        }
+      }
+    });
+  };
   try {
     session = await service.create({
       workingDirectory: input.workingDirectory ?? runtimeRoot,
@@ -532,35 +564,7 @@ export async function executeLiveRunnerWorkflow(input: {
       lifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 },
       scenario: { id: `runner-workflow-${input.evalCase.id}` },
     });
-    const unsubscribe = session.subscribe((event) => {
-      streamed.push(event);
-      if (
-        firstVisibleAt === null &&
-        (event.kind === "delta" || event.kind === "activity")
-      )
-        firstVisibleAt = Date.now();
-      if (
-        event.kind === "usage" &&
-        budgetInterrupt === null &&
-        session !== null
-      ) {
-        const reason = liveCandidateBudgetStopReason(
-          input.candidate,
-          session.snapshot(),
-          event.usage,
-        );
-        if (reason !== null) {
-          budgetStopReason = reason;
-          const activeSession = session;
-          budgetInterrupt = activeSession.interrupt(reason).then(
-            () => undefined,
-            (error: unknown) => {
-              budgetInterruptError = error;
-            },
-          );
-        }
-      }
-    });
+    subscribeToSession(session);
     try {
       if (input.evalCase.id === "cancellation-permissions") {
         const pending = session.sendMessage(promptFor(input.evalCase));
@@ -584,6 +588,7 @@ export async function executeLiveRunnerWorkflow(input: {
             transportOptions,
           });
           session = await service.restore(sessionId);
+          subscribeToSession(session);
           turns.push(
             await session.sendMessage(continuationPrompt(input.evalCase)),
           );
