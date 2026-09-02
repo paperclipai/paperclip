@@ -329,6 +329,20 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/routines/{id}/run"].post.responses["422"]).toBeDefined();
   });
 
+  it("advertises the stalled-review-decision route as board-only", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/issues/{id}/stalled-review-decision"].post;
+
+    // The handler calls assertBoard and the service writes the decision under a
+    // user actor, so advertising AgentBearerAuth sent agents to a route that can
+    // only ever answer them "Board access required".
+    expect(operation.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
+
   it("publishes the Claude browser-code grammar and strict setup-token response shapes", () => {
     const { spec } = loadSpecRoutes();
     const base = "/api/companies/{companyId}/setup-token-login-sessions";
