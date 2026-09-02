@@ -98,6 +98,7 @@ export function createNativeSessionBackend(
     onSpawn: options.onSpawn,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
+    environment: options.environment,
     transportFactory: options.codexTransportFactory,
   });
 }

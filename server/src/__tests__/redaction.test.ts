@@ -1,7 +1,34 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import { PRP_V1_EVENT_TYPES, REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 describe("redaction", () => {
+  it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {
+    const schema = JSON.parse(readFileSync(
+      new URL("../../../packages/paperclip-runner/protocol/schemas/event.schema.json", import.meta.url),
+      "utf8",
+    )) as { properties: { eventType: { enum: string[] } } };
+    expect([...PRP_V1_EVENT_TYPES]).toEqual(schema.properties.eventType.enum);
+  });
+
+  it("preserves every discriminator in the cross-language replay stream", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL(
+        "../../../packages/paperclip-runner/protocol/fixtures/replay/duplicate-event.json",
+        import.meta.url,
+      ),
+      "utf8",
+    )) as { events: Array<Record<string, unknown>> };
+
+    for (const event of fixture.events) {
+      const sanitized = redactEventPayload({ prpEvent: event });
+      const envelope = sanitized?.prpEvent as Record<string, unknown>;
+      expect(envelope.eventType).toBe(event.eventType);
+      expect(envelope.sourceEventId).toBe(event.sourceEventId);
+      expect(envelope.payload).toEqual(event.payload);
+    }
+  });
+
   it("redacts sensitive keys and nested secret values", () => {
     const input = {
       apiKey: "abc123",
@@ -73,6 +100,95 @@ describe("redaction", () => {
         runtimeSchema: "paperclip.runtime_request.v2",
       },
     });
+  });
+
+  it("preserves only known PRP v1 event discriminators inside validated envelopes", () => {
+    const payload = {
+      prpEvent: {
+        schema: "paperclip.prp.event.v1",
+        schemaVersion: 1,
+        eventType: "tool.execution.started",
+        payload: {
+          eventType: "run.result.accepted",
+          credential: "aaa.bbb.ccc",
+        },
+      },
+      unrelated: {
+        eventType: "workspace.file.referenced",
+      },
+    };
+
+    const sanitized = redactEventPayload(payload);
+
+    expect(sanitized).toEqual({
+      prpEvent: {
+        schema: "paperclip.prp.event.v1",
+        schemaVersion: 1,
+        eventType: "tool.execution.started",
+        payload: {
+          eventType: REDACTED_EVENT_VALUE,
+          credential: REDACTED_EVENT_VALUE,
+        },
+      },
+      unrelated: {
+        eventType: REDACTED_EVENT_VALUE,
+      },
+    });
+    expect(redactEventPayload(sanitized)).toEqual(sanitized);
+  });
+
+  it("redacts unknown dotted event values even in a PRP-shaped envelope", () => {
+    expect(redactEventPayload({
+      schema: "paperclip.prp.event.v1",
+      schemaVersion: 1,
+      eventType: "attacker.supplied.token",
+    })?.eventType).toBe(REDACTED_EVENT_VALUE);
+  });
+
+  it("preserves native run span identities without weakening hostname redaction", () => {
+    const spanNames = [
+      "environment.workspace.realize",
+      "native.coordinator.claim",
+      "runner.transport.selected",
+      "runner.prp.route.register",
+      "runner.transport.connect",
+      "runner.session.bootstrap",
+      "runner.turn.submit",
+      "runner.session.startup",
+      "provider.turn.queue",
+      "native.session.execute",
+      "native.result.finalize",
+      "task.run.measured",
+    ];
+
+    for (const span of spanNames) {
+      const input = {
+        schema: "paperclip.run-performance-span.v1",
+        span,
+        parentSpan: "native.session.execute",
+        providerHostname: "api.openai.com",
+      };
+      const sanitized = redactEventPayload(input);
+
+      expect(sanitized).toMatchObject({
+        schema: input.schema,
+        span,
+        parentSpan: "native.session.execute",
+        providerHostname: REDACTED_EVENT_VALUE,
+      });
+      expect(redactEventPayload(sanitized)).toEqual(sanitized);
+    }
+
+    expect(redactEventPayload({
+      schema: "paperclip.run-performance-span.v1",
+      span: "api.openai.com",
+    })?.span).toBe(REDACTED_EVENT_VALUE);
+    expect(
+      redactEventPayload({
+        schema: "paperclip.run-performance-span.v1",
+        span: "runner.example.com",
+      })?.span,
+    ).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("redacts payload objects while preserving null", () => {

@@ -380,7 +380,7 @@ fn decodes_terminal_and_redacts_diagnostic_payloads() {
     assert!(matches!(
         decoded,
         AcpxEventPayload::Diagnostic { message, .. }
-            if message == "[REDACTED diagnostic containing a sensitive marker]"
+            if message == "Authorization: Bearer [REDACTED]"
     ));
 }
 

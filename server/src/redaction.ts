@@ -37,6 +37,147 @@ const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-
 // public discriminators, not credentials. Exempt only the closed Paperclip
 // schema namespace while retaining the existing fail-closed JWT value guard.
 const PAPERCLIP_SCHEMA_ID_RE = /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
+// Keep this closed catalog aligned with PRP v1's event.schema.json. These
+// values are public protocol discriminators, but their dotted shape overlaps
+// the deliberately broad JWT heuristic. They are exempt only in the
+// discriminator field of a PRP v1 event envelope; the same string anywhere
+// else remains subject to redaction.
+export const PRP_V1_EVENT_TYPES = new Set([
+  "runner.connected",
+  "runner.reconnected",
+  "runner.reconciled",
+  "runner.disconnected",
+  "runner.draining",
+  "runner.backpressure",
+  "runner.suspending",
+  "runner.suspended",
+  "runner.stopped",
+  "runner.diagnostic",
+  "runtime.phase.changed",
+  "sandbox.metric",
+  "workspace.ready",
+  "workspace.change.updated",
+  "workspace.diff.recorded",
+  "workspace.file.referenced",
+  "harness.starting",
+  "harness.ready",
+  "harness.exited",
+  "harness.diagnostic",
+  "plan.updated",
+  "tool.execution.started",
+  "tool.execution.progressed",
+  "tool.execution.completed",
+  "research.started",
+  "research.progressed",
+  "research.completed",
+  "delegation.started",
+  "delegation.updated",
+  "delegation.completed",
+  "model.route.changed",
+  "model.verification.updated",
+  "context.compacted",
+  "artifact.viewed",
+  "artifact.generated",
+  "review.mode.changed",
+  "hook.started",
+  "hook.completed",
+  "memory.citation.referenced",
+  "safety.review.started",
+  "safety.review.completed",
+  "terminal.input.sent",
+  "wait.started",
+  "wait.completed",
+  "provider.notice.recorded",
+  "session.starting",
+  "session.started",
+  "session.resuming",
+  "session.resumed",
+  "session.reconciled",
+  "session.updated",
+  "session.closed",
+  "session.failed",
+  "turn.submitted",
+  "turn.accepted",
+  "turn.started",
+  "turn.completed",
+  "turn.failed",
+  "turn.interrupted",
+  "turn.cancelled",
+  "item.started",
+  "item.delta",
+  "item.completed",
+  "item.failed",
+  "usage.reported",
+  "semantic_tool.input",
+  "semantic_tool.result",
+  "semantic_tool.reconciled",
+  "mcp_app.discovered",
+  "mcp_app.resource.resolved",
+  "mcp_app.initializing",
+  "mcp_app.ready",
+  "mcp_app.tool_input",
+  "mcp_app.tool_result",
+  "mcp_app.action.requested",
+  "mcp_app.action.resolved",
+  "mcp_app.host_context.changed",
+  "mcp_app.failed",
+  "mcp_app.teardown",
+  "runtime_request.created",
+  "runtime_request.resolved",
+  "runtime_request.expired",
+  "runtime_request.cancelled",
+  "interaction.request.proposed",
+  "interaction.request.materialized",
+  "interaction.request.rejected",
+  "interaction.response.progressed",
+  "interaction.response.resolved",
+  "interaction.response.delivered",
+  "run.attached",
+  "run.detached",
+  "run.result.proposed",
+  "run.result.accepted",
+  "run.result.rejected",
+  "attention.request.proposed",
+  "attention.request.routed",
+  "attention.request.resolved",
+  "attention.request.expired",
+  "attention.request.superseded",
+  "work.assessment.recorded",
+  "issue.status.decision.recorded",
+  "issue.status.decision.applied",
+  "issue.status.decision.rejected",
+  "issue.status.decision.superseded",
+  "run.terminal",
+]);
+const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
+const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
+const NATIVE_RUN_SPAN_NAMES = new Set([
+  "agent.turn",
+  "environment.acquire",
+  "environment.startup",
+  "environment.workspace.realize",
+  "native.coordinator.claim",
+  "native.result.finalize",
+  "native.session.execute",
+  "provider.session.continuity_break",
+  "provider.session.resume",
+  "provider.time_to_first_agent_event",
+  "provider.turn.queue",
+  "runner.artifact.discover",
+  "runner.artifact.prepare",
+  "runner.prp.route.register",
+  "runner.runtime.stage",
+  "runner.session.bootstrap",
+  "runner.session.resume",
+  "runner.session.startup",
+  "runner.transport.connect",
+  "runner.transport.selected",
+  "runner.turn.submit",
+  "task.prepare",
+  "task.run",
+  "task.run.measured",
+  "task.settle",
+]);
 const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
@@ -120,6 +261,18 @@ function sanitizeCommandArgs(args: unknown[]): unknown[] {
   });
 }
 
+function isKnownPrpEventDiscriminator(
+  container: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): value is string {
+  return key === "eventType"
+    && container.schema === "paperclip.prp.event.v1"
+    && container.schemaVersion === 1
+    && typeof value === "string"
+    && PRP_V1_EVENT_TYPES.has(value);
+}
+
 export function sanitizeRecord(record: Record<string, unknown>): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
@@ -151,6 +304,13 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
+    // Interpret a validated schema field before applying generic value-shape
+    // heuristics. The exemption is deliberately closed to this one PRP v1
+    // discriminator; the same dotted string in any other field is redacted.
+    if (isKnownPrpEventDiscriminator(record, key, value)) {
+      redacted[key] = value;
+      continue;
+    }
     if (
       typeof value === "string"
       && JWT_VALUE_RE.test(value)
@@ -168,7 +328,21 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
-  return sanitizeRecord(payload);
+  const sanitized = sanitizeRecord(payload);
+  if (payload.schema !== NATIVE_RUN_SPAN_SCHEMA) return sanitized;
+
+  // Native run span identities are controlled diagnostics emitted by
+  // createNativeRunTrace, not provider data. Their dotted names overlap the
+  // broad JWT-value heuristic, so restore only these two fields on the exact
+  // run-performance schema. Hostnames and JWT-shaped values on every other
+  // field and schema still fail closed through sanitizeRecord above.
+  for (const field of NATIVE_RUN_SPAN_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && NATIVE_RUN_SPAN_NAMES.has(value)) {
+      sanitized[field] = value;
+    }
+  }
+  return sanitized;
 }
 
 export function redactSensitiveText(input: string): string {

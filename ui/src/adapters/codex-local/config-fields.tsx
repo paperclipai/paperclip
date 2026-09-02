@@ -69,21 +69,28 @@ export function CodexLocalConfigFields({
     : "codex";
   const runnerPermissionCapability =
     PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider];
+  const configuredRunnerPermissionMode = runnerManaged && runnerPermissionCapability.configurable
+    ? isCreate
+      ? values!.adapterSchemaValues?.[
+          runnerPermissionCapability.configKey
+        ] ?? (runnerProvider === "codex" ? values!.codexPermissionMode : undefined)
+      : eff(
+          "adapterConfig",
+          runnerPermissionCapability.configKey,
+          config[runnerPermissionCapability.configKey],
+        )
+    : undefined;
+  const runnerPermissionModeUnsupported =
+    runnerManaged
+    && runnerPermissionCapability.configurable
+    && configuredRunnerPermissionMode !== undefined
+    && !runnerPermissionCapability.options.some(
+      (option) => option.value === configuredRunnerPermissionMode,
+    );
   const runnerPermissionMode = runnerManaged && runnerPermissionCapability.configurable
     ? resolvePaperclipRunnerPermissionMode(
         runnerProvider,
-        isCreate
-          ? values!.adapterSchemaValues?.[
-              runnerPermissionCapability.configKey
-            ] ??
-              (runnerProvider === "codex"
-                ? values!.codexPermissionMode
-                : undefined)
-          : eff(
-              "adapterConfig",
-              runnerPermissionCapability.configKey,
-              config[runnerPermissionCapability.configKey],
-            ),
+        configuredRunnerPermissionMode,
       )
     : runnerPermissionCapability.defaultMode;
   const runnerSchemaValue = (key: string, fallback: unknown): unknown =>
@@ -369,7 +376,7 @@ export function CodexLocalConfigFields({
         >
           <select
             className={inputClass}
-            value={runnerPermissionMode}
+            value={runnerPermissionModeUnsupported ? "__unsupported__" : runnerPermissionMode}
             onChange={(event) => {
               const value = resolvePaperclipRunnerPermissionMode(
                 runnerProvider,
@@ -391,12 +398,22 @@ export function CodexLocalConfigFields({
               }
             }}
           >
+            {runnerPermissionModeUnsupported && (
+              <option value="__unsupported__" disabled>
+                Unsupported saved mode — select a qualified mode
+              </option>
+            )}
             {runnerPermissionCapability.options.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
             ))}
           </select>
+          {runnerPermissionModeUnsupported && runnerProvider === "codex" && (
+            <p className="mt-1 text-xs text-destructive" role="alert">
+              This saved Codex mode cannot start or recover a Paperclip Runner run. Select Full auto (never ask) to remediate it.
+            </p>
+          )}
         </Field>
       )}
       {runnerManaged && (

@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   parseObject,
   resolvePaperclipInstanceRootForAdapter,
@@ -166,7 +167,10 @@ import type {
   SetupTokenTransportAdvisory,
 } from "@paperclipai/shared";
 import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
@@ -1716,6 +1720,33 @@ export function agentRoutes(
     }
   }
 
+  function resolvePaperclipRunnerAdapterTransition(input: {
+    previousAdapterType: string;
+    nextAdapterType: string;
+    previousAdapterConfig: Record<string, unknown>;
+    nextAdapterConfig: Record<string, unknown>;
+  }): Record<string, unknown> {
+    if (
+      input.nextAdapterType !== "paperclip_runner"
+      || input.previousAdapterType === input.nextAdapterType
+    ) {
+      return input.nextAdapterConfig;
+    }
+    if (input.previousAdapterType !== "codex_local") {
+      throw unprocessable(
+        `Cannot convert ${input.previousAdapterType} to Paperclip Runner while only the Codex provider is available.`,
+        { code: "paperclip_runner_adapter_conversion_unsupported" },
+      );
+    }
+    return {
+      ...input.nextAdapterConfig,
+      model:
+        asNonEmptyString(input.nextAdapterConfig.model)
+        ?? asNonEmptyString(input.previousAdapterConfig.model)
+        ?? DEFAULT_CODEX_LOCAL_MODEL,
+    };
+  }
+
   function assertProviderTraceSettingTransition(
     req: Request,
     nextRuntimeConfig: unknown,
@@ -1927,7 +1958,10 @@ export function agentRoutes(
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
     );
-    return normalizedAdapterConfig;
+    return normalizePaperclipRunnerAdapterConfig(
+      input.adapterType ?? "",
+      normalizedAdapterConfig,
+    );
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -1989,6 +2023,9 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "paperclip_runner") {
+      return normalizePaperclipRunnerAdapterConfig(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -2401,16 +2438,14 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
-    if (
-      adapterType === "paperclip_runner"
-      && mode !== "remove"
-      && requestedSkillEntries.some((entry) => entry.key === PAPERCLIP_OPERATIONAL_SKILL_KEY)
-    ) {
-      throw unprocessable(
-        `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
-      );
-    }
+    const desiredSkillEntries = mergeDesiredSkillEntries(
+      currentSkillEntries,
+      requestedSkillEntries,
+      mode,
+    ).filter(
+      (entry) => adapterType !== "paperclip_runner"
+        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),
@@ -4263,6 +4298,12 @@ export function agentRoutes(
           existingAdapterConfig,
           rawEffectiveAdapterConfig,
         );
+        rawEffectiveAdapterConfig = resolvePaperclipRunnerAdapterTransition({
+          previousAdapterType: existing.adapterType,
+          nextAdapterType: requestedAdapterType,
+          previousAdapterConfig: existingAdapterConfig,
+          nextAdapterConfig: rawEffectiveAdapterConfig,
+        });
       }
       const existingRunnerProvider =
         existing.adapterType === "paperclip_runner"

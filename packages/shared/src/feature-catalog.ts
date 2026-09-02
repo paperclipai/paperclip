@@ -53,7 +53,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:
-      "Allow new Codex agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required.",
+      "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

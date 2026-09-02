@@ -212,7 +212,7 @@
     },
     {
       "path": "fixtures/replay/duplicate-event.json",
-      "sha256": "779c146966d2825ffcde88bfff8b1fb238c162d40c578980ad3bd1a7def405d7",
+      "sha256": "ea94f163048111118ed2c81d9940196e5560455a047266cdc092f6f64e3cfaff",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

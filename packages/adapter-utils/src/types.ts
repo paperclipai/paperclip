@@ -618,8 +618,8 @@ export interface PaperclipQuestionResponse {
 }
 
 export type TranscriptEntry =
-  | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown" }
-  | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown" }
+  | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown"; itemId?: string }
+  | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown"; itemId?: string }
   | { kind: "user"; ts: string; text: string }
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean; delta?: boolean }

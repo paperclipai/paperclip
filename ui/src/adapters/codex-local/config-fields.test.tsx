@@ -31,9 +31,9 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
     expect(html).toContain("OpenCode 1.18.17");
     expect(html).toContain("ACPX");
-    expect(html).toContain("Full auto (never ask)");
-    expect(html).toContain("Ask when requested");
-    expect(html).toContain("Ask for untrusted operations");
+    expect(html).toContain("Automatic (isolated)");
+    expect(html).not.toContain("Ask when requested");
+    expect(html).not.toContain("Ask for untrusted operations");
     expect(html).toContain("Claude Managed");
     expect(html).toContain("AWS AgentCore");
     expect(html).not.toContain("Bypass sandbox");
@@ -69,7 +69,9 @@ describe("Paperclip Runner Codex configuration", () => {
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 
-    expect(html).toContain('<option value="untrusted" selected="">Ask for untrusted operations</option>');
+    expect(html).toContain('value="__unsupported__" selected=""');
+    expect(html).toContain("cannot start or recover a Paperclip Runner run");
+    expect(html).toContain("Full auto (never ask)");
   });
 
   it("shows a bounded idle timeout only for warm sessions", () => {

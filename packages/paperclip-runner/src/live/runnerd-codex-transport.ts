@@ -2145,7 +2145,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                           this.options.environment,
                           [
                             ...trustedRuntimeReadOnlyRoots(this.options.environment),
-                            ...(runtimeContext ? [codexHome, runtimeContext.instructions.bundle.rootPath, ...runtimeContext.skills.map((skill) => skill.bundle.rootPath)] : []),
+                            ...(runtimeContext
+                              ? [
+                                  resolve(codexHome, "skills"),
+                                  runtimeContext.instructions.bundle.rootPath,
+                                  ...runtimeContext.skills.map(
+                                    (skill) => skill.bundle.rootPath,
+                                  ),
+                                ]
+                              : []),
                           ],
                         )),
                   cwd: String(params.cwd ?? tmpdir()),

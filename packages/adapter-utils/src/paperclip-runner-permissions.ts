@@ -16,6 +16,9 @@ export type PaperclipRunnerPermissionMode =
 
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
+  codex: "gpt-5.6-sol",
+} as const;
 
 export interface PaperclipRunnerPermissionOption<TMode extends string = string> {
   value: TMode;
@@ -47,12 +50,20 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   codex: {
     configurable: true,
     configKey: "codexPermissionMode",
-    defaultMode: "untrusted",
-    description: "Controls when Codex asks before an operation inside the assigned Paperclip environment.",
+    defaultMode: "never",
+    // `never` disables provider approval pauses; it does not disable the
+    // runner's independent security boundary. Native Codex may use this mode
+    // only through the root-denied, workspace-scoped, network-disabled, and
+    // environment-allowlisted profile assembled by codex-security-config.ts.
+    description:
+      "Codex runs automatically inside a root-denied, workspace-scoped, network-disabled Paperclip environment.",
     options: [
-      { value: "never", label: "Full auto (never ask)", description: "Run without Codex approval pauses." },
-      { value: "on-request", label: "Ask when requested", description: "Prompt when Codex requests approval." },
-      { value: "untrusted", label: "Ask for untrusted operations", description: "Prompt for operations Codex does not classify as trusted." },
+      {
+        value: "never",
+        label: "Automatic (isolated)",
+        description:
+          "Run without Codex approval pauses while Paperclip keeps its independent workspace, network, and environment restrictions.",
+      },
     ],
   },
   opencode: {
@@ -108,6 +119,15 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? value as PaperclipRunnerPermissionMode
     : capability.defaultMode;
+}
+
+export function resolvePaperclipRunnerModel(
+  provider: keyof typeof PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  value: unknown,
+): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : PAPERCLIP_RUNNER_DEFAULT_MODELS[provider];
 }
 
 export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {

@@ -20431,10 +20431,15 @@ export function heartbeatService(
                     onLog,
                     onEvent: onAdapterEvent,
                     preparationSpans: nativeRunnerPreparationSpans,
-                    // Bootstrap the provider with executable/home discovery while
-                    // keeping the agent's configured provider values authoritative.
+                    // Bootstrap with executable/home discovery while keeping
+                    // configured provider values and the server-selected
+                    // workspace boundary authoritative.
                     runnerEnvironment: {
-                      ...buildNativeProviderEnvironment(adapterEnv),
+                      ...buildNativeProviderEnvironment(
+                        adapterEnv,
+                        process.env,
+                        executionWorkspace.cwd,
+                      ),
                       ...(nativeMcpServer
                         ? {
                             PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
